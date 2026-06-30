@@ -1,0 +1,15 @@
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY stubs/aeneas /usr/local/bin/aeneas
+COPY stubs/lake   /usr/local/bin/lake
+RUN chmod +x /usr/local/bin/aeneas /usr/local/bin/lake
+
+RUN git config --global user.email "lusterna@agent" \
+    && git config --global user.name "Lusterna"
+
+RUN mkdir -p /workspace/repo /workspace/out
+WORKDIR /workspace
