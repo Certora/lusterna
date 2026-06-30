@@ -1,0 +1,5 @@
+{
+  "enabledPlugins": {
+    "pydantic-ai@claude-plugins-official": true
+  }
+}

@@ -1,0 +1,12 @@
+*venv
+*.egg-info/
+*-lusterna/
+__pycache__
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+env/
+venv/
+.venv
+.env

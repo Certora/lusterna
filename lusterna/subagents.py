@@ -1,0 +1,117 @@
+"""Specialist subagents spawned by the orchestrator for focused tasks."""
+import logging
+from pydantic import BaseModel
+from pydantic_ai import Agent
+
+from . import config
+
+log = logging.getLogger(__name__)
+
+
+# ── output schemas ────────────────────────────────────────────────────────────
+
+class InformalSpec(BaseModel):
+    summary: str
+    preconditions: list[str]
+    postconditions: list[str]
+    invariants: list[str]
+    edge_cases: list[str]
+
+
+class FormalSpec(BaseModel):
+    lean_definitions: str    # Lean 4 type definitions and predicates
+    lean_theorem_stubs: str  # theorem statements (without proofs)
+    rationale: str
+
+
+class JudgeVerdict(BaseModel):
+    approved: bool
+    score: int               # 0-10
+    issues: list[str]
+    suggestions: list[str]
+
+
+# ── subagent definitions ──────────────────────────────────────────────────────
+
+_spec_inferrer = Agent(
+    config.MODEL,
+    output_type=InformalSpec,
+    instructions=(
+        "You are a formal methods expert. Given Lean 4 code translated from Rust "
+        "and an optional design document, infer the informal specification of the program: "
+        "what it should do, its preconditions, postconditions, invariants, and edge cases. "
+        "Be precise and concise. Do not invent behaviour not evidenced by the code or doc."
+    ),
+)
+
+_formal_spec_writer = Agent(
+    config.MODEL,
+    output_type=FormalSpec,
+    instructions=(
+        "You are a Lean 4 expert. Given an informal specification, produce a formal specification "
+        "as Lean 4 definitions and theorem stubs (no sorry-free proofs required yet). "
+        "Use idiomatic Lean 4 / Mathlib style. Each theorem stub must have a docstring "
+        "explaining what it captures."
+    ),
+)
+
+_judge = Agent(
+    config.JUDGE_MODEL,
+    output_type=JudgeVerdict,
+    instructions=(
+        "You are a rigorous reviewer of formal specifications. "
+        "Evaluate whether the provided formal Lean 4 specification faithfully captures "
+        "the informal specification and the original Rust source. "
+        "Score 0-10. Flag any gaps, unsound definitions, or missing invariants."
+    ),
+)
+
+_summariser = Agent(
+    config.MODEL,
+    output_type=str,
+    instructions=(
+        "Summarise the following agent conversation history into a concise paragraph "
+        "capturing all decisions made, artefacts produced, and open questions. "
+        "Preserve technical details such as file paths and commit SHAs."
+    ),
+)
+
+
+# ── public async entry points ─────────────────────────────────────────────────
+
+async def infer_informal_spec(lean_code: str, design_doc: str) -> InformalSpec:
+    log.info("Subagent: inferring informal specification")
+    prompt = f"### Lean 4 code\n{lean_code}\n\n### Design document\n{design_doc}"
+    result = await _spec_inferrer.run(prompt)
+    return result.output
+
+
+async def derive_formal_spec(informal: InformalSpec, lean_code: str) -> FormalSpec:
+    log.info("Subagent: deriving formal specification")
+    prompt = (
+        f"### Informal specification\n{informal.model_dump_json(indent=2)}\n\n"
+        f"### Lean 4 translated code\n{lean_code}"
+    )
+    result = await _formal_spec_writer.run(prompt)
+    return result.output
+
+
+async def judge_formal_spec(
+    informal: InformalSpec,
+    formal: FormalSpec,
+    rust_source: str,
+) -> JudgeVerdict:
+    log.info("Subagent: judging formal specification")
+    prompt = (
+        f"### Informal spec\n{informal.model_dump_json(indent=2)}\n\n"
+        f"### Formal spec\n{formal.model_dump_json(indent=2)}\n\n"
+        f"### Original Rust source\n{rust_source}"
+    )
+    result = await _judge.run(prompt)
+    return result.output
+
+
+async def summarise_history(history_text: str) -> str:
+    log.info("Subagent: summarising context history")
+    result = await _summariser.run(history_text)
+    return result.output
