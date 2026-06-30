@@ -1,0 +1,20 @@
+#!/bin/sh
+# Stub aeneas: aeneas <src.rs> -o <out.lean>
+SRC=$1; shift; shift; OUT=$1
+NAME=$(basename "$SRC" .rs)
+mkdir -p "$(dirname "$OUT")"
+cat > "$OUT" << LEAN
+-- Auto-translated from $SRC by aeneas (stub)
+import Mathlib.Tactic
+
+namespace Fib
+
+/-- Recursive Fibonacci -/
+def fib : Nat → Nat
+  | 0 => 0
+  | 1 => 1
+  | (n + 2) => fib (n + 1) + fib n
+
+end Fib
+LEAN
+echo "aeneas: wrote $OUT"
