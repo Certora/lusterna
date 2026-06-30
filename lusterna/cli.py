@@ -8,7 +8,7 @@ from pathlib import Path
 
 import click
 
-from . import checkpoint, config, logging_setup, permissions
+from . import checkpoint, config, logging_setup
 from .state import AgentDeps
 
 log = logging.getLogger(__name__)
@@ -18,13 +18,9 @@ _DOCKERFILE_DIR = Path(__file__).parent.parent
 
 @click.group()
 @click.option("--verbose", "-v", is_flag=True, help="Set log level to DEBUG")
-@click.option("--no-confirm", is_flag=True, help="Skip permission confirmation (for CI use)")
-@click.pass_context
-def main(ctx: click.Context, verbose: bool, no_confirm: bool) -> None:
+def main(verbose: bool) -> None:
     """Lusterna — Rust → Lean formal verification agent."""
     logging_setup.setup(verbose=verbose)
-    ctx.ensure_object(dict)
-    ctx.obj["no_confirm"] = no_confirm
 
 
 @main.command()
@@ -38,9 +34,7 @@ def main(ctx: click.Context, verbose: bool, no_confirm: bool) -> None:
               help="Attach to a pre-running container instead of starting a new one")
 @click.option("--image", default=config.CONTAINER_IMAGE, show_default=True,
               help="Image to start when --container is not given")
-@click.pass_context
 def run(
-    ctx: click.Context,
     repo: str,
     design_doc: str,
     out_dir: str | None,
@@ -51,9 +45,6 @@ def run(
     """Run the verification pipeline on REPO using DESIGN_DOC."""
     from . import agent as agent_module
     from . import container as container_mod
-
-    if not ctx.obj.get("no_confirm"):
-        permissions.request_permissions()
 
     repo_path = Path(repo)
     work_path = Path(out_dir) if out_dir else repo_path.parent / (repo_path.name + "-lusterna")
@@ -115,7 +106,6 @@ def run(
 @click.option("--tag", default=config.CONTAINER_IMAGE, show_default=True)
 def build_image(tag: str) -> None:
     """Build the lusterna Docker toolchain image."""
-    logging_setup.setup()
     from . import container as container_mod
     container_mod.build_image(_DOCKERFILE_DIR, tag=tag)
 
@@ -151,7 +141,6 @@ def rag() -> None:
 def rag_add(files: tuple[str, ...], source: str, tags: str) -> None:
     """Ingest FILES into the RAG knowledge base."""
     from . import rag as rag_module
-    logging_setup.setup()
     tag_list = [t.strip() for t in tags.split(",") if t.strip()]
     docs = [
         {"id": f, "text": Path(f).read_text(), "source": source, "tags": tag_list}

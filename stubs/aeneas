@@ -1,20 +1,30 @@
 #!/bin/sh
-# Stub aeneas: aeneas <src.rs> -o <out.lean>
-SRC=$1; shift; shift; OUT=$1
-NAME=$(basename "$SRC" .rs)
-mkdir -p "$(dirname "$OUT")"
-cat > "$OUT" << LEAN
--- Auto-translated from $SRC by aeneas (stub)
-import Mathlib.Tactic
+# Stub aeneas: mimics `aeneas -backend lean -dest <outdir> <file.llbc>`
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -backend) shift ;;
+        -dest)    shift; OUTDIR="$1" ;;
+        *.llbc)   LLBC="$1" ;;
+    esac
+    shift
+done
+CRATE=$(basename "${LLBC%.llbc}")
+# Capitalise first letter (POSIX sh compatible)
+LIB=$(echo "$CRATE" | cut -c1 | tr '[:lower:]' '[:upper:]')$(echo "$CRATE" | cut -c2-)
+mkdir -p "$OUTDIR"
+cat > "$OUTDIR/${LIB}.lean" << LEAN
+-- Auto-translated from $LLBC by aeneas (stub)
+import Aeneas
+open Aeneas Aeneas.Std Result
 
-namespace Fib
+namespace ${CRATE}
 
-/-- Recursive Fibonacci -/
-def fib : Nat → Nat
-  | 0 => 0
-  | 1 => 1
-  | (n + 2) => fib (n + 1) + fib n
+def fib_recursive (n : Std.U32) : Result Std.U64 :=
+  match n with
+  | 0#uscalar => ok 0#u64
+  | 1#uscalar => ok 1#u64
+  | _ => ok 0#u64  -- stub: recursive case omitted
 
-end Fib
+end ${CRATE}
 LEAN
-echo "aeneas: wrote $OUT"
+echo "aeneas: wrote $OUTDIR/${LIB}.lean"

@@ -4,9 +4,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# Stub binaries matching the real two-step interface:
+#   charon cargo --preset=aeneas  →  <crate>.llbc
+#   aeneas -backend lean <f>.llbc -o <outdir>  →  <outdir>/<crate>.lean
+COPY stubs/charon /usr/local/bin/charon
 COPY stubs/aeneas /usr/local/bin/aeneas
 COPY stubs/lake   /usr/local/bin/lake
-RUN chmod +x /usr/local/bin/aeneas /usr/local/bin/lake
+RUN chmod +x /usr/local/bin/charon /usr/local/bin/aeneas /usr/local/bin/lake
 
 RUN git config --global user.email "lusterna@agent" \
     && git config --global user.name "Lusterna"

@@ -1,47 +1,94 @@
 FROM debian:bookworm-slim
 
-# ── system packages ────────────────────────────────────────────────────────────
+# ── System packages ────────────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates git build-essential \
-        libssl-dev pkg-config \
+        build-essential curl git ca-certificates \
+        pkg-config libssl-dev libgmp-dev libffi-dev \
+        opam bubblewrap m4 \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Rust / Cargo ───────────────────────────────────────────────────────────────
+# Needed both at build time (to compile Charon) and at runtime
+# (charon cargo invokes cargo inside the user's crate).
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
+
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     | sh -s -- -y --no-modify-path --default-toolchain stable
-RUN rustup component add rustfmt clippy
 
-# ── LLVM / Charon (Aeneas front-end) ──────────────────────────────────────────
-# Charon translates Rust MIR → LLBC; Aeneas then translates LLBC → Lean/Coq.
-# We install both from their published releases.
-ARG CHARON_VERSION=0.1.55
-ARG AENEAS_VERSION=0.1.0
+# ── OCaml 5.2 + OPAM ──────────────────────────────────────────────────────────
+# Required to build Aeneas. OCaml 4.x is not sufficient.
+# ocamlformat must be exactly 0.27.0 — any other version breaks the build.
+ENV OPAMROOT=/usr/local/opam \
+    OPAMYES=1
 
-RUN cargo install --locked charon --version ${CHARON_VERSION} 2>&1 | tail -1
+RUN opam init --bare --no-setup --disable-sandboxing -a
 
-# Aeneas is distributed as a pre-built binary alongside the Lean library.
-# Adjust the URL when a newer release is available.
-RUN curl -fsSL \
-    "https://github.com/AeneasVerif/aeneas/releases/download/v${AENEAS_VERSION}/aeneas-linux-x86_64" \
-    -o /usr/local/bin/aeneas \
-    && chmod +x /usr/local/bin/aeneas
+# ~5-10 min; cached as its own layer so code changes don't re-trigger it.
+RUN opam switch create 5.2.0 \
+        --packages=ocaml-variants.5.2.0+options,ocaml-option-flambda
+
+RUN opam install -y --switch=5.2.0 \
+        calendar core_unix domainslib easy_logging menhir \
+        "ocamlformat=0.27.0" ocamlgraph odoc \
+        ppx_deriving ppx_deriving_yojson \
+        progress unionFind visitors yojson zarith
+
+# ── Charon + Aeneas ───────────────────────────────────────────────────────────
+# Aeneas ships a `charon-pin` file that records the exact Charon commit it
+# was tested with.  `make setup-charon` reads that file and clones Charon at
+# the right commit — the two binaries must always match.
+WORKDIR /opt/aeneas
+
+RUN git clone --depth=1 https://github.com/AeneasVerif/aeneas.git .
+
+# Clone Charon at the pinned commit (reads ./charon-pin internally).
+RUN make setup-charon
+
+# Build the Charon Rust binary.  The Charon repo ships its own
+# rust-toolchain.toml so rustup will download the right toolchain.
+RUN make -C charon build-charon-rust \
+    && cp charon/bin/charon /usr/local/bin/charon \
+    && cp charon/bin/charon-driver /usr/local/bin/charon-driver
+
+# Build the Aeneas OCaml binary (native compilation; no OCaml runtime needed
+# at container run time — the binary is self-contained).
+RUN eval $(opam env --switch=5.2.0) && make \
+    && cp bin/aeneas /usr/local/bin/aeneas
 
 # ── Lean 4 / Lake ─────────────────────────────────────────────────────────────
+# The Lean toolchain version must match the one declared in
+# /opt/aeneas/backends/lean/lean-toolchain.
 ENV ELAN_HOME=/usr/local/elan \
     PATH=/usr/local/elan/bin:$PATH
-RUN curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
-    | sh -s -- -y --no-modify-path --default-toolchain leanprover/lean4:stable
-# lake is bundled with lean; verify it is on PATH
-RUN lake --version
 
-# ── workspace layout ───────────────────────────────────────────────────────────
-# The host bind-mounts:
-#   <repo>      → /workspace/repo   (read-only)
-#   <work_path> → /workspace/out    (read-write)
+RUN LEAN_TC=$(cat /opt/aeneas/backends/lean/lean-toolchain) \
+    && curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+       | sh -s -- -y --no-modify-path --default-toolchain "$LEAN_TC"
+
+# Pre-fetch Mathlib and the Aeneas Lean runtime library so the container can
+# work with --network none at run time.
+# `lake exe cache get` downloads pre-compiled .olean files from the Mathlib CDN
+# instead of compiling Mathlib from source (~hours vs ~minutes).
+WORKDIR /opt/aeneas/backends/lean
+RUN lake update \
+    && lake exe cache get || echo "WARNING: Mathlib CDN unavailable; oleans not pre-cached"
+
+# ── Lean project template ──────────────────────────────────────────────────────
+# Pre-create a minimal lake project that depends on the bundled Aeneas runtime.
+# `lake update` runs here (with network) so the manifest is resolved and baked
+# into the image.  At agent runtime (--network none) we copy this template into
+# /workspace/out/lean and only overwrite the lakefile with the crate-specific
+# package/lib names — no further network access needed.
+RUN mkdir -p /opt/lean-template \
+    && printf 'import Lake\nopen Lake DSL\nrequire aeneas from "/opt/aeneas/backends/lean"\npackage «template» where\nlean_lib «Template» where\n' \
+       > /opt/lean-template/lakefile.lean \
+    && cd /opt/lean-template && lake update
+
+# ── Workspace layout ───────────────────────────────────────────────────────────
+RUN git config --global user.email "lusterna@agent" \
+    && git config --global user.name "Lusterna"
+
 RUN mkdir -p /workspace/repo /workspace/out
 WORKDIR /workspace
-
-CMD ["/bin/bash"]

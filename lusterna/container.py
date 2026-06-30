@@ -50,10 +50,25 @@ def start(image: str = DEFAULT_IMAGE, name: str | None = None) -> str:
 
 
 def push_repo(container_id: str, repo_path: Path) -> None:
-    """Copy the source repository into the container."""
-    _docker("exec", container_id, "mkdir", "-p", REPO_IN)
-    # docker cp <src>/. copies the directory contents, not the directory itself
-    _docker("cp", f"{repo_path.resolve()}/.", f"{container_id}:{REPO_IN}")
+    """Copy the source repository into the container.
+
+    We pipe a tar archive through `docker exec tar x` rather than using
+    `docker cp` so that extracted files are owned by root (the container
+    user).  `docker cp` preserves the host UID/GID, and with --cap-drop all
+    the containerised root loses CAP_DAC_OVERRIDE and cannot write those files.
+    """
+    exec_in(container_id, ["mkdir", "-p", REPO_IN])
+    tar = subprocess.Popen(
+        ["tar", "c", "-C", str(repo_path.resolve()), "."],
+        stdout=subprocess.PIPE,
+    )
+    subprocess.run(
+        ["docker", "exec", "-i", container_id,
+         "tar", "x", "--no-same-owner", "-C", REPO_IN],
+        stdin=tar.stdout,
+        check=True,
+    )
+    tar.wait()
     log.info("Repo pushed into container %s → %s", container_id[:12], REPO_IN)
 
 

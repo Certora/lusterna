@@ -100,12 +100,22 @@ async def judge_formal_spec(
     informal: InformalSpec,
     formal: FormalSpec,
     rust_source: str,
+    build_result: dict,
 ) -> JudgeVerdict:
     log.info("Subagent: judging formal specification")
+    build_section = (
+        "### lake build result\n"
+        f"success: {build_result.get('success', False)}\n"
+        f"stdout: {build_result.get('stdout', '')[:800]}\n"
+        f"stderr: {build_result.get('stderr', '')[:800]}\n"
+    )
     prompt = (
         f"### Informal spec\n{informal.model_dump_json(indent=2)}\n\n"
         f"### Formal spec\n{formal.model_dump_json(indent=2)}\n\n"
-        f"### Original Rust source\n{rust_source}"
+        f"### Original Rust source\n{rust_source}\n\n"
+        f"{build_section}\n"
+        "IMPORTANT: if lake build failed, approved MUST be false and score MUST be ≤ 4. "
+        "A spec that does not type-check cannot be approved."
     )
     result = await _judge.run(prompt)
     return result.output
