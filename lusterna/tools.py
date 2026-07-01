@@ -57,6 +57,10 @@ def read_output_file(deps: AgentDeps, path: str) -> str:
 
 def write_file(deps: AgentDeps, path: str, content: str) -> str:
     """Write *content* to *path* inside /workspace/out."""
+    _assert_relative(path)
+    parts = Path(path).parts
+    if ".lake" in parts or ".git" in parts:
+        raise ValueError(f"Writing into .lake/ or .git/ is not allowed (got: {path!r})")
     full = _out(path)
     # ensure parent directory exists
     parent = str(Path(full).parent)
