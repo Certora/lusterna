@@ -2,12 +2,30 @@
 import logging
 
 from pydantic_ai import Agent, RunContext
+from pydantic_ai.capabilities.hooks import Hooks
+from pydantic_ai.models import ModelRequestContext
 
 from . import checkpoint, compaction, git_ops, subagents, tools
 from .state import AgentDeps
 from . import config
 
 log = logging.getLogger(__name__)
+
+# ── message-history snapshot hook ─────────────────────────────────────────────
+# Before every model request, the hook captures all messages seen so far into
+# deps.message_history. This ensures mid-run _checkpoint() calls include the
+# conversation up to the current point, not just the empty list from session start.
+
+_hooks = Hooks()
+
+
+@_hooks.on.before_model_request
+async def _snapshot_messages(
+    ctx: RunContext[AgentDeps], model_ctx: ModelRequestContext
+) -> ModelRequestContext | None:
+    ctx.deps.message_history = list(model_ctx.messages)
+    return model_ctx
+
 
 # ── orchestrator agent ────────────────────────────────────────────────────────
 
@@ -50,6 +68,7 @@ Pipeline stages (execute in order, committing artefacts after each):
 Use git_commit to record every significant artefact.
 Use rag_query whenever you need domain knowledge about Rust, Lean, or Aeneas.
 """,
+    capabilities=[_hooks],
 )
 
 
@@ -101,9 +120,13 @@ def run_aeneas(ctx: RunContext[AgentDeps], entry_file: str) -> dict:
 @orchestrator.tool
 async def infer_spec(ctx: RunContext[AgentDeps]) -> dict:
     """Infer the informal specification from the translated Lean code and design doc."""
+    from pydantic_ai.exceptions import UnexpectedModelBehavior
     lean_path = ctx.deps.progress.get("aeneas", {}).get("lean_path")
     lean_code = tools.read_output_file(ctx.deps, lean_path) if lean_path else "(no Lean code yet)"
-    spec = await subagents.infer_informal_spec(lean_code, ctx.deps.design_doc)
+    try:
+        spec = await subagents.infer_informal_spec(lean_code, ctx.deps.design_doc)
+    except UnexpectedModelBehavior as e:
+        return {"error": f"infer_spec subagent failed: {e}"}
     ctx.deps.progress["informal_spec"] = spec.model_dump()
     tools.write_file(ctx.deps, "specs/informal_spec.json", spec.model_dump_json(indent=2))
     git_ops.commit(ctx.deps.container_id, "feat(spec): informal specification", glob="specs/")
@@ -114,6 +137,7 @@ async def infer_spec(ctx: RunContext[AgentDeps]) -> dict:
 @orchestrator.tool
 async def formalise_spec(ctx: RunContext[AgentDeps]) -> dict:
     """Derive a formal Lean 4 specification from the informal spec."""
+    from pydantic_ai.exceptions import UnexpectedModelBehavior
     from .subagents import InformalSpec
     inf_data = ctx.deps.progress.get("informal_spec")
     if not inf_data:
@@ -121,7 +145,10 @@ async def formalise_spec(ctx: RunContext[AgentDeps]) -> dict:
     informal = InformalSpec(**inf_data)
     lean_path = ctx.deps.progress.get("aeneas", {}).get("lean_path")
     lean_code = tools.read_output_file(ctx.deps, lean_path) if lean_path else ""
-    formal = await subagents.derive_formal_spec(informal, lean_code)
+    try:
+        formal = await subagents.derive_formal_spec(informal, lean_code)
+    except UnexpectedModelBehavior as e:
+        return {"error": f"formalise_spec subagent failed: {e} — try calling formalise_spec again or write the spec manually with write_file"}
     ctx.deps.progress["formal_spec"] = formal.model_dump()
     tools.write_file(ctx.deps, "specs/formal_spec.lean", formal.lean_definitions + "\n\n" + formal.lean_theorem_stubs)
     git_ops.commit(ctx.deps.container_id, "feat(spec): formal specification stubs", glob="specs/")
@@ -187,38 +214,64 @@ def check_lean(ctx: RunContext[AgentDeps], lean_file: str) -> dict:
 # ── internal helpers ──────────────────────────────────────────────────────────
 
 def _checkpoint(deps: AgentDeps) -> None:
-    checkpoint.save(deps.session_id, {
-        "repo_path": str(deps.repo_path),
-        "work_path": str(deps.work_path),
-        "container_id": deps.container_id,
-        "design_doc": deps.design_doc,
-        "progress": deps.progress,
-    })
+    checkpoint.save(
+        deps.session_id,
+        {
+            "repo_path": str(deps.repo_path),
+            "work_path": str(deps.work_path),
+            "container_id": deps.container_id,
+            "design_doc": deps.design_doc,
+            "progress": deps.progress,
+            "git_head": git_ops.head_sha(deps.container_id),
+        },
+        messages=deps.message_history,
+    )
 
 
 # ── main entry point ──────────────────────────────────────────────────────────
 
 async def run_session(deps: AgentDeps) -> str:
     """Drive the full pipeline and return a final summary string."""
-    initial_prompt = (
-        f"Begin the formal verification pipeline for the Rust repository at {deps.repo_path}.\n"
-        f"Design document (excerpt):\n{deps.design_doc[:2000]}\n"
-        "Follow the pipeline stages defined in your instructions."
-    )
+    resuming = bool(deps.message_history)
 
-    message_history = []
+    if resuming:
+        # Full conversation history restored — the agent remembers everything.
+        # Inject a brief note as the new user turn so the agent knows the container
+        # is fresh and it should continue from where it stopped.
+        initial_prompt = (
+            "SESSION RESUMED — the Docker container is fresh but all previously "
+            "generated artefacts have been restored into it. Your full conversation "
+            "history above shows exactly what was done. Continue from where you left off."
+        )
+        log.info("Resuming session with %d messages of history", len(deps.message_history))
+    else:
+        initial_prompt = (
+            f"Begin the formal verification pipeline for the Rust repository at {deps.repo_path}.\n"
+            f"Design document (excerpt):\n{deps.design_doc[:2000]}\n"
+            "Follow the pipeline stages defined in your instructions."
+        )
+
     result = None
-    async with orchestrator.iter(initial_prompt, deps=deps, message_history=message_history) as agent_run:
+    async with orchestrator.iter(
+        initial_prompt,
+        deps=deps,
+        message_history=deps.message_history,
+    ) as agent_run:
         async for node in agent_run:
-            # Compact context if the history is getting large
-            if compaction.needs_compaction(message_history):
+            if compaction.needs_compaction(deps.message_history):
                 log.info("Context threshold reached — compacting")
-                message_history = await compaction.compact(
-                    message_history,
+                deps.message_history = await compaction.compact(
+                    deps.message_history,
                     summarise_fn=subagents.summarise_history,
                 )
 
         result = agent_run.result
+
+    if result:
+        # Capture the full conversation so the next checkpoint (or final save)
+        # includes everything the agent saw and generated this session.
+        deps.message_history = result.all_messages()
+        _checkpoint(deps)
 
     summary = result.output if result else "(no output)"
     log.info("Pipeline complete")

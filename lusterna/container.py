@@ -82,6 +82,27 @@ def init_out(container_id: str) -> None:
     log.info("Output repo initialised at %s inside %s", OUT_IN, container_id[:12])
 
 
+def push_artefacts(container_id: str, src: Path) -> None:
+    """Push existing artefacts from *src* on the host back into OUT_IN.
+
+    Used when resuming a session with a dead container: restores the partial
+    output (including the git history) into a freshly started container.
+    """
+    exec_in(container_id, ["mkdir", "-p", OUT_IN])
+    tar = subprocess.Popen(
+        ["tar", "c", "-C", str(src.resolve()), "."],
+        stdout=subprocess.PIPE,
+    )
+    subprocess.run(
+        ["docker", "exec", "-i", container_id,
+         "tar", "x", "--no-same-owner", "-C", OUT_IN],
+        stdin=tar.stdout,
+        check=True,
+    )
+    tar.wait()
+    log.info("Artefacts pushed %s → %s inside %s", src, OUT_IN, container_id[:12])
+
+
 def pull_artefacts(container_id: str, dest: Path) -> None:
     """Copy the output directory from the container to *dest* on the host."""
     dest.mkdir(parents=True, exist_ok=True)
@@ -121,10 +142,12 @@ def exec_in(
 
     full_cmd = ["docker", "exec", "--workdir", workdir, *env_flags, container_id, *cmd]
     log.debug("exec: %s", " ".join(full_cmd))
-    r = subprocess.run(full_cmd, capture_output=True, text=True, timeout=timeout)
+    r = subprocess.run(full_cmd, capture_output=True, timeout=timeout)
+    stdout = r.stdout.decode("utf-8", errors="replace")
+    stderr = r.stderr.decode("utf-8", errors="replace")
     if r.returncode != 0:
-        log.debug("exec exit %d stderr: %s", r.returncode, r.stderr[:300])
-    return r.returncode, r.stdout, r.stderr
+        log.debug("exec exit %d stderr: %s", r.returncode, stderr[:300])
+    return r.returncode, stdout, stderr
 
 
 def build_image(dockerfile_dir: Path, tag: str = DEFAULT_IMAGE) -> None:

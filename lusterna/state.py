@@ -12,3 +12,4 @@ class AgentDeps:
     session_id: str
     design_doc: str
     progress: dict[str, Any] = field(default_factory=dict)
+    message_history: list = field(default_factory=list)

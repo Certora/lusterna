@@ -10,3 +10,6 @@ env/
 venv/
 .venv
 .env
+tmp
+.log
+LOG

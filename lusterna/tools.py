@@ -170,7 +170,8 @@ def run_aeneas(deps: AgentDeps, entry_file: str) -> dict:
     )
     lean_files = [
         l.strip().removeprefix(OUT_IN + "/")
-        for l in lean_list.splitlines() if l.strip()
+        for l in lean_list.splitlines()
+        if l.strip() and not Path(l.strip()).name.startswith("._")
     ]
     log.info("Aeneas wrote %d Lean file(s): %s", len(lean_files), lean_files)
 

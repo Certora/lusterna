@@ -30,6 +30,8 @@ def main(verbose: bool) -> None:
               help="Host directory to pull artefacts into when done "
                    "(default: <repo>/../<repo>-lusterna)")
 @click.option("--session-id", default=None, help="Resume an existing session by ID")
+@click.option("--checkpoint-number", "ckpt_number", default=None, type=int,
+              help="Checkpoint number to resume from (default: latest)")
 @click.option("--container", default=config.CONTAINER_ID or None,
               help="Attach to a pre-running container instead of starting a new one")
 @click.option("--image", default=config.CONTAINER_IMAGE, show_default=True,
@@ -39,6 +41,7 @@ def run(
     design_doc: str,
     out_dir: str | None,
     session_id: str | None,
+    ckpt_number: int | None,
     container: str | None,
     image: str,
 ) -> None:
@@ -52,27 +55,38 @@ def run(
     doc_text = Path(design_doc).read_text()
 
     sid = session_id or str(uuid.uuid4())
-    saved = checkpoint.load(sid)
+    saved = checkpoint.load(sid, number=ckpt_number)
     if saved:
-        log.info("Resuming session %s", sid)
+        log.info(
+            "Resuming session %s from checkpoint %s",
+            sid, ckpt_number or "latest",
+        )
         progress = saved.get("progress", {})
         container = container or saved.get("container_id")
+        message_history = checkpoint.load_messages(sid, number=ckpt_number)
     else:
         log.info("Starting new session %s", sid)
         progress = {}
+        message_history = []
 
     _owned = False
-    if container:
-        if not container_mod.is_running(container):
-            log.error("Container %s is not running", container)
-            sys.exit(1)
+    resuming = bool(saved)
+
+    if container and container_mod.is_running(container):
         container_id = container
         log.info("Attaching to existing container %s", container_id[:12])
     else:
+        if container:
+            log.info("Container %s is not running — starting a fresh one", container[:12])
         container_id = container_mod.start(image=image)
-        container_mod.push_repo(container_id, repo_path)
-        container_mod.init_out(container_id)
         _owned = True
+        container_mod.push_repo(container_id, repo_path)
+        if resuming and work_path.exists():
+            # Restore partial artefacts so the agent can continue where it left off.
+            container_mod.push_artefacts(container_id, work_path)
+            log.info("Restored artefacts from %s into container", work_path)
+        else:
+            container_mod.init_out(container_id)
 
     deps = AgentDeps(
         container_id=container_id,
@@ -81,6 +95,7 @@ def run(
         session_id=sid,
         design_doc=doc_text,
         progress=progress,
+        message_history=message_history,
     )
 
     try:
@@ -112,18 +127,34 @@ def build_image(tag: str) -> None:
 
 @main.command("list-sessions")
 def list_sessions() -> None:
-    """List all saved session IDs."""
+    """List all session IDs that have at least one checkpoint."""
     for sid in checkpoint.list_sessions():
-        print(sid)
+        nums = checkpoint.list_checkpoints(sid)
+        latest = nums[-1] if nums else {}
+        print(f"{sid}  checkpoints={len(nums)}  latest={latest.get('progress_keys', [])}")
 
 
-@main.command("show-session")
+@main.command("list-checkpoints")
 @click.argument("session_id")
-def show_session(session_id: str) -> None:
-    """Print the checkpoint state for SESSION_ID as JSON."""
-    state = checkpoint.load(session_id)
+def list_checkpoints_cmd(session_id: str) -> None:
+    """List all checkpoints for SESSION_ID."""
+    ckpts = checkpoint.list_checkpoints(session_id)
+    if not ckpts:
+        log.error("No checkpoints found for session %s", session_id)
+        sys.exit(1)
+    json.dump(ckpts, sys.stdout, indent=2)
+    sys.stdout.write("\n")
+
+
+@main.command("show-checkpoint")
+@click.argument("session_id")
+@click.option("--number", "-n", default=None, type=int,
+              help="Checkpoint number (default: latest)")
+def show_checkpoint(session_id: str, number: int | None) -> None:
+    """Print the state of a checkpoint for SESSION_ID as JSON."""
+    state = checkpoint.load(session_id, number=number)
     if state is None:
-        log.error("No checkpoint found for session %s", session_id)
+        log.error("No checkpoint found for session %s (number=%s)", session_id, number)
         sys.exit(1)
     json.dump(state, sys.stdout, indent=2)
     sys.stdout.write("\n")
