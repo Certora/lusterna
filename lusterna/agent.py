@@ -8,7 +8,7 @@ from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.models import ModelRequestContext
 
 from . import checkpoint, compaction, git_ops, subagents, tools
-from .subagents import InformalSpec, FormalSpec, JudgeVerdict
+from .subagents import InformalSpec, FormalSpec, JudgeVerdict, ProofVerdict
 from .state import AgentDeps
 from . import config
 
@@ -368,6 +368,81 @@ _judge.tool(read_output_file)
 _judge.tool(read_file)
 
 
+_prove = Agent(
+    config.MODEL,
+    deps_type=AgentDeps,
+    capabilities=[_hooks],
+    instructions="""
+You are the PROVE stage of the Lusterna pipeline.
+
+The formal spec has been approved by the spec judge. Your job is to attempt to
+prove as many theorems and lemmas as possible using Lean 4 tactics, without
+changing any theorem or definition statements.
+
+Workflow:
+1. List and read the spec file(s) (lean/*Spec.lean).
+2. For each theorem/lemma with a `sorry` proof, attempt tactics in this order:
+     rfl, simp, omega, norm_num, decide, native_decide, ring, linarith,
+     then induction / cases with the above tactics on sub-goals.
+3. After editing, call check_lean. If the build fails, revert failing proofs
+   to `sorry` (do not touch the statement) and call check_lean again.
+4. Commit the result with git_commit.
+
+STRICT RULES:
+- NEVER alter a theorem's statement (the part before `:= by`).
+- NEVER introduce an axiom or `#check` that weakens the spec.
+- If a proof takes more than 2-3 tactic attempts, leave it as `sorry` and move on.
+- It is acceptable — even expected — to leave hard theorems as `sorry`.
+""",
+)
+_prove.tool(list_files)
+_prove.tool(read_output_file)
+_prove.tool(write_file)
+_prove.tool(check_lean)
+_prove.tool(rag_query)
+_prove.tool(git_commit)
+_prove.tool(git_log)
+
+
+_proof_judge = Agent(
+    config.MODEL,
+    deps_type=AgentDeps,
+    output_type=ProofVerdict,
+    retries=3,
+    capabilities=[_hooks],
+    instructions="""
+You are the PROOF JUDGE stage of the Lusterna pipeline.
+
+Evaluate every theorem and lemma in the formal spec and return a ProofVerdict.
+
+For each component classify its status:
+  "proved"            — proof is complete (no sorry), compiles, and is correct
+  "sorry_acceptable"  — theorem is correctly stated but requires advanced techniques
+                        beyond automation (deep induction, non-trivial Mathlib lemmas,
+                        novel mathematical arguments). sorry is the right placeholder.
+  "likely_misstated"  — the theorem CANNOT be proved as stated because the statement
+                        itself is logically wrong: wrong quantifier, wrong bound,
+                        inconsistent precondition, output type mismatch, etc.
+
+CRITICAL — only use "likely_misstated" when you can state a SPECIFIC logical reason:
+  ✓ "Precondition `n < 100` should be `n ≤ 93` — UInt64 overflows at fib(94)"
+  ✓ "Postcondition equates UInt64 and Nat directly; needs a cast or modular equivalence"
+  ✗ "I could not find a proof" — this is sorry_acceptable, not likely_misstated
+  ✗ "The proof is complex" — same, sorry_acceptable
+  When in doubt, classify as sorry_acceptable.
+
+STAGNATION — set stagnant=true ONLY when ALL of:
+  1. This is not the first proof-judge round (prior verdict exists in message history).
+  2. The set of likely_misstated theorems is identical to the previous round.
+  3. The proof automator made no changes to those theorems' statements or proof attempts.
+  Default to stagnant=false.
+""",
+)
+_proof_judge.tool(get_build_result)
+_proof_judge.tool(list_files)
+_proof_judge.tool(read_output_file)
+
+
 _report = Agent(
     config.MODEL,
     deps_type=AgentDeps,
@@ -507,128 +582,219 @@ async def run_session(deps: AgentDeps) -> str:
             log.error("INFER produced no informal spec — aborting")
             return "Pipeline aborted: informal spec inference failed."
 
-    # ── FORMALISE + JUDGE loop ────────────────────────────────────────────────
-    # Termination is stagnation-based, not count-based:
-    #   • Success : approved=True or score >= 7
-    #   • Stagnation : the set of failing component names is unchanged from the
-    #                  previous round (model saw the same feedback, produced the
-    #                  same broken components — more rounds won't help), OR the
-    #                  score decreased (formaliser broke something it had fixed).
-    #   • Safety net: absolute cap of 10 rounds against infinite loops.
-    _HARD_CAP = 10
+    # ── SPEC FORMALISE + SPEC JUDGE + PROVE + PROOF JUDGE ────────────────────
+    #
+    # Two nested loops:
+    #
+    #   Outer (spec+proof cycle, cap=5):
+    #     Inner (spec formalise+judge, cap=10, stagnation-based):
+    #       FORMALISE → SPEC-JUDGE → break on approved/stagnant
+    #     PROVE
+    #     PROOF-JUDGE → break if no misstated theorems or stagnant
+    #               → else feed misstated back into next outer cycle
+    #
+    # Progress keys:
+    #   "verdict"       — latest spec-judge verdict (overwritten each cycle)
+    #   "proof_verdict" — latest proof-judge verdict (overwritten each cycle)
+    #   Clearing either forces the corresponding loop to re-run on resume.
 
-    if "verdict" not in completed:
-        attempt = 0
+    _HARD_CAP  = 10   # max spec-judge rounds per cycle
+    _CYCLE_CAP = 5    # max full spec→proof cycles
 
-        while attempt < _HARD_CAP:
-            # On the first attempt when resuming mid-formalise (lean_build already
-            # succeeded and formal_spec exists), skip straight to JUDGE.
-            skip_formalise = (
-                attempt == 0
-                and "formal_spec" in completed
-                and deps.progress.get("lean_build", {}).get("success")
-            )
+    proof_amendments: list[dict] = []   # mis-stated theorems fed back from proof judge
 
-            if not skip_formalise:
-                if attempt == 0:
-                    formalise_prompt = (
-                        "Proceed to FORMALISE+BUILD. Call formalise_spec, write the spec "
-                        "file to lean/, register it in the lakefile, then call check_lean "
-                        "until the build passes (max 3 build attempts)." + resume_note
-                    )
-                else:
-                    # Build a focused prompt listing only the failing components.
-                    prev_verdict_data = deps.progress.get("verdict", {})
-                    failing_comps = [
-                        c for c in prev_verdict_data.get("components", [])
-                        if not c.get("approved")
-                    ]
-                    if failing_comps:
-                        component_lines = "\n".join(
-                            f"  - {c['name']} ({c['kind']}): "
-                            + ("; ".join(c.get("issues", [])) or "no details")
-                            for c in failing_comps
+    for cycle in range(_CYCLE_CAP):
+
+        # ── Phase 1: SPEC FORMALISE + SPEC JUDGE ──────────────────────────────
+        # Skip if spec already approved this cycle and no proof amendments arrived.
+        if "verdict" not in completed or proof_amendments:
+            spec_attempt = 0
+
+            while spec_attempt < _HARD_CAP:
+                # Skip FORMALISE only on the very first attempt of the first cycle
+                # when resuming mid-run with a passing build and no amendments.
+                skip_formalise = (
+                    spec_attempt == 0
+                    and cycle == 0
+                    and not proof_amendments
+                    and "formal_spec" in completed
+                    and deps.progress.get("lean_build", {}).get("success")
+                )
+
+                if not skip_formalise:
+                    if proof_amendments:
+                        amendment_lines = "\n".join(
+                            f"  - {t['name']} ({t['kind']}): {t['misstatement_reason']}"
+                            for t in proof_amendments
                         )
                         formalise_prompt = (
-                            f"The judge did not approve (round {attempt + 1}). "
-                            f"The following {len(failing_comps)} component(s) were rejected — "
-                            "fix only these, leave approved components untouched:\n"
-                            f"{component_lines}\n\n"
-                            "After editing the spec file call check_lean to confirm "
-                            "the build still passes."
+                            f"Cycle {cycle + 1}: the proof judge found the following "
+                            f"{len(proof_amendments)} theorem(s) to be likely mis-stated. "
+                            "Amend ONLY these statements — do not change any other component:\n"
+                            f"{amendment_lines}\n\n"
+                            "After editing, call check_lean to confirm the build still passes."
+                        )
+                        proof_amendments = []   # consumed
+                    elif spec_attempt == 0:
+                        formalise_prompt = (
+                            "Proceed to FORMALISE+BUILD. Call formalise_spec to derive "
+                            "Lean 4 theorem stubs (all sorry), write the spec file to lean/, "
+                            "register it in the lakefile, then call check_lean until the "
+                            "build passes (max 3 build attempts)." + resume_note
                         )
                     else:
-                        formalise_prompt = (
-                            f"The judge did not approve (round {attempt + 1}). "
-                            "Revise the formal specification based on the judge's overall "
-                            "feedback above, then call check_lean to confirm the build passes."
-                        )
-                _, history = await _run_stage(
-                    _formalise, formalise_prompt, deps, history,
-                    f"FORMALISE (round {attempt + 1})",
+                        failing_comps = [
+                            c for c in deps.progress.get("verdict", {}).get("components", [])
+                            if not c.get("approved")
+                        ]
+                        if failing_comps:
+                            component_lines = "\n".join(
+                                f"  - {c['name']} ({c['kind']}): "
+                                + ("; ".join(c.get("issues", [])) or "no details")
+                                for c in failing_comps
+                            )
+                            formalise_prompt = (
+                                f"Spec judge did not approve (round {spec_attempt + 1}). "
+                                f"Fix only these {len(failing_comps)} component(s):\n"
+                                f"{component_lines}\n\n"
+                                "Then call check_lean to confirm the build still passes."
+                            )
+                        else:
+                            formalise_prompt = (
+                                f"Spec judge did not approve (round {spec_attempt + 1}). "
+                                "Revise the spec based on the feedback above, "
+                                "then call check_lean to confirm the build passes."
+                            )
+
+                    _, history = await _run_stage(
+                        _formalise, formalise_prompt, deps, history,
+                        f"FORMALISE (cycle {cycle + 1}, round {spec_attempt + 1})",
+                    )
+                    _checkpoint(deps)
+                    resume_note = ""
+
+                # ── SPEC JUDGE ────────────────────────────────────────────────
+                build_ok = deps.progress.get("lean_build", {}).get("success", False)
+                sj_result, history = await _run_stage(
+                    _judge,
+                    f"Proceed to SPEC-JUDGE. Evaluate the theorem statements only "
+                    f"(ignore sorry proofs). "
+                    f"lake build {'passed ✓' if build_ok else 'FAILED ✗ — approved must be false'}.",
+                    deps, history,
+                    f"SPEC-JUDGE (cycle {cycle + 1}, round {spec_attempt + 1})",
+                )
+
+                if not (sj_result and sj_result.output):
+                    log.warning("Spec judge produced no output — stopping spec loop")
+                    break
+
+                sv: JudgeVerdict = sj_result.output
+                deps.progress["verdict"] = sv.model_dump()
+                failing_names = sorted(c.name for c in sv.components if not c.approved)
+                log.info(
+                    "Spec-judge cycle %d round %d: approved=%s score=%d "
+                    "components=%d failing=%s stagnant=%s",
+                    cycle + 1, spec_attempt + 1, sv.approved, sv.score,
+                    len(sv.components), failing_names or "none", sv.stagnant,
                 )
                 _checkpoint(deps)
-                resume_note = ""
 
-            # ── JUDGE ─────────────────────────────────────────────────────────
-            build_ok = deps.progress.get("lean_build", {}).get("success", False)
-            judge_prompt = (
-                f"Proceed to JUDGE. Evaluate the formal specification. "
-                f"lake build {'passed ✓' if build_ok else 'FAILED ✗ — approved must be false'}."
-            )
-            verdict_result, history = await _run_stage(
-                _judge, judge_prompt, deps, history,
-                f"JUDGE (round {attempt + 1})",
-            )
+                if sv.approved or sv.score >= 7:
+                    log.info("Spec verdict accepted")
+                    break
+                if sv.stagnant:
+                    log.warning("Spec judge reports stagnation — exiting spec loop")
+                    break
+                spec_attempt += 1
+            else:
+                log.warning("Spec-judge loop hit hard cap of %d rounds", _HARD_CAP)
 
-            if not (verdict_result and verdict_result.output):
-                log.warning("Judge produced no output in round %d — stopping loop", attempt + 1)
-                break
+            completed = set(deps.progress.keys())
 
-            verdict: JudgeVerdict = verdict_result.output
-            deps.progress["verdict"] = verdict.model_dump()
-            failing_names = sorted(c.name for c in verdict.components if not c.approved)
-            log.info(
-                "Judge round %d: approved=%s score=%d components=%d failing=%s stagnant=%s",
-                attempt + 1, verdict.approved, verdict.score,
-                len(verdict.components), failing_names or "none", verdict.stagnant,
+        # ── Phase 2: PROVE ────────────────────────────────────────────────────
+        if "proof_verdict" not in completed:
+            _, history = await _run_stage(
+                _prove,
+                f"Proceed to PROVE (cycle {cycle + 1}). Attempt to fill in proofs "
+                "for all sorry theorems in the spec. Do not alter any statement. "
+                "Commit the result when done.",
+                deps, history,
+                f"PROVE (cycle {cycle + 1})",
             )
             _checkpoint(deps)
 
-            # ── termination checks ─────────────────────────────────────────
-            if verdict.approved or verdict.score >= 7:
-                log.info("Verdict accepted — exiting loop")
+            # ── PROOF JUDGE ───────────────────────────────────────────────────
+            build_ok = deps.progress.get("lean_build", {}).get("success", False)
+            pj_result, history = await _run_stage(
+                _proof_judge,
+                f"Proceed to PROOF-JUDGE (cycle {cycle + 1}). "
+                f"lake build {'passed ✓' if build_ok else 'FAILED ✗'}. "
+                "Classify every theorem as proved / sorry_acceptable / likely_misstated.",
+                deps, history,
+                f"PROOF-JUDGE (cycle {cycle + 1})",
+            )
+
+            if not (pj_result and pj_result.output):
+                log.warning("Proof judge produced no output — stopping")
                 break
 
-            if verdict.stagnant:
-                log.warning(
-                    "Judge reports stagnation on round %d (failing: %s) — stopping loop",
-                    attempt + 1, failing_names,
-                )
+            pv: ProofVerdict = pj_result.output
+            deps.progress["proof_verdict"] = pv.model_dump()
+            misstated = [t for t in pv.theorems if t.status == "likely_misstated"]
+            proved    = [t for t in pv.theorems if t.status == "proved"]
+            sorry_ok  = [t for t in pv.theorems if t.status == "sorry_acceptable"]
+            log.info(
+                "Proof-judge cycle %d: proved=%d sorry_acceptable=%d misstated=%s stagnant=%s",
+                cycle + 1, len(proved), len(sorry_ok),
+                [t.name for t in misstated] or "none", pv.stagnant,
+            )
+            _checkpoint(deps)
+
+            if not misstated:
+                log.info("No mis-stated theorems — proof stage complete")
+                break
+            if pv.stagnant:
+                log.warning("Proof judge reports stagnation — accepting current state")
                 break
 
-            attempt += 1
-
+            # Feed mis-stated theorems back to the formaliser next cycle.
+            proof_amendments = [t.model_dump() for t in misstated]
+            # Clear both verdicts so the next outer cycle re-runs both phases.
+            deps.progress.pop("verdict", None)
+            deps.progress.pop("proof_verdict", None)
+            completed = set(deps.progress.keys())
+            log.info(
+                "Feeding %d mis-stated theorem(s) back to formaliser for cycle %d",
+                len(proof_amendments), cycle + 2,
+            )
         else:
-            log.warning("FORMALISE+JUDGE loop hit hard cap of %d rounds", _HARD_CAP)
+            log.info("proof_verdict already in progress — skipping proof stage")
+            break
 
-        completed = set(deps.progress.keys())
+    else:
+        log.warning("Spec+proof cycle loop hit cap of %d cycles", _CYCLE_CAP)
+
+    completed = set(deps.progress.keys())
 
     # ── REPORT ────────────────────────────────────────────────────────────────
-    verdict_data = deps.progress.get("verdict", {})
+    verdict_data     = deps.progress.get("verdict", {})
+    proof_verd_data  = deps.progress.get("proof_verdict", {})
+    proved_count     = sum(1 for t in proof_verd_data.get("theorems", []) if t.get("status") == "proved")
+    sorry_count      = sum(1 for t in proof_verd_data.get("theorems", []) if t.get("status") == "sorry_acceptable")
+    misstated_count  = sum(1 for t in proof_verd_data.get("theorems", []) if t.get("status") == "likely_misstated")
+
     report_result, history = await _run_stage(
         _report,
         f"Proceed to REPORT. "
-        f"Judge verdict: approved={verdict_data.get('approved')}, "
-        f"score={verdict_data.get('score')}. "
-        "Read the artefacts (lean/*.lean, specs/*.json, specs/*.lean) and "
-        "produce the full VERIFICATION_REPORT.md content as your response." + resume_note,
+        f"Spec-judge: approved={verdict_data.get('approved')}, score={verdict_data.get('score')}. "
+        f"Proof-judge: proved={proved_count}, sorry_acceptable={sorry_count}, "
+        f"likely_misstated={misstated_count}. "
+        "Read the artefacts (lean/*.lean, specs/*.json) and produce the full "
+        "VERIFICATION_REPORT.md content as your response." + resume_note,
         deps, history, "REPORT",
     )
 
-    # Write and commit the report from Python — avoids the model having to
-    # pass the full report text as a tool argument (which triggers arg validation
-    # failures when the model forgets to include the content field).
+    # Write and commit from Python — avoids tool-argument validation failures.
     report_text = report_result.output if report_result else ""
     if report_text:
         try:

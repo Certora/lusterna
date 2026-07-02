@@ -1,5 +1,6 @@
 """Specialist subagents spawned by the orchestrator for focused tasks."""
 import logging
+from typing import Literal
 from pydantic import BaseModel
 from pydantic_ai import Agent
 
@@ -31,6 +32,20 @@ class ComponentVerdict(BaseModel):
     score: int               # 0-10
     issues: list[str]        # specific problems with this component
     suggestions: list[str]   # actionable fixes
+
+
+class TheoremProofResult(BaseModel):
+    name: str
+    kind: str                                          # "theorem" | "lemma" | "definition"
+    status: Literal["proved", "sorry_acceptable", "likely_misstated"]
+    proof_attempt: str                                 # what was tried / what proof was found
+    misstatement_reason: str = ""                      # precise logical reason; only for likely_misstated
+
+
+class ProofVerdict(BaseModel):
+    theorems: list[TheoremProofResult]
+    stagnant: bool = False                             # see proof-judge instructions for criterion
+    summary: str                                       # brief overall narrative
 
 
 class JudgeVerdict(BaseModel):
