@@ -7,7 +7,7 @@ from pydantic_ai.capabilities.hooks import Hooks
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.models import ModelRequestContext
 
-from . import checkpoint, compaction, git_ops, subagents, tools
+from . import checkpoint, compaction, docs, git_ops, subagents, tools
 from .subagents import InformalSpec, FormalSpec, JudgeVerdict, ProofVerdict
 from .state import AgentDeps
 from . import config
@@ -103,9 +103,18 @@ def run_aeneas(ctx: RunContext[AgentDeps], entry_file: str) -> dict:
     return result
 
 
-def rag_query(ctx: RunContext[AgentDeps], query: str, top_k: int = 5) -> list[dict]:
-    """Query the local RAG knowledge base for Lean / Aeneas domain knowledge."""
-    return tools.rag_query(query, top_k=top_k)
+def search_mathlib(ctx: RunContext[AgentDeps], query: str, max_results: int = 8) -> list[dict]:
+    """Search Mathlib4 for lemmas by name fragment or type signature (via Loogle).
+
+    Use this when you need a specific Mathlib lemma and are not sure of its exact
+    name.  Examples:
+      search_mathlib("Nat.fib_mono")          — find the monotonicity lemma for fib
+      search_mathlib("Monotone Nat.fib")      — search by type shape
+      search_mathlib("UInt64 mod")            — find UInt64 modular arithmetic lemmas
+    Returns up to max_results hits with name, type, module, and doc fields.
+    Runs outside the container — no network restriction applies.
+    """
+    return tools.search_mathlib(query, max_results=max_results)
 
 
 def git_commit(ctx: RunContext[AgentDeps], message: str) -> str:
@@ -202,7 +211,6 @@ You are the EXPLORE stage of the Lusterna formal verification pipeline.
 Understand the Rust codebase before translation begins:
 - List all .rs and .toml files.
 - Read the key source files (lib.rs, main.rs, Cargo.toml).
-- Query the RAG knowledge base for relevant Lean/Aeneas domain context.
 - Identify functions to be translated and flag obvious Aeneas incompatibilities
   (vec!, println!, trait objects, unsupported std types, etc.).
 
@@ -211,7 +219,6 @@ Write a short structured summary of findings. Then stop — do not run Aeneas.
 )
 _explore.tool(list_files)
 _explore.tool(read_file)
-_explore.tool(rag_query)
 
 
 _translate = Agent(
@@ -235,14 +242,13 @@ Translate the Rust codebase to Lean 4 via Charon + Aeneas:
    c. success=false AND lean_files=[] → try fixing Rust (max 2 retries); if still nothing,
       report failure and stop.
 3. Commit the Lean output once translation produces at least some files.
-""",
+""" + docs.FOR_TRANSLATE,
 )
 _translate.tool(list_files)
 _translate.tool(read_file)
 _translate.tool(read_output_file)
 _translate.tool(write_rust_file)
 _translate.tool(run_aeneas)
-_translate.tool(rag_query)
 _translate.tool(git_commit)
 _translate.tool(git_log)
 
@@ -268,7 +274,6 @@ When infer_spec succeeds, your job is done. Do not proceed to formalise_spec.
 _infer.tool(list_files)
 _infer.tool(read_output_file)
 _infer.tool(infer_spec)
-_infer.tool(rag_query)
 
 
 _formalise = Agent(
@@ -278,7 +283,8 @@ _formalise = Agent(
     instructions="""
 You are the FORMALISE+BUILD stage of the Lusterna pipeline.
 
-Produce a Lean 4 formal specification that compiles with `lake build`:
+Produce a Lean 4 formal specification that compiles with `lake build`.
+Write theorem stubs only — use `sorry` for all proofs. Do NOT attempt proofs.
 
 1. Call formalise_spec — it spawns a subagent that turns the informal spec into Lean 4
    theorem stubs and commits specs/formal_spec.lean.
@@ -297,8 +303,8 @@ Produce a Lean 4 formal specification that compiles with `lake build`:
 
 5. Commit everything once the build passes (or after all attempts, noting any failures).
 
-Do NOT call judge_spec — that is handled by a separate stage.
-""",
+Do NOT attempt proofs — that is the PROVE stage's responsibility.
+""" + docs.FOR_FORMALISE,
 )
 _formalise.tool(list_files)
 _formalise.tool(read_file)
@@ -306,7 +312,6 @@ _formalise.tool(read_output_file)
 _formalise.tool(write_file)
 _formalise.tool(formalise_spec)
 _formalise.tool(check_lean)
-_formalise.tool(rag_query)
 _formalise.tool(git_commit)
 _formalise.tool(git_log)
 
@@ -393,13 +398,13 @@ STRICT RULES:
 - NEVER introduce an axiom or `#check` that weakens the spec.
 - If a proof takes more than 2-3 tactic attempts, leave it as `sorry` and move on.
 - It is acceptable — even expected — to leave hard theorems as `sorry`.
-""",
+""" + docs.FOR_PROVE,
 )
 _prove.tool(list_files)
 _prove.tool(read_output_file)
 _prove.tool(write_file)
 _prove.tool(check_lean)
-_prove.tool(rag_query)
+_prove.tool(search_mathlib)
 _prove.tool(git_commit)
 _prove.tool(git_log)
 

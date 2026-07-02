@@ -2,7 +2,7 @@
 import logging
 from pathlib import Path
 
-from . import git_ops, rag
+from . import git_ops
 from .container import REPO_IN, OUT_IN, exec_in
 from .state import AgentDeps
 
@@ -303,11 +303,41 @@ def check_lean(deps: AgentDeps, lean_file: str) -> dict:
     return {"success": code == 0, "stdout": out, "stderr": err}
 
 
-def rag_query(query_text: str, top_k: int = 5) -> list[dict]:
-    """Query the local RAG knowledge base for domain knowledge."""
-    results = rag.query(query_text, top_k=top_k)
-    log.info("RAG query returned %d results", len(results))
-    return results
+
+def search_mathlib(query: str, max_results: int = 8) -> list[dict]:
+    """Search Mathlib4 for lemmas by name fragment or type signature via Loogle.
+
+    *query* can be a name fragment (e.g. "Nat.fib_mono"), a type signature
+    fragment (e.g. "Monotone Nat.fib"), or a mix.  Returns up to *max_results*
+    hits, each with 'name', 'type', 'module', and 'doc' fields.
+
+    This call goes to loogle.lean-lang.org — it runs in the agent process,
+    outside the air-gapped Docker container.
+    """
+    import urllib.request
+    import urllib.parse
+    import json as _json
+
+    url = "https://loogle.lean-lang.org/json?" + urllib.parse.urlencode({"q": query})
+    req = urllib.request.Request(url, headers={"User-Agent": "lusterna/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = _json.loads(resp.read())
+    except Exception as exc:
+        log.warning("search_mathlib failed for %r: %s", query, exc)
+        return [{"error": str(exc)}]
+
+    hits = data.get("hits", [])[:max_results]
+    log.info("search_mathlib(%r): %d/%s hits", query, len(hits), data.get("count", "?"))
+    return [
+        {
+            "name":   h.get("name", ""),
+            "type":   h.get("type", ""),
+            "module": h.get("module", ""),
+            "doc":    (h.get("doc") or "")[:300],
+        }
+        for h in hits
+    ]
 
 
 def git_log(deps: AgentDeps, n: int = 10) -> str:

@@ -6,7 +6,6 @@ requires-python = ">=3.10"
 dependencies = [
     "pydantic-ai[anthropic]>=0.1.0",
     "pydantic>=2.0",
-    "numpy>=1.26",
     "click>=8.0",
 ]
 

@@ -6,8 +6,6 @@ MODEL = os.environ.get("LUSTERNA_MODEL", "anthropic:claude-sonnet-4-6")
 JUDGE_MODEL = os.environ.get("LUSTERNA_JUDGE_MODEL", "anthropic:claude-sonnet-4-6")
 # Token budget before triggering context compaction
 COMPACTION_THRESHOLD = int(os.environ.get("LUSTERNA_COMPACTION_THRESHOLD", "80000"))
-# Directory that holds the RAG knowledge base (JSONL + .npy embeddings)
-RAG_DB_PATH = Path(os.environ.get("LUSTERNA_RAG_DB", "~/.local/share/lusterna/rag")).expanduser()
 # Root directory that holds per-session checkpoint directories
 SESSIONS_DIR = Path(os.environ.get("LUSTERNA_SESSIONS_DIR", "~/.local/share/lusterna/sessions")).expanduser()
 CHARON_BIN = os.environ.get("LUSTERNA_CHARON_BIN", "charon")

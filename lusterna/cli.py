@@ -160,22 +160,3 @@ def show_checkpoint(session_id: str, number: int | None) -> None:
     sys.stdout.write("\n")
 
 
-@main.group()
-def rag() -> None:
-    """Manage the local RAG knowledge base."""
-
-
-@rag.command("add")
-@click.argument("files", nargs=-1, type=click.Path(exists=True))
-@click.option("--source", default="manual")
-@click.option("--tags", default="")
-def rag_add(files: tuple[str, ...], source: str, tags: str) -> None:
-    """Ingest FILES into the RAG knowledge base."""
-    from . import rag as rag_module
-    tag_list = [t.strip() for t in tags.split(",") if t.strip()]
-    docs = [
-        {"id": f, "text": Path(f).read_text(), "source": source, "tags": tag_list}
-        for f in files
-    ]
-    rag_module.ingest(docs)
-    log.info("Ingested %d document(s)", len(docs))
