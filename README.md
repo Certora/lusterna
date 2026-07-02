@@ -4,13 +4,15 @@ An AI agent that translates Rust programs into formally verified Lean 4 specific
 
 Given a Rust repository and a design document, Lusterna:
 
-1. Explores the source and queries a local knowledge base for domain context
+1. Explores the source code
 2. Translates the Rust code to Lean 4 via [Aeneas](https://github.com/AeneasVerif/aeneas)
 3. Infers an informal specification from the translated code and the design document
-4. Derives a formal Lean 4 specification (theorem stubs)
+4. Derives a formal Lean 4 specification (theorem stubs with `sorry`)
 5. Verifies the spec compiles with `lake build`; iterates until it does (max 3 attempts)
-6. Has a judge subagent score the spec; revises if score < 7
-7. Writes a final verification report
+6. Has a spec-judge subagent score the statements; revises if score < 7
+7. Attempts to fill in proofs using Lean 4 tactics
+8. Has a proof-judge subagent classify each theorem (proved / sorry-acceptable / misstated)
+9. Writes a final verification report
 
 All generated artefacts are git-committed incrementally inside the toolchain container and pulled to the host on exit.
 
@@ -21,13 +23,13 @@ lusterna/
 ├── cli.py          — Click entry point; manages the container lifecycle
 ├── agent.py        — Orchestrator agent (pydantic-ai); owns the pipeline loop
 ├── subagents.py    — Specialist subagents: spec inferrer, formaliser, judge, summariser
-├── tools.py        — All agent-callable tools (file I/O, Aeneas, Lake, RAG, git)
+├── tools.py        — All agent-callable tools (file I/O, Aeneas, Lake, Mathlib search, git)
+├── docs.py         — Aeneas/Lean skill documents embedded as agent instructions
 ├── container.py    — Docker lifecycle: start, push repo, exec, pull artefacts, stop
 ├── git_ops.py      — Git commands run inside the container via docker exec
 ├── state.py        — AgentDeps: typed dependency bundle injected into every tool
 ├── checkpoint.py   — Per-session checkpoint directories with incremental numbered files
 ├── compaction.py   — Context summarisation when the token estimate exceeds the threshold
-├── rag.py          — File-based RAG: JSONL documents + numpy embedding index
 ├── config.py       — All knobs via environment variables
 └── logging_setup.py — stdlib logging → stderr; level from LUSTERNA_LOG_LEVEL
 ```
@@ -40,17 +42,20 @@ CLI
      └─ tar-pipe repo → /workspace/repo
      └─ git init /workspace/out
          └─ Orchestrator agent (pydantic-ai)
-             ├─ EXPLORE   list_files, read_file, rag_query
-             ├─ TRANSLATE run_aeneas        → lean/          (git commit)
-             │             write_rust_file if Charon/Aeneas errors (up to 2 retries)
-             ├─ INFER     infer_spec        → specs/         (git commit)
-             │             └─ spec-inferrer subagent
-             ├─ FORMALISE formalise_spec    → specs/         (git commit)
-             │   + BUILD  check_lean (lake build) — loop until pass or 3 attempts
-             │             └─ formal-spec subagent
-             ├─ JUDGE     judge_spec                         (git commit)
-             │             └─ judge subagent  (re-formalise if score < 7)
-             └─ REPORT    write_file        → VERIFICATION_REPORT.md
+             ├─ EXPLORE      list_files, read_file
+             ├─ TRANSLATE    run_aeneas          → lean/     (git commit)
+             │                write_rust_file if Charon/Aeneas errors (up to 2 retries)
+             ├─ INFER        infer_spec          → specs/    (git commit)
+             │                └─ spec-inferrer subagent
+             ├─ FORMALISE    formalise_spec      → lean/     (git commit)
+             │   + BUILD     check_lean (lake build) — loop until pass or 3 attempts
+             │                └─ formal-spec subagent
+             ├─ SPEC-JUDGE   judge subagent      (re-formalise if score < 7, up to 10 rounds)
+             ├─ PROVE        write_file, check_lean, search_mathlib
+             │                (fill sorry proofs with tactics; up to 80 messages)
+             ├─ PROOF-JUDGE  proof-judge subagent
+             │                (proved / sorry-acceptable / misstated; feeds misstated back)
+             └─ REPORT       write_file          → VERIFICATION_REPORT.md
  └─ tar-pipe /workspace/out → host out_dir
  └─ stop container
 ```
@@ -71,8 +76,19 @@ All toolchain invocations go through `docker exec`. Git also runs inside the con
 |---|---|---|
 | `_spec_inferrer` | `InformalSpec` | Reads Lean + design doc → preconditions, postconditions, invariants, edge cases |
 | `_formal_spec_writer` | `FormalSpec` | Turns informal spec → Lean 4 definitions and theorem stubs |
-| `_judge` | `JudgeVerdict` | Scores the formal spec 0–10; lists gaps and suggestions |
+| `_judge` | `JudgeVerdict` | Scores the formal spec 0–10 per component; lists gaps and suggestions |
+| `_proof_judge` | `ProofVerdict` | Classifies each theorem as proved / sorry-acceptable / likely-misstated |
 | `_summariser` | `str` | Condenses message history when the context threshold is reached |
+
+### Proving tools
+
+The PROVE stage has access to:
+
+- `check_lean` — runs `lake build` inside the container and returns stdout/stderr; the primary feedback loop for proof development
+- `search_mathlib` — queries [Loogle](https://loogle.lean-lang.org) by name fragment or type signature to find relevant Mathlib lemmas (runs outside the air-gapped container)
+- `read_output_file`, `write_file`, `git_commit` — read/write Lean files and commit progress
+
+No interactive LSP or RAG retrieval is used during proof search. The model works from its training knowledge of Lean 4 and Aeneas idioms (embedded as skill documents in `docs/`), supplemented by on-demand Mathlib searches. This keeps the toolchain simple and avoids the latency and reliability problems of running a Lean language server inside a locked-down container.
 
 ### Context management
 
@@ -98,17 +114,6 @@ Each file records:
 - `messages` — full pydantic-ai conversation history serialised with `ModelMessagesTypeAdapter`
 
 The growing message history means the agent resumes with complete conversational context — it remembers every tool call, error, and decision from the previous run. The `git_head` field lets you reset the output repo to the exact git state that matches any given checkpoint before resuming.
-
-### RAG knowledge base
-
-`rag.py` maintains a flat file store under `~/.local/share/lusterna/rag/`:
-
-```
-docs.jsonl        — one JSON object per line: {id, text, source, tags[]}
-embeddings.npy    — float32 matrix (N, D), row i = embedding of docs[i]
-```
-
-Similarity search uses cosine distance over numpy vectors — no external vector database needed. Ingest documents with `lusterna rag add`.
 
 ## Requirements
 
@@ -168,7 +173,7 @@ Output (stdout, JSON):
   "out_dir": "/path/to/rust-repo-lusterna",
   "container_id": "...",
   "summary": "...",
-  "progress_keys": ["aeneas", "informal_spec", "formal_spec", "lean_build", "verdict"]
+  "progress_keys": ["aeneas", "informal_spec", "formal_spec", "lean_build", "verdict", "proof_verdict"]
 }
 ```
 
@@ -206,14 +211,6 @@ lusterna show-checkpoint SESSION_ID [--number N]
 
 Print the state JSON for a specific checkpoint (default: latest).
 
-### `rag add`
-
-```
-lusterna rag add FILE [FILE ...] [--source SOURCE] [--tags tag1,tag2]
-```
-
-Ingest one or more documents into the local RAG knowledge base.
-
 ## Environment variables
 
 | Variable | Default | Description |
@@ -222,7 +219,6 @@ Ingest one or more documents into the local RAG knowledge base.
 | `LUSTERNA_MODEL` | `anthropic:claude-sonnet-4-6` | Model for the orchestrator and most subagents |
 | `LUSTERNA_JUDGE_MODEL` | `anthropic:claude-sonnet-4-6` | Model for the judge subagent |
 | `LUSTERNA_COMPACTION_THRESHOLD` | `80000` | Estimated token count that triggers context compaction |
-| `LUSTERNA_RAG_DB` | `~/.local/share/lusterna/rag` | Path to the RAG knowledge base |
 | `LUSTERNA_SESSIONS_DIR` | `~/.local/share/lusterna/sessions` | Root directory for per-session checkpoint directories |
 | `LUSTERNA_AENEAS_BIN` | `aeneas` | Aeneas binary name inside the container |
 | `LUSTERNA_LAKE_BIN` | `lake` | Lake binary name inside the container |
