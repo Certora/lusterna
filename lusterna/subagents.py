@@ -24,11 +24,23 @@ class FormalSpec(BaseModel):
     rationale: str
 
 
-class JudgeVerdict(BaseModel):
+class ComponentVerdict(BaseModel):
+    name: str                # e.g. "fib_recursive_correct"
+    kind: str                # "theorem" | "definition" | "lemma" | "other"
     approved: bool
     score: int               # 0-10
-    issues: list[str]
-    suggestions: list[str]
+    issues: list[str]        # specific problems with this component
+    suggestions: list[str]   # actionable fixes
+
+
+class JudgeVerdict(BaseModel):
+    approved: bool
+    score: int                      # 0-10 overall
+    issues: list[str]               # overall / cross-cutting issues
+    suggestions: list[str]          # overall suggestions
+    components: list[ComponentVerdict] = []   # per-theorem/definition breakdown
+    stagnant: bool = False          # True only when the formaliser is genuinely stuck
+                                    # (see judge instructions for the precise criterion)
 
 
 # ── subagent definitions ──────────────────────────────────────────────────────

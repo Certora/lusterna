@@ -320,23 +320,46 @@ _judge = Agent(
     instructions="""
 You are the JUDGE stage of the Lusterna pipeline.
 
-Evaluate the formal Lean 4 specification and return a structured JudgeVerdict.
+Evaluate the formal Lean 4 specification and return a structured JudgeVerdict that
+includes both an overall verdict and a per-component breakdown.
 
 Steps:
 1. Call get_build_result to see whether lake build passed.
 2. Read the formal spec file(s) (lean/*Spec.lean) and the Aeneas translation (lean/*.lean).
 3. Read specs/informal_spec.json for the reference specification.
 
-Score 0–10 on:
-- Completeness: all key functions and their behaviours covered?
-- Correctness: theorem statements faithfully capture the informal spec?
-- Precision: preconditions, postconditions, invariants, and edge cases encoded?
-- Lean quality: syntactically idiomatic, well-named, well-structured?
+For EACH theorem, definition, and lemma in the spec file, produce a ComponentVerdict:
+  - name: the Lean identifier (e.g. "fib_recursive_correct")
+  - kind: "theorem" | "definition" | "lemma" | "other"
+  - approved: true only if the statement is sound and complete for its purpose
+  - score: 0-10 for this component
+  - issues: specific problems (wrong quantifier, missing edge case, unsound statement…)
+  - suggestions: concrete fixes the formaliser should apply
+
+Then produce the overall JudgeVerdict:
+  - approved: true only if lake build passed AND all critical components are approved
+  - score: 0-10 weighted average across components
+  - issues: cross-cutting problems not tied to one component
+  - suggestions: overall structural improvements
+  - components: the list of ComponentVerdicts above
+
+STAGNATION FIELD — read this carefully before setting stagnant:
+
+  Set stagnant=true ONLY when ALL THREE of the following hold simultaneously:
+    1. This is not the first judging round (there is a prior verdict in the message history).
+    2. Every component that was failing in the previous round is still failing now,
+       AND no previously-failing component has been removed or replaced.
+    3. The Lean theorem/definition statements for those failing components are
+       materially unchanged from the previous round — not just similar in meaning,
+       but the same logical content and structure. Minor renaming or reformatting
+       does NOT count as progress; fixing even one substantive issue in any failing
+       component DOES count as progress.
+
+  Default to stagnant=false. Only set stagnant=true when you are certain the
+  formaliser has made zero substantive progress on the failing components.
+  When in doubt, set stagnant=false and let another round proceed.
 
 IMPORTANT: if lake build failed, approved MUST be false and score MUST be ≤ 4.
-
-Return a JudgeVerdict with: approved (bool), score (0-10), issues (list of specific
-problems), and suggestions (list of actionable improvements).
 """,
 )
 _judge.tool(get_build_result)
@@ -485,10 +508,19 @@ async def run_session(deps: AgentDeps) -> str:
             return "Pipeline aborted: informal spec inference failed."
 
     # ── FORMALISE + JUDGE loop ────────────────────────────────────────────────
-    if "verdict" not in completed:
-        max_rounds = 3
-        for attempt in range(max_rounds):
+    # Termination is stagnation-based, not count-based:
+    #   • Success : approved=True or score >= 7
+    #   • Stagnation : the set of failing component names is unchanged from the
+    #                  previous round (model saw the same feedback, produced the
+    #                  same broken components — more rounds won't help), OR the
+    #                  score decreased (formaliser broke something it had fixed).
+    #   • Safety net: absolute cap of 10 rounds against infinite loops.
+    _HARD_CAP = 10
 
+    if "verdict" not in completed:
+        attempt = 0
+
+        while attempt < _HARD_CAP:
             # On the first attempt when resuming mid-formalise (lean_build already
             # succeeded and formal_spec exists), skip straight to JUDGE.
             skip_formalise = (
@@ -498,16 +530,39 @@ async def run_session(deps: AgentDeps) -> str:
             )
 
             if not skip_formalise:
-                formalise_prompt = (
-                    "Proceed to FORMALISE+BUILD. Call formalise_spec, write the spec "
-                    "file to lean/, register it in the lakefile, then call check_lean "
-                    "until the build passes (max 3 build attempts)." + resume_note
-                    if attempt == 0
-                    else
-                    f"The judge did not approve (round {attempt + 1}/{max_rounds}). "
-                    "Revise the formal specification based on the judge's feedback above, "
-                    "then call check_lean to confirm the build still passes."
-                )
+                if attempt == 0:
+                    formalise_prompt = (
+                        "Proceed to FORMALISE+BUILD. Call formalise_spec, write the spec "
+                        "file to lean/, register it in the lakefile, then call check_lean "
+                        "until the build passes (max 3 build attempts)." + resume_note
+                    )
+                else:
+                    # Build a focused prompt listing only the failing components.
+                    prev_verdict_data = deps.progress.get("verdict", {})
+                    failing_comps = [
+                        c for c in prev_verdict_data.get("components", [])
+                        if not c.get("approved")
+                    ]
+                    if failing_comps:
+                        component_lines = "\n".join(
+                            f"  - {c['name']} ({c['kind']}): "
+                            + ("; ".join(c.get("issues", [])) or "no details")
+                            for c in failing_comps
+                        )
+                        formalise_prompt = (
+                            f"The judge did not approve (round {attempt + 1}). "
+                            f"The following {len(failing_comps)} component(s) were rejected — "
+                            "fix only these, leave approved components untouched:\n"
+                            f"{component_lines}\n\n"
+                            "After editing the spec file call check_lean to confirm "
+                            "the build still passes."
+                        )
+                    else:
+                        formalise_prompt = (
+                            f"The judge did not approve (round {attempt + 1}). "
+                            "Revise the formal specification based on the judge's overall "
+                            "feedback above, then call check_lean to confirm the build passes."
+                        )
                 _, history = await _run_stage(
                     _formalise, formalise_prompt, deps, history,
                     f"FORMALISE (round {attempt + 1})",
@@ -526,21 +581,36 @@ async def run_session(deps: AgentDeps) -> str:
                 f"JUDGE (round {attempt + 1})",
             )
 
-            if verdict_result and verdict_result.output:
-                verdict: JudgeVerdict = verdict_result.output
-                deps.progress["verdict"] = verdict.model_dump()
-                log.info(
-                    "Judge round %d: approved=%s score=%d",
-                    attempt + 1, verdict.approved, verdict.score,
-                )
-                _checkpoint(deps)
-                if verdict.approved or verdict.score >= 7:
-                    break
-                # Loop: formalise_prompt on next iteration includes judge critique
-                # via the accumulated message history.
-            else:
+            if not (verdict_result and verdict_result.output):
                 log.warning("Judge produced no output in round %d — stopping loop", attempt + 1)
                 break
+
+            verdict: JudgeVerdict = verdict_result.output
+            deps.progress["verdict"] = verdict.model_dump()
+            failing_names = sorted(c.name for c in verdict.components if not c.approved)
+            log.info(
+                "Judge round %d: approved=%s score=%d components=%d failing=%s stagnant=%s",
+                attempt + 1, verdict.approved, verdict.score,
+                len(verdict.components), failing_names or "none", verdict.stagnant,
+            )
+            _checkpoint(deps)
+
+            # ── termination checks ─────────────────────────────────────────
+            if verdict.approved or verdict.score >= 7:
+                log.info("Verdict accepted — exiting loop")
+                break
+
+            if verdict.stagnant:
+                log.warning(
+                    "Judge reports stagnation on round %d (failing: %s) — stopping loop",
+                    attempt + 1, failing_names,
+                )
+                break
+
+            attempt += 1
+
+        else:
+            log.warning("FORMALISE+JUDGE loop hit hard cap of %d rounds", _HARD_CAP)
 
         completed = set(deps.progress.keys())
 
