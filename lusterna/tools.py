@@ -55,12 +55,22 @@ def read_output_file(deps: AgentDeps, path: str) -> str:
     return out
 
 
+_WRITE_PROTECTED = {
+    "lean-toolchain", "lakefile.lean", "lake-manifest.json",
+    "Cargo.toml", "Cargo.lock",
+}
+
 def write_file(deps: AgentDeps, path: str, content: str) -> str:
     """Write *content* to *path* inside /workspace/out."""
     _assert_relative(path)
     parts = Path(path).parts
     if ".lake" in parts or ".git" in parts:
         raise ValueError(f"Writing into .lake/ or .git/ is not allowed (got: {path!r})")
+    if Path(path).name in _WRITE_PROTECTED:
+        raise ValueError(
+            f"{Path(path).name!r} is a protected infrastructure file and must not be modified. "
+            "Only write to spec files (lean/*Spec.lean)."
+        )
     full = _out(path)
     # ensure parent directory exists
     parent = str(Path(full).parent)
@@ -77,17 +87,23 @@ def write_file(deps: AgentDeps, path: str, content: str) -> str:
 
 
 def list_files(deps: AgentDeps, extension: str = "rs") -> list[str]:
-    """List files in the repo with the given extension (e.g. 'rs', 'toml')."""
+    """List files in the repo or output directory with the given extension.
+
+    Lean files (extension='lean') are searched in /workspace/out since that is
+    where Aeneas writes its output.  All other extensions are searched in the
+    Rust repository at /workspace/repo.
+    """
+    search_root = OUT_IN if extension == "lean" else REPO_IN
     code, out, err = exec_in(
         deps.container_id,
-        ["find", REPO_IN, "-type", "f", "-name", f"*.{extension}"],
+        ["find", search_root, "-type", "f", "-name", f"*.{extension}"],
     )
     files = [
-        line.removeprefix(REPO_IN + "/")
+        line.removeprefix(search_root + "/")
         for line in out.splitlines()
         if line.strip()
     ]
-    log.info("list_files(*.%s): %d results", extension, len(files))
+    log.info("list_files(*.%s) in %s: %d results", extension, search_root, len(files))
     return files
 
 
@@ -245,10 +261,12 @@ def _write_lakefile(deps: AgentDeps, lean_out_dir: str, llbc_path: str) -> None:
 
     _exec_input(["tee", f"{lean_out_dir}/lakefile.lean"], lakefile)
 
-    # Use the pre-resolved manifest from the template so lake knows the pinned
-    # package set without any network access.
+    # Use the pre-resolved manifest and toolchain file from the template so lake
+    # knows the pinned package set without any network access.
     _exec(["cp", f"{LEAN_TEMPLATE}/lake-manifest.json",
            f"{lean_out_dir}/lake-manifest.json"])
+    _exec(["cp", f"{LEAN_TEMPLATE}/lean-toolchain",
+           f"{lean_out_dir}/lean-toolchain"])
 
     # Symlink the pre-downloaded package trees (Mathlib, Aeneas runtime, etc.)
     _exec(["mkdir", "-p", f"{lean_out_dir}/.lake"])

@@ -8,7 +8,7 @@ Before diving into a function proof:
 
 2. **Modularize when possible.** If sub-components of the function are natural to verify independently (they have clear specs), slice the function into pieces using the refolding technique (see proof-strategies.md). In particular, it is often useful to isolate `if-then-else` / `match` expressions into auxiliary functions with fold theorems.
 
-3. **Don't `exact` big terms.** Large `exact ⟨..., fun x => by ..., fun y => by ...⟩` expressions are bad for proof incrementality — the LSP must re-elaborate the entire term on every edit. Instead, use `refine ⟨..., ?_, ?_⟩` or `apply` to create separate goals, then prove each with `·` focus blocks.
+3. **Don't `exact` big terms.** Large `exact ⟨..., fun x => by ..., fun y => by ...⟩` expressions force Lean to re-elaborate the entire term when anything changes. Instead, use `refine ⟨..., ?_, ?_⟩` or `apply` to create separate goals, then prove each with `·` focus blocks.
 
 ## Loop Translation: Prefer `-loops-to-rec`
 

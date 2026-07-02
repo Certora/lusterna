@@ -7,8 +7,6 @@ description: Tactic decision tree, banned tactics, and common combinations for A
 
 ## Decision Tree: Which Tactic?
 
-**PREREQUISITE:** Always use the lean-lsp-mcp tools for interactive proof development. Use `lean_goal` to inspect the proof state before choosing a tactic. See the `lean-lsp-mcp` skill file.
-
 > **🔑 DEFAULT TACTIC: When you don't know what to do, use `agrind`.**
 > `agrind` is always the first tactic to try — it is fast, handles arithmetic,
 > equalities, and most structural goals. If `agrind` fails, try `grind` (slower
@@ -238,13 +236,13 @@ This has critical benefits:
 - **`agrind` closes most sub-goals immediately** — many goals produced by `step*`
   and `split_conjs` are arithmetic bounds or simple equalities that `agrind` handles.
 - **Each goal becomes independently inspectable** — for goals where `agrind` fails,
-  use `lean_goal` on that line to see exactly the context and target.
+  use `check_lean` to see the error on that line and inspect the context and target.
 - **Edits are incremental** — replacing one `· agrind` with a different tactic only
   re-elaborates that single goal, not the others.
 - **No risk of `all_goals` temptation** — the structure is already in place.
 
 After scaffolding, check which `· agrind` goals still have errors. For those,
-inspect with `lean_goal`, pick the right tactic, and replace. This is
+inspect the `check_lean` error output, pick the right tactic, and replace. This is
 the correct workflow even for 20+ goals — never try to close them in bulk.
 
 **⚠️ After `step*`, BEFORE writing any cdot blocks: check for missing solver
@@ -417,10 +415,8 @@ tactics inefficiently — it must be fixed, not tolerated.
 the proof (the kernel replaying the proof term) takes very long. This is a distinct issue
 from tactic slowness — it means the proof term is too large or complex.
 
-**How to detect kernel replay slowness:** In the LSP, after all tactics have been
-elaborated, the server will report that it is still processing the last line of the proof
-AND the `theorem` declaration line (along with any `set_option ... in` above it). If it
-stays in this state for a long time, it is likely spending time in the kernel checking the
+**How to detect kernel replay slowness:** If `check_lean` (lake build) is slow even though
+individual tactics appear straightforward, the kernel may be spending time checking a large
 proof term — not running tactics.
 
 **Fixes:** Decompose the function (fold theorems), extract sub-goals as auxiliary lemmas
@@ -457,10 +453,9 @@ Note: `time` output format varies by shell. This works in both bash and zsh.
 
 **Keeping Lean reactive is even more important.** When developing a proof interactively,
 adding a tactic at the end should take **< 0.5s** — this is what enables rapid iteration.
-If incremental edits are slow (several seconds), the proof structure is forcing
-re-elaboration of large chunks. See the `lean-lsp-mcp` skill file for guidance
-(avoid `by ...` blocks inside `apply`/`exact`/`refine` arguments, use `have` to create
-elaboration checkpoints).
+If `check_lean` is slow, the proof structure may be forcing re-elaboration of large chunks.
+Avoid `by ...` blocks inside `apply`/`exact`/`refine` arguments; use `have` to create
+elaboration checkpoints.
 
 ### Report misbehaving tactics
 

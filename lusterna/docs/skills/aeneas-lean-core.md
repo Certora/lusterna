@@ -8,11 +8,6 @@ description: Translation model, spec patterns, tactic reference, and pitfalls fo
 ## Context
 Aeneas translates Rust programs to pure Lean code via the LLBC intermediate representation. The generated code uses the `Result` error monad. Proofs verify functional correctness by writing specification theorems tagged with `@[step]`.
 
-## PREREQUISITE: Use lean-lsp-mcp for All Proof Work
-
-**Before writing or editing any Lean proof**, use the lean-lsp-mcp tools.
-See the `lean-lsp-mcp` skill file for the full tool reference and workflow.
-
 ## Reading Aeneas-Generated Code
 
 ### File layout
@@ -278,17 +273,10 @@ goal asks the invariant for `[0, next_start)`. Split with `by_cases hjj : j = it
 
 ## Proof Development Workflow
 
-### ⛔ Use the LSP for all checking — `lake build` only at the very end
+### Use `check_lean` (`lake build`) to verify proofs
 
-**Use only the lean-lsp-mcp tools** (diagnostics, goal, multi_attempt, etc.) when
-developing proofs: they give you incremental proof checking.
-**Do NOT run `lake build`** while developing proofs — the LSP server and `lake build`
-write to the same `.lake/build/` directory concurrently, causing file corruption,
-transient build failures, and wasted rebuild time.
-
-**`lake build` is allowed only once, at the very end**, as a final verification that
-the entire project builds. During proof development, the LSP gives you instant
-feedback on individual files without the overhead or corruption risk of a full build.
+After writing or editing proofs, call `check_lean` to run `lake build` and get
+Lean's feedback on errors and warnings. This is your primary source of truth.
 
 ### The step*? → fix → collapse workflow:
 1. `step*?` — generates expanded proof script (one `step` per monadic call)
@@ -297,7 +285,7 @@ feedback on individual files without the overhead or corruption risk of a full b
    this is the first thing you do after pasting. Do NOT attempt to close any
    goal before all are scaffolded.
 4. Work through each `· agrind` one at a time: if `agrind` didn't close a goal,
-   inspect with `lean_goal`, pick the right tactic, and replace
+   inspect the `check_lean` error output, pick the right tactic, and replace
 5. Once the full proof works, try collapsing sections back to `step*`
 6. If `step*` works on the whole body, use that (shorter is better)
 7. If not, keep the expanded script for the parts that need manual intervention
@@ -317,7 +305,7 @@ step as ⟨ r, h_len, h_val ⟩ -- name result + both conjuncts
 
 Each name binds one component of the postcondition's top-level structure
 (conjunction components, existential witnesses). If unsure how many components
-there are, use `lean_goal` after a plain `step` to inspect the unnamed
+there are, add a temporary `sorry` after `step` and use the `check_lean` error message to inspect the unnamed
 hypotheses, then add names to `step as ⟨...⟩` to match. If you provide too
 many names, Lean warns `"Too many ids provided"` — remove the excess.
 
@@ -667,13 +655,13 @@ or `<;>` to "handle them all at once". Critical benefits:
 - **`agrind` closes most sub-goals immediately** — many goals produced by `step*`
   and `split_conjs` are arithmetic bounds or simple equalities that `agrind` handles.
 - **Each goal becomes independently inspectable** — for goals where `agrind` fails,
-  use `lean_goal` on that line to see exactly the context and target.
+  use `check_lean` to see the error on that line and inspect the context and target.
 - **Edits are incremental** — replacing one `· agrind` with a different tactic only
   re-elaborates that single goal, not the others.
 - **No `all_goals` temptation** — the structure prevents bulk tactics.
 
 After scaffolding, check which `· agrind` goals still have errors. For those,
-inspect with `lean_goal`, pick the right tactic, and replace. This is the
+inspect the `check_lean` error output, pick the right tactic, and replace. This is the
 correct workflow even for 20+ goals — never try to close them in bulk. If
 there are too many goals (15+), consider fold decomposition first (see the
 `aeneas-crypto-verification` skill file).
@@ -780,14 +768,14 @@ calc (x + 1) * (x + 1)
 4. **`agrind` fails**: Try `simp [*]; agrind`
 5. **`grind` explodes**: Use `agrind` instead (controlled context)
 6. **Progress applies wrong spec**: Use `step with specific_theorem`
-7. **"Too many ids provided" from `step`**: You gave more binder names in `step as ⟨...⟩` than the tactic produced. Remove excess names until the count matches. Check `lean_goal` to see how many binders the postcondition actually has.
+7. **"Too many ids provided" from `step`**: You gave more binder names in `step as ⟨...⟩` than the tactic produced. Remove excess names until the count matches.
 8. **"This simp argument is unused"**: A lemma in `simp only [...]` or `simp_all only [...]` didn't fire. **Always fix this** — remove the unused lemma from the list. Don't ignore these warnings.
 9. **"'...' tactic does nothing"** / **"'...' tactic is never executed"**: The tactic call is dead code. **Always fix this** — remove the tactic entirely. Don't leave dead tactics in proofs.
 10. **Report misbehaving tactics.** If a tactic doesn't do what it should — for example, `step` fails to make progress even though the appropriate `@[step]` lemma exists, or `scalar_tac` can't close a pure arithmetic goal it should handle — **report this to the user**. It may indicate a bug or missing feature worth fixing upstream.
 11. **Keep `maxHeartbeats` reasonable (< 8M).** Lean's default (200K) is too low for Aeneas proofs — increase to 1M as a baseline. But if a proof needs more than ~8M heartbeats, the proof is ill-structured or uses tactics inefficiently. Don't just bump the number — instead: decompose the function with fold theorems, extract sub-goals as auxiliary lemmas, minimize the context with `clear`, prefer `agrind` over `grind`, or use `step*?` instead of `step*` for finer control. **⛔ NEVER use `set_option ... in` inside a proof script** (e.g., within a `by` block). The `in` scoping inside a tactic block makes everything below it a single elaboration unit — any edit forces full re-elaboration, destroying incrementality. Using `set_option ... in` **before** a theorem declaration is fine and standard practice (e.g., `set_option maxHeartbeats 16000000 in theorem ...`).
 <!-- ⚠️ SYNC RULE: the measure tactic is defined in aeneas-tactics-quickref "Profiling proof time" -->
-12. **⚠️ Keep proof wall-clock time < 60s — this is important.** Fast proofs enable fast iteration. Even the biggest proofs (for functions of 50+ lines) should complete in under 60 seconds wall-clock (including kernel proof-term replay). If a proof takes longer, it must be fixed — decompose it, extract auxiliary lemmas, or use more direct proof strategies. **Detecting kernel replay slowness:** In the LSP, after all tactics are elaborated, the server reports it is still processing the last proof line AND the `theorem` declaration line (plus `set_option ... in` above it). If it stays in this state a long time, the kernel is replaying the proof term — the fix is to produce simpler/smaller proof terms (decompose the function, extract sub-goals as separate lemmas). **Profiling:** `set_option trace.profiler true in` only measures tactic execution time — it does NOT include kernel type-checking of the proof terms that tactics produce. The discrepancy can be huge. Use the `measure` tactic wrapper (see the `aeneas-tactics-quickref` skill file, "Profiling proof time") to get true wall-clock time including kernel checking. If `trace.profiler` says tactics are fast but `measure` is slow, the bottleneck is kernel replay.
-13. **⚠️ Keeping Lean reactive is critical (&lt; 0.5s per tactic).** Adding a tactic at the end of a proof should take &lt; 0.5s (everything above is cached). If it takes several seconds, big chunks are being re-elaborated. See the "Extract inline `(by ...)` blocks" and "Never embed `(by ...)` in type signatures" and "Avoid `step* <;> tactic`" sections above for the main causes and fixes.
+12. **⚠️ Keep proof build time reasonable.** Fast proofs enable fast iteration. If `check_lean` is slow even though tactics seem straightforward, the kernel may be replaying a large proof term — the fix is to produce simpler/smaller proof terms (decompose the function, extract sub-goals as separate lemmas). **Profiling:** `set_option trace.profiler true in` only measures tactic execution time — it does NOT include kernel type-checking of the proof terms that tactics produce. The discrepancy can be huge.
+13. **⚠️ Proof structure affects rebuild time.** If proof edits cause large portions of the file to re-elaborate, the build will be slow. See the "Extract inline `(by ...)` blocks" and "Never embed `(by ...)` in type signatures" and "Avoid `step* <;> tactic`" sections above for the main causes and fixes.
 14. **Dependent proof terms break `rw`/`simp only`.** When a term has a proof argument that depends on the value being rewritten (e.g., `partial_sum arr bound (hbound : bound ≤ N)`), `simp`/`rw` tries to update both the value AND the proof simultaneously and may loop. **Fix:** Use `fcongr 1` to peel off the proof argument (handled by proof irrelevance), then rewrite the value part separately. (Never use `congr 1` — it uses default transparency and can cause heartbeat timeouts; see item 26.)
     ```lean
     -- BAD: loops because hbound depends on bound

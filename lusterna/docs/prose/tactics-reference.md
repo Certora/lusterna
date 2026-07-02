@@ -30,7 +30,7 @@ step as ⟨ r, h_len, h_val ⟩ -- name result + both conjuncts
 
 Each name binds one component of the postcondition's top-level structure
 (conjunction components, existential witnesses). If unsure how many components
-there are, use `lean_goal` after a plain `step` to inspect the unnamed
+there are, add a temporary `sorry` after `step` and use the `check_lean` error message to inspect the unnamed
 hypotheses, then add names to `step as ⟨...⟩` to match. If you provide too
 many names, Lean warns `"Too many ids provided"` — remove the excess.
 
