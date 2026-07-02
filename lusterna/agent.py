@@ -370,7 +370,6 @@ IMPORTANT: if lake build failed, approved MUST be false and score MUST be ≤ 4.
 _judge.tool(get_build_result)
 _judge.tool(list_files)
 _judge.tool(read_output_file)
-_judge.tool(read_file)
 
 
 _prove = Agent(
