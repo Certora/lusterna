@@ -1,4 +1,10 @@
-"""Stage-based pipeline: one Agent per stage, Python drives sequencing and loops."""
+"""Pipeline stages: one Agent per stage, Python orchestrates sequencing and loops.
+
+Each stage agent is driven directly by run_session() and shares the accumulated
+message history across the session.  Embedded specialists (subagents.py) are a
+separate concept: they are invoked as tool calls from within a stage and return
+structured data without contributing to the shared history.
+"""
 import logging
 from typing import Any
 
@@ -199,7 +205,7 @@ def get_build_result(ctx: RunContext[AgentDeps]) -> dict:
     )
 
 
-# ── stage agents ──────────────────────────────────────────────────────────────
+# ── pipeline stages ───────────────────────────────────────────────────────────
 
 _explore = Agent(
     config.MODEL,

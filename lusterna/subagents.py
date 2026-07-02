@@ -1,4 +1,9 @@
-"""Specialist subagents spawned by the orchestrator for focused tasks."""
+"""Embedded specialists: focused agents called as tools from within pipeline stages.
+
+Unlike pipeline stages (agent.py), these agents are invoked mid-turn via a tool
+call, receive no message history, and return structured Pydantic output directly
+to the calling stage.  They are invisible to the pipeline loop.
+"""
 import logging
 from typing import Literal
 from pydantic import BaseModel

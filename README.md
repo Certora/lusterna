@@ -22,7 +22,7 @@ All generated artefacts are git-committed incrementally inside the toolchain con
 lusterna/
 ├── cli.py          — Click entry point; manages the container lifecycle
 ├── agent.py        — Orchestrator agent (pydantic-ai); owns the pipeline loop
-├── subagents.py    — Specialist subagents: spec inferrer, formaliser, judge, summariser
+├── subagents.py    — Embedded specialists: spec inferrer, formaliser, summariser (called as tools)
 ├── tools.py        — All agent-callable tools (file I/O, Aeneas, Lake, Mathlib search, git)
 ├── docs.py         — Aeneas/Lean skill documents embedded as agent instructions
 ├── container.py    — Docker lifecycle: start, push repo, exec, pull artefacts, stop
@@ -70,25 +70,34 @@ The toolchain (Rust/Cargo, Charon, Aeneas, Lean/Lake) lives entirely inside a Do
 
 All toolchain invocations go through `docker exec`. Git also runs inside the container so the commit history is part of the pulled artefacts.
 
-### Subagents
+### Pipeline stages (`agent.py`)
 
-| Agent | Output type | Purpose |
+Each stage is a full `Agent` run driven by the Python pipeline loop in `run_session()`. Stages share the accumulated message history across the session and can call any registered tool.
+
+| Stage | Key tools | Purpose |
 |---|---|---|
-| `_spec_inferrer` | `InformalSpec` | Reads Lean + design doc → preconditions, postconditions, invariants, edge cases |
-| `_formal_spec_writer` | `FormalSpec` | Turns informal spec → Lean 4 definitions and theorem stubs |
-| `_judge` | `JudgeVerdict` | Scores the formal spec 0–10 per component; lists gaps and suggestions |
-| `_proof_judge` | `ProofVerdict` | Classifies each theorem as proved / sorry-acceptable / likely-misstated |
-| `_summariser` | `str` | Condenses message history when the context threshold is reached |
+| EXPLORE | `list_files`, `read_file` | Survey the Rust source; flag Aeneas incompatibilities |
+| TRANSLATE | `run_aeneas`, `write_rust_file` | Charon → Aeneas → Lean; massage Rust on errors |
+| INFER | `infer_spec` | Trigger spec-inferrer specialist; store informal spec |
+| FORMALISE | `formalise_spec`, `check_lean`, `write_file` | Derive theorem stubs; iterate until `lake build` passes |
+| SPEC-JUDGE | `read_output_file`, `get_build_result` | Score theorem statements; signal re-formalise if score < 7 |
+| PROVE | `write_file`, `check_lean`, `search_mathlib` | Fill `sorry` proofs with tactics |
+| PROOF-JUDGE | `read_output_file`, `get_build_result` | Classify each theorem; feed misstated back to formaliser |
+| REPORT | `read_output_file`, `git_log` | Produce `VERIFICATION_REPORT.md` |
 
-### Proving tools
+### Embedded specialists (`subagents.py`)
 
-The PROVE stage has access to:
+Specialists are invoked as tool calls from within a pipeline stage. They receive no message history, return structured Pydantic output to the calling stage, and are invisible to the pipeline loop.
 
-- `check_lean` — runs `lake build` inside the container and returns stdout/stderr; the primary feedback loop for proof development
-- `search_mathlib` — queries [Loogle](https://loogle.lean-lang.org) by name fragment or type signature to find relevant Mathlib lemmas (runs outside the air-gapped container)
-- `read_output_file`, `write_file`, `git_commit` — read/write Lean files and commit progress
+| Specialist | Output type | Purpose |
+|---|---|---|
+| spec-inferrer | `InformalSpec` | Reads Lean + design doc → preconditions, postconditions, invariants, edge cases |
+| formaliser | `FormalSpec` | Turns informal spec → Lean 4 definitions and theorem stubs |
+| summariser | `str` | Condenses message history when the context threshold is reached |
 
-No interactive LSP or RAG retrieval is used during proof search. The model works from its training knowledge of Lean 4 and Aeneas idioms (embedded as skill documents in `docs/`), supplemented by on-demand Mathlib searches. This keeps the toolchain simple and avoids the latency and reliability problems of running a Lean language server inside a locked-down container.
+### Proof search approach
+
+The PROVE stage uses `check_lean` (`lake build`) as its only feedback mechanism — no interactive LSP, no retrieval-augmented generation. The stage agent works from its training knowledge of Lean 4 and Aeneas idioms (embedded as skill documents in `docs/`) and can call `search_mathlib` to query [Loogle](https://loogle.lean-lang.org) for specific Mathlib lemmas by name or type signature. This keeps the toolchain simple and avoids the latency and reliability problems of running a Lean language server inside a locked-down, network-isolated container.
 
 ### Context management
 
@@ -125,7 +134,8 @@ The growing message history means the agent resumes with complete conversational
 
 ```sh
 python3 -m venv .venv
-.venv/bin/pip install -e .
+source .venv/bin/activate
+pip install -e .
 ```
 
 ## Quickstart
