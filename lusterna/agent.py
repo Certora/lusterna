@@ -85,6 +85,22 @@ def write_file(ctx: RunContext[AgentDeps], path: str, content: str) -> str:
         return f"ERROR: {e}"
 
 
+def append_file(ctx: RunContext[AgentDeps], path: str, content: str) -> str:
+    """Append content to a file in /workspace/out (creates the file if absent).
+
+    Use this to write large files in sections without hitting output token limits.
+    Each call appends *content* immediately after whatever was previously written.
+    Returns an ERROR: string on failure so the model can recover.
+    """
+    _OUT_PREFIX = "/workspace/out/"
+    if path.startswith(_OUT_PREFIX):
+        path = path[len(_OUT_PREFIX):]
+    try:
+        return tools.append_file(ctx.deps, path, content)
+    except (ValueError, IOError) as e:
+        return f"ERROR: {e}"
+
+
 def write_rust_file(ctx: RunContext[AgentDeps], path: str, content: str) -> str:
     """Overwrite a Rust source file in the repo.
 
@@ -645,9 +661,19 @@ _report = Agent(
     instructions="""
 You are the REPORT stage of the Lusterna formal verification pipeline.
 
-Read the generated artefacts and write the complete VERIFICATION_REPORT.md using
-write_file, then commit it with git_commit. Do not return the report as text —
-write it directly to the file so it is never truncated by output token limits.
+Write VERIFICATION_REPORT.md in sections using append_file (not write_file), then
+commit with git_commit. Each append_file call must be SHORT — aim for ~200-300 lines
+maximum per call. Use at least 5-6 separate append_file calls. A typical split:
+
+  1. append_file: title, overview table, translation summary
+  2. append_file: abstract specification section
+  3. append_file: informal + formal spec, build result
+  4. append_file: spec-judge verdict
+  5. append_file: reconciliation results (all cycles, discrepancies, obligations)
+  6. append_file: proof results, open obligations, gaps/limitations
+  7. git_commit
+
+Never try to write more than ~300 lines in a single append_file call.
 
 The report must cover:
 - What was translated and how (Charon/Aeneas, any Rust changes required)
@@ -668,7 +694,7 @@ The report must cover:
 _report.tool(list_files)
 _report.tool(read_file)
 _report.tool(read_output_file)
-_report.tool(write_file)
+_report.tool(append_file)
 _report.tool(git_commit)
 _report.tool(git_log)
 
@@ -1118,18 +1144,19 @@ async def run_session(deps: AgentDeps) -> str:
     report_text = report_result.output if report_result else ""
     try:
         existing = tools.read_output_file(deps, "VERIFICATION_REPORT.md")
+        report_on_disk = not existing.startswith("ERROR:")
     except Exception:
-        existing = ""
-    if not existing and report_text:
-        log.warning("REPORT agent did not write the file — writing from output text")
+        report_on_disk = False
+    if report_on_disk:
+        log.info("Report written and committed by REPORT agent")
+    elif report_text:
+        log.warning("REPORT agent did not write the file — falling back to text output")
         try:
             tools.write_file(deps, "VERIFICATION_REPORT.md", report_text)
             git_ops.commit(deps.container_id, "stage/report: final pipeline report",
                            glob="VERIFICATION_REPORT.md")
         except Exception as e:
             log.warning("Could not write report: %s", e)
-    elif existing:
-        log.info("Report written and committed by REPORT agent")
     else:
         log.warning("REPORT stage produced no output and wrote no file")
 

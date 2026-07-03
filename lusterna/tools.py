@@ -86,6 +86,27 @@ def write_file(deps: AgentDeps, path: str, content: str) -> str:
     return f"Written {len(content)} chars to {path}"
 
 
+def append_file(deps: AgentDeps, path: str, content: str) -> str:
+    """Append *content* to *path* inside /workspace/out (creates the file if absent)."""
+    _assert_relative(path)
+    parts = Path(path).parts
+    if ".lake" in parts or ".git" in parts:
+        raise ValueError(f"Writing into .lake/ or .git/ is not allowed (got: {path!r})")
+    if Path(path).name in _WRITE_PROTECTED:
+        raise ValueError(f"{Path(path).name!r} is write-protected.")
+    full = _out(path)
+    parent = str(Path(full).parent)
+    exec_in(deps.container_id, ["mkdir", "-p", parent])
+    import subprocess
+    cmd = ["docker", "exec", "--interactive", "--workdir", OUT_IN,
+           deps.container_id, "tee", "--append", full]
+    r = subprocess.run(cmd, input=content, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise IOError(f"append_file failed for {path}: {r.stderr.strip()}")
+    log.info("append_file: %s (+%d chars)", path, len(content))
+    return f"Appended {len(content)} chars to {path}"
+
+
 def list_files(deps: AgentDeps, extension: str = "rs") -> list[str]:
     """List files in the repo or output directory with the given extension.
 
