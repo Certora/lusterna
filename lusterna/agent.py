@@ -661,41 +661,58 @@ _report = Agent(
     instructions="""
 You are the REPORT stage of the Lusterna formal verification pipeline.
 
-Write VERIFICATION_REPORT.md in sections using append_file (not write_file), then
-commit with git_commit. Each append_file call must be SHORT — aim for ~200-300 lines
-maximum per call. Use at least 5-6 separate append_file calls. A typical split:
+Write each section of the verification report as a SEPARATE FILE under report/,
+using write_file once per section. The calling code will concatenate them in order
+into VERIFICATION_REPORT.md — do NOT write that file yourself and do NOT call
+git_commit.
 
-  1. append_file: title, overview table, translation summary
-  2. append_file: abstract specification section
-  3. append_file: informal + formal spec, build result
-  4. append_file: spec-judge verdict
-  5. append_file: reconciliation results (all cycles, discrepancies, obligations)
-  6. append_file: proof results, open obligations, gaps/limitations
-  7. git_commit
+Write exactly these files, in this order:
 
-Never try to write more than ~300 lines in a single append_file call.
+  report/01_overview.md
+      Title, one-paragraph executive summary, overview table (translation result,
+      spec-judge score, proved/sorry/misstated counts, critical discrepancies).
 
-The report must cover:
-- What was translated and how (Charon/Aeneas, any Rust changes required)
-- The abstract specification (from specs/abstract_formal_spec.lean — design intent only)
-- The informal specification (key preconditions, postconditions, invariants, edge cases)
-- The formal specification: theorems stated, which are proved vs sorry
-- The lake build result and judge verdict (score, issues, suggestions)
-- Reconciliation results (from specs/reconciliation_cycle_N.json for each cycle):
-    - Components that align between abstract and impl spec
-    - Any discrepancies across ALL cycles, especially CRITICAL ones (implementation_wrong,
-      bridge_wrong) — a discrepancy that appeared in cycle 1 and vanished in cycle 2 is
-      suspicious and must be reported, not silently dropped
-    - Refinement obligations and their proof status
-- Open proof obligations: each sorry with a brief suggested proof strategy
-- Known gaps or limitations
+  report/02_translation.md
+      What was translated: entry file, Rust changes required (stubs, removals),
+      Aeneas output files, any partial-translation caveats.
+
+  report/03_abstract_spec.md
+      The abstract specification derived from the design document alone
+      (specs/abstract_formal_spec.lean). List the key theorems and definitions with
+      a one-line gloss for each. Note any open_questions the doc-inferrer flagged.
+
+  report/04_implementation_spec.md
+      The implementation informal spec (specs/informal_spec.json) and formal spec
+      (lean/*Spec.lean). List every theorem stub with its statement and a one-line
+      explanation. Include the lake build result.
+
+  report/05_spec_judge.md
+      Spec-judge verdict: overall score, approved/not, per-component breakdown.
+      Quote the judge's issues and suggestions for any component scoring < 8.
+
+  report/06_reconciliation.md
+      Reconciliation results for every cycle (specs/reconciliation_cycle_N.json).
+      For each cycle: aligned components, discrepancies (with kind, severity,
+      description), refinement obligations. Flag any discrepancy that appeared in
+      an earlier cycle but vanished later — that is suspicious.
+
+  report/07_proofs.md
+      Proof-judge verdict: per-theorem classification (proved/sorry_acceptable/
+      likely_misstated), proof sketch for each proved theorem, suggested strategy
+      for each sorry_acceptable, precise reason for any likely_misstated.
+
+  report/08_summary.md
+      Open proof obligations (each sorry with a concrete next step), known gaps
+      and limitations, overall verdict paragraph.
+
+Be thorough — do not summarise away detail that would help a reader understand
+what was verified, what was found, and what remains open.
 """,
 )
 _report.tool(list_files)
 _report.tool(read_file)
 _report.tool(read_output_file)
-_report.tool(append_file)
-_report.tool(git_commit)
+_report.tool(write_file)
 _report.tool(git_log)
 
 
@@ -1138,27 +1155,39 @@ async def run_session(deps: AgentDeps) -> str:
         deps, history, "REPORT",
     )
 
-    # The REPORT agent writes VERIFICATION_REPORT.md directly via write_file + git_commit
-    # to avoid output-token truncation.  Fall back to the text output if the agent failed
-    # to call write_file for any reason.
-    report_text = report_result.output if report_result else ""
-    try:
-        existing = tools.read_output_file(deps, "VERIFICATION_REPORT.md")
-        report_on_disk = not existing.startswith("ERROR:")
-    except Exception:
-        report_on_disk = False
-    if report_on_disk:
-        log.info("Report written and committed by REPORT agent")
-    elif report_text:
-        log.warning("REPORT agent did not write the file — falling back to text output")
+    # The REPORT agent writes one file per section under report/. Read them in
+    # order and concatenate into VERIFICATION_REPORT.md, then commit.
+    _REPORT_SECTIONS = [
+        "report/01_overview.md", "report/02_translation.md",
+        "report/03_abstract_spec.md", "report/04_implementation_spec.md",
+        "report/05_spec_judge.md", "report/06_reconciliation.md",
+        "report/07_proofs.md", "report/08_summary.md",
+    ]
+    parts = []
+    for sf in _REPORT_SECTIONS:
+        content = tools.read_output_file(deps, sf)
+        if not content.startswith("ERROR:"):
+            parts.append(content)
+    if parts:
+        report_text = "\n\n".join(parts)
+        log.info("Concatenating %d/%d report sections into VERIFICATION_REPORT.md",
+                 len(parts), len(_REPORT_SECTIONS))
+        log.info("Concatenating %d report sections into VERIFICATION_REPORT.md", len(parts))
+    else:
+        # Fallback: agent returned the report as text output
+        report_text = report_result.output if report_result else ""
+        if report_text:
+            log.warning("No report/ sections found — falling back to agent text output")
+        else:
+            log.warning("REPORT stage produced no sections and no text output")
+    if report_text:
         try:
             tools.write_file(deps, "VERIFICATION_REPORT.md", report_text)
             git_ops.commit(deps.container_id, "stage/report: final pipeline report",
                            glob="VERIFICATION_REPORT.md")
+            log.info("Report written and committed (%d chars)", len(report_text))
         except Exception as e:
             log.warning("Could not write report: %s", e)
-    else:
-        log.warning("REPORT stage produced no output and wrote no file")
 
     _checkpoint(deps)
     log.info("Pipeline complete")
