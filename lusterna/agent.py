@@ -645,8 +645,9 @@ _report = Agent(
     instructions="""
 You are the REPORT stage of the Lusterna formal verification pipeline.
 
-Read the generated artefacts and produce the full text of VERIFICATION_REPORT.md
-as your final response (plain Markdown, no surrounding commentary).
+Read the generated artefacts and write the complete VERIFICATION_REPORT.md using
+write_file, then commit it with git_commit. Do not return the report as text —
+write it directly to the file so it is never truncated by output token limits.
 
 The report must cover:
 - What was translated and how (Charon/Aeneas, any Rust changes required)
@@ -662,14 +663,13 @@ The report must cover:
     - Refinement obligations and their proof status
 - Open proof obligations: each sorry with a brief suggested proof strategy
 - Known gaps or limitations
-
-After reading the files, output ONLY the Markdown report — nothing else.
-The calling code will write it to VERIFICATION_REPORT.md and commit it.
 """,
 )
 _report.tool(list_files)
 _report.tool(read_file)
 _report.tool(read_output_file)
+_report.tool(write_file)
+_report.tool(git_commit)
 _report.tool(git_log)
 
 
@@ -1112,18 +1112,26 @@ async def run_session(deps: AgentDeps) -> str:
         deps, history, "REPORT",
     )
 
-    # Write and commit from Python — avoids tool-argument validation failures.
+    # The REPORT agent writes VERIFICATION_REPORT.md directly via write_file + git_commit
+    # to avoid output-token truncation.  Fall back to the text output if the agent failed
+    # to call write_file for any reason.
     report_text = report_result.output if report_result else ""
-    if report_text:
+    try:
+        existing = tools.read_output_file(deps, "VERIFICATION_REPORT.md")
+    except Exception:
+        existing = ""
+    if not existing and report_text:
+        log.warning("REPORT agent did not write the file — writing from output text")
         try:
             tools.write_file(deps, "VERIFICATION_REPORT.md", report_text)
             git_ops.commit(deps.container_id, "stage/report: final pipeline report",
                            glob="VERIFICATION_REPORT.md")
-            log.info("Report written and committed")
         except Exception as e:
             log.warning("Could not write report: %s", e)
+    elif existing:
+        log.info("Report written and committed by REPORT agent")
     else:
-        log.warning("REPORT stage produced no output — skipping file write")
+        log.warning("REPORT stage produced no output and wrote no file")
 
     _checkpoint(deps)
     log.info("Pipeline complete")
