@@ -299,6 +299,10 @@ After a run, `<out_dir>/` contains a git repository with one commit per pipeline
 │   ├── informal_spec.json            — Implementation informal spec
 │   ├── formal_spec.lean              — Raw formal spec from the formaliser subagent
 │   └── reconciliation_cycle_N.json   — Discrepancies between abstract and impl spec (one per cycle)
+├── report/
+│   ├── 01_overview.md                — General overview
+│   ├── 02_translation.md             — Aeneas/Charon translation report
+│   └── ...                           — all individual sections composing VERIFICATION_REPORT.md
 └── VERIFICATION_REPORT.md    — Final report: theorem status, discrepancies, proof sketches
 ```
 
