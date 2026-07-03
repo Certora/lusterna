@@ -192,6 +192,7 @@ Run the full verification pipeline on `REPO` using `DESIGN_DOC`.
 | `--checkpoint-number N` | (latest) | Checkpoint to resume from within a session |
 | `--container NAME` | (auto-start) | Attach to a pre-running toolchain container |
 | `--image TAG` | `lusterna-toolchain:latest` | Image to start when `--container` is not given |
+| `--token-budget N` | (unlimited) | Maximum total tokens across all agents for this session; overrides `LUSTERNA_TOKEN_BUDGET`; 0 = unlimited |
 
 Output (stdout, JSON):
 
@@ -252,6 +253,7 @@ Print the state JSON for a specific checkpoint (default: latest).
 | `LUSTERNA_LAKE_BIN` | `lake` | Lake binary name inside the container |
 | `LUSTERNA_IMAGE` | `lusterna-toolchain:latest` | Default Docker image |
 | `LUSTERNA_CONTAINER` | — | Pre-existing container to attach to (skips auto-start) |
+| `LUSTERNA_TOKEN_BUDGET` | (unlimited) | Maximum total tokens across all agents for a session; 0 or unset = unlimited |
 | `LUSTERNA_LOG_LEVEL` | `INFO` | Log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 
 ## Resuming a session
