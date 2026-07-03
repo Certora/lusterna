@@ -7,9 +7,8 @@ to the calling stage.  They are invisible to the pipeline loop.
 import logging
 from typing import Literal
 from pydantic import BaseModel
-from pydantic_ai import Agent
 
-from . import config
+from . import config, factory
 
 log = logging.getLogger(__name__)
 
@@ -116,76 +115,60 @@ class JudgeVerdict(BaseModel):
 
 # ── subagent definitions ──────────────────────────────────────────────────────
 
-_doc_inferrer = Agent(
-    config.MODEL,
-    output_type=AbstractInformalSpec,
-    instructions=(
-        "You are a formal methods expert. Given ONLY a design document (no source code), "
-        "infer the abstract specification of the system: what it should do according to the "
-        "design intent, its preconditions, postconditions, invariants, and edge cases. "
-        "Where the design document is silent or ambiguous, record the gap in open_questions. "
-        "Do NOT invent behaviour not evidenced by the design document. "
-        "Be implementation-independent: do not assume any particular data representation "
-        "or algorithm."
-    ),
+
+_doc_inferrer = factory.make_subagent(
+    AbstractInformalSpec,
+    "You are a formal methods expert. Given ONLY a design document (no source code), "
+    "infer the abstract specification of the system: what it should do according to the "
+    "design intent, its preconditions, postconditions, invariants, and edge cases. "
+    "Where the design document is silent or ambiguous, record the gap in open_questions. "
+    "Do NOT invent behaviour not evidenced by the design document. "
+    "Be implementation-independent: do not assume any particular data representation "
+    "or algorithm.",
 )
 
-_doc_formaliser = Agent(
-    config.MODEL,
-    output_type=AbstractFormalSpec,
-    instructions=(
-        "You are a Lean 4 expert. Given an abstract informal specification derived from a "
-        "design document (no implementation knowledge), produce a formal specification as "
-        "Lean 4 definitions and theorem stubs. "
-        "Use abstract mathematical types (Nat, List, Set, etc.) — never mention Rust types, "
-        "UInt64, or any implementation detail. Each theorem stub must carry a docstring. "
-        "If any aspect of the informal spec is too ambiguous to formalise faithfully, record "
-        "it in ambiguities so the doc-inferrer can resolve it. "
-        "Leave ambiguities empty when the spec is clear enough to formalise."
-    ),
+_doc_formaliser = factory.make_subagent(
+    AbstractFormalSpec,
+    "You are a Lean 4 expert. Given an abstract informal specification derived from a "
+    "design document (no implementation knowledge), produce a formal specification as "
+    "Lean 4 definitions and theorem stubs. "
+    "Use abstract mathematical types (Nat, List, Set, etc.) — never mention Rust types, "
+    "UInt64, or any implementation detail. Each theorem stub must carry a docstring. "
+    "If any aspect of the informal spec is too ambiguous to formalise faithfully, record "
+    "it in ambiguities so the doc-inferrer can resolve it. "
+    "Leave ambiguities empty when the spec is clear enough to formalise.",
 )
 
-_spec_inferrer = Agent(
-    config.MODEL,
-    output_type=InformalSpec,
-    instructions=(
-        "You are a formal methods expert. Given Lean 4 code translated from Rust "
-        "and an optional design document, infer the informal specification of the program: "
-        "what it should do, its preconditions, postconditions, invariants, and edge cases. "
-        "Be precise and concise. Do not invent behaviour not evidenced by the code or doc."
-    ),
+_spec_inferrer = factory.make_subagent(
+    InformalSpec,
+    "You are a formal methods expert. Given Lean 4 code translated from Rust "
+    "and an optional design document, infer the informal specification of the program: "
+    "what it should do, its preconditions, postconditions, invariants, and edge cases. "
+    "Be precise and concise. Do not invent behaviour not evidenced by the code or doc.",
 )
 
-_formal_spec_writer = Agent(
-    config.MODEL,
-    output_type=FormalSpec,
-    instructions=(
-        "You are a Lean 4 expert. Given an informal specification, produce a formal specification "
-        "as Lean 4 definitions and theorem stubs (no sorry-free proofs required yet). "
-        "Use idiomatic Lean 4 / Mathlib style. Each theorem stub must have a docstring "
-        "explaining what it captures."
-    ),
+_formal_spec_writer = factory.make_subagent(
+    FormalSpec,
+    "You are a Lean 4 expert. Given an informal specification, produce a formal specification "
+    "as Lean 4 definitions and theorem stubs (no sorry-free proofs required yet). "
+    "Use idiomatic Lean 4 / Mathlib style. Each theorem stub must have a docstring "
+    "explaining what it captures.",
 )
 
-_judge = Agent(
-    config.JUDGE_MODEL,
-    output_type=JudgeVerdict,
-    instructions=(
-        "You are a rigorous reviewer of formal specifications. "
-        "Evaluate whether the provided formal Lean 4 specification faithfully captures "
-        "the informal specification and the original Rust source. "
-        "Score 0-10. Flag any gaps, unsound definitions, or missing invariants."
-    ),
+_judge = factory.make_subagent(
+    JudgeVerdict,
+    "You are a rigorous reviewer of formal specifications. "
+    "Evaluate whether the provided formal Lean 4 specification faithfully captures "
+    "the informal specification and the original Rust source. "
+    "Score 0-10. Flag any gaps, unsound definitions, or missing invariants.",
+    model=config.JUDGE_MODEL,
 )
 
-_summariser = Agent(
-    config.MODEL,
-    output_type=str,
-    instructions=(
-        "Summarise the following agent conversation history into a concise paragraph "
-        "capturing all decisions made, artefacts produced, and open questions. "
-        "Preserve technical details such as file paths and commit SHAs."
-    ),
+_summariser = factory.make_subagent(
+    str,
+    "Summarise the following agent conversation history into a concise paragraph "
+    "capturing all decisions made, artefacts produced, and open questions. "
+    "Preserve technical details such as file paths and commit SHAs.",
 )
 
 
@@ -196,6 +179,7 @@ _summariser = Agent(
 async def infer_abstract_informal_spec(design_doc: str) -> AbstractInformalSpec:
     log.info("Doc-inferrer: deriving abstract informal spec from design document")
     result = await _doc_inferrer.run(f"### Design document\n{design_doc}")
+    factory.record_usage(result.usage)
     return result.output
 
 
@@ -203,6 +187,7 @@ async def derive_abstract_formal_spec(abstract_informal: AbstractInformalSpec) -
     log.info("Doc-formaliser: deriving abstract formal spec")
     prompt = f"### Abstract informal specification\n{abstract_informal.model_dump_json(indent=2)}"
     result = await _doc_formaliser.run(prompt)
+    factory.record_usage(result.usage)
     return result.output
 
 
@@ -222,6 +207,7 @@ async def refine_abstract_informal_spec(
         "ambiguity, record it in open_questions."
     )
     result = await _doc_inferrer.run(prompt)
+    factory.record_usage(result.usage)
     return result.output
 
 
@@ -231,6 +217,7 @@ async def infer_informal_spec(lean_code: str, design_doc: str) -> InformalSpec:
     log.info("Subagent: inferring informal specification")
     prompt = f"### Lean 4 code\n{lean_code}\n\n### Design document\n{design_doc}"
     result = await _spec_inferrer.run(prompt)
+    factory.record_usage(result.usage)
     return result.output
 
 
@@ -241,6 +228,7 @@ async def derive_formal_spec(informal: InformalSpec, lean_code: str) -> FormalSp
         f"### Lean 4 translated code\n{lean_code}"
     )
     result = await _formal_spec_writer.run(prompt)
+    factory.record_usage(result.usage)
     return result.output
 
 
@@ -266,10 +254,12 @@ async def judge_formal_spec(
         "A spec that does not type-check cannot be approved."
     )
     result = await _judge.run(prompt)
+    factory.record_usage(result.usage)
     return result.output
 
 
 async def summarise_history(history_text: str) -> str:
     log.info("Subagent: summarising context history")
     result = await _summariser.run(history_text)
+    factory.record_usage(result.usage)
     return result.output

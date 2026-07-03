@@ -9,11 +9,9 @@ import logging
 from typing import Any
 
 from pydantic_ai import Agent, RunContext
-from pydantic_ai.capabilities.hooks import Hooks
 from pydantic_ai.exceptions import UnexpectedModelBehavior
-from pydantic_ai.models import ModelRequestContext
 
-from . import checkpoint, compaction, docs, git_ops, subagents, tools
+from . import checkpoint, compaction, docs, factory, git_ops, subagents, tools
 from .subagents import (
     AbstractInformalSpec, AbstractFormalSpec,
     InformalSpec, FormalSpec, JudgeVerdict, ProofVerdict, ReconciliationReport,
@@ -22,22 +20,6 @@ from .state import AgentDeps
 from . import config
 
 log = logging.getLogger(__name__)
-
-
-# ── message-history snapshot hook ─────────────────────────────────────────────
-# Shared across all stage agents. Before every model request the hook writes the
-# current accumulated messages into deps.message_history so that mid-stage
-# _checkpoint() calls always capture up-to-date history.
-
-_hooks = Hooks()
-
-
-@_hooks.on.before_model_request
-async def _snapshot_messages(
-    ctx: RunContext[AgentDeps], model_ctx: ModelRequestContext
-) -> ModelRequestContext | None:
-    ctx.deps.message_history = list(model_ctx.messages)
-    return model_ctx
 
 
 # ── shared tool functions ─────────────────────────────────────────────────────
@@ -294,11 +276,7 @@ def get_build_result(ctx: RunContext[AgentDeps]) -> dict:
 
 # ── pipeline stages ───────────────────────────────────────────────────────────
 
-_doc_infer = Agent(
-    config.MODEL,
-    deps_type=AgentDeps,
-    capabilities=[_hooks],
-    instructions="""
+_doc_infer = factory.make_stage_agent("""
 You are the DOC-INFER stage of the Lusterna pipeline.
 
 Derive an abstract informal specification from the design document ALONE.
@@ -315,11 +293,7 @@ Do not call any other tool.
 _doc_infer.tool(infer_abstract_informal_spec)
 
 
-_doc_formalise = Agent(
-    config.MODEL,
-    deps_type=AgentDeps,
-    capabilities=[_hooks],
-    instructions="""
+_doc_formalise = factory.make_stage_agent("""
 You are the DOC-FORMALISE stage of the Lusterna pipeline.
 
 Produce a Lean 4 abstract formal specification from the abstract informal spec.
@@ -338,11 +312,7 @@ Do not call any other tool.
 _doc_formalise.tool(formalise_abstract_spec)
 
 
-_explore = Agent(
-    config.MODEL,
-    deps_type=AgentDeps,
-    capabilities=[_hooks],
-    instructions="""
+_explore = factory.make_stage_agent("""
 You are the EXPLORE stage of the Lusterna formal verification pipeline.
 
 Understand the Rust codebase before translation begins:
@@ -358,11 +328,7 @@ _explore.tool(list_files)
 _explore.tool(read_file)
 
 
-_translate = Agent(
-    config.MODEL,
-    deps_type=AgentDeps,
-    capabilities=[_hooks],
-    instructions="""
+_translate = factory.make_stage_agent("""
 You are the TRANSLATE stage of the Lusterna pipeline.
 
 Translate the Rust codebase to Lean 4 via Charon + Aeneas:
@@ -390,11 +356,7 @@ _translate.tool(git_commit)
 _translate.tool(git_log)
 
 
-_infer = Agent(
-    config.MODEL,
-    deps_type=AgentDeps,
-    capabilities=[_hooks],
-    instructions="""
+_infer = factory.make_stage_agent("""
 You are the INFER stage of the Lusterna pipeline.
 
 Derive an informal specification from the Aeneas-translated Lean output:
@@ -413,11 +375,7 @@ _infer.tool(read_output_file)
 _infer.tool(infer_spec)
 
 
-_formalise = Agent(
-    config.MODEL,
-    deps_type=AgentDeps,
-    capabilities=[_hooks],
-    instructions="""
+_formalise = factory.make_stage_agent("""
 You are the FORMALISE+BUILD stage of the Lusterna pipeline.
 
 Produce a Lean 4 formal specification that compiles with `lake build`.
@@ -453,13 +411,7 @@ _formalise.tool(git_commit)
 _formalise.tool(git_log)
 
 
-_judge = Agent(
-    config.MODEL,
-    deps_type=AgentDeps,
-    output_type=JudgeVerdict,
-    retries=3,
-    capabilities=[_hooks],
-    instructions="""
+_judge = factory.make_stage_agent("""
 You are the JUDGE stage of the Lusterna pipeline.
 
 Evaluate the formal Lean 4 specification and return a structured JudgeVerdict that
@@ -510,19 +462,15 @@ STAGNATION FIELD — read this carefully before setting stagnant:
 
 IMPORTANT: if lake build failed, approved MUST be false and score MUST be ≤ 4.
 """,
+    output_type=JudgeVerdict,
+    retries=3,
 )
 _judge.tool(get_build_result)
 _judge.tool(list_files)
 _judge.tool(read_output_file)
 
 
-_reconcile = Agent(
-    config.MODEL,
-    deps_type=AgentDeps,
-    output_type=ReconciliationReport,
-    retries=3,
-    capabilities=[_hooks],
-    instructions="""
+_reconcile = factory.make_stage_agent("""
 You are the RECONCILE stage of the Lusterna pipeline.
 
 Compare the abstract formal specification (derived from the design document alone)
@@ -574,16 +522,14 @@ IMPORTANT: design_doc_silent gaps are NOT discrepancies — do not list them unl
 you also want to generate a refinement obligation for them. When in doubt about
 whether something is a gap or a real discrepancy, classify it as design_doc_silent.
 """,
+    output_type=ReconciliationReport,
+    retries=3,
 )
 _reconcile.tool(list_files)
 _reconcile.tool(read_output_file)
 
 
-_prove = Agent(
-    config.MODEL,
-    deps_type=AgentDeps,
-    capabilities=[_hooks],
-    instructions="""
+_prove = factory.make_stage_agent("""
 You are the PROVE stage of the Lusterna pipeline.
 
 The formal spec has been approved by the spec judge. Your job is to attempt to
@@ -615,13 +561,7 @@ _prove.tool(git_commit)
 _prove.tool(git_log)
 
 
-_proof_judge = Agent(
-    config.MODEL,
-    deps_type=AgentDeps,
-    output_type=ProofVerdict,
-    retries=3,
-    capabilities=[_hooks],
-    instructions="""
+_proof_judge = factory.make_stage_agent("""
 You are the PROOF JUDGE stage of the Lusterna pipeline.
 
 Evaluate every theorem and lemma in the formal spec and return a ProofVerdict.
@@ -648,17 +588,15 @@ STAGNATION — set stagnant=true ONLY when ALL of:
   3. The proof automator made no changes to those theorems' statements or proof attempts.
   Default to stagnant=false.
 """,
+    output_type=ProofVerdict,
+    retries=3,
 )
 _proof_judge.tool(get_build_result)
 _proof_judge.tool(list_files)
 _proof_judge.tool(read_output_file)
 
 
-_report = Agent(
-    config.MODEL,
-    deps_type=AgentDeps,
-    capabilities=[_hooks],
-    instructions="""
+_report = factory.make_stage_agent("""
 You are the REPORT stage of the Lusterna formal verification pipeline.
 
 Write each section of the verification report as a SEPARATE FILE under report/,
@@ -761,6 +699,17 @@ async def _run_stage(
     except UnexpectedModelBehavior as e:
         log.warning("Stage %s hit UnexpectedModelBehavior: %s", label, e)
     if result:
+        factory.record_usage(result.usage)
+        u = factory.get_usage()
+        log.info(
+            "Stage %s complete — stage usage: in=%d out=%d cache_read=%d | "
+            "session total=%d/%s",
+            label,
+            getattr(result.usage, "input_tokens", 0) or 0,
+            getattr(result.usage, "output_tokens", 0) or 0,
+            getattr(result.usage, "cache_read_tokens", 0) or 0,
+            u["total_tokens"], u["budget"] or "∞",
+        )
         history = result.all_messages()
         deps.message_history = history
     return result, history
@@ -1190,5 +1139,12 @@ async def run_session(deps: AgentDeps) -> str:
             log.warning("Could not write report: %s", e)
 
     _checkpoint(deps)
-    log.info("Pipeline complete")
+    usage = factory.get_usage()
+    log.info(
+        "Pipeline complete — session usage: in=%d out=%d "
+        "cache_read=%d cache_write=%d total=%d/%s requests=%d",
+        usage["input_tokens"], usage["output_tokens"],
+        usage["cache_read_tokens"], usage["cache_write_tokens"],
+        usage["total_tokens"], usage["budget"] or "∞", usage["requests"],
+    )
     return report_text or "(no report generated)"

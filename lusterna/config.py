@@ -15,3 +15,26 @@ LAKE_BIN = os.environ.get("LUSTERNA_LAKE_BIN", "lake")
 CONTAINER_IMAGE = os.environ.get("LUSTERNA_IMAGE", "lusterna-toolchain:latest")
 # Pre-existing container name/ID to attach to (skips auto-start when set)
 CONTAINER_ID = os.environ.get("LUSTERNA_CONTAINER", "")
+# Optional cumulative token budget for the entire session (all agents combined).
+# 0 or unset means unlimited.
+_budget_env = os.environ.get("LUSTERNA_TOKEN_BUDGET", "0")
+TOKEN_BUDGET: int | None = int(_budget_env) if _budget_env.strip() not in ("", "0") else None
+
+
+def cache_settings(model: str) -> dict:
+    """Return AnthropicModelSettings with prompt caching enabled when *model* is Anthropic.
+
+    Caches system prompt blocks and the last tool-definition block so re-sent
+    instructions and tool schemas are billed at the cache-hit rate (~10× cheaper).
+    Returns an empty dict for non-Anthropic providers, keeping agents vendor-agnostic.
+    """
+    if not model.startswith("anthropic:"):
+        return {}
+    try:
+        from pydantic_ai.models.anthropic import AnthropicModelSettings
+        return AnthropicModelSettings(
+            anthropic_cache_instructions=True,
+            anthropic_cache_tool_definitions=True,
+        )
+    except ImportError:
+        return {}

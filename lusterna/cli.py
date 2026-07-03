@@ -36,6 +36,9 @@ def main(verbose: bool) -> None:
               help="Attach to a pre-running container instead of starting a new one")
 @click.option("--image", default=config.CONTAINER_IMAGE, show_default=True,
               help="Image to start when --container is not given")
+@click.option("--token-budget", "token_budget", default=None, type=int,
+              help="Maximum total tokens across all agents for this session "
+                   "(overrides LUSTERNA_TOKEN_BUDGET; 0 = unlimited)")
 def run(
     repo: str,
     design_doc: str,
@@ -44,10 +47,19 @@ def run(
     ckpt_number: int | None,
     container: str | None,
     image: str,
+    token_budget: int | None,
 ) -> None:
     """Run the verification pipeline on REPO using DESIGN_DOC."""
-    from . import agent as agent_module
+    from . import agent as agent_module, factory
     from . import container as container_mod
+
+    # Token budget: CLI flag takes precedence over env var.
+    effective_budget = token_budget if token_budget is not None else config.TOKEN_BUDGET
+    if effective_budget == 0:
+        effective_budget = None
+    factory.set_budget(effective_budget)
+    if effective_budget:
+        log.info("Session token budget: %d tokens", effective_budget)
 
     repo_path = Path(repo)
     work_path = Path(out_dir) if out_dir else repo_path.parent / (repo_path.name + "-lusterna")
