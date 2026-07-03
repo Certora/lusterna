@@ -16,6 +16,31 @@ log = logging.getLogger(__name__)
 
 # ── output schemas ────────────────────────────────────────────────────────────
 
+# Abstract specs — derived from the design document only, no implementation knowledge.
+
+class AbstractInformalSpec(BaseModel):
+    summary: str
+    preconditions: list[str]
+    postconditions: list[str]
+    invariants: list[str]
+    edge_cases: list[str]
+    open_questions: list[str]   # aspects the design doc does not specify
+
+
+class Ambiguity(BaseModel):
+    field: str      # e.g. "postconditions[0]", "edge_cases"
+    question: str   # what needs to be clarified before it can be formalised
+
+
+class AbstractFormalSpec(BaseModel):
+    lean_definitions: str       # abstract type definitions and predicates (no Rust types)
+    lean_theorem_stubs: str     # theorem statements with sorry, no implementation knowledge
+    rationale: str
+    ambiguities: list[Ambiguity] = []   # questions for the doc-inferrer; empty when converged
+
+
+# Implementation specs — derived from the Aeneas-translated Lean code.
+
 class InformalSpec(BaseModel):
     summary: str
     preconditions: list[str]
@@ -53,6 +78,32 @@ class ProofVerdict(BaseModel):
     summary: str                                       # brief overall narrative
 
 
+class Discrepancy(BaseModel):
+    abstract_component: str   # name/description from abstract spec, or "N/A" if absent there
+    impl_component: str       # name/description from impl spec, or "N/A" if absent there
+    kind: Literal[
+        "implementation_wrong",  # Rust code diverges from the design intent — CRITICAL
+        "bridge_wrong",          # impl spec was mis-derived from the translation — CRITICAL
+        "abstract_wrong",        # abstract model misreads the design document
+        "design_doc_silent",     # design doc simply does not cover this aspect — acceptable gap
+    ]
+    severity: Literal["critical", "minor", "gap"]
+    description: str          # precise explanation of what differs and why it matters
+
+
+class RefinementObligation(BaseModel):
+    name: str        # proposed Lean theorem name, e.g. "fib_impl_refines_abstract"
+    statement: str   # full Lean 4 theorem statement (with sorry proof placeholder)
+    rationale: str   # why this bridge is needed
+
+
+class ReconciliationReport(BaseModel):
+    aligned: list[str]                          # impl components that satisfy the abstract spec
+    discrepancies: list[Discrepancy]
+    refinement_obligations: list[RefinementObligation]
+    summary: str
+
+
 class JudgeVerdict(BaseModel):
     approved: bool
     score: int                      # 0-10 overall
@@ -64,6 +115,35 @@ class JudgeVerdict(BaseModel):
 
 
 # ── subagent definitions ──────────────────────────────────────────────────────
+
+_doc_inferrer = Agent(
+    config.MODEL,
+    output_type=AbstractInformalSpec,
+    instructions=(
+        "You are a formal methods expert. Given ONLY a design document (no source code), "
+        "infer the abstract specification of the system: what it should do according to the "
+        "design intent, its preconditions, postconditions, invariants, and edge cases. "
+        "Where the design document is silent or ambiguous, record the gap in open_questions. "
+        "Do NOT invent behaviour not evidenced by the design document. "
+        "Be implementation-independent: do not assume any particular data representation "
+        "or algorithm."
+    ),
+)
+
+_doc_formaliser = Agent(
+    config.MODEL,
+    output_type=AbstractFormalSpec,
+    instructions=(
+        "You are a Lean 4 expert. Given an abstract informal specification derived from a "
+        "design document (no implementation knowledge), produce a formal specification as "
+        "Lean 4 definitions and theorem stubs. "
+        "Use abstract mathematical types (Nat, List, Set, etc.) — never mention Rust types, "
+        "UInt64, or any implementation detail. Each theorem stub must carry a docstring. "
+        "If any aspect of the informal spec is too ambiguous to formalise faithfully, record "
+        "it in ambiguities so the doc-inferrer can resolve it. "
+        "Leave ambiguities empty when the spec is clear enough to formalise."
+    ),
+)
 
 _spec_inferrer = Agent(
     config.MODEL,
@@ -110,6 +190,42 @@ _summariser = Agent(
 
 
 # ── public async entry points ─────────────────────────────────────────────────
+
+# Abstract spec entry points (design-doc-only, called from DOC-INFER / DOC-FORMALISE stages).
+
+async def infer_abstract_informal_spec(design_doc: str) -> AbstractInformalSpec:
+    log.info("Doc-inferrer: deriving abstract informal spec from design document")
+    result = await _doc_inferrer.run(f"### Design document\n{design_doc}")
+    return result.output
+
+
+async def derive_abstract_formal_spec(abstract_informal: AbstractInformalSpec) -> AbstractFormalSpec:
+    log.info("Doc-formaliser: deriving abstract formal spec")
+    prompt = f"### Abstract informal specification\n{abstract_informal.model_dump_json(indent=2)}"
+    result = await _doc_formaliser.run(prompt)
+    return result.output
+
+
+async def refine_abstract_informal_spec(
+    design_doc: str,
+    current: AbstractInformalSpec,
+    ambiguities: list[Ambiguity],
+) -> AbstractInformalSpec:
+    log.info("Doc-inferrer: refining abstract informal spec to resolve %d ambiguity/ies", len(ambiguities))
+    ambiguity_lines = "\n".join(f"  - {a.field}: {a.question}" for a in ambiguities)
+    prompt = (
+        f"### Design document\n{design_doc}\n\n"
+        f"### Current abstract informal specification\n{current.model_dump_json(indent=2)}\n\n"
+        f"### Ambiguities to resolve\n{ambiguity_lines}\n\n"
+        "Revise the abstract informal specification to resolve these ambiguities using only "
+        "the design document as evidence. Where the design document cannot resolve an "
+        "ambiguity, record it in open_questions."
+    )
+    result = await _doc_inferrer.run(prompt)
+    return result.output
+
+
+# Implementation spec entry points (called from INFER / FORMALISE stages).
 
 async def infer_informal_spec(lean_code: str, design_doc: str) -> InformalSpec:
     log.info("Subagent: inferring informal specification")

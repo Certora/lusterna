@@ -4,15 +4,17 @@ An AI agent that translates Rust programs into formally verified Lean 4 specific
 
 Given a Rust repository and a design document, Lusterna:
 
-1. Explores the source code
-2. Translates the Rust code to Lean 4 via [Aeneas](https://github.com/AeneasVerif/aeneas)
-3. Infers an informal specification from the translated code and the design document
-4. Derives a formal Lean 4 specification (theorem stubs with `sorry`)
-5. Verifies the spec compiles with `lake build`; iterates until it does (max 3 attempts)
-6. Has a spec-judge subagent score the statements; revises if score < 7
-7. Attempts to fill in proofs using Lean 4 tactics
-8. Has a proof-judge subagent classify each theorem (proved / sorry-acceptable / misstated)
-9. Writes a final verification report
+1. Derives an **abstract specification** from the design document alone — before looking at any code
+2. Explores the source code
+3. Translates the Rust code to Lean 4 via [Aeneas](https://github.com/AeneasVerif/aeneas)
+4. Infers an informal specification from the translated code and the design document
+5. Derives a formal Lean 4 specification (theorem stubs with `sorry`)
+6. Verifies the spec compiles with `lake build`; iterates until it does (max 3 attempts)
+7. Has a spec-judge score the statements against both the implementation and the abstract spec; revises if score < 7
+8. **Reconciles** the abstract spec against the implementation spec — classifies discrepancies and flags critical ones (implementation bugs, mis-stated theorems)
+9. Attempts to fill in proofs using Lean 4 tactics
+10. Has a proof-judge classify each theorem (proved / sorry-acceptable / misstated)
+11. Writes a final verification report
 
 All generated artefacts are git-committed incrementally inside the toolchain container and pulled to the host on exit.
 
@@ -42,6 +44,11 @@ CLI
      └─ tar-pipe repo → /workspace/repo
      └─ git init /workspace/out
          └─ Orchestrator agent (pydantic-ai)
+             ├─ DOC-INFER    infer_abstract_informal_spec → specs/  (git commit)
+             │                └─ doc-inferrer subagent (design doc only, no code)
+             ├─ DOC-FORMALISE formalise_abstract_spec    → specs/  (git commit)
+             │                └─ doc-formaliser subagent; iterates with doc-inferrer
+             │                   to resolve ambiguities (up to 3 rounds)
              ├─ EXPLORE      list_files, read_file
              ├─ TRANSLATE    run_aeneas          → lean/     (git commit)
              │                write_rust_file if Charon/Aeneas errors (up to 2 retries)
@@ -49,12 +56,18 @@ CLI
              │                └─ spec-inferrer subagent
              ├─ FORMALISE    formalise_spec      → lean/     (git commit)
              │   + BUILD     check_lean (lake build) — loop until pass or 3 attempts
-             │                └─ formal-spec subagent
-             ├─ SPEC-JUDGE   judge subagent      (re-formalise if score < 7, up to 10 rounds)
+             │                └─ formaliser subagent
+             ├─ SPEC-JUDGE   (re-formalise if score < 7, up to 10 rounds)
+             │                reads abstract spec as ground-truth reference
+             ├─ RECONCILE    → specs/reconciliation_cycle_N.json  (git commit)
+             │                compares abstract spec vs impl spec; classifies discrepancies:
+             │                  implementation_wrong / bridge_wrong (CRITICAL)
+             │                  abstract_wrong (minor) / design_doc_silent (gap)
+             │                accumulates across cycles — critical findings never dropped
              ├─ PROVE        write_file, check_lean, search_mathlib
              │                (fill sorry proofs with tactics; up to 80 messages)
-             ├─ PROOF-JUDGE  proof-judge subagent
-             │                (proved / sorry-acceptable / misstated; feeds misstated back)
+             │                warned of any critical discrepancies from all prior cycles
+             ├─ PROOF-JUDGE  (proved / sorry-acceptable / misstated; feeds misstated back)
              └─ REPORT       write_file          → VERIFICATION_REPORT.md
  └─ tar-pipe /workspace/out → host out_dir
  └─ stop container
@@ -76,12 +89,15 @@ Each stage is a full `Agent` run driven by the Python pipeline loop in `run_sess
 
 | Stage | Key tools | Purpose |
 |---|---|---|
+| DOC-INFER | `infer_abstract_informal_spec` | Derive abstract informal spec from design doc — no code access |
+| DOC-FORMALISE | `formalise_abstract_spec` | Derive abstract Lean stubs; iterate with doc-inferrer to resolve ambiguities |
 | EXPLORE | `list_files`, `read_file` | Survey the Rust source; flag Aeneas incompatibilities |
 | TRANSLATE | `run_aeneas`, `write_rust_file` | Charon → Aeneas → Lean; massage Rust on errors |
 | INFER | `infer_spec` | Trigger spec-inferrer specialist; store informal spec |
 | FORMALISE | `formalise_spec`, `check_lean`, `write_file` | Derive theorem stubs; iterate until `lake build` passes |
-| SPEC-JUDGE | `read_output_file`, `get_build_result` | Score theorem statements; signal re-formalise if score < 7 |
-| PROVE | `write_file`, `check_lean`, `search_mathlib` | Fill `sorry` proofs with tactics |
+| SPEC-JUDGE | `read_output_file`, `get_build_result` | Score statements against impl spec and abstract spec; re-formalise if score < 7 |
+| RECONCILE | `read_output_file`, `list_files` | Compare abstract vs impl spec; classify discrepancies; accumulate across cycles |
+| PROVE | `write_file`, `check_lean`, `search_mathlib` | Fill `sorry` proofs; warned of critical discrepancies from all prior cycles |
 | PROOF-JUDGE | `read_output_file`, `get_build_result` | Classify each theorem; feed misstated back to formaliser |
 | REPORT | `read_output_file`, `git_log` | Produce `VERIFICATION_REPORT.md` |
 
@@ -91,7 +107,9 @@ Specialists are invoked as tool calls from within a pipeline stage. They receive
 
 | Specialist | Output type | Purpose |
 |---|---|---|
-| spec-inferrer | `InformalSpec` | Reads Lean + design doc → preconditions, postconditions, invariants, edge cases |
+| doc-inferrer | `AbstractInformalSpec` | Reads design doc only → abstract preconditions, postconditions, invariants, open questions |
+| doc-formaliser | `AbstractFormalSpec` | Turns abstract informal spec → Lean 4 abstract theorem stubs; flags ambiguities for doc-inferrer |
+| spec-inferrer | `InformalSpec` | Reads Lean translation + design doc → implementation informal spec |
 | formaliser | `FormalSpec` | Turns informal spec → Lean 4 definitions and theorem stubs |
 | summariser | `str` | Condenses message history when the context threshold is reached |
 
@@ -272,13 +290,16 @@ After a run, `<out_dir>/` contains a git repository with one commit per pipeline
 <out_dir>/
 ├── lean/
 │   ├── Foo.lean              — Aeneas translation
-│   ├── FooSpec.lean          — Formal specification (theorem stubs)
+│   ├── FooSpec.lean          — Formal specification (theorem stubs + proofs)
 │   ├── lakefile.lean         — Lake project file
 │   └── lake-manifest.json    — Pre-resolved package manifest (offline)
 ├── specs/
-│   ├── informal_spec.json    — Structured informal specification
-│   └── formal_spec.lean      — Raw formal spec from the formaliser subagent
-└── VERIFICATION_REPORT.md    — Final report: theorem status, open obligations, proof sketches
+│   ├── abstract_informal_spec.json   — Abstract spec from design doc (no code)
+│   ├── abstract_formal_spec.lean     — Abstract Lean stubs (design intent)
+│   ├── informal_spec.json            — Implementation informal spec
+│   ├── formal_spec.lean              — Raw formal spec from the formaliser subagent
+│   └── reconciliation_cycle_N.json   — Discrepancies between abstract and impl spec (one per cycle)
+└── VERIFICATION_REPORT.md    — Final report: theorem status, discrepancies, proof sketches
 ```
 
 ```sh
