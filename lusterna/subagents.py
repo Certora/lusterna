@@ -164,13 +164,6 @@ _judge = factory.make_subagent(
     model=config.JUDGE_MODEL,
 )
 
-_summariser = factory.make_subagent(
-    str,
-    "Summarise the following agent conversation history into a concise paragraph "
-    "capturing all decisions made, artefacts produced, and open questions. "
-    "Preserve technical details such as file paths and commit SHAs.",
-)
-
 
 # ── public async entry points ─────────────────────────────────────────────────
 
@@ -258,8 +251,3 @@ async def judge_formal_spec(
     return result.output
 
 
-async def summarise_history(history_text: str) -> str:
-    log.info("Subagent: summarising context history")
-    result = await _summariser.run(history_text)
-    factory.record_usage(result.usage)
-    return result.output

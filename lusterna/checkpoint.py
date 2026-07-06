@@ -49,33 +49,9 @@ def latest_number(session_id: str) -> int | None:
     return nums[-1] if nums else None
 
 
-# ── serialisation helpers ─────────────────────────────────────────────────────
-
-def _serialise_messages(messages: list) -> list:
-    if not messages:
-        return []
-    try:
-        from pydantic_ai.messages import ModelMessagesTypeAdapter
-        return ModelMessagesTypeAdapter.dump_python(messages, mode="json")
-    except Exception as exc:
-        log.warning("Could not serialise message history: %s", exc)
-        return []
-
-
-def _deserialise_messages(data: list) -> list:
-    if not data:
-        return []
-    try:
-        from pydantic_ai.messages import ModelMessagesTypeAdapter
-        return ModelMessagesTypeAdapter.validate_python(data)
-    except Exception as exc:
-        log.warning("Could not deserialise message history: %s", exc)
-        return []
-
-
 # ── public API ────────────────────────────────────────────────────────────────
 
-def save(session_id: str, state: dict[str, Any], messages: list | None = None) -> int:
+def save(session_id: str, state: dict[str, Any]) -> int:
     """Append a new numbered checkpoint and return its number."""
     nums = _existing_numbers(session_id)
     number = (nums[-1] + 1) if nums else 1
@@ -86,14 +62,10 @@ def save(session_id: str, state: dict[str, Any], messages: list | None = None) -
         "saved_at": time.time(),
         "number": number,
         "state": state,
-        "messages": _serialise_messages(messages or []),
     }
     tmp.write_text(json.dumps(payload, indent=2))
     tmp.replace(path)  # atomic on POSIX
-    log.info(
-        "Checkpoint saved: %s (number=%d, %d messages)",
-        path, number, len(payload["messages"]),
-    )
+    log.info("Checkpoint saved: %s (number=%d)", path, number)
     return number
 
 
@@ -128,25 +100,6 @@ def load(session_id: str, number: int | None = None) -> dict[str, Any] | None:
     return state
 
 
-def load_messages(session_id: str, number: int | None = None) -> list:
-    """Load and deserialise the message history from a checkpoint."""
-    if number is None:
-        number = latest_number(session_id)
-    if number is None:
-        return []
-
-    path = _checkpoint_path(session_id, number)
-    if not path.exists():
-        return []
-
-    payload = json.loads(path.read_text())
-    raw = payload.get("messages", [])
-    messages = _deserialise_messages(raw)
-    log.info(
-        "Loaded %d messages from checkpoint %s", len(messages), path
-    )
-    return messages
-
 
 def list_sessions() -> list[str]:
     """Return all session IDs that have at least one checkpoint."""
@@ -172,7 +125,6 @@ def list_checkpoints(session_id: str) -> list[dict]:
                 "saved_at": payload.get("saved_at"),
                 "git_head": state.get("git_head", ""),
                 "progress_keys": list(state.get("progress", {}).keys()),
-                "messages": len(payload.get("messages", [])),
                 "path": str(path),
             })
         except Exception as exc:

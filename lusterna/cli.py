@@ -75,11 +75,9 @@ def run(
         )
         progress = saved.get("progress", {})
         container = container or saved.get("container_id")
-        message_history = checkpoint.load_messages(sid, number=ckpt_number)
     else:
         log.info("Starting new session %s", sid)
         progress = {}
-        message_history = []
 
     _owned = False
     resuming = bool(saved)
@@ -107,7 +105,7 @@ def run(
         session_id=sid,
         design_doc=doc_text,
         progress=progress,
-        message_history=message_history,
+        message_history=[],
     )
 
     try:

@@ -4,8 +4,6 @@ from pathlib import Path
 
 MODEL = os.environ.get("LUSTERNA_MODEL", "anthropic:claude-sonnet-4-6")
 JUDGE_MODEL = os.environ.get("LUSTERNA_JUDGE_MODEL", "anthropic:claude-sonnet-4-6")
-# Token budget before triggering context compaction
-COMPACTION_THRESHOLD = int(os.environ.get("LUSTERNA_COMPACTION_THRESHOLD", "80000"))
 # Root directory that holds per-session checkpoint directories
 SESSIONS_DIR = Path(os.environ.get("LUSTERNA_SESSIONS_DIR", "~/.local/share/lusterna/sessions")).expanduser()
 CHARON_BIN = os.environ.get("LUSTERNA_CHARON_BIN", "charon")
@@ -22,10 +20,12 @@ TOKEN_BUDGET: int | None = int(_budget_env) if _budget_env.strip() not in ("", "
 
 
 def cache_settings(model: str) -> dict:
-    """Return AnthropicModelSettings with prompt caching enabled when *model* is Anthropic.
+    """Return AnthropicModelSettings with prompt caching and auto-compaction for Anthropic models.
 
     Caches system prompt blocks and the last tool-definition block so re-sent
     instructions and tool schemas are billed at the cache-hit rate (~10× cheaper).
+    Also enables automatic context compaction at 100k input tokens to prevent
+    within-stage context saturation on long-running stages (PROVE, FORMALISE).
     Returns an empty dict for non-Anthropic providers, keeping agents vendor-agnostic.
     """
     if not model.startswith("anthropic:"):
@@ -35,6 +35,14 @@ def cache_settings(model: str) -> dict:
         return AnthropicModelSettings(
             anthropic_cache_instructions=True,
             anthropic_cache_tool_definitions=True,
+            anthropic_context_management={
+                "edits": [
+                    {
+                        "type": "compact_20260112",
+                        "trigger": {"type": "input_tokens", "value": 100_000},
+                    }
+                ]
+            },
         )
     except ImportError:
         return {}

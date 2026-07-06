@@ -31,7 +31,6 @@ lusterna/
 ├── git_ops.py      — Git commands run inside the container via docker exec
 ├── state.py        — AgentDeps: typed dependency bundle injected into every tool
 ├── checkpoint.py   — Per-session checkpoint directories with incremental numbered files
-├── compaction.py   — Context summarisation when the token estimate exceeds the threshold
 ├── config.py       — All knobs via environment variables
 └── logging_setup.py — stdlib logging → stderr; level from LUSTERNA_LOG_LEVEL
 ```
@@ -85,7 +84,7 @@ All toolchain invocations go through `docker exec`. Git also runs inside the con
 
 ### Pipeline stages (`agent.py`)
 
-Each stage is a full `Agent` run driven by the Python pipeline loop in `run_session()`. Stages share the accumulated message history across the session and can call any registered tool.
+Each stage is a full `Agent` run driven by the Python pipeline loop in `run_session()`. Each stage starts with a fresh context — stages communicate via the filesystem (git-committed artefacts) and `deps.progress`, not via message history. Within each stage, Anthropic's automatic context compaction triggers at 100k input tokens to prevent saturation on long-running stages (PROVE, FORMALISE).
 
 | Stage | Key tools | Purpose |
 |---|---|---|
@@ -111,15 +110,10 @@ Specialists are invoked as tool calls from within a pipeline stage. They receive
 | doc-formaliser | `AbstractFormalSpec` | Turns abstract informal spec → Lean 4 abstract theorem stubs; flags ambiguities for doc-inferrer |
 | spec-inferrer | `InformalSpec` | Reads Lean translation + design doc → implementation informal spec |
 | formaliser | `FormalSpec` | Turns informal spec → Lean 4 definitions and theorem stubs |
-| summariser | `str` | Condenses message history when the context threshold is reached |
 
 ### Proof search approach
 
 The PROVE stage uses `check_lean` (`lake build`) as its only feedback mechanism — no interactive LSP, no retrieval-augmented generation. The stage agent works from its training knowledge of Lean 4 and Aeneas idioms (embedded as skill documents in `docs/`) and can call `search_mathlib` to query [Loogle](https://loogle.lean-lang.org) for specific Mathlib lemmas by name or type signature. This keeps the toolchain simple and avoids the latency and reliability problems of running a Lean language server inside a locked-down, network-isolated container.
-
-### Context management
-
-Token usage is estimated with a character-based heuristic (4 chars ≈ 1 token). When the estimate exceeds `LUSTERNA_COMPACTION_THRESHOLD` (default 80 000 tokens), the summariser subagent condenses all but the last two messages into a single system prompt entry, keeping the orchestrator coherent across long sessions.
 
 ### Checkpoints
 
@@ -138,9 +132,8 @@ Each file records:
 
 - `state` — progress dict, container ID, repo/work paths, design doc
 - `git_head` — SHA of `/workspace/out` HEAD at save time
-- `messages` — full pydantic-ai conversation history serialised with `ModelMessagesTypeAdapter`
 
-The growing message history means the agent resumes with complete conversational context — it remembers every tool call, error, and decision from the previous run. The `git_head` field lets you reset the output repo to the exact git state that matches any given checkpoint before resuming.
+The `git_head` field lets you reset the output repo to the exact git state that matches any given checkpoint before resuming. Since each stage starts with fresh context, resuming simply skips completed stages (tracked via the progress dict) and re-runs from the first incomplete one.
 
 ## Requirements
 
@@ -247,7 +240,6 @@ Print the state JSON for a specific checkpoint (default: latest).
 | `ANTHROPIC_API_KEY` | — | **Required.** Anthropic API key |
 | `LUSTERNA_MODEL` | `anthropic:claude-sonnet-4-6` | Model for the orchestrator and most subagents |
 | `LUSTERNA_JUDGE_MODEL` | `anthropic:claude-sonnet-4-6` | Model for the judge subagent |
-| `LUSTERNA_COMPACTION_THRESHOLD` | `80000` | Estimated token count that triggers context compaction |
 | `LUSTERNA_SESSIONS_DIR` | `~/.local/share/lusterna/sessions` | Root directory for per-session checkpoint directories |
 | `LUSTERNA_AENEAS_BIN` | `aeneas` | Aeneas binary name inside the container |
 | `LUSTERNA_LAKE_BIN` | `lake` | Lake binary name inside the container |
@@ -267,8 +259,8 @@ lusterna list-sessions
 # Inspect checkpoints for a session
 lusterna list-checkpoints <session-id>
 # [
-#   {"number": 1, "git_head": "d469df7e...", "progress_keys": ["aeneas"], "messages": 7},
-#   {"number": 2, "git_head": "d463a94c...", "progress_keys": ["aeneas", "informal_spec"], "messages": 13},
+#   {"number": 1, "git_head": "d469df7e...", "progress_keys": ["aeneas"]},
+#   {"number": 2, "git_head": "d463a94c...", "progress_keys": ["aeneas", "informal_spec"]},
 #   ...
 # ]
 

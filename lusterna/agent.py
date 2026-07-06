@@ -1,9 +1,9 @@
 """Pipeline stages: one Agent per stage, Python orchestrates sequencing and loops.
 
-Each stage agent is driven directly by run_session() and shares the accumulated
-message history across the session.  Embedded specialists (subagents.py) are a
-separate concept: they are invoked as tool calls from within a stage and return
-structured data without contributing to the shared history.
+Each stage agent runs independently with no shared message history — stages
+communicate via the filesystem and deps.progress, not via conversation context.
+Embedded specialists (subagents.py) are invoked as tool calls from within a
+stage and return structured data directly to the calling stage.
 """
 import logging
 from typing import Any
@@ -11,7 +11,7 @@ from typing import Any
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 
-from . import checkpoint, compaction, docs, factory, git_ops, subagents, tools
+from . import checkpoint, docs, factory, git_ops, subagents, tools
 from .subagents import (
     AbstractInformalSpec, AbstractFormalSpec,
     InformalSpec, FormalSpec, JudgeVerdict, ProofVerdict, ReconciliationReport,
@@ -404,7 +404,7 @@ Do NOT attempt proofs — that is the PROVE stage's responsibility.
 _formalise.tool(list_files)
 _formalise.tool(read_file)
 _formalise.tool(read_output_file)
-_formalise.tool(write_file)
+_formalise.tool(write_file, retries=2)
 _formalise.tool(formalise_spec)
 _formalise.tool(check_lean)
 _formalise.tool(git_commit)
@@ -554,7 +554,7 @@ STRICT RULES:
 )
 _prove.tool(list_files)
 _prove.tool(read_output_file)
-_prove.tool(write_file)
+_prove.tool(write_file, retries=2)
 _prove.tool(check_lean)
 _prove.tool(search_mathlib)
 _prove.tool(git_commit)
@@ -650,7 +650,7 @@ what was verified, what was found, and what remains open.
 _report.tool(list_files)
 _report.tool(read_file)
 _report.tool(read_output_file)
-_report.tool(write_file)
+_report.tool(write_file, retries=2)
 _report.tool(git_log)
 
 
@@ -667,82 +667,56 @@ def _checkpoint(deps: AgentDeps) -> None:
             "progress": deps.progress,
             "git_head": git_ops.head_sha(deps.container_id),
         },
-        messages=deps.message_history,
     )
 
 
-async def _run_stage(
-    agent: Agent,
-    prompt: str,
-    deps: AgentDeps,
-    history: list,
-    label: str,
-) -> tuple[Any, list]:
-    """Run one stage agent to completion, handling compaction. Returns (result, history).
+class _PipelineAborted(Exception):
+    pass
 
-    Catches UnexpectedModelBehavior so a single bad tool call doesn't crash the
-    entire pipeline — the caller can inspect deps.progress to decide whether to
-    retry or abort.
+
+_HARD_CAP  = 10   # max spec-judge rounds per cycle
+_CYCLE_CAP = 5    # max full spec→proof cycles
+
+
+async def _run_stage(agent: Agent, prompt: str, deps: AgentDeps, label: str) -> Any:
+    """Run one stage agent to completion. Each stage starts with no prior history.
+
+    Stages communicate via the filesystem and deps.progress, not via conversation
+    context — so no history is passed in or accumulated across stages.
+    Re-raises UnexpectedModelBehavior; judge stages catch it locally.
     """
     log.info("─── Stage: %s ───", label)
-    result = None
-    try:
-        async with agent.iter(prompt, deps=deps, message_history=history) as run:
-            async for _node in run:
-                if compaction.needs_compaction(deps.message_history):
-                    log.info("Compacting context in stage %s", label)
-                    deps.message_history = await compaction.compact(
-                        deps.message_history,
-                        summarise_fn=subagents.summarise_history,
-                    )
-            result = run.result
-    except UnexpectedModelBehavior as e:
-        log.warning("Stage %s hit UnexpectedModelBehavior: %s", label, e)
-    if result:
-        factory.record_usage(result.usage)
-        u = factory.get_usage()
-        log.info(
-            "Stage %s complete — stage usage: in=%d out=%d cache_read=%d | "
-            "session total=%d/%s",
-            label,
-            getattr(result.usage, "input_tokens", 0) or 0,
-            getattr(result.usage, "output_tokens", 0) or 0,
-            getattr(result.usage, "cache_read_tokens", 0) or 0,
-            u["total_tokens"], u["budget"] or "∞",
-        )
-        history = result.all_messages()
-        deps.message_history = history
-    return result, history
-
-
-# ── main entry point ──────────────────────────────────────────────────────────
-
-async def run_session(deps: AgentDeps) -> str:
-    """Drive the pipeline stage by stage and return a final summary string."""
-    history: list = list(deps.message_history)
-    completed = set(deps.progress.keys())
-    resuming = bool(history)
-
-    if resuming:
-        log.info("Resuming session — completed stages: %s", sorted(completed))
-
-    # A short note appended to the first prompt when resuming so the agent
-    # knows the container is fresh even though it has prior history.
-    resume_note = (
-        "\n\nSESSION RESUMED — the Docker container is fresh but all previously "
-        "generated artefacts have been restored. Continue from where you left off."
-        if resuming else ""
+    deps.message_history = []
+    async with agent.iter(prompt, deps=deps) as run:
+        async for _node in run:
+            pass
+        result = run.result
+    factory.record_usage(result.usage)
+    u = factory.get_usage()
+    log.info(
+        "Stage %s complete — stage usage: in=%d out=%d cache_read=%d | "
+        "session total=%d/%s",
+        label,
+        getattr(result.usage, "input_tokens", 0) or 0,
+        getattr(result.usage, "output_tokens", 0) or 0,
+        getattr(result.usage, "cache_read_tokens", 0) or 0,
+        u["total_tokens"], u["budget"] or "∞",
     )
+    return result
 
-    # ── DOC-INFER ─────────────────────────────────────────────────────────────
-    # Derive the abstract informal spec from the design document only.
-    # Skip if already produced (also skipped if abstract_formal_spec exists).
+
+# ── pipeline sub-functions ────────────────────────────────────────────────────
+
+async def _run_doc_stages(deps: AgentDeps, resume_note: str) -> str:
+    """Run DOC-INFER and DOC-FORMALISE (skipped if already in progress)."""
+    completed = set(deps.progress.keys())
+
     if "abstract_informal_spec" not in completed:
-        _, history = await _run_stage(
+        await _run_stage(
             _doc_infer,
             "Begin DOC-INFER. Call infer_abstract_informal_spec to derive the abstract "
             "informal specification from the design document." + resume_note,
-            deps, history, "DOC-INFER",
+            deps, "DOC-INFER",
         )
         _checkpoint(deps)
         resume_note = ""
@@ -750,339 +724,337 @@ async def run_session(deps: AgentDeps) -> str:
         if "abstract_informal_spec" not in completed:
             log.warning("DOC-INFER produced no output — proceeding without abstract spec")
 
-    # ── DOC-FORMALISE ─────────────────────────────────────────────────────────
     if "abstract_informal_spec" in completed and "abstract_formal_spec" not in completed:
-        _, history = await _run_stage(
+        await _run_stage(
             _doc_formalise,
             "Proceed to DOC-FORMALISE. Call formalise_abstract_spec to produce "
             "Lean 4 abstract theorem stubs from the abstract informal spec." + resume_note,
-            deps, history, "DOC-FORMALISE",
+            deps, "DOC-FORMALISE",
         )
         _checkpoint(deps)
         resume_note = ""
-        completed = set(deps.progress.keys())
 
-    # ── EXPLORE ───────────────────────────────────────────────────────────────
-    # Skip if TRANSLATE already completed (aeneas in progress).
+    return resume_note
+
+
+async def _run_translate_stages(deps: AgentDeps, resume_note: str) -> str:
+    """Run EXPLORE, TRANSLATE, and INFER (skipped if already in progress).
+
+    Raises _PipelineAborted if TRANSLATE or INFER produce no output.
+    """
+    completed = set(deps.progress.keys())
+
     if "aeneas" not in completed:
-        _, history = await _run_stage(
+        await _run_stage(
             _explore,
             f"Begin EXPLORE for the Rust repository at {deps.repo_path}.\n"
             f"Design document:\n{deps.design_doc[:2000]}" + resume_note,
-            deps, history, "EXPLORE",
+            deps, "EXPLORE",
         )
         _checkpoint(deps)
-        resume_note = ""  # consumed
+        resume_note = ""
 
-    # ── TRANSLATE ─────────────────────────────────────────────────────────────
     if "aeneas" not in completed:
-        _, history = await _run_stage(
+        await _run_stage(
             _translate,
             "Proceed to TRANSLATE. Run Aeneas on the Rust source; fix any "
             "Charon/Aeneas errors by massaging the Rust source as needed." + resume_note,
-            deps, history, "TRANSLATE",
+            deps, "TRANSLATE",
         )
         _checkpoint(deps)
         resume_note = ""
         completed = set(deps.progress.keys())
         if "aeneas" not in completed:
-            log.error("TRANSLATE produced no Aeneas output — aborting")
-            return "Pipeline aborted: Aeneas translation failed after retries."
+            raise _PipelineAborted("Aeneas translation failed after retries.")
 
-    # ── INFER ─────────────────────────────────────────────────────────────────
     if "informal_spec" not in completed:
-        _, history = await _run_stage(
+        await _run_stage(
             _infer,
             "Proceed to INFER. Call infer_spec to derive the informal specification "
             "from the Lean output and the design document." + resume_note,
-            deps, history, "INFER",
+            deps, "INFER",
         )
         _checkpoint(deps)
         resume_note = ""
         completed = set(deps.progress.keys())
         if "informal_spec" not in completed:
-            log.error("INFER produced no informal spec — aborting")
-            return "Pipeline aborted: informal spec inference failed."
+            raise _PipelineAborted("Informal spec inference failed.")
 
-    # ── SPEC FORMALISE + SPEC JUDGE + PROVE + PROOF JUDGE ────────────────────
-    #
-    # Two nested loops:
-    #
-    #   Outer (spec+proof cycle, cap=5):
-    #     Inner (spec formalise+judge, cap=10, stagnation-based):
-    #       FORMALISE → SPEC-JUDGE → break on approved/stagnant
-    #     PROVE
-    #     PROOF-JUDGE → break if no misstated theorems or stagnant
-    #               → else feed misstated back into next outer cycle
-    #
-    # Progress keys:
-    #   "verdict"       — latest spec-judge verdict (overwritten each cycle)
-    #   "proof_verdict" — latest proof-judge verdict (overwritten each cycle)
-    #   Clearing either forces the corresponding loop to re-run on resume.
+    return resume_note
 
-    _HARD_CAP  = 10   # max spec-judge rounds per cycle
-    _CYCLE_CAP = 5    # max full spec→proof cycles
 
-    proof_amendments: list[dict] = []   # mis-stated theorems fed back from proof judge
-
-    for cycle in range(_CYCLE_CAP):
-
-        # ── Phase 1: SPEC FORMALISE + SPEC JUDGE ──────────────────────────────
-        # Skip if spec already approved this cycle and no proof amendments arrived.
-        if "verdict" not in completed or proof_amendments:
-            spec_attempt = 0
-
-            while spec_attempt < _HARD_CAP:
-                # Skip FORMALISE only on the very first attempt of the first cycle
-                # when resuming mid-run with a passing build and no amendments.
-                skip_formalise = (
-                    spec_attempt == 0
-                    and cycle == 0
-                    and not proof_amendments
-                    and "formal_spec" in completed
-                    and deps.progress.get("lean_build", {}).get("success")
-                )
-
-                if not skip_formalise:
-                    if proof_amendments:
-                        amendment_lines = "\n".join(
-                            f"  - {t['name']} ({t['kind']}): {t['misstatement_reason']}"
-                            for t in proof_amendments
-                        )
-                        formalise_prompt = (
-                            f"Cycle {cycle + 1}: the proof judge found the following "
-                            f"{len(proof_amendments)} theorem(s) to be likely mis-stated. "
-                            "Amend ONLY these statements — do not change any other component:\n"
-                            f"{amendment_lines}\n\n"
-                            "After editing, call check_lean to confirm the build still passes."
-                        )
-                        proof_amendments = []   # consumed
-                    elif spec_attempt == 0:
-                        formalise_prompt = (
-                            "Proceed to FORMALISE+BUILD. Call formalise_spec to derive "
-                            "Lean 4 theorem stubs (all sorry), write the spec file to lean/, "
-                            "register it in the lakefile, then call check_lean until the "
-                            "build passes (max 3 build attempts)." + resume_note
-                        )
-                    else:
-                        failing_comps = [
-                            c for c in deps.progress.get("verdict", {}).get("components", [])
-                            if not c.get("approved")
-                        ]
-                        if failing_comps:
-                            component_lines = "\n".join(
-                                f"  - {c['name']} ({c['kind']}): "
-                                + ("; ".join(c.get("issues", [])) or "no details")
-                                for c in failing_comps
-                            )
-                            formalise_prompt = (
-                                f"Spec judge did not approve (round {spec_attempt + 1}). "
-                                f"Fix only these {len(failing_comps)} component(s):\n"
-                                f"{component_lines}\n\n"
-                                "Then call check_lean to confirm the build still passes."
-                            )
-                        else:
-                            formalise_prompt = (
-                                f"Spec judge did not approve (round {spec_attempt + 1}). "
-                                "Revise the spec based on the feedback above, "
-                                "then call check_lean to confirm the build passes."
-                            )
-
-                    _, history = await _run_stage(
-                        _formalise, formalise_prompt, deps, history,
-                        f"FORMALISE (cycle {cycle + 1}, round {spec_attempt + 1})",
-                    )
-                    _checkpoint(deps)
-                    resume_note = ""
-
-                # ── SPEC JUDGE ────────────────────────────────────────────────
-                build_ok = deps.progress.get("lean_build", {}).get("success", False)
-                sj_result, history = await _run_stage(
-                    _judge,
-                    f"Proceed to SPEC-JUDGE. Evaluate the theorem statements only "
-                    f"(ignore sorry proofs). "
-                    f"lake build {'passed ✓' if build_ok else 'FAILED ✗ — approved must be false'}.",
-                    deps, history,
-                    f"SPEC-JUDGE (cycle {cycle + 1}, round {spec_attempt + 1})",
-                )
-
-                if not (sj_result and sj_result.output):
-                    log.warning("Spec judge produced no output — stopping spec loop")
-                    break
-
-                sv: JudgeVerdict = sj_result.output
-                deps.progress["verdict"] = sv.model_dump()
-                failing_names = sorted(c.name for c in sv.components if not c.approved)
-                log.info(
-                    "Spec-judge cycle %d round %d: approved=%s score=%d "
-                    "components=%d failing=%s stagnant=%s",
-                    cycle + 1, spec_attempt + 1, sv.approved, sv.score,
-                    len(sv.components), failing_names or "none", sv.stagnant,
-                )
-                _checkpoint(deps)
-
-                if sv.approved or sv.score >= 7:
-                    log.info("Spec verdict accepted")
-                    break
-                if sv.stagnant:
-                    log.warning("Spec judge reports stagnation — exiting spec loop")
-                    break
-                spec_attempt += 1
-            else:
-                log.warning("Spec-judge loop hit hard cap of %d rounds", _HARD_CAP)
-
-            completed = set(deps.progress.keys())
-
-        # ── Phase 2: RECONCILE ───────────────────────────────────────────────
-        # Compare abstract spec (design-doc-only) against impl spec.
-        # Runs once per cycle; results accumulate in reconciliation_history so
-        # critical discrepancies from earlier cycles are never silently dropped.
-        rc_history: list[dict] = deps.progress.setdefault("reconciliation_history", [])
-        this_cycle_reconciled = len(rc_history) > cycle
-
-        if "abstract_formal_spec" in completed and not this_cycle_reconciled:
-            rc_result, history = await _run_stage(
-                _reconcile,
-                f"Proceed to RECONCILE (cycle {cycle + 1}). "
-                "Compare specs/abstract_formal_spec.lean (design intent, no implementation "
-                "knowledge) against lean/*Spec.lean (implementation spec). "
-                "Classify every discrepancy and produce refinement obligations for critical ones.",
-                deps, history,
-                f"RECONCILE (cycle {cycle + 1})",
-            )
-            if rc_result and rc_result.output:
-                rc: ReconciliationReport = rc_result.output
-                rc_entry = {**rc.model_dump(), "cycle": cycle + 1}
-                rc_history.append(rc_entry)
-                tools.write_file(
-                    deps,
-                    f"specs/reconciliation_cycle_{cycle + 1}.json",
-                    rc.model_dump_json(indent=2),
-                )
-                git_ops.commit(
-                    deps.container_id,
-                    f"feat(spec): reconciliation cycle {cycle + 1} — abstract vs impl spec",
-                    glob="specs/",
-                )
-                critical = [d for d in rc.discrepancies if d.severity == "critical"]
-                log.info(
-                    "Reconcile cycle %d: aligned=%d discrepancies=%d critical=%d "
-                    "refinement_obligations=%d",
-                    cycle + 1, len(rc.aligned), len(rc.discrepancies),
-                    len(critical), len(rc.refinement_obligations),
-                )
-                if critical:
-                    log.warning(
-                        "RECONCILE cycle %d found %d CRITICAL discrepancy/ies: %s",
-                        cycle + 1, len(critical),
-                        [d.kind + ": " + d.description[:60] for d in critical],
-                    )
-            _checkpoint(deps)
-            completed = set(deps.progress.keys())
-
-        # ── Phase 3: PROVE ────────────────────────────────────────────────────
-        if "proof_verdict" not in completed:
-            # Collect critical discrepancies across ALL cycles — never lose earlier findings.
-            rc_history = deps.progress.get("reconciliation_history", [])
-            all_critical = [
-                {**d, "_cycle": rc_entry.get("cycle", "?")}
-                for rc_entry in rc_history
-                for d in rc_entry.get("discrepancies", [])
-                if d.get("severity") == "critical"
-            ]
-            # Obligations from the current cycle's report (latest is most relevant).
-            current_rc = rc_history[cycle] if cycle < len(rc_history) else {}
-            rc_obligations = current_rc.get("refinement_obligations", [])
-            prove_note = ""
-            if rc_obligations:
-                prove_note = (
-                    f"\n\nRECONCILIATION NOTE: {len(rc_obligations)} refinement obligation(s) "
-                    f"were generated in cycle {cycle + 1} to bridge the impl spec to the abstract spec. "
-                    f"Their sorry stubs are in specs/reconciliation_cycle_{cycle + 1}.json. "
-                    "You may add them to the spec file and attempt to prove them."
-                )
-            if all_critical:
-                critical_lines = "\n".join(
-                    f"  [cycle {d['_cycle']} {d['kind']}] {d['description'][:100]}"
-                    for d in all_critical
-                )
-                prove_note += (
-                    f"\n\nCRITICAL ({len(all_critical)} across all cycles — do NOT paper over):\n"
-                    f"{critical_lines}\n"
-                    "These indicate a potential bug in the implementation or a mis-stated theorem. "
-                    "Leave the corresponding obligations unproved and note them clearly."
-                )
-            _, history = await _run_stage(
-                _prove,
-                f"Proceed to PROVE (cycle {cycle + 1}). Attempt to fill in proofs "
-                "for all sorry theorems in the spec. Do not alter any statement. "
-                "Commit the result when done." + prove_note,
-                deps, history,
-                f"PROVE (cycle {cycle + 1})",
-            )
-            _checkpoint(deps)
-
-            # ── PROOF JUDGE ───────────────────────────────────────────────────
-            build_ok = deps.progress.get("lean_build", {}).get("success", False)
-            pj_result, history = await _run_stage(
-                _proof_judge,
-                f"Proceed to PROOF-JUDGE (cycle {cycle + 1}). "
-                f"lake build {'passed ✓' if build_ok else 'FAILED ✗'}. "
-                "Classify every theorem as proved / sorry_acceptable / likely_misstated.",
-                deps, history,
-                f"PROOF-JUDGE (cycle {cycle + 1})",
-            )
-
-            if not (pj_result and pj_result.output):
-                log.warning("Proof judge produced no output — stopping")
-                break
-
-            pv: ProofVerdict = pj_result.output
-            deps.progress["proof_verdict"] = pv.model_dump()
-            misstated = [t for t in pv.theorems if t.status == "likely_misstated"]
-            proved    = [t for t in pv.theorems if t.status == "proved"]
-            sorry_ok  = [t for t in pv.theorems if t.status == "sorry_acceptable"]
-            log.info(
-                "Proof-judge cycle %d: proved=%d sorry_acceptable=%d misstated=%s stagnant=%s",
-                cycle + 1, len(proved), len(sorry_ok),
-                [t.name for t in misstated] or "none", pv.stagnant,
-            )
-            _checkpoint(deps)
-
-            if not misstated:
-                log.info("No mis-stated theorems — proof stage complete")
-                break
-            if pv.stagnant:
-                log.warning("Proof judge reports stagnation — accepting current state")
-                break
-
-            # Feed mis-stated theorems back to the formaliser next cycle.
-            proof_amendments = [t.model_dump() for t in misstated]
-            # Clear both verdicts so the next outer cycle re-runs both phases.
-            deps.progress.pop("verdict", None)
-            deps.progress.pop("proof_verdict", None)
-            completed = set(deps.progress.keys())
-            log.info(
-                "Feeding %d mis-stated theorem(s) back to formaliser for cycle %d",
-                len(proof_amendments), cycle + 2,
-            )
-        else:
-            log.info("proof_verdict already in progress — skipping proof stage")
-            break
-
-    else:
-        log.warning("Spec+proof cycle loop hit cap of %d cycles", _CYCLE_CAP)
-
+async def _run_spec_phase(
+    deps: AgentDeps,
+    cycle: int,
+    resume_note: str,
+    proof_amendments: list[dict],
+) -> str:
+    """Run the FORMALISE+SPEC-JUDGE loop for one cycle."""
     completed = set(deps.progress.keys())
 
-    # ── REPORT ────────────────────────────────────────────────────────────────
-    verdict_data     = deps.progress.get("verdict", {})
-    proof_verd_data  = deps.progress.get("proof_verdict", {})
-    proved_count     = sum(1 for t in proof_verd_data.get("theorems", []) if t.get("status") == "proved")
-    sorry_count      = sum(1 for t in proof_verd_data.get("theorems", []) if t.get("status") == "sorry_acceptable")
-    misstated_count  = sum(1 for t in proof_verd_data.get("theorems", []) if t.get("status") == "likely_misstated")
+    if "verdict" in completed and not proof_amendments:
+        return resume_note
 
-    rc_history       = deps.progress.get("reconciliation_history", [])
+    spec_attempt = 0
+    while spec_attempt < _HARD_CAP:
+        skip_formalise = (
+            spec_attempt == 0
+            and cycle == 0
+            and not proof_amendments
+            and "formal_spec" in completed
+            and deps.progress.get("lean_build", {}).get("success")
+        )
+
+        if not skip_formalise:
+            if proof_amendments:
+                amendment_lines = "\n".join(
+                    f"  - {t['name']} ({t['kind']}): {t['misstatement_reason']}"
+                    for t in proof_amendments
+                )
+                formalise_prompt = (
+                    f"Cycle {cycle + 1}: the proof judge found the following "
+                    f"{len(proof_amendments)} theorem(s) to be likely mis-stated. "
+                    "Amend ONLY these statements — do not change any other component:\n"
+                    f"{amendment_lines}\n\n"
+                    "After editing, call check_lean to confirm the build still passes."
+                )
+                proof_amendments = []   # consumed
+            elif spec_attempt == 0:
+                formalise_prompt = (
+                    "Proceed to FORMALISE+BUILD. Call formalise_spec to derive "
+                    "Lean 4 theorem stubs (all sorry), write the spec file to lean/, "
+                    "register it in the lakefile, then call check_lean until the "
+                    "build passes (max 3 build attempts)." + resume_note
+                )
+            else:
+                failing_comps = [
+                    c for c in deps.progress.get("verdict", {}).get("components", [])
+                    if not c.get("approved")
+                ]
+                if failing_comps:
+                    component_lines = "\n".join(
+                        f"  - {c['name']} ({c['kind']}): "
+                        + ("; ".join(c.get("issues", [])) or "no details")
+                        for c in failing_comps
+                    )
+                    formalise_prompt = (
+                        f"Spec judge did not approve (round {spec_attempt + 1}). "
+                        f"Fix only these {len(failing_comps)} component(s):\n"
+                        f"{component_lines}\n\n"
+                        "Then call check_lean to confirm the build still passes."
+                    )
+                else:
+                    formalise_prompt = (
+                        f"Spec judge did not approve (round {spec_attempt + 1}). "
+                        "Revise the spec based on the feedback above, "
+                        "then call check_lean to confirm the build passes."
+                    )
+
+            await _run_stage(
+                _formalise, formalise_prompt, deps,
+                f"FORMALISE (cycle {cycle + 1}, round {spec_attempt + 1})",
+            )
+            _checkpoint(deps)
+            resume_note = ""
+
+        build_ok = deps.progress.get("lean_build", {}).get("success", False)
+        try:
+            sj_result = await _run_stage(
+                _judge,
+                f"Proceed to SPEC-JUDGE. Evaluate the theorem statements only "
+                f"(ignore sorry proofs). "
+                f"lake build {'passed ✓' if build_ok else 'FAILED ✗ — approved must be false'}.",
+                deps,
+                f"SPEC-JUDGE (cycle {cycle + 1}, round {spec_attempt + 1})",
+            )
+        except UnexpectedModelBehavior as e:
+            log.warning("Spec judge failed after retries: %s — stopping spec loop", e)
+            break
+
+        if not (sj_result and sj_result.output):
+            log.warning("Spec judge produced no output — stopping spec loop")
+            break
+
+        sv: JudgeVerdict = sj_result.output
+        deps.progress["verdict"] = sv.model_dump()
+        failing_names = sorted(c.name for c in sv.components if not c.approved)
+        log.info(
+            "Spec-judge cycle %d round %d: approved=%s score=%d "
+            "components=%d failing=%s stagnant=%s",
+            cycle + 1, spec_attempt + 1, sv.approved, sv.score,
+            len(sv.components), failing_names or "none", sv.stagnant,
+        )
+        _checkpoint(deps)
+
+        if sv.approved or sv.score >= 7:
+            log.info("Spec verdict accepted")
+            break
+        if sv.stagnant:
+            log.warning("Spec judge reports stagnation — exiting spec loop")
+            break
+        spec_attempt += 1
+    else:
+        log.warning("Spec-judge loop hit hard cap of %d rounds", _HARD_CAP)
+
+    return resume_note
+
+
+async def _run_reconcile_phase(deps: AgentDeps, cycle: int) -> None:
+    """Run RECONCILE for one cycle (skipped if already done or no abstract spec)."""
+    completed = set(deps.progress.keys())
+    rc_history: list[dict] = deps.progress.setdefault("reconciliation_history", [])
+
+    if "abstract_formal_spec" not in completed or len(rc_history) > cycle:
+        return
+
+    rc_result = await _run_stage(
+        _reconcile,
+        f"Proceed to RECONCILE (cycle {cycle + 1}). "
+        "Compare specs/abstract_formal_spec.lean (design intent, no implementation "
+        "knowledge) against lean/*Spec.lean (implementation spec). "
+        "Classify every discrepancy and produce refinement obligations for critical ones.",
+        deps,
+        f"RECONCILE (cycle {cycle + 1})",
+    )
+    if rc_result and rc_result.output:
+        rc: ReconciliationReport = rc_result.output
+        rc_entry = {**rc.model_dump(), "cycle": cycle + 1}
+        rc_history.append(rc_entry)
+        tools.write_file(
+            deps,
+            f"specs/reconciliation_cycle_{cycle + 1}.json",
+            rc.model_dump_json(indent=2),
+        )
+        git_ops.commit(
+            deps.container_id,
+            f"feat(spec): reconciliation cycle {cycle + 1} — abstract vs impl spec",
+            glob="specs/",
+        )
+        critical = [d for d in rc.discrepancies if d.severity == "critical"]
+        log.info(
+            "Reconcile cycle %d: aligned=%d discrepancies=%d critical=%d "
+            "refinement_obligations=%d",
+            cycle + 1, len(rc.aligned), len(rc.discrepancies),
+            len(critical), len(rc.refinement_obligations),
+        )
+        if critical:
+            log.warning(
+                "RECONCILE cycle %d found %d CRITICAL discrepancy/ies: %s",
+                cycle + 1, len(critical),
+                [d.kind + ": " + d.description[:60] for d in critical],
+            )
+    _checkpoint(deps)
+
+
+async def _run_prove_phase(deps: AgentDeps, cycle: int) -> tuple[bool, list[dict]]:
+    """Run PROVE+PROOF-JUDGE for one cycle.
+
+    Returns (done, proof_amendments). done=True stops the cycle loop;
+    proof_amendments carries mis-stated theorems for the next cycle.
+    """
+    completed = set(deps.progress.keys())
+
+    if "proof_verdict" in completed:
+        log.info("proof_verdict already in progress — skipping proof stage")
+        return True, []
+
+    rc_history = deps.progress.get("reconciliation_history", [])
+    all_critical = [
+        {**d, "_cycle": rc_entry.get("cycle", "?")}
+        for rc_entry in rc_history
+        for d in rc_entry.get("discrepancies", [])
+        if d.get("severity") == "critical"
+    ]
+    current_rc = rc_history[cycle] if cycle < len(rc_history) else {}
+    rc_obligations = current_rc.get("refinement_obligations", [])
+    prove_note = ""
+    if rc_obligations:
+        prove_note = (
+            f"\n\nRECONCILIATION NOTE: {len(rc_obligations)} refinement obligation(s) "
+            f"were generated in cycle {cycle + 1} to bridge the impl spec to the abstract spec. "
+            f"Their sorry stubs are in specs/reconciliation_cycle_{cycle + 1}.json. "
+            "You may add them to the spec file and attempt to prove them."
+        )
+    if all_critical:
+        critical_lines = "\n".join(
+            f"  [cycle {d['_cycle']} {d['kind']}] {d['description'][:100]}"
+            for d in all_critical
+        )
+        prove_note += (
+            f"\n\nCRITICAL ({len(all_critical)} across all cycles — do NOT paper over):\n"
+            f"{critical_lines}\n"
+            "These indicate a potential bug in the implementation or a mis-stated theorem. "
+            "Leave the corresponding obligations unproved and note them clearly."
+        )
+
+    try:
+        await _run_stage(
+            _prove,
+            f"Proceed to PROVE (cycle {cycle + 1}). Attempt to fill in proofs "
+            "for all sorry theorems in the spec. Do not alter any statement. "
+            "Commit the result when done." + prove_note,
+            deps,
+            f"PROVE (cycle {cycle + 1})",
+        )
+    except UnexpectedModelBehavior as e:
+        log.warning("PROVE stage failed after retries: %s — continuing to PROOF-JUDGE with partial proofs", e)
+    _checkpoint(deps)
+
+    build_ok = deps.progress.get("lean_build", {}).get("success", False)
+    try:
+        pj_result = await _run_stage(
+            _proof_judge,
+            f"Proceed to PROOF-JUDGE (cycle {cycle + 1}). "
+            f"lake build {'passed ✓' if build_ok else 'FAILED ✗'}. "
+            "Classify every theorem as proved / sorry_acceptable / likely_misstated.",
+            deps,
+            f"PROOF-JUDGE (cycle {cycle + 1})",
+        )
+    except UnexpectedModelBehavior as e:
+        log.warning("Proof judge failed after retries: %s — stopping", e)
+        return True, []
+
+    if not (pj_result and pj_result.output):
+        log.warning("Proof judge produced no output — stopping")
+        return True, []
+
+    pv: ProofVerdict = pj_result.output
+    deps.progress["proof_verdict"] = pv.model_dump()
+    misstated = [t for t in pv.theorems if t.status == "likely_misstated"]
+    proved    = [t for t in pv.theorems if t.status == "proved"]
+    sorry_ok  = [t for t in pv.theorems if t.status == "sorry_acceptable"]
+    log.info(
+        "Proof-judge cycle %d: proved=%d sorry_acceptable=%d misstated=%s stagnant=%s",
+        cycle + 1, len(proved), len(sorry_ok),
+        [t.name for t in misstated] or "none", pv.stagnant,
+    )
+    _checkpoint(deps)
+
+    if not misstated:
+        log.info("No mis-stated theorems — proof stage complete")
+        return True, []
+    if pv.stagnant:
+        log.warning("Proof judge reports stagnation — accepting current state")
+        return True, []
+
+    proof_amendments = [t.model_dump() for t in misstated]
+    deps.progress.pop("verdict", None)
+    deps.progress.pop("proof_verdict", None)
+    log.info(
+        "Feeding %d mis-stated theorem(s) back to formaliser for cycle %d",
+        len(proof_amendments), cycle + 2,
+    )
+    return False, proof_amendments
+
+
+async def _run_report(deps: AgentDeps, resume_note: str) -> str:
+    """Run the REPORT stage and concatenate section files into VERIFICATION_REPORT.md."""
+    verdict_data    = deps.progress.get("verdict", {})
+    proof_verd_data = deps.progress.get("proof_verdict", {})
+    proved_count    = sum(1 for t in proof_verd_data.get("theorems", []) if t.get("status") == "proved")
+    sorry_count     = sum(1 for t in proof_verd_data.get("theorems", []) if t.get("status") == "sorry_acceptable")
+    misstated_count = sum(1 for t in proof_verd_data.get("theorems", []) if t.get("status") == "likely_misstated")
+    rc_history      = deps.progress.get("reconciliation_history", [])
     rc_critical_ever = sum(
         1 for rc_entry in rc_history
         for d in rc_entry.get("discrepancies", [])
@@ -1090,7 +1062,8 @@ async def run_session(deps: AgentDeps) -> str:
     )
     rc_cycles        = len(rc_history)
     rc_obligations_n = sum(len(rc_entry.get("refinement_obligations", [])) for rc_entry in rc_history)
-    report_result, history = await _run_stage(
+
+    report_result = await _run_stage(
         _report,
         f"Proceed to REPORT. "
         f"Spec-judge: approved={verdict_data.get('approved')}, score={verdict_data.get('score')}. "
@@ -1101,34 +1074,31 @@ async def run_session(deps: AgentDeps) -> str:
         f"Reconciliation reports are at specs/reconciliation_cycle_N.json (N=1..{rc_cycles}). "
         "Read the artefacts (lean/*.lean, specs/*.json) "
         "and produce the full VERIFICATION_REPORT.md content as your response." + resume_note,
-        deps, history, "REPORT",
+        deps, "REPORT",
     )
 
-    # The REPORT agent writes one file per section under report/. Read them in
-    # order and concatenate into VERIFICATION_REPORT.md, then commit.
     _REPORT_SECTIONS = [
         "report/01_overview.md", "report/02_translation.md",
         "report/03_abstract_spec.md", "report/04_implementation_spec.md",
         "report/05_spec_judge.md", "report/06_reconciliation.md",
         "report/07_proofs.md", "report/08_summary.md",
     ]
-    parts = []
-    for sf in _REPORT_SECTIONS:
-        content = tools.read_output_file(deps, sf)
-        if not content.startswith("ERROR:"):
-            parts.append(content)
+    parts = [
+        content for sf in _REPORT_SECTIONS
+        for content in [tools.read_output_file(deps, sf)]
+        if not content.startswith("ERROR:")
+    ]
     if parts:
         report_text = "\n\n".join(parts)
         log.info("Concatenating %d/%d report sections into VERIFICATION_REPORT.md",
                  len(parts), len(_REPORT_SECTIONS))
-        log.info("Concatenating %d report sections into VERIFICATION_REPORT.md", len(parts))
     else:
-        # Fallback: agent returned the report as text output
         report_text = report_result.output if report_result else ""
         if report_text:
             log.warning("No report/ sections found — falling back to agent text output")
         else:
             log.warning("REPORT stage produced no sections and no text output")
+
     if report_text:
         try:
             tools.write_file(deps, "VERIFICATION_REPORT.md", report_text)
@@ -1148,3 +1118,39 @@ async def run_session(deps: AgentDeps) -> str:
         usage["total_tokens"], usage["budget"] or "∞", usage["requests"],
     )
     return report_text or "(no report generated)"
+
+
+# ── main entry point ──────────────────────────────────────────────────────────
+
+async def run_session(deps: AgentDeps) -> str:
+    """Drive the pipeline stage by stage and return a final summary string."""
+    resuming = bool(deps.progress)
+
+    if resuming:
+        log.info("Resuming session — completed stages: %s", sorted(deps.progress.keys()))
+
+    resume_note = (
+        "\n\nSESSION RESUMED — the Docker container is fresh but all previously "
+        "generated artefacts have been restored. Continue from where you left off."
+        if resuming else ""
+    )
+
+    try:
+        resume_note = await _run_doc_stages(deps, resume_note)
+        resume_note = await _run_translate_stages(deps, resume_note)
+
+        proof_amendments: list[dict] = []
+        for cycle in range(_CYCLE_CAP):
+            resume_note = await _run_spec_phase(deps, cycle, resume_note, proof_amendments)
+            await _run_reconcile_phase(deps, cycle)
+            done, proof_amendments = await _run_prove_phase(deps, cycle)
+            if done:
+                break
+        else:
+            log.warning("Spec+proof cycle loop hit cap of %d cycles", _CYCLE_CAP)
+
+        return await _run_report(deps, resume_note)
+
+    except _PipelineAborted as e:
+        log.error("Pipeline aborted: %s", e)
+        return f"Pipeline aborted: {e}"
