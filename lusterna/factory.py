@@ -75,9 +75,63 @@ def _total_tokens() -> int:
     return _input_tokens + _output_tokens
 
 
+# ── manual compaction ─────────────────────────────────────────────────────────
+# When a stage accumulates more than COMPACTION_THRESHOLD messages, summarise
+# the older half via a lightweight subagent and replace those messages with a
+# single summary message — keeping the most recent KEEP_RECENT messages verbatim.
+#
+# The summariser is intentionally NOT wired into _hooks to prevent re-entrancy.
+
+_compacting = False   # re-entrancy guard
+
+
+def _messages_to_text(messages: list) -> str:
+    """Serialise pydantic-ai message objects to a readable text block."""
+    import json
+    try:
+        from pydantic_ai.messages import ModelMessagesTypeAdapter
+        data = ModelMessagesTypeAdapter.dump_python(messages, mode="json")
+        return json.dumps(data, indent=2)
+    except Exception:
+        return str(messages)
+
+
+async def _compact(messages: list) -> list:
+    """Summarise *messages* and return a replacement single-message list."""
+    global _compacting
+    _compacting = True
+    try:
+        text = _messages_to_text(messages)
+        summariser = Agent(
+            config.MODEL,
+            output_type=str,
+            model_settings=config.cache_settings(config.MODEL),
+            instructions=(
+                "Summarise the following agent conversation into a concise technical paragraph. "
+                "Preserve all file paths, Lean theorem names, lake build errors, git commit SHAs, "
+                "and any decisions made. Focus on what was attempted, what succeeded, and what failed."
+            ),
+        )
+        result = await summariser.run(text)
+        record_usage(result.usage)
+        summary = result.output
+    except Exception as exc:
+        log.warning("Compaction summariser failed (%s) — keeping messages as-is", exc)
+        return messages
+    finally:
+        _compacting = False
+
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+    summary_msg = ModelRequest(parts=[UserPromptPart(
+        content=f"[COMPACTED CONTEXT — earlier conversation summary]\n{summary}"
+    )])
+    log.info("Compaction: %d messages → 1 summary message", len(messages))
+    return [summary_msg]
+
+
 # ── shared hooks ──────────────────────────────────────────────────────────────
 # One Hooks instance wired into every agent so the callbacks fire for all
-# model requests: stage agents, subagent specialists, and summariser alike.
+# model requests: stage agents and subagent specialists.
 
 _hooks = Hooks()
 
@@ -90,6 +144,23 @@ async def _before_request(
     # up-to-date history. Subagents have no AgentDeps, so the check is safe.
     if isinstance(ctx.deps, AgentDeps):
         ctx.deps.message_history = list(model_ctx.messages)
+
+    log.debug("model request: messages=%d", len(model_ctx.messages))
+
+    # Manual compaction: when messages exceed the threshold, summarise the older
+    # portion and replace it with a single summary message.
+    n = len(model_ctx.messages)
+    if not _compacting and n >= config.COMPACTION_THRESHOLD:
+        keep = config.COMPACTION_KEEP_RECENT
+        to_compact = list(model_ctx.messages[:-keep])
+        to_keep    = list(model_ctx.messages[-keep:])
+        log.info(
+            "Compaction triggered: %d messages >= threshold %d — compacting %d, keeping %d",
+            n, config.COMPACTION_THRESHOLD, len(to_compact), len(to_keep),
+        )
+        compacted = await _compact(to_compact)
+        import dataclasses
+        model_ctx = dataclasses.replace(model_ctx, messages=compacted + to_keep)
 
     # Budget enforcement: raise before we spend more tokens than allowed.
     if _budget is not None and _total_tokens() >= _budget:

@@ -47,13 +47,19 @@ def read_output_file(ctx: RunContext[AgentDeps], path: str) -> str:
     return tools.read_output_file(ctx.deps, path)
 
 
-def write_file(ctx: RunContext[AgentDeps], path: str, content: str) -> str:
+def write_file(ctx: RunContext[AgentDeps], path: str, content: str = "") -> str:
     """Write content to a file in /workspace/out.
 
     *path* may be relative (e.g. 'VERIFICATION_REPORT.md') or an absolute path
     inside /workspace/out (e.g. '/workspace/out/VERIFICATION_REPORT.md') — both
-    are accepted. Returns an ERROR: string on failure so the model can recover.
+    are accepted. *content* is required — returns an ERROR: string if omitted or
+    on failure so the model can recover.
     """
+    if not content:
+        return (
+            "ERROR: content is required — please retry write_file with the full "
+            "file content included. Do not call write_file with only a path."
+        )
     # Normalise: strip the known container output prefix so the model can use
     # absolute paths without triggering the relative-path guard in tools.write_file.
     _OUT_PREFIX = "/workspace/out/"
@@ -315,7 +321,10 @@ _doc_formalise.tool(formalise_abstract_spec)
 _explore = factory.make_stage_agent("""
 You are the EXPLORE stage of the Lusterna formal verification pipeline.
 
-Understand the Rust codebase before translation begins:
+Understand the Rust codebase before translation begins. The goal is formal
+verification via Aeneas (Rust→Lean 4) and Lean 4 proof assistants — flag anything
+that would prevent or degrade an Aeneas translation.
+
 - List all .rs and .toml files.
 - Read the key source files (lib.rs, main.rs, Cargo.toml).
 - Identify functions to be translated and flag obvious Aeneas incompatibilities
@@ -362,10 +371,14 @@ You are the INFER stage of the Lusterna pipeline.
 Derive an informal specification from the Aeneas-translated Lean output:
 
 1. Read the translated Lean file(s) to understand function signatures and structure.
-2. Call infer_spec — it spawns a subagent that reads the Lean code and the design
+2. If specs/abstract_informal_spec.json exists (listed in the pipeline context), read
+   it — it is the abstract spec derived from the design document alone and describes
+   intended behaviour independent of the implementation. Align the informal spec
+   structure with it where possible (same postconditions, invariants, edge cases).
+3. Call infer_spec — it spawns a subagent that reads the Lean code and the design
    document and returns a structured InformalSpec (preconditions, postconditions,
    invariants, edge cases).
-3. If infer_spec returns an error dict, try once more.
+4. If infer_spec returns an error dict, try once more.
 
 When infer_spec succeeds, your job is done. Do not proceed to formalise_spec.
 """,
@@ -381,22 +394,27 @@ You are the FORMALISE+BUILD stage of the Lusterna pipeline.
 Produce a Lean 4 formal specification that compiles with `lake build`.
 Write theorem stubs only — use `sorry` for all proofs. Do NOT attempt proofs.
 
-1. Call formalise_spec — it spawns a subagent that turns the informal spec into Lean 4
+1. If specs/abstract_formal_spec.lean exists (listed in the pipeline context), read it
+   first — it is the ABSTRACT specification derived from the design document alone and
+   defines the theorems the implementation must satisfy. Use it as a guide for which
+   theorems to include; the implementation spec should cover at least these obligations.
+
+2. Call formalise_spec — it spawns a subagent that turns the informal spec into Lean 4
    theorem stubs and commits specs/formal_spec.lean.
    If it returns an error, retry once; if it fails again, write the spec manually
    with write_file using the informal spec in progress.
 
-2. Write the spec file to lean/<CrateName>Spec.lean (if formalise_spec did not).
+3. Write the spec file to lean/<CrateName>Spec.lean (if formalise_spec did not).
    Make sure lean/lakefile.lean declares it as a lean_lib target.
 
-3. Call check_lean to run `lake build`.
+4. Call check_lean to run `lake build`.
 
-4. If the build fails:
+5. If the build fails:
    - Read stdout/stderr carefully.
    - Fix type errors, missing imports, namespace issues with write_file.
    - Call check_lean again. Repeat up to 3 total build attempts.
 
-5. Commit everything once the build passes (or after all attempts, noting any failures).
+6. Commit everything once the build passes (or after all attempts, noting any failures).
 
 Do NOT attempt proofs — that is the PROVE stage's responsibility.
 """ + docs.FOR_FORMALISE,
@@ -404,7 +422,7 @@ Do NOT attempt proofs — that is the PROVE stage's responsibility.
 _formalise.tool(list_files)
 _formalise.tool(read_file)
 _formalise.tool(read_output_file)
-_formalise.tool(write_file, retries=2)
+_formalise.tool(write_file)
 _formalise.tool(formalise_spec)
 _formalise.tool(check_lean)
 _formalise.tool(git_commit)
@@ -447,7 +465,8 @@ Then produce the overall JudgeVerdict:
 STAGNATION FIELD — read this carefully before setting stagnant:
 
   Set stagnant=true ONLY when ALL THREE of the following hold simultaneously:
-    1. This is not the first judging round (there is a prior verdict in the message history).
+    1. This is not the first judging round (a prior spec-judge verdict is shown in the
+       pipeline context at the top of this prompt under "Spec-judge verdict").
     2. Every component that was failing in the previous round is still failing now,
        AND no previously-failing component has been removed or replaced.
     3. The Lean theorem/definition statements for those failing components are
@@ -532,9 +551,9 @@ _reconcile.tool(read_output_file)
 _prove = factory.make_stage_agent("""
 You are the PROVE stage of the Lusterna pipeline.
 
-The formal spec has been approved by the spec judge. Your job is to attempt to
-prove as many theorems and lemmas as possible using Lean 4 tactics, without
-changing any theorem or definition statements.
+The formal spec has passed the spec-judge threshold (score ≥ 7 or approved). Your
+job is to attempt to prove as many theorems and lemmas as possible using Lean 4
+tactics, without changing any theorem or definition statements.
 
 Workflow:
 1. List and read the spec file(s) (lean/*Spec.lean).
@@ -554,7 +573,7 @@ STRICT RULES:
 )
 _prove.tool(list_files)
 _prove.tool(read_output_file)
-_prove.tool(write_file, retries=2)
+_prove.tool(write_file)
 _prove.tool(check_lean)
 _prove.tool(search_mathlib)
 _prove.tool(git_commit)
@@ -583,7 +602,8 @@ CRITICAL — only use "likely_misstated" when you can state a SPECIFIC logical r
   When in doubt, classify as sorry_acceptable.
 
 STAGNATION — set stagnant=true ONLY when ALL of:
-  1. This is not the first proof-judge round (prior verdict exists in message history).
+  1. This is not the first proof-judge round (a prior proof-judge verdict is shown in
+     the pipeline context at the top of this prompt under "Proof-judge verdict").
   2. The set of likely_misstated theorems is identical to the previous round.
   3. The proof automator made no changes to those theorems' statements or proof attempts.
   Default to stagnant=false.
@@ -615,29 +635,32 @@ Write exactly these files, in this order:
       Aeneas output files, any partial-translation caveats.
 
   report/03_abstract_spec.md
-      The abstract specification derived from the design document alone
-      (specs/abstract_formal_spec.lean). List the key theorems and definitions with
-      a one-line gloss for each. Note any open_questions the doc-inferrer flagged.
+      Read specs/abstract_formal_spec.lean and specs/abstract_informal_spec.json.
+      List the key theorems and definitions with a one-line gloss for each.
+      Note any open_questions the doc-inferrer flagged.
 
   report/04_implementation_spec.md
-      The implementation informal spec (specs/informal_spec.json) and formal spec
-      (lean/*Spec.lean). List every theorem stub with its statement and a one-line
-      explanation. Include the lake build result.
+      Read specs/informal_spec.json and the formal spec file (lean/*Spec.lean —
+      use list_files with extension='lean' to find it). List every theorem stub
+      with its statement and a one-line explanation. Include the lake build result.
 
   report/05_spec_judge.md
       Spec-judge verdict: overall score, approved/not, per-component breakdown.
       Quote the judge's issues and suggestions for any component scoring < 8.
+      (Verdict data is in the pipeline context above.)
 
   report/06_reconciliation.md
-      Reconciliation results for every cycle (specs/reconciliation_cycle_N.json).
-      For each cycle: aligned components, discrepancies (with kind, severity,
-      description), refinement obligations. Flag any discrepancy that appeared in
-      an earlier cycle but vanished later — that is suspicious.
+      Read each specs/reconciliation_cycle_N.json individually (use read_output_file
+      with the exact filename, never the directory). For each cycle: aligned
+      components, discrepancies (with kind, severity, description), refinement
+      obligations. Flag any discrepancy that appeared in an earlier cycle but
+      vanished later — that is suspicious.
 
   report/07_proofs.md
       Proof-judge verdict: per-theorem classification (proved/sorry_acceptable/
       likely_misstated), proof sketch for each proved theorem, suggested strategy
       for each sorry_acceptable, precise reason for any likely_misstated.
+      (Verdict data is in the pipeline context above.)
 
   report/08_summary.md
       Open proof obligations (each sorry with a concrete next step), known gaps
@@ -650,7 +673,7 @@ what was verified, what was found, and what remains open.
 _report.tool(list_files)
 _report.tool(read_file)
 _report.tool(read_output_file)
-_report.tool(write_file, retries=2)
+_report.tool(write_file)
 _report.tool(git_log)
 
 
@@ -678,6 +701,105 @@ _HARD_CAP  = 10   # max spec-judge rounds per cycle
 _CYCLE_CAP = 5    # max full spec→proof cycles
 
 
+def _pipeline_briefing(deps: AgentDeps) -> str:
+    """Return a structured context block describing pipeline state so far.
+
+    Prepended to every stage's runtime prompt so each stage agent understands
+    the overall goal, what has been completed, and key findings from prior stages.
+    """
+    p = deps.progress
+
+    # Completed stages
+    stage_flags = [
+        ("abstract_informal_spec", "DOC-INFER"),
+        ("abstract_formal_spec",   "DOC-FORMALISE"),
+        ("aeneas",                 "EXPLORE+TRANSLATE"),
+        ("informal_spec",          "INFER"),
+        ("formal_spec",            "FORMALISE"),
+        ("verdict",                "SPEC-JUDGE"),
+        ("reconciliation_history", "RECONCILE"),
+        ("proof_verdict",          "PROOF-JUDGE"),
+    ]
+    done = [label for key, label in stage_flags if key in p]
+
+    lines = [
+        "## Pipeline context",
+        f"Goal: formally verify the Rust crate against the design document.",
+        f"Design document (excerpt):\n{deps.design_doc[:600].rstrip()}",
+        "",
+        f"Completed stages: {', '.join(done) if done else 'none yet'}",
+    ]
+
+    # Artefact inventory
+    artefacts = []
+    if "aeneas" in p:
+        lean_path = p["aeneas"].get("lean_path", "")
+        if lean_path:
+            artefacts.append(lean_path)
+    for key, path in [
+        ("abstract_informal_spec", "specs/abstract_informal_spec.json"),
+        ("abstract_formal_spec",   "specs/abstract_formal_spec.lean"),
+        ("informal_spec",          "specs/informal_spec.json"),
+        ("formal_spec",            "specs/formal_spec.lean"),
+    ]:
+        if key in p:
+            artefacts.append(path)
+    rc_history = p.get("reconciliation_history", [])
+    for i, _ in enumerate(rc_history):
+        artefacts.append(f"specs/reconciliation_cycle_{i + 1}.json")
+    if artefacts:
+        lines.append(
+            f"Key artefacts (all in /workspace/out — use read_output_file): "
+            + ", ".join(artefacts)
+        )
+
+    # Spec-judge verdict
+    verdict = p.get("verdict")
+    if verdict:
+        approved = verdict.get("approved", False)
+        score = verdict.get("score", "?")
+        issues = verdict.get("issues", [])
+        comps = verdict.get("components", [])
+        failing = [c["name"] for c in comps if not c.get("approved")]
+        lines.append(
+            f"\nSpec-judge verdict: {'approved ✓' if approved else 'not approved ✗'} "
+            f"score={score}"
+            + (f"  failing={failing}" if failing else "")
+            + (f"  issues={issues[:2]}" if issues else "")
+        )
+
+    # Reconciliation summary (all cycles)
+    if rc_history:
+        lines.append(f"\nReconciliation ({len(rc_history)} cycle(s)):")
+        for rc_entry in rc_history:
+            cyc = rc_entry.get("cycle", "?")
+            discrepancies = rc_entry.get("discrepancies", [])
+            critical = [d for d in discrepancies if d.get("severity") == "critical"]
+            obligations = rc_entry.get("refinement_obligations", [])
+            lines.append(
+                f"  Cycle {cyc}: {len(discrepancies)} discrepancy/ies "
+                f"({len(critical)} critical), {len(obligations)} refinement obligation(s)"
+            )
+            for d in critical:
+                lines.append(f"    [CRITICAL {d.get('kind','')}] {d.get('description','')[:120]}")
+
+    # Proof-judge verdict
+    proof_verdict = p.get("proof_verdict")
+    if proof_verdict:
+        theorems = proof_verdict.get("theorems", [])
+        proved   = [t["name"] for t in theorems if t.get("status") == "proved"]
+        sorry    = [t["name"] for t in theorems if t.get("status") == "sorry_acceptable"]
+        mis      = [t["name"] for t in theorems if t.get("status") == "likely_misstated"]
+        lines.append(
+            f"\nProof-judge verdict: proved={len(proved)} sorry_acceptable={len(sorry)} "
+            f"likely_misstated={len(mis)}"
+            + (f"  misstated={mis}" if mis else "")
+        )
+
+    lines.append("")   # trailing newline before stage-specific prompt
+    return "\n".join(lines) + "\n"
+
+
 async def _run_stage(agent: Agent, prompt: str, deps: AgentDeps, label: str) -> Any:
     """Run one stage agent to completion. Each stage starts with no prior history.
 
@@ -687,7 +809,8 @@ async def _run_stage(agent: Agent, prompt: str, deps: AgentDeps, label: str) -> 
     """
     log.info("─── Stage: %s ───", label)
     deps.message_history = []
-    async with agent.iter(prompt, deps=deps) as run:
+    full_prompt = _pipeline_briefing(deps) + prompt
+    async with agent.iter(full_prompt, deps=deps) as run:
         async for _node in run:
             pass
         result = run.result
@@ -846,8 +969,9 @@ async def _run_spec_phase(
                 else:
                     formalise_prompt = (
                         f"Spec judge did not approve (round {spec_attempt + 1}). "
-                        "Revise the spec based on the feedback above, "
-                        "then call check_lean to confirm the build passes."
+                        "Revise the spec based on the spec-judge verdict in the "
+                        "pipeline context above, then call check_lean to confirm "
+                        "the build passes."
                     )
 
             await _run_stage(
@@ -907,12 +1031,21 @@ async def _run_reconcile_phase(deps: AgentDeps, cycle: int) -> None:
     if "abstract_formal_spec" not in completed or len(rc_history) > cycle:
         return
 
+    prior_note = ""
+    if cycle > 0:
+        prior_note = (
+            f" Prior cycle findings are summarised in the pipeline context above "
+            f"and detailed in specs/reconciliation_cycle_{cycle}.json. "
+            "Note whether previous critical discrepancies have been resolved, "
+            "persisted, or worsened."
+        )
     rc_result = await _run_stage(
         _reconcile,
         f"Proceed to RECONCILE (cycle {cycle + 1}). "
         "Compare specs/abstract_formal_spec.lean (design intent, no implementation "
         "knowledge) against lean/*Spec.lean (implementation spec). "
-        "Classify every discrepancy and produce refinement obligations for critical ones.",
+        "Classify every discrepancy and produce refinement obligations for critical ones."
+        + prior_note,
         deps,
         f"RECONCILE (cycle {cycle + 1})",
     )
@@ -1006,7 +1139,10 @@ async def _run_prove_phase(deps: AgentDeps, cycle: int) -> tuple[bool, list[dict
             _proof_judge,
             f"Proceed to PROOF-JUDGE (cycle {cycle + 1}). "
             f"lake build {'passed ✓' if build_ok else 'FAILED ✗'}. "
-            "Classify every theorem as proved / sorry_acceptable / likely_misstated.",
+            "Classify every theorem as proved / sorry_acceptable / likely_misstated. "
+            "Where the spec-judge flagged components as having issues (see pipeline "
+            "context above under 'Spec-judge verdict'), weigh whether those issues "
+            "make the theorem likely_misstated rather than sorry_acceptable.",
             deps,
             f"PROOF-JUDGE (cycle {cycle + 1})",
         )

@@ -84,7 +84,7 @@ All toolchain invocations go through `docker exec`. Git also runs inside the con
 
 ### Pipeline stages (`agent.py`)
 
-Each stage is a full `Agent` run driven by the Python pipeline loop in `run_session()`. Each stage starts with a fresh context — stages communicate via the filesystem (git-committed artefacts) and `deps.progress`, not via message history. Within each stage, Anthropic's automatic context compaction triggers at 100k input tokens to prevent saturation on long-running stages (PROVE, FORMALISE).
+Each stage is a full `Agent` run driven by the Python pipeline loop in `run_session()`. Each stage starts with a fresh context — stages communicate via the filesystem (git-committed artefacts) and `deps.progress`, not via message history. Within each stage, a manual compaction step triggers when the message count exceeds `LUSTERNA_COMPACTION_THRESHOLD`: the older messages are summarised by a lightweight subagent and replaced with a single summary message, keeping the most recent `LUSTERNA_COMPACTION_KEEP_RECENT` messages verbatim.
 
 | Stage | Key tools | Purpose |
 |---|---|---|
@@ -246,6 +246,8 @@ Print the state JSON for a specific checkpoint (default: latest).
 | `LUSTERNA_IMAGE` | `lusterna-toolchain:latest` | Default Docker image |
 | `LUSTERNA_CONTAINER` | — | Pre-existing container to attach to (skips auto-start) |
 | `LUSTERNA_TOKEN_BUDGET` | (unlimited) | Maximum total tokens across all agents for a session; 0 or unset = unlimited |
+| `LUSTERNA_COMPACTION_THRESHOLD` | `40` | Compact within-stage message history when message count reaches this value |
+| `LUSTERNA_COMPACTION_KEEP_RECENT` | `20` | Number of most-recent messages to keep verbatim after compaction |
 | `LUSTERNA_LOG_LEVEL` | `INFO` | Log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 
 ## Resuming a session

@@ -20,12 +20,10 @@ TOKEN_BUDGET: int | None = int(_budget_env) if _budget_env.strip() not in ("", "
 
 
 def cache_settings(model: str) -> dict:
-    """Return AnthropicModelSettings with prompt caching and auto-compaction for Anthropic models.
+    """Return AnthropicModelSettings with prompt caching enabled when *model* is Anthropic.
 
     Caches system prompt blocks and the last tool-definition block so re-sent
     instructions and tool schemas are billed at the cache-hit rate (~10× cheaper).
-    Also enables automatic context compaction at 100k input tokens to prevent
-    within-stage context saturation on long-running stages (PROVE, FORMALISE).
     Returns an empty dict for non-Anthropic providers, keeping agents vendor-agnostic.
     """
     if not model.startswith("anthropic:"):
@@ -35,14 +33,12 @@ def cache_settings(model: str) -> dict:
         return AnthropicModelSettings(
             anthropic_cache_instructions=True,
             anthropic_cache_tool_definitions=True,
-            anthropic_context_management={
-                "edits": [
-                    {
-                        "type": "compact_20260112",
-                        "trigger": {"type": "input_tokens", "value": 100_000},
-                    }
-                ]
-            },
         )
     except ImportError:
         return {}
+
+
+# Manual compaction: compact when a stage accumulates this many messages,
+# keeping the most recent COMPACTION_KEEP_RECENT messages verbatim.
+COMPACTION_THRESHOLD    = int(os.environ.get("LUSTERNA_COMPACTION_THRESHOLD", "40"))
+COMPACTION_KEEP_RECENT  = int(os.environ.get("LUSTERNA_COMPACTION_KEEP_RECENT", "20"))
