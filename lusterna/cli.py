@@ -8,7 +8,7 @@ from pathlib import Path
 
 import click
 
-from . import checkpoint, config, logging_setup
+from . import checkpoint, config, logging_setup, telemetry
 from .state import AgentDeps
 
 log = logging.getLogger(__name__)
@@ -50,14 +50,14 @@ def run(
     token_budget: int | None,
 ) -> None:
     """Run the verification pipeline on REPO using DESIGN_DOC."""
-    from . import agent as agent_module, factory
+    from . import agent as agent_module
     from . import container as container_mod
 
     # Token budget: CLI flag takes precedence over env var.
     effective_budget = token_budget if token_budget is not None else config.TOKEN_BUDGET
     if effective_budget == 0:
         effective_budget = None
-    factory.set_budget(effective_budget)
+    telemetry.budget = effective_budget
     if effective_budget:
         log.info("Session token budget: %d tokens", effective_budget)
 

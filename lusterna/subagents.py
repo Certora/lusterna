@@ -7,8 +7,9 @@ to the calling stage.  They are invisible to the pipeline loop.
 import logging
 from typing import Literal
 from pydantic import BaseModel
+from pydantic_ai import Agent
 
-from . import config, factory
+from . import config, telemetry
 
 log = logging.getLogger(__name__)
 
@@ -113,10 +114,24 @@ class JudgeVerdict(BaseModel):
                                     # (see judge instructions for the precise criterion)
 
 
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+def _agent(output_type, instructions: str, model: str | None = None) -> Agent:
+    m = model or config.MODEL
+    return Agent(m, output_type=output_type,
+                 model_settings=config.cache_settings(m),
+                 instructions=instructions)
+
+
+async def _run(agent: Agent, prompt: str):
+    result = await agent.run(prompt)
+    telemetry.session.record(result.usage)
+    return result.output
+
+
 # ── subagent definitions ──────────────────────────────────────────────────────
 
-
-_doc_inferrer = factory.make_subagent(
+_doc_inferrer = _agent(
     AbstractInformalSpec,
     "You are a formal methods expert. Given ONLY a design document (no source code), "
     "infer the abstract specification of the system: what it should do according to the "
@@ -127,7 +142,7 @@ _doc_inferrer = factory.make_subagent(
     "or algorithm.",
 )
 
-_doc_formaliser = factory.make_subagent(
+_doc_formaliser = _agent(
     AbstractFormalSpec,
     "You are a Lean 4 expert. Given an abstract informal specification derived from a "
     "design document (no implementation knowledge), produce a formal specification as "
@@ -139,7 +154,7 @@ _doc_formaliser = factory.make_subagent(
     "Leave ambiguities empty when the spec is clear enough to formalise.",
 )
 
-_spec_inferrer = factory.make_subagent(
+_spec_inferrer = _agent(
     InformalSpec,
     "You are a formal methods expert. Given Lean 4 code translated from Rust "
     "and an optional design document, infer the informal specification of the program: "
@@ -147,7 +162,7 @@ _spec_inferrer = factory.make_subagent(
     "Be precise and concise. Do not invent behaviour not evidenced by the code or doc.",
 )
 
-_formal_spec_writer = factory.make_subagent(
+_formal_spec_writer = _agent(
     FormalSpec,
     "You are a Lean 4 expert. Given an informal specification, produce a formal specification "
     "as Lean 4 definitions and theorem stubs (no sorry-free proofs required yet). "
@@ -155,7 +170,7 @@ _formal_spec_writer = factory.make_subagent(
     "explaining what it captures.",
 )
 
-_judge = factory.make_subagent(
+_judge = _agent(
     JudgeVerdict,
     "You are a rigorous reviewer of formal specifications. "
     "Evaluate whether the provided formal Lean 4 specification faithfully captures "
@@ -164,24 +179,25 @@ _judge = factory.make_subagent(
     model=config.JUDGE_MODEL,
 )
 
+_summariser = _agent(
+    str,
+    "Summarise the following agent conversation into a concise technical paragraph. "
+    "Preserve all file paths, Lean theorem names, lake build errors, git commit SHAs, "
+    "and any decisions made. Focus on what was attempted, what succeeded, and what failed.",
+)
+
 
 # ── public async entry points ─────────────────────────────────────────────────
 
-# Abstract spec entry points (design-doc-only, called from DOC-INFER / DOC-FORMALISE stages).
-
 async def infer_abstract_informal_spec(design_doc: str) -> AbstractInformalSpec:
     log.info("Doc-inferrer: deriving abstract informal spec from design document")
-    result = await _doc_inferrer.run(f"### Design document\n{design_doc}")
-    factory.record_usage(result.usage)
-    return result.output
+    return await _run(_doc_inferrer, f"### Design document\n{design_doc}")
 
 
 async def derive_abstract_formal_spec(abstract_informal: AbstractInformalSpec) -> AbstractFormalSpec:
     log.info("Doc-formaliser: deriving abstract formal spec")
-    prompt = f"### Abstract informal specification\n{abstract_informal.model_dump_json(indent=2)}"
-    result = await _doc_formaliser.run(prompt)
-    factory.record_usage(result.usage)
-    return result.output
+    return await _run(_doc_formaliser,
+                      f"### Abstract informal specification\n{abstract_informal.model_dump_json(indent=2)}")
 
 
 async def refine_abstract_informal_spec(
@@ -199,19 +215,13 @@ async def refine_abstract_informal_spec(
         "the design document as evidence. Where the design document cannot resolve an "
         "ambiguity, record it in open_questions."
     )
-    result = await _doc_inferrer.run(prompt)
-    factory.record_usage(result.usage)
-    return result.output
+    return await _run(_doc_inferrer, prompt)
 
-
-# Implementation spec entry points (called from INFER / FORMALISE stages).
 
 async def infer_informal_spec(lean_code: str, design_doc: str) -> InformalSpec:
     log.info("Subagent: inferring informal specification")
-    prompt = f"### Lean 4 code\n{lean_code}\n\n### Design document\n{design_doc}"
-    result = await _spec_inferrer.run(prompt)
-    factory.record_usage(result.usage)
-    return result.output
+    return await _run(_spec_inferrer,
+                      f"### Lean 4 code\n{lean_code}\n\n### Design document\n{design_doc}")
 
 
 async def derive_formal_spec(informal: InformalSpec, lean_code: str) -> FormalSpec:
@@ -220,9 +230,7 @@ async def derive_formal_spec(informal: InformalSpec, lean_code: str) -> FormalSp
         f"### Informal specification\n{informal.model_dump_json(indent=2)}\n\n"
         f"### Lean 4 translated code\n{lean_code}"
     )
-    result = await _formal_spec_writer.run(prompt)
-    factory.record_usage(result.usage)
-    return result.output
+    return await _run(_formal_spec_writer, prompt)
 
 
 async def judge_formal_spec(
@@ -246,8 +254,35 @@ async def judge_formal_spec(
         "IMPORTANT: if lake build failed, approved MUST be false and score MUST be ≤ 4. "
         "A spec that does not type-check cannot be approved."
     )
-    result = await _judge.run(prompt)
-    factory.record_usage(result.usage)
-    return result.output
+    return await _run(_judge, prompt)
 
 
+# ── context compaction ────────────────────────────────────────────────────────
+
+def _messages_to_text(messages: list) -> str:
+    import json
+    try:
+        from pydantic_ai.messages import ModelMessagesTypeAdapter
+        data = ModelMessagesTypeAdapter.dump_python(messages, mode="json")
+        return json.dumps(data, indent=2)
+    except Exception:
+        return str(messages)
+
+
+async def compact(messages: list) -> list:
+    """Summarise *messages* and return a replacement single-message list.
+
+    The summariser has no hooks, so it cannot trigger compaction recursively.
+    Falls back to the original list if summarisation fails.
+    """
+    try:
+        summary = await _run(_summariser, _messages_to_text(messages))
+    except Exception as exc:
+        log.warning("Compaction summariser failed (%s) — keeping messages as-is", exc)
+        return messages
+
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+    log.info("Compaction: %d messages → 1 summary message", len(messages))
+    return [ModelRequest(parts=[UserPromptPart(
+        content=f"[COMPACTED CONTEXT — earlier conversation summary]\n{summary}"
+    )])]

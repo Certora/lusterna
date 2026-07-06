@@ -40,15 +40,16 @@ def read_file(deps: AgentDeps, path: str) -> str:
 
 
 def read_output_file(deps: AgentDeps, path: str) -> str:
-    """Read a generated file from /workspace/out inside the container. Path must be relative.
+    """Read a single generated file from /workspace/out. Path must be a file, not a directory.
 
-    Returns the file content, or an error string prefixed with 'ERROR:' so the
-    agent can detect and recover from missing files without crashing the pipeline.
+    To discover available files use list_files first, then call read_output_file on each
+    specific file path (e.g. 'specs/informal_spec.json', not 'specs/').
+    Returns the file content, or an ERROR: string on failure.
     """
     _assert_relative(path)
     code, out, err = exec_in(deps.container_id, ["cat", _out(path)], workdir=OUT_IN)
     if code != 0:
-        msg = f"ERROR: cannot read output file '{path}': {err.strip()}"
+        msg = f"ERROR: cannot read output file '{path}': {err.strip()} — if this is a directory, call list_files first"
         log.warning(msg)
         return msg
     log.info("read_output_file: %s (%d chars)", path, len(out))

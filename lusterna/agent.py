@@ -11,7 +11,7 @@ from typing import Any
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 
-from . import checkpoint, docs, factory, git_ops, subagents, tools
+from . import checkpoint, docs, factory, git_ops, subagents, telemetry, tools
 from .subagents import (
     AbstractInformalSpec, AbstractFormalSpec,
     InformalSpec, FormalSpec, JudgeVerdict, ProofVerdict, ReconciliationReport,
@@ -808,22 +808,16 @@ async def _run_stage(agent: Agent, prompt: str, deps: AgentDeps, label: str) -> 
     Re-raises UnexpectedModelBehavior; judge stages catch it locally.
     """
     log.info("─── Stage: %s ───", label)
+    telemetry.stage.reset()
     deps.message_history = []
     full_prompt = _pipeline_briefing(deps) + prompt
     async with agent.iter(full_prompt, deps=deps) as run:
         async for _node in run:
             pass
         result = run.result
-    factory.record_usage(result.usage)
-    u = factory.get_usage()
     log.info(
-        "Stage %s complete — stage usage: in=%d out=%d cache_read=%d | "
-        "session total=%d/%s",
-        label,
-        getattr(result.usage, "input_tokens", 0) or 0,
-        getattr(result.usage, "output_tokens", 0) or 0,
-        getattr(result.usage, "cache_read_tokens", 0) or 0,
-        u["total_tokens"], u["budget"] or "∞",
+        "Stage %s complete — session total=%d/%s",
+        label, telemetry.session.total(), telemetry.budget or "∞",
     )
     return result
 
@@ -1245,14 +1239,6 @@ async def _run_report(deps: AgentDeps, resume_note: str) -> str:
             log.warning("Could not write report: %s", e)
 
     _checkpoint(deps)
-    usage = factory.get_usage()
-    log.info(
-        "Pipeline complete — session usage: in=%d out=%d "
-        "cache_read=%d cache_write=%d total=%d/%s requests=%d",
-        usage["input_tokens"], usage["output_tokens"],
-        usage["cache_read_tokens"], usage["cache_write_tokens"],
-        usage["total_tokens"], usage["budget"] or "∞", usage["requests"],
-    )
     return report_text or "(no report generated)"
 
 
@@ -1285,7 +1271,15 @@ async def run_session(deps: AgentDeps) -> str:
         else:
             log.warning("Spec+proof cycle loop hit cap of %d cycles", _CYCLE_CAP)
 
-        return await _run_report(deps, resume_note)
+        result = await _run_report(deps, resume_note)
+        u = telemetry.session.as_dict()
+        log.info(
+            "Pipeline complete — session usage: in=%d out=%d cache_read=%d cache_write=%d total=%d/%s",
+            u["input_tokens"], u["output_tokens"],
+            u["cache_read_tokens"], u["cache_write_tokens"],
+            u["total_tokens"], telemetry.budget or "∞",
+        )
+        return result
 
     except _PipelineAborted as e:
         log.error("Pipeline aborted: %s", e)

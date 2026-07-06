@@ -38,7 +38,5 @@ def cache_settings(model: str) -> dict:
         return {}
 
 
-# Manual compaction: compact when a stage accumulates this many messages,
-# keeping the most recent COMPACTION_KEEP_RECENT messages verbatim.
-COMPACTION_THRESHOLD    = int(os.environ.get("LUSTERNA_COMPACTION_THRESHOLD", "40"))
-COMPACTION_KEEP_RECENT  = int(os.environ.get("LUSTERNA_COMPACTION_KEEP_RECENT", "20"))
+# Manual compaction: compact when a stage accumulates this many input tokens.
+COMPACTION_THRESHOLD = int(os.environ.get("LUSTERNA_COMPACTION_THRESHOLD", "500000"))
