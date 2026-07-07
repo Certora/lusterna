@@ -36,6 +36,7 @@ def cache_settings(model: str) -> dict:
     try:
         from pydantic_ai.models.anthropic import AnthropicModelSettings
         return AnthropicModelSettings(
+            anthropic_cache=True,
             anthropic_cache_instructions=True,
             anthropic_cache_tool_definitions=True,
             max_tokens=MAX_TOKENS,
@@ -44,5 +45,19 @@ def cache_settings(model: str) -> dict:
         return {}
 
 
+# Maximum model requests per stage (pydantic-ai UsageLimits.request_limit).
+# 0 or unset means unlimited.
+_req_limit_env = os.environ.get("LUSTERNA_REQUEST_LIMIT", "0")
+REQUEST_LIMIT: int | None = int(_req_limit_env) if _req_limit_env.strip() not in ("", "0") else None
+
+# PROVE interleaving: requests per PROVE slice before PROOF-JUDGE runs.
+# 0 or unset disables slicing (one monolithic PROVE run, old behaviour).
+_prove_slice_env = os.environ.get("LUSTERNA_PROVE_SLICE", "20")
+PROVE_SLICE: int | None = int(_prove_slice_env) if _prove_slice_env.strip() not in ("", "0") else None
+
+# Maximum PROVE→PROOF-JUDGE rounds per cycle before giving up.
+MAX_PROVE_ROUNDS: int = int(os.environ.get("LUSTERNA_MAX_PROVE_ROUNDS", "6"))
+
 # Manual compaction: compact when a stage accumulates this many input tokens.
 COMPACTION_THRESHOLD = int(os.environ.get("LUSTERNA_COMPACTION_THRESHOLD", "500000"))
+COMPACTION_KEEP = int(os.environ.get("LUSTERNA_COMPACTION_KEEP", "4"))

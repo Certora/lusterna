@@ -1,6 +1,15 @@
-"""Agent tools — exec commands and manage files inside the container."""
+"""Agent tools — registered directly on pydantic-ai agents.
+
+Public functions take RunContext[AgentDeps] and can be passed to agent.tool() without
+any wrapper.  Private helpers (_norm_out, _guard_out, _tee, _write_lakefile) take plain
+values and are called internally.  run_aeneas and check_lean are implementation helpers
+called from agent.py wrappers that carry additional pipeline logic (progress, checkpoint).
+"""
 import logging
+import subprocess
 from pathlib import Path
+
+from pydantic_ai import RunContext
 
 from . import git_ops
 from .container import REPO_IN, OUT_IN, exec_in
@@ -8,125 +17,109 @@ from .state import AgentDeps
 
 log = logging.getLogger(__name__)
 
-
-def _repo(rel: str) -> str:
-    return f"{REPO_IN}/{rel}"
-
-
-def _out(rel: str) -> str:
-    return f"{OUT_IN}/{rel}"
+_OUT_PREFIX = f"{OUT_IN}/"
+_WRITE_PROTECTED = {"lean-toolchain", "lakefile.lean", "lake-manifest.json", "Cargo.toml", "Cargo.lock"}
 
 
-def _assert_relative(path: str) -> None:
-    """Reject absolute paths — tools only accept repo-relative or out-relative paths."""
-    if path.startswith("/"):
-        raise ValueError(f"Absolute paths are not accepted; use a repo-relative path (got: {path!r})")
+def _norm_out(path: str) -> str:
+    """Strip the /workspace/out/ prefix so callers may pass either form."""
+    if path == OUT_IN:
+        return "."
+    return path.removeprefix(_OUT_PREFIX)
 
 
-def read_file(deps: AgentDeps, path: str) -> str:
-    """Read a source file from the repo inside the container. Path must be relative.
+def _guard_out(path: str) -> str | None:
+    """Return an ERROR: string if *path* is write-protected, else None."""
+    parts = Path(path).parts
+    if ".lake" in parts or ".git" in parts:
+        return f"ERROR: writing into .lake/ or .git/ is not allowed (got: {path!r})"
+    if Path(path).name in _WRITE_PROTECTED:
+        return f"ERROR: {Path(path).name!r} is a protected infrastructure file"
+    return None
 
-    Returns the file content, or an error string prefixed with 'ERROR:' so the
-    agent can detect and recover from missing files without crashing the pipeline.
-    """
-    _assert_relative(path)
-    code, out, err = exec_in(deps.container_id, ["cat", _repo(path)])
+
+def _tee(container_id: str, dest: str, content: str, append: bool = False) -> str | None:
+    """Write *content* to *dest* via tee; return an error string on failure."""
+    cmd = ["docker", "exec", "--interactive", "--workdir", OUT_IN, container_id, "tee"]
+    if append:
+        cmd.append("--append")
+    cmd.append(dest)
+    r = subprocess.run(cmd, input=content, capture_output=True, text=True)
+    return None if r.returncode == 0 else r.stderr.strip()
+
+
+def list_files(ctx: RunContext[AgentDeps], extension: str = "rs") -> list[str]:
+    """List files with the given extension ('rs', 'lean', 'toml', …).
+    Lean files are searched in /workspace/out; all others in the Rust repo."""
+    search_root = OUT_IN if extension == "lean" else REPO_IN
+    _, out, _ = exec_in(ctx.deps.container_id,
+                        ["find", search_root, "-type", "f", "-name", f"*.{extension}"])
+    files = [line.removeprefix(search_root + "/") for line in out.splitlines() if line.strip()]
+    log.info("list_files(*.%s): %d results", extension, len(files))
+    return files
+
+
+def read_file(ctx: RunContext[AgentDeps], path: str) -> str:
+    """Read a Rust source file (repo-relative path). Returns ERROR: if the file is missing."""
+    code, out, err = exec_in(ctx.deps.container_id, ["cat", f"{REPO_IN}/{path}"])
     if code != 0:
-        msg = f"ERROR: cannot read repo file '{path}': {err.strip()}"
-        log.warning(msg)
-        return msg
+        return f"ERROR: cannot read '{path}': {err.strip()}"
     log.info("read_file: %s (%d chars)", path, len(out))
     return out
 
 
-def read_output_file(deps: AgentDeps, path: str) -> str:
-    """Read a single generated file from /workspace/out. Path must be a file, not a directory.
-
-    To discover available files use list_files first, then call read_output_file on each
-    specific file path (e.g. 'specs/informal_spec.json', not 'specs/').
-    Returns the file content, or an ERROR: string on failure.
-    """
-    _assert_relative(path)
-    code, out, err = exec_in(deps.container_id, ["cat", _out(path)], workdir=OUT_IN)
+def read_out(deps: AgentDeps, path: str) -> str:
+    """Read a generated file from /workspace/out. For direct orchestration calls."""
+    path = _norm_out(path)
+    code, out, err = exec_in(deps.container_id, ["cat", f"{OUT_IN}/{path}"], workdir=OUT_IN)
     if code != 0:
-        msg = f"ERROR: cannot read output file '{path}': {err.strip()} — if this is a directory, call list_files first"
-        log.warning(msg)
-        return msg
-    log.info("read_output_file: %s (%d chars)", path, len(out))
+        return f"ERROR: cannot read '{path}': {err.strip()}"
+    log.info("read_out: %s (%d chars)", path, len(out))
     return out
 
 
-_WRITE_PROTECTED = {
-    "lean-toolchain", "lakefile.lean", "lake-manifest.json",
-    "Cargo.toml", "Cargo.lock",
-}
+def read_output_file(ctx: RunContext[AgentDeps], path: str) -> str:
+    """Read a generated file from /workspace/out (relative or absolute path).
+    Use list_files('lean') to discover available files. Returns ERROR: on failure."""
+    return read_out(ctx.deps, path)
 
-def write_file(deps: AgentDeps, path: str, content: str) -> str:
-    """Write *content* to *path* inside /workspace/out."""
-    _assert_relative(path)
-    parts = Path(path).parts
-    if ".lake" in parts or ".git" in parts:
-        raise ValueError(f"Writing into .lake/ or .git/ is not allowed (got: {path!r})")
-    if Path(path).name in _WRITE_PROTECTED:
-        raise ValueError(
-            f"{Path(path).name!r} is a protected infrastructure file and must not be modified. "
-            "Only write to spec files (lean/*Spec.lean)."
-        )
-    full = _out(path)
-    # ensure parent directory exists
-    parent = str(Path(full).parent)
-    exec_in(deps.container_id, ["mkdir", "-p", parent])
-    # write via tee (no shell injection: content goes through stdin)
-    import subprocess
-    cmd = ["docker", "exec", "--interactive", "--workdir", OUT_IN,
-           deps.container_id, "tee", full]
-    r = subprocess.run(cmd, input=content, capture_output=True, text=True)
-    if r.returncode != 0:
-        raise IOError(f"write_file failed for {path}: {r.stderr.strip()}")
-    log.info("write_file: %s (%d chars)", path, len(content))
+
+def write_out(deps: AgentDeps, path: str, content: str) -> str:
+    """Write *content* to *path* in /workspace/out. For direct orchestration calls.
+
+    Unlike write_file, this does not guard against empty content — the caller is
+    responsible. Returns an ERROR: string on failure.
+    """
+    path = _norm_out(path)
+    if err := _guard_out(path):
+        return err
+    full = f"{OUT_IN}/{path}"
+    exec_in(deps.container_id, ["mkdir", "-p", str(Path(full).parent)])
+    if fail := _tee(deps.container_id, full, content):
+        return f"ERROR: write_out failed for '{path}': {fail}"
+    log.info("write_out: %s (%d chars)", path, len(content))
     return f"Written {len(content)} chars to {path}"
 
 
-def append_file(deps: AgentDeps, path: str, content: str) -> str:
-    """Append *content* to *path* inside /workspace/out (creates the file if absent)."""
-    _assert_relative(path)
-    parts = Path(path).parts
-    if ".lake" in parts or ".git" in parts:
-        raise ValueError(f"Writing into .lake/ or .git/ is not allowed (got: {path!r})")
-    if Path(path).name in _WRITE_PROTECTED:
-        raise ValueError(f"{Path(path).name!r} is write-protected.")
-    full = _out(path)
-    parent = str(Path(full).parent)
-    exec_in(deps.container_id, ["mkdir", "-p", parent])
-    import subprocess
-    cmd = ["docker", "exec", "--interactive", "--workdir", OUT_IN,
-           deps.container_id, "tee", "--append", full]
-    r = subprocess.run(cmd, input=content, capture_output=True, text=True)
-    if r.returncode != 0:
-        raise IOError(f"append_file failed for {path}: {r.stderr.strip()}")
+def write_file(ctx: RunContext[AgentDeps], path: str, content: str = "") -> str:
+    """Write *content* to *path* in /workspace/out (relative or absolute).
+    Returns ERROR: if content is empty, the path is protected, or the write fails."""
+    if not content:
+        return "ERROR: content is required — retry write_file with the full file content"
+    return write_out(ctx.deps, path, content)
+
+
+def append_file(ctx: RunContext[AgentDeps], path: str, content: str) -> str:
+    """Append *content* to *path* in /workspace/out (creates it if absent). Returns ERROR: on failure."""
+    path = _norm_out(path)
+    if err := _guard_out(path):
+        return err
+    full = f"{OUT_IN}/{path}"
+    exec_in(ctx.deps.container_id, ["mkdir", "-p", str(Path(full).parent)])
+    if fail := _tee(ctx.deps.container_id, full, content, append=True):
+        return f"ERROR: append_file failed for '{path}': {fail}"
     log.info("append_file: %s (+%d chars)", path, len(content))
     return f"Appended {len(content)} chars to {path}"
-
-
-def list_files(deps: AgentDeps, extension: str = "rs") -> list[str]:
-    """List files in the repo or output directory with the given extension.
-
-    Lean files (extension='lean') are searched in /workspace/out since that is
-    where Aeneas writes its output.  All other extensions are searched in the
-    Rust repository at /workspace/repo.
-    """
-    search_root = OUT_IN if extension == "lean" else REPO_IN
-    code, out, err = exec_in(
-        deps.container_id,
-        ["find", search_root, "-type", "f", "-name", f"*.{extension}"],
-    )
-    files = [
-        line.removeprefix(search_root + "/")
-        for line in out.splitlines()
-        if line.strip()
-    ]
-    log.info("list_files(*.%s) in %s: %d results", extension, search_root, len(files))
-    return files
 
 
 def run_aeneas(deps: AgentDeps, entry_file: str) -> dict:
@@ -148,7 +141,7 @@ def run_aeneas(deps: AgentDeps, entry_file: str) -> dict:
     """
     from . import config
 
-    lean_out_dir = _out("lean")
+    lean_out_dir = f"{OUT_IN}/lean"
     exec_in(deps.container_id, ["mkdir", "-p", lean_out_dir])
 
     # ── Step 1: Charon ────────────────────────────────────────────────────────
@@ -271,7 +264,6 @@ def _write_lakefile(deps: AgentDeps, lean_out_dir: str, llbc_path: str) -> None:
         f'package «{crate}» where\n\n'
         f'lean_lib «{lib_name}» where\n'
     )
-    import subprocess
 
     def _exec(cmd_args: list[str]) -> None:
         subprocess.run(["docker", "exec", deps.container_id] + cmd_args,
@@ -298,93 +290,116 @@ def _write_lakefile(deps: AgentDeps, lean_out_dir: str, llbc_path: str) -> None:
     log.info("Generated lakefile.lean + package symlinks for crate '%s'", crate)
 
 
-def write_rust_file(deps: AgentDeps, path: str, content: str) -> str:
-    """Overwrite a Rust source file inside the container repo.
-
-    Use this to remove or simplify constructs that Aeneas cannot translate
-    (e.g. strip a main() that uses vec!, replace unsupported stdlib calls with
-    stubs) before retrying run_aeneas.  Path must be repo-relative.
-    """
-    _assert_relative(path)
-    full = _repo(path)
-    parent = str(Path(full).parent)
-    exec_in(deps.container_id, ["mkdir", "-p", parent])
-    import subprocess
-    cmd = ["docker", "exec", "--interactive", "--workdir", REPO_IN,
-           deps.container_id, "tee", full]
+def write_rust_file(ctx: RunContext[AgentDeps], path: str, content: str) -> str:
+    """Overwrite a Rust source file (repo-relative). Use before retrying run_aeneas. Returns ERROR: on failure."""
+    full = f"{REPO_IN}/{path}"
+    exec_in(ctx.deps.container_id, ["mkdir", "-p", str(Path(full).parent)])
+    cmd = ["docker", "exec", "--interactive", "--workdir", REPO_IN, ctx.deps.container_id, "tee", full]
     r = subprocess.run(cmd, input=content, capture_output=True, text=True)
     if r.returncode != 0:
-        raise IOError(f"write_rust_file failed for {path}: {r.stderr.strip()}")
+        return f"ERROR: write_rust_file failed for '{path}': {r.stderr.strip()}"
     log.info("write_rust_file: %s (%d chars)", path, len(content))
     return f"Written {len(content)} chars to {path}"
 
 
-def check_lean(deps: AgentDeps, lean_file: str) -> dict:
-    """Run `lake build` inside the Lean project directory produced by Aeneas.
-
-    *lean_file* is ignored for the build invocation — lake discovers targets
-    from its lakefile. The file is only used to determine the project root
-    (the directory that contains the lakefile produced by Aeneas).
-    """
-    from . import config
-
-    lean_out_dir = _out("lean")
-    # lake build with no arguments builds all targets declared in the lakefile.
-    # Timeout is raised to 20 min; Lean+Mathlib compilation can be slow even
-    # with a pre-populated cache.
-    code, out, err = exec_in(
-        deps.container_id,
-        [config.LAKE_BIN, "build"],
-        workdir=lean_out_dir,
-        timeout=1200,
-    )
+def search_output_file(ctx: RunContext[AgentDeps], path: str, pattern: str) -> str:
+    """Grep *pattern* in an output file; returns '<lineno>:<line>' per match (or '(no matches)').
+    *path* may be relative or absolute. Use to locate a theorem before calling read_output_lines."""
+    path = _norm_out(path)
+    code, out, err = exec_in(ctx.deps.container_id, ["grep", "-n", pattern, f"{OUT_IN}/{path}"])
+    if code == 1:
+        return "(no matches)"
     if code != 0:
-        log.warning("lake build failed (exit %d): %s", code, err[:200])
-    else:
-        log.info("check_lean: lake build succeeded")
-    return {"success": code == 0, "stdout": out, "stderr": err}
+        return f"ERROR: grep failed for '{path}': {err.strip()}"
+    log.info("search_output_file: %s %r → %d lines", path, pattern, out.count("\n"))
+    return out
 
+
+def read_output_lines(ctx: RunContext[AgentDeps], path: str, start: int, end: int) -> str:
+    """Read lines *start*–*end* (1-indexed, inclusive) from an output file as '<lineno>: <content>'.
+    *path* may be relative or absolute. Use search_output_file first to find the right line numbers."""
+    path = _norm_out(path)
+    code, out, err = exec_in(ctx.deps.container_id,
+                             ["sed", "-n", f"{start},{end}p", f"{OUT_IN}/{path}"])
+    if code != 0:
+        return f"ERROR: read_output_lines failed for '{path}': {err.strip()}"
+    lines = out.splitlines()
+    log.info("read_output_lines: %s [%d-%d] → %d lines", path, start, end, len(lines))
+    return "\n".join(f"{start + i}: {line}" for i, line in enumerate(lines))
+
+
+def patch_output_lines(ctx: RunContext[AgentDeps], path: str, start: int, end: int, content: str) -> str:
+    """Replace lines *start*–*end* (1-indexed, inclusive) with *content*; all other lines are preserved.
+    *path* may be relative or absolute. Use to update a single theorem proof. Returns ERROR: on failure."""
+    path = _norm_out(path)
+    if err := _guard_out(path):
+        return err
+    full = f"{OUT_IN}/{path}"
+    code, raw, err = exec_in(ctx.deps.container_id, ["cat", full])
+    if code != 0:
+        return f"ERROR: cannot read '{path}' for patching: {err.strip()}"
+    lines = raw.splitlines(keepends=True)
+    if start < 1 or end > len(lines) or start > end:
+        return f"ERROR: range [{start},{end}] out of bounds for '{path}' ({len(lines)} lines)"
+    replacement = content if content.endswith("\n") else content + "\n"
+    new_content = "".join(lines[:start - 1] + [replacement] + lines[end:])
+    if fail := _tee(ctx.deps.container_id, full, new_content):
+        return f"ERROR: patch_output_lines failed for '{path}': {fail}"
+    log.info("patch_output_lines: %s [%d-%d]", path, start, end)
+    return f"Patched lines {start}–{end} of {path}"
 
 
 def search_mathlib(query: str, max_results: int = 8) -> list[dict]:
-    """Search Mathlib4 for lemmas by name fragment or type signature via Loogle.
-
-    *query* can be a name fragment (e.g. "Nat.fib_mono"), a type signature
-    fragment (e.g. "Monotone Nat.fib"), or a mix.  Returns up to *max_results*
-    hits, each with 'name', 'type', 'module', and 'doc' fields.
-
-    This call goes to loogle.lean-lang.org — it runs in the agent process,
-    outside the air-gapped Docker container.
-    """
-    import urllib.request
-    import urllib.parse
+    """Search Mathlib4 by name fragment or type signature via Loogle (e.g. 'Nat.fib_mono').
+    Returns up to *max_results* hits with name, type, module, doc fields."""
     import json as _json
-
+    import urllib.parse
+    import urllib.request
     url = "https://loogle.lean-lang.org/json?" + urllib.parse.urlencode({"q": query})
-    req = urllib.request.Request(url, headers={"User-Agent": "lusterna/1.0"})
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(
+            urllib.request.Request(url, headers={"User-Agent": "lusterna/1.0"}), timeout=10
+        ) as resp:
             data = _json.loads(resp.read())
     except Exception as exc:
-        log.warning("search_mathlib failed for %r: %s", query, exc)
+        log.warning("search_mathlib(%r): %s", query, exc)
         return [{"error": str(exc)}]
-
     hits = data.get("hits", [])[:max_results]
     log.info("search_mathlib(%r): %d/%s hits", query, len(hits), data.get("count", "?"))
-    return [
-        {
-            "name":   h.get("name", ""),
-            "type":   h.get("type", ""),
-            "module": h.get("module", ""),
-            "doc":    (h.get("doc") or "")[:300],
-        }
-        for h in hits
-    ]
+    return [{"name": h.get("name", ""), "type": h.get("type", ""),
+             "module": h.get("module", ""), "doc": (h.get("doc") or "")[:300]}
+            for h in hits]
 
 
-def git_log(deps: AgentDeps, n: int = 10) -> str:
-    return git_ops.log_oneline(deps.container_id, n=n)
+def git_log(ctx: RunContext[AgentDeps], n: int = 10) -> str:
+    """Show the last *n* commits in /workspace/out."""
+    return git_ops.log_oneline(ctx.deps.container_id, n=n)
 
 
-def git_commit(deps: AgentDeps, message: str) -> str:
-    return git_ops.commit(deps.container_id, message)
+def git_commit(ctx: RunContext[AgentDeps], message: str) -> str:
+    """Stage all changes in /workspace/out and create a git commit."""
+    return git_ops.commit(ctx.deps.container_id, message)
+
+
+_BUILD_TAIL = 200  # lines of stderr to keep on failure — errors appear at the end
+
+
+def check_lean(deps: AgentDeps, lean_file: str) -> dict:  # noqa: ARG001
+    """Run `lake build` on the Lean project.
+
+    Returns {"success": bool, "stderr": str}.  stdout is discarded (it carries no
+    actionable info).  On failure, stderr is trimmed to the last 200 lines so only
+    the relevant error messages reach the model.  On success, stderr is empty.
+    """
+    from . import config
+    lean_out_dir = f"{OUT_IN}/lean"
+    code, out, err = exec_in(deps.container_id, [config.LAKE_BIN, "build"],
+                             workdir=lean_out_dir, timeout=1200)
+    if code != 0:
+        log.warning("lake build failed (exit %d)", code)
+        log.debug("lake build stderr:\n%s", err)
+        lines = err.splitlines()
+        trimmed = "\n".join(lines[-_BUILD_TAIL:]) if len(lines) > _BUILD_TAIL else err
+        return {"success": False, "stderr": trimmed}
+    log.info("check_lean: lake build succeeded")
+    return {"success": True, "stderr": ""}

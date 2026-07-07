@@ -15,6 +15,7 @@ from . import checkpoint, docs, factory, git_ops, subagents, telemetry, tools
 from .subagents import (
     AbstractInformalSpec, AbstractFormalSpec,
     InformalSpec, FormalSpec, JudgeVerdict, ProofVerdict, ReconciliationReport,
+    TheoremEstimate,
 )
 from .state import AgentDeps
 from . import config
@@ -22,122 +23,15 @@ from . import config
 log = logging.getLogger(__name__)
 
 
-# ── shared tool functions ─────────────────────────────────────────────────────
-# Plain functions — registered on whichever stage agents need them via
-# agent.tool(fn).  Actual logic stays in tools.py / git_ops.py.
-
-def list_files(ctx: RunContext[AgentDeps], extension: str = "rs") -> list[str]:
-    """List files in the repo with the given extension (e.g. 'rs', 'toml', 'lean')."""
-    return tools.list_files(ctx.deps, extension)
-
-
-def read_file(ctx: RunContext[AgentDeps], path: str) -> str:
-    """Read a source file from the Rust repository (repo-relative path)."""
-    return tools.read_file(ctx.deps, path)
-
-
-def read_output_file(ctx: RunContext[AgentDeps], path: str) -> str:
-    """Read a generated file from /workspace/out.
-
-    *path* may be relative or an absolute path inside /workspace/out.
-    """
-    _OUT_PREFIX = "/workspace/out/"
-    if path.startswith(_OUT_PREFIX):
-        path = path[len(_OUT_PREFIX):]
-    return tools.read_output_file(ctx.deps, path)
-
-
-def write_file(ctx: RunContext[AgentDeps], path: str, content: str = "") -> str:
-    """Write content to a file in /workspace/out.
-
-    *path* may be relative (e.g. 'FOO.md') or an absolute path
-    inside /workspace/out (e.g. '/workspace/out/FOO.md') — both
-    are accepted. *content* is required — returns an ERROR: string if omitted or
-    on failure so the model can recover.
-    """
-    if not content:
-        return (
-            "ERROR: content is required — please retry write_file with the full "
-            "file content included. Do not call write_file with only a path."
-        )
-    # Normalise: strip the known container output prefix so the model can use
-    # absolute paths without triggering the relative-path guard in tools.write_file.
-    _OUT_PREFIX = "/workspace/out/"
-    if path.startswith(_OUT_PREFIX):
-        path = path[len(_OUT_PREFIX):]
-    elif path == "/workspace/out":
-        path = "."
-    try:
-        return tools.write_file(ctx.deps, path, content)
-    except (ValueError, IOError) as e:
-        return f"ERROR: {e}"
-
-
-def append_file(ctx: RunContext[AgentDeps], path: str, content: str) -> str:
-    """Append content to a file in /workspace/out (creates the file if absent).
-
-    Use this to write large files in sections without hitting output token limits.
-    Each call appends *content* immediately after whatever was previously written.
-    Returns an ERROR: string on failure so the model can recover.
-    """
-    _OUT_PREFIX = "/workspace/out/"
-    if path.startswith(_OUT_PREFIX):
-        path = path[len(_OUT_PREFIX):]
-    try:
-        return tools.append_file(ctx.deps, path, content)
-    except (ValueError, IOError) as e:
-        return f"ERROR: {e}"
-
-
-def write_rust_file(ctx: RunContext[AgentDeps], path: str, content: str) -> str:
-    """Overwrite a Rust source file in the repo.
-
-    Use to remove untranslatable constructs (vec!, println!, main body, etc.)
-    before retrying run_aeneas.  Path must be repo-relative.
-    Returns an ERROR: string if the path is invalid.
-    """
-    try:
-        return tools.write_rust_file(ctx.deps, path, content)
-    except (ValueError, IOError) as e:
-        return f"ERROR: {e}"
-
-
 def run_aeneas(ctx: RunContext[AgentDeps], entry_file: str) -> dict:
-    """Translate entry_file to Lean 4 via Charon + Aeneas.
-
-    Stores result in progress['aeneas'] on success and saves a checkpoint.
-    Inspect aeneas_errors / charon_errors and use write_rust_file to fix issues,
-    then call run_aeneas again (max 2 retries).
-    """
+    """Translate *entry_file* (repo-relative) to Lean 4 via Charon + Aeneas.
+    On success saves the result to progress and checkpoints. Inspect aeneas_errors /
+    charon_errors, fix with write_rust_file, then retry (max 2 times)."""
     result = tools.run_aeneas(ctx.deps, entry_file)
     if result.get("success") or result.get("lean_files"):
         ctx.deps.progress["aeneas"] = result
         _checkpoint(ctx.deps)
     return result
-
-
-def search_mathlib(ctx: RunContext[AgentDeps], query: str, max_results: int = 8) -> list[dict]:
-    """Search Mathlib4 for lemmas by name fragment or type signature (via Loogle).
-
-    Use this when you need a specific Mathlib lemma and are not sure of its exact
-    name.  Examples:
-      search_mathlib("Nat.fib_mono")          — find the monotonicity lemma for fib
-      search_mathlib("Monotone Nat.fib")      — search by type shape
-      search_mathlib("UInt64 mod")            — find UInt64 modular arithmetic lemmas
-    Returns up to max_results hits with name, type, module, and doc fields.
-    Runs outside the container — no network restriction applies.
-    """
-    return tools.search_mathlib(query, max_results=max_results)
-
-
-def git_commit(ctx: RunContext[AgentDeps], message: str) -> str:
-    """Stage all pending changes in /workspace/out and create a git commit."""
-    return tools.git_commit(ctx.deps, message)
-
-
-def git_log(ctx: RunContext[AgentDeps], n: int = 10) -> str:
-    """Show the last n commits in /workspace/out."""
-    return tools.git_log(ctx.deps, n=n)
 
 
 async def infer_spec(ctx: RunContext[AgentDeps]) -> dict:
@@ -147,13 +41,13 @@ async def infer_spec(ctx: RunContext[AgentDeps]) -> dict:
     a structured InformalSpec stored in progress['informal_spec'].
     """
     lean_path = ctx.deps.progress.get("aeneas", {}).get("lean_path", "")
-    lean_code = tools.read_output_file(ctx.deps, lean_path) if lean_path else ""
+    lean_code = tools.read_output_file(ctx, lean_path) if lean_path else ""
     try:
         spec = await subagents.infer_informal_spec(lean_code, ctx.deps.design_doc)
     except UnexpectedModelBehavior as e:
         return {"error": f"infer_spec subagent failed: {e}"}
     ctx.deps.progress["informal_spec"] = spec.model_dump()
-    tools.write_file(ctx.deps, "specs/informal_spec.json", spec.model_dump_json(indent=2))
+    tools.write_file(ctx, "specs/informal_spec.json", spec.model_dump_json(indent=2))
     git_ops.commit(ctx.deps.container_id, "feat(spec): informal specification", glob="specs/")
     _checkpoint(ctx.deps)
     return spec.model_dump()
@@ -172,7 +66,7 @@ async def formalise_spec(ctx: RunContext[AgentDeps]) -> dict:
         return {"error": "prerequisite missing — call infer_spec first"}
     informal = InformalSpec(**inf_data)
     lean_path = ctx.deps.progress.get("aeneas", {}).get("lean_path", "")
-    lean_code = tools.read_output_file(ctx.deps, lean_path) if lean_path else ""
+    lean_code = tools.read_output_file(ctx, lean_path) if lean_path else ""
     try:
         formal = await subagents.derive_formal_spec(informal, lean_code)
     except UnexpectedModelBehavior as e:
@@ -184,7 +78,7 @@ async def formalise_spec(ctx: RunContext[AgentDeps]) -> dict:
         }
     ctx.deps.progress["formal_spec"] = formal.model_dump()
     tools.write_file(
-        ctx.deps, "specs/formal_spec.lean",
+        ctx, "specs/formal_spec.lean",
         formal.lean_definitions + "\n\n" + formal.lean_theorem_stubs,
     )
     git_ops.commit(ctx.deps.container_id, "feat(spec): formal specification stubs", glob="specs/")
@@ -203,7 +97,7 @@ async def infer_abstract_informal_spec(ctx: RunContext[AgentDeps]) -> dict:
     except UnexpectedModelBehavior as e:
         return {"error": f"doc-inferrer failed: {e}"}
     ctx.deps.progress["abstract_informal_spec"] = spec.model_dump()
-    tools.write_file(ctx.deps, "specs/abstract_informal_spec.json", spec.model_dump_json(indent=2))
+    tools.write_file(ctx, "specs/abstract_informal_spec.json", spec.model_dump_json(indent=2))
     git_ops.commit(ctx.deps.container_id, "feat(spec): abstract informal specification", glob="specs/")
     _checkpoint(ctx.deps)
     return spec.model_dump()
@@ -250,9 +144,9 @@ async def formalise_abstract_spec(ctx: RunContext[AgentDeps]) -> dict:
 
     ctx.deps.progress["abstract_informal_spec"] = abstract_informal.model_dump()
     ctx.deps.progress["abstract_formal_spec"] = abstract_formal.model_dump()
-    tools.write_file(ctx.deps, "specs/abstract_informal_spec.json", abstract_informal.model_dump_json(indent=2))
+    tools.write_file(ctx, "specs/abstract_informal_spec.json", abstract_informal.model_dump_json(indent=2))
     tools.write_file(
-        ctx.deps, "specs/abstract_formal_spec.lean",
+        ctx, "specs/abstract_formal_spec.lean",
         abstract_formal.lean_definitions + "\n\n" + abstract_formal.lean_theorem_stubs,
     )
     git_ops.commit(ctx.deps.container_id, "feat(spec): abstract formal specification", glob="specs/")
@@ -261,7 +155,7 @@ async def formalise_abstract_spec(ctx: RunContext[AgentDeps]) -> dict:
 
 
 def check_lean(ctx: RunContext[AgentDeps], lean_file: str) -> dict:
-    """Run `lake build` in the Lean project and return {success, stdout, stderr}.
+    """Run `lake build` in the Lean project and return {success, stderr}.
 
     The result is stored in progress['lean_build'] and a checkpoint is saved.
     Always call this after writing or modifying any Lean file.
@@ -269,6 +163,68 @@ def check_lean(ctx: RunContext[AgentDeps], lean_file: str) -> dict:
     result = tools.check_lean(ctx.deps, lean_file)
     ctx.deps.progress["lean_build"] = result
     _checkpoint(ctx.deps)
+    return result
+
+
+async def _run_inline_judge(deps: AgentDeps) -> ProofVerdict | None:
+    """Run _proof_judge from inside a tool call (does not reset stage telemetry).
+
+    Stores the verdict in deps.progress['proof_verdict'] on success.
+    """
+    from pydantic_ai.usage import UsageLimits
+    prompt = (
+        _pipeline_briefing(deps)
+        + "Inline PROOF-JUDGE: classify every theorem as proved / sorry_acceptable / "
+          "likely_misstated based on the current file state."
+    )
+    try:
+        async with _proof_judge.iter(
+            prompt, deps=deps,
+            usage_limits=UsageLimits(request_limit=config.REQUEST_LIMIT),
+        ) as run:
+            async for _ in run:
+                pass
+            result = run.result
+    except UnexpectedModelBehavior as e:
+        log.warning("Inline proof-judge failed: %s", e)
+        return None
+    if not (result and result.output):
+        return None
+    pv: ProofVerdict = result.output
+    deps.progress["proof_verdict"] = pv.model_dump()
+    _checkpoint(deps)
+    log.info(
+        "Inline proof-judge: proved=%d sorry=%d misstated=%d stagnant=%s",
+        sum(1 for t in pv.theorems if t.status == "proved"),
+        sum(1 for t in pv.theorems if t.status == "sorry_acceptable"),
+        sum(1 for t in pv.theorems if t.status == "likely_misstated"),
+        pv.stagnant,
+    )
+    return pv
+
+
+async def check_and_judge(ctx: RunContext[AgentDeps], lean_file: str) -> dict:
+    """Run `lake build` then immediately run an embedded PROOF-JUDGE on success.
+
+    Use this (not check_lean) when proving theorems. The result includes a
+    'proof_judge' key on successful builds. Inspect it after every call:
+      - proof_judge.stagnant == true  →  call git_commit and stop immediately.
+      - proof_judge.likely_misstated  →  note names but do NOT alter statements.
+      - No sorry theorems remaining   →  call git_commit and stop.
+    Always call check_and_judge as your last action before git_commit.
+    """
+    result = tools.check_lean(ctx.deps, lean_file)
+    ctx.deps.progress["lean_build"] = result
+    _checkpoint(ctx.deps)
+    if result["success"]:
+        pv = await _run_inline_judge(ctx.deps)
+        if pv:
+            result["proof_judge"] = {
+                "stagnant": pv.stagnant,
+                "proved": [t.name for t in pv.theorems if t.status == "proved"],
+                "sorry_acceptable": [t.name for t in pv.theorems if t.status == "sorry_acceptable"],
+                "likely_misstated": [t.name for t in pv.theorems if t.status == "likely_misstated"],
+            }
     return result
 
 
@@ -333,8 +289,8 @@ that would prevent or degrade an Aeneas translation.
 Write a short structured summary of findings. Then stop — do not run Aeneas.
 """,
 )
-_explore.tool(list_files)
-_explore.tool(read_file)
+_explore.tool(tools.list_files)
+_explore.tool(tools.read_file)
 
 
 _translate = factory.make_stage_agent("""
@@ -354,15 +310,20 @@ Translate the Rust codebase to Lean 4 via Charon + Aeneas:
    c. success=false AND lean_files=[] → try fixing Rust (max 2 retries); if still nothing,
       report failure and stop.
 3. Commit the Lean output once translation produces at least some files.
+
+When inspecting Lean output files, prefer search_output_file + read_output_lines over
+read_output_file to avoid loading entire files unnecessarily.
 """ + docs.FOR_TRANSLATE,
 )
-_translate.tool(list_files)
-_translate.tool(read_file)
-_translate.tool(read_output_file)
-_translate.tool(write_rust_file)
+_translate.tool(tools.list_files)
+_translate.tool(tools.read_file)
+_translate.tool(tools.read_output_file)
+_translate.tool(tools.search_output_file)
+_translate.tool(tools.read_output_lines)
+_translate.tool(tools.write_rust_file)
 _translate.tool(run_aeneas)
-_translate.tool(git_commit)
-_translate.tool(git_log)
+_translate.tool(tools.git_commit)
+_translate.tool(tools.git_log)
 
 
 _infer = factory.make_stage_agent("""
@@ -370,7 +331,9 @@ You are the INFER stage of the Lusterna pipeline.
 
 Derive an informal specification from the Aeneas-translated Lean output:
 
-1. Read the translated Lean file(s) to understand function signatures and structure.
+1. Locate the translated Lean file(s) with list_files('lean'). Use search_output_file
+   to find function signatures and definitions, then read_output_lines to read only
+   the relevant sections — avoid loading the entire file unless it is small.
 2. If specs/abstract_informal_spec.json exists (listed in the pipeline context), read
    it — it is the abstract spec derived from the design document alone and describes
    intended behaviour independent of the implementation. Align the informal spec
@@ -383,8 +346,10 @@ Derive an informal specification from the Aeneas-translated Lean output:
 When infer_spec succeeds, your job is done. Do not proceed to formalise_spec.
 """,
 )
-_infer.tool(list_files)
-_infer.tool(read_output_file)
+_infer.tool(tools.list_files)
+_infer.tool(tools.read_output_file)
+_infer.tool(tools.search_output_file)
+_infer.tool(tools.read_output_lines)
 _infer.tool(infer_spec)
 
 
@@ -411,7 +376,9 @@ Write theorem stubs only — use `sorry` for all proofs. Do NOT attempt proofs.
 
 5. If the build fails:
    - Read stdout/stderr carefully.
-   - Fix type errors, missing imports, namespace issues with write_file.
+   - Fix type errors, missing imports, namespace issues. For targeted fixes use
+     search_output_file to locate the relevant lines, then patch_output_lines to
+     replace only those lines. Use write_file only to create or fully replace a file.
    - Call check_lean again. Repeat up to 3 total build attempts.
 
 6. Commit everything once the build passes (or after all attempts, noting any failures).
@@ -419,14 +386,17 @@ Write theorem stubs only — use `sorry` for all proofs. Do NOT attempt proofs.
 Do NOT attempt proofs — that is the PROVE stage's responsibility.
 """ + docs.FOR_FORMALISE,
 )
-_formalise.tool(list_files)
-_formalise.tool(read_file)
-_formalise.tool(read_output_file)
-_formalise.tool(write_file)
+_formalise.tool(tools.list_files)
+_formalise.tool(tools.read_file)
+_formalise.tool(tools.read_output_file)
+_formalise.tool(tools.search_output_file)
+_formalise.tool(tools.read_output_lines)
+_formalise.tool(tools.patch_output_lines)
+_formalise.tool(tools.write_file)
 _formalise.tool(formalise_spec)
 _formalise.tool(check_lean)
-_formalise.tool(git_commit)
-_formalise.tool(git_log)
+_formalise.tool(tools.git_commit)
+_formalise.tool(tools.git_log)
 
 
 _judge = factory.make_stage_agent("""
@@ -437,7 +407,9 @@ includes both an overall verdict and a per-component breakdown.
 
 Steps:
 1. Call get_build_result to see whether lake build passed.
-2. Read the formal spec file(s) (lean/*Spec.lean) and the Aeneas translation (lean/*.lean).
+2. Locate spec files with list_files('lean'). For each file, use search_output_file to
+   find theorem/definition names, then read_output_lines to fetch individual components.
+   Use read_output_file only when you need the full file (e.g. a short spec).
 3. Read specs/informal_spec.json for the implementation-derived informal spec.
 4. Read specs/abstract_formal_spec.lean — this is the ABSTRACT specification derived
    from the design document alone, with no knowledge of the Rust implementation.
@@ -485,8 +457,10 @@ IMPORTANT: if lake build failed, approved MUST be false and score MUST be ≤ 4.
     retries=3,
 )
 _judge.tool(get_build_result)
-_judge.tool(list_files)
-_judge.tool(read_output_file)
+_judge.tool(tools.list_files)
+_judge.tool(tools.read_output_file)
+_judge.tool(tools.search_output_file)
+_judge.tool(tools.read_output_lines)
 
 
 _reconcile = factory.make_stage_agent("""
@@ -497,10 +471,12 @@ against the implementation formal specification (derived from the Aeneas transla
 Return a structured ReconciliationReport.
 
 Steps:
-1. Read specs/abstract_formal_spec.lean — this is the ABSTRACT spec. It was produced
-   with zero knowledge of the Rust source. It represents design intent.
-2. Read lean/*Spec.lean — this is the IMPLEMENTATION spec, derived from the Aeneas
-   translation of the Rust code.
+1. Locate both spec files with list_files('lean'). Use search_output_file +
+   read_output_lines to read theorems side by side rather than loading entire files.
+   Use read_output_file for small files (under ~100 lines).
+2. specs/abstract_formal_spec.lean is the ABSTRACT spec — produced with zero knowledge
+   of the Rust source; it represents design intent.
+   lean/*Spec.lean is the IMPLEMENTATION spec, derived from the Aeneas translation.
 3. For each theorem/definition, determine whether the two specs agree, diverge, or
    whether one side is simply silent.
 
@@ -544,8 +520,10 @@ whether something is a gap or a real discrepancy, classify it as design_doc_sile
     output_type=ReconciliationReport,
     retries=3,
 )
-_reconcile.tool(list_files)
-_reconcile.tool(read_output_file)
+_reconcile.tool(tools.list_files)
+_reconcile.tool(tools.read_output_file)
+_reconcile.tool(tools.search_output_file)
+_reconcile.tool(tools.read_output_lines)
 
 
 _prove = factory.make_stage_agent("""
@@ -555,35 +533,64 @@ The formal spec has passed the spec-judge threshold (score ≥ 7 or approved). Y
 job is to attempt to prove as many theorems and lemmas as possible using Lean 4
 tactics, without changing any theorem or definition statements.
 
-Workflow:
-1. List and read the spec file(s) (lean/*Spec.lean).
-2. For each theorem/lemma with a `sorry` proof, attempt tactics in this order:
-     rfl, simp, omega, norm_num, decide, native_decide, ring, linarith,
-     then induction / cases with the above tactics on sub-goals.
-3. After editing, call check_lean. If the build fails, revert failing proofs
-   to `sorry` (do not touch the statement) and call check_lean again.
-4. Commit the result with git_commit.
+An EFFORT ESTIMATE is provided in the runtime prompt. Follow it strictly:
+  trivial / moderate  →  attempt these; spend up to 2-3 tactic tries each
+  hard_acceptable     →  leave as sorry immediately without any proof attempt
+  likely_misstated    →  do NOT touch; note the name in your commit message
+
+Workflow — work ONE theorem at a time to keep context small:
+1. Call list_files('lean') to find spec files.
+2. Call search_output_file(file, 'theorem|lemma') to list all theorem/lemma names
+   with their line numbers.
+3. For each sorry theorem classified trivial or moderate, in order:
+   a. Call search_output_file to locate it precisely, then read_output_lines to fetch
+      just that theorem block (from its `theorem` line to its `:= by sorry` line).
+   b. Attempt tactics in this order: rfl, simp, omega, norm_num, decide,
+      native_decide, ring, linarith, then induction/cases with sub-goal tactics.
+   c. When you have a candidate proof, call patch_output_lines to replace ONLY the
+      proof body (the lines from `:= by` to the closing `sorry`) — do not touch
+      anything outside that range.
+   d. Call check_and_judge. If the build fails, call patch_output_lines again to
+      revert that theorem to `sorry` (restore the exact original lines), then move on.
+4. After attempting all tractable theorems, call check_and_judge one final time,
+   then call git_commit and stop.
+
+After each SUCCESSFUL check_and_judge the result contains a 'proof_judge' section.
+Inspect it immediately:
+  - proof_judge.stagnant == true  →  call git_commit and stop now.
+  - proof_judge.likely_misstated  →  note those names; do NOT alter their statements.
+  - All theorems proved or sorry_acceptable  →  call git_commit and stop now.
 
 STRICT RULES:
 - NEVER alter a theorem's statement (the part before `:= by`).
+- NEVER use write_file or append_file to replace a whole spec file — use
+  patch_output_lines for targeted edits and read_output_lines to inspect context.
+  write_file is allowed ONLY for creating brand-new files (e.g. reconciliation stubs).
 - NEVER introduce an axiom or `#check` that weakens the spec.
 - If a proof takes more than 2-3 tactic attempts, leave it as `sorry` and move on.
 - It is acceptable — even expected — to leave hard theorems as `sorry`.
 """ + docs.FOR_PROVE,
 )
-_prove.tool(list_files)
-_prove.tool(read_output_file)
-_prove.tool(write_file)
-_prove.tool(check_lean)
-_prove.tool(search_mathlib)
-_prove.tool(git_commit)
-_prove.tool(git_log)
+_prove.tool(tools.list_files)
+_prove.tool(tools.search_output_file)
+_prove.tool(tools.read_output_lines)
+_prove.tool(tools.read_output_file)
+_prove.tool(tools.patch_output_lines)
+_prove.tool(tools.write_file)
+_prove.tool(check_and_judge)
+_prove.tool_plain(tools.search_mathlib)
+_prove.tool(tools.git_commit)
+_prove.tool(tools.git_log)
 
 
 _proof_judge = factory.make_stage_agent("""
 You are the PROOF JUDGE stage of the Lusterna pipeline.
 
 Evaluate every theorem and lemma in the formal spec and return a ProofVerdict.
+
+Use search_output_file(file, 'theorem|lemma') to enumerate all theorems with their
+line numbers, then read_output_lines to fetch each one individually. This keeps your
+context small — do not load the entire spec with read_output_file unless it is short.
 
 For each component classify its status:
   "proved"            — proof is complete (no sorry), compiles, and is correct
@@ -612,8 +619,10 @@ STAGNATION — set stagnant=true ONLY when ALL of:
     retries=3,
 )
 _proof_judge.tool(get_build_result)
-_proof_judge.tool(list_files)
-_proof_judge.tool(read_output_file)
+_proof_judge.tool(tools.list_files)
+_proof_judge.tool(tools.read_output_file)
+_proof_judge.tool(tools.search_output_file)
+_proof_judge.tool(tools.read_output_lines)
 
 
 _report = factory.make_stage_agent("""
@@ -641,8 +650,9 @@ Write exactly these files, in this order:
 
   report/04_implementation_spec.md
       Read specs/informal_spec.json and the formal spec file (lean/*Spec.lean —
-      use list_files with extension='lean' to find it). List every theorem stub
-      with its statement and a one-line explanation. Include the lake build result.
+      use list_files('lean') to find it; use search_output_file + read_output_lines
+      to read theorem by theorem). List every theorem stub with its statement and a
+      one-line explanation. Include the lake build result.
 
   report/05_spec_judge.md
       Spec-judge verdict: overall score, approved/not, per-component breakdown.
@@ -670,11 +680,13 @@ Be thorough — do not summarise away detail that would help a reader understand
 what was verified, what was found, and what remains open.
 """,
 )
-_report.tool(list_files)
-_report.tool(read_file)
-_report.tool(read_output_file)
-_report.tool(write_file)
-_report.tool(git_log)
+_report.tool(tools.list_files)
+_report.tool(tools.read_file)
+_report.tool(tools.read_output_file)
+_report.tool(tools.search_output_file)
+_report.tool(tools.read_output_lines)
+_report.tool(tools.write_file)
+_report.tool(tools.git_log)
 
 
 # ── internal helpers ──────────────────────────────────────────────────────────
@@ -811,7 +823,11 @@ async def _run_stage(agent: Agent, prompt: str, deps: AgentDeps, label: str) -> 
     telemetry.stage.reset()
     deps.message_history = []
     full_prompt = _pipeline_briefing(deps) + prompt
-    async with agent.iter(full_prompt, deps=deps) as run:
+    from pydantic_ai.usage import UsageLimits
+    async with agent.iter(
+        full_prompt, deps=deps,
+        usage_limits=UsageLimits(request_limit=config.REQUEST_LIMIT),
+    ) as run:
         async for _node in run:
             pass
         result = run.result
@@ -1047,7 +1063,7 @@ async def _run_reconcile_phase(deps: AgentDeps, cycle: int) -> None:
         rc: ReconciliationReport = rc_result.output
         rc_entry = {**rc.model_dump(), "cycle": cycle + 1}
         rc_history.append(rc_entry)
-        tools.write_file(
+        tools.write_out(
             deps,
             f"specs/reconciliation_cycle_{cycle + 1}.json",
             rc.model_dump_json(indent=2),
@@ -1073,15 +1089,44 @@ async def _run_reconcile_phase(deps: AgentDeps, cycle: int) -> None:
     _checkpoint(deps)
 
 
+async def _run_estimator(deps: AgentDeps, cycle: int) -> TheoremEstimate | None:
+    """Run the effort estimator on the current formal spec + any reconciliation obligations."""
+    formal = tools.read_out(deps, "specs/formal_spec.lean")
+    if formal.startswith("ERROR:"):
+        log.warning("Effort estimator: cannot read formal spec — %s", formal)
+        return None
+    rc_history = deps.progress.get("reconciliation_history", [])
+    extras = ""
+    if cycle < len(rc_history):
+        obls = rc_history[cycle].get("refinement_obligations", [])
+        if obls:
+            extras = "\n\nRefinement obligations (from RECONCILE):\n" + "\n".join(
+                f"  theorem {o['name']}: {o['statement'][:200]}" for o in obls
+            )
+    try:
+        estimate = await subagents.estimate_theorem_effort(formal + extras)
+        log.info(
+            "Effort estimate: trivial=%d moderate=%d hard=%d misstated=%d",
+            len(estimate.trivial), len(estimate.moderate),
+            len(estimate.hard_acceptable), len(estimate.likely_misstated),
+        )
+        return estimate
+    except Exception as e:
+        log.warning("Effort estimator failed: %s — proceeding without estimate", e)
+        return None
+
+
 async def _run_prove_phase(deps: AgentDeps, cycle: int) -> tuple[bool, list[dict]]:
-    """Run PROVE+PROOF-JUDGE for one cycle.
+    """Run EFFORT-ESTIMATOR → PROVE (with inline PROOF-JUDGE on each successful build).
+
+    PROOF-JUDGE is embedded inside check_and_judge: on every successful build PROVE receives
+    a proof_judge verdict and stops if stagnant or done.  The final verdict is read from
+    deps.progress['proof_verdict'] set by the last inline judge call.
 
     Returns (done, proof_amendments). done=True stops the cycle loop;
     proof_amendments carries mis-stated theorems for the next cycle.
     """
-    completed = set(deps.progress.keys())
-
-    if "proof_verdict" in completed:
+    if "proof_verdict" in deps.progress:
         log.info("proof_verdict already in progress — skipping proof stage")
         return True, []
 
@@ -1114,6 +1159,20 @@ async def _run_prove_phase(deps: AgentDeps, cycle: int) -> tuple[bool, list[dict
             "Leave the corresponding obligations unproved and note them clearly."
         )
 
+    estimate = await _run_estimator(deps, cycle)
+    if estimate:
+        def _names(lst: list[str]) -> str:
+            return ", ".join(lst) if lst else "none"
+        prove_note += (
+            f"\n\nEFFORT ESTIMATE:\n"
+            f"  trivial (attempt):             {_names(estimate.trivial)}\n"
+            f"  moderate (attempt):            {_names(estimate.moderate)}\n"
+            f"  hard_acceptable (leave sorry): {_names(estimate.hard_acceptable)}\n"
+            f"  likely_misstated (do not touch): {_names(estimate.likely_misstated)}\n"
+            "Attempt only trivial and moderate theorems. Mark hard_acceptable as sorry "
+            "without spending further effort."
+        )
+
     try:
         await _run_stage(
             _prove,
@@ -1124,32 +1183,17 @@ async def _run_prove_phase(deps: AgentDeps, cycle: int) -> tuple[bool, list[dict
             f"PROVE (cycle {cycle + 1})",
         )
     except UnexpectedModelBehavior as e:
-        log.warning("PROVE stage failed after retries: %s — continuing to PROOF-JUDGE with partial proofs", e)
+        log.warning("PROVE stage failed after retries: %s", e)
     _checkpoint(deps)
 
-    build_ok = deps.progress.get("lean_build", {}).get("success", False)
-    try:
-        pj_result = await _run_stage(
-            _proof_judge,
-            f"Proceed to PROOF-JUDGE (cycle {cycle + 1}). "
-            f"lake build {'passed ✓' if build_ok else 'FAILED ✗'}. "
-            "Classify every theorem as proved / sorry_acceptable / likely_misstated. "
-            "Where the spec-judge flagged components as having issues (see pipeline "
-            "context above under 'Spec-judge verdict'), weigh whether those issues "
-            "make the theorem likely_misstated rather than sorry_acceptable.",
-            deps,
-            f"PROOF-JUDGE (cycle {cycle + 1})",
+    pv_data = deps.progress.get("proof_verdict")
+    if pv_data is None:
+        raise _PipelineAborted(
+            f"PROVE cycle {cycle + 1} completed without a successful lake build — "
+            "no proof verdict available"
         )
-    except UnexpectedModelBehavior as e:
-        log.warning("Proof judge failed after retries: %s — stopping", e)
-        return True, []
 
-    if not (pj_result and pj_result.output):
-        log.warning("Proof judge produced no output — stopping")
-        return True, []
-
-    pv: ProofVerdict = pj_result.output
-    deps.progress["proof_verdict"] = pv.model_dump()
+    pv = ProofVerdict(**pv_data)
     misstated = [t for t in pv.theorems if t.status == "likely_misstated"]
     proved    = [t for t in pv.theorems if t.status == "proved"]
     sorry_ok  = [t for t in pv.theorems if t.status == "sorry_acceptable"]
@@ -1158,7 +1202,6 @@ async def _run_prove_phase(deps: AgentDeps, cycle: int) -> tuple[bool, list[dict
         cycle + 1, len(proved), len(sorry_ok),
         [t.name for t in misstated] or "none", pv.stagnant,
     )
-    _checkpoint(deps)
 
     if not misstated:
         log.info("No mis-stated theorems — proof stage complete")
@@ -1215,7 +1258,7 @@ async def _run_report(deps: AgentDeps, resume_note: str) -> str:
     ]
     parts = [
         content for sf in _REPORT_SECTIONS
-        for content in [tools.read_output_file(deps, sf)]
+        for content in [tools.read_out(deps, sf)]
         if not content.startswith("ERROR:")
     ]
     if parts:
@@ -1231,7 +1274,7 @@ async def _run_report(deps: AgentDeps, resume_note: str) -> str:
 
     if report_text:
         try:
-            tools.write_file(deps, "VERIFICATION_REPORT.md", report_text)
+            tools.write_out(deps, "VERIFICATION_REPORT.md", report_text)
             git_ops.commit(deps.container_id, "stage/report: final pipeline report",
                            glob="VERIFICATION_REPORT.md")
             log.info("Report written and committed (%d chars)", len(report_text))

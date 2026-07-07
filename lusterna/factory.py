@@ -39,9 +39,6 @@ async def _after_request(ctx: RunContext, *, request_context: ModelRequestContex
     return response
 
 
-_COMPACTION_KEEP = 20  # keep last N messages verbatim after compaction
-
-
 def _turn_boundary(messages: list) -> int:
     """Return the index of the first message to keep after compaction.
 
@@ -51,9 +48,9 @@ def _turn_boundary(messages: list) -> int:
     Returns 0 if there is nothing worth compacting.
     """
     from pydantic_ai.messages import ModelResponse
-    if len(messages) <= _COMPACTION_KEEP:
+    if len(messages) <= config.COMPACTION_KEEP:
         return 0
-    target = len(messages) - _COMPACTION_KEEP
+    target = len(messages) - config.COMPACTION_KEEP
     # Snap forward to the nearest ModelResponse at or after target.
     for i in range(target, len(messages)):
         if isinstance(messages[i], ModelResponse):

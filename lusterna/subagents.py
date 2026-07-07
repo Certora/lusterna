@@ -75,7 +75,14 @@ class TheoremProofResult(BaseModel):
 class ProofVerdict(BaseModel):
     theorems: list[TheoremProofResult]
     stagnant: bool = False                             # see proof-judge instructions for criterion
-    summary: str                                       # brief overall narrative
+    summary: str
+
+
+class TheoremEstimate(BaseModel):
+    trivial: list[str]            # rfl/simp/omega — 1-2 steps
+    moderate: list[str]           # real effort but tractable (induction, Mathlib)
+    hard_acceptable: list[str]    # advanced techniques needed — leave as sorry
+    likely_misstated: list[str]   # statement appears logically incorrect                                       # brief overall narrative
 
 
 class Discrepancy(BaseModel):
@@ -186,6 +193,21 @@ _summariser = _agent(
     "and any decisions made. Focus on what was attempted, what succeeded, and what failed.",
 )
 
+_effort_estimator = _agent(
+    TheoremEstimate,
+    "You are a Lean 4 proof difficulty estimator. Given Lean 4 theorem stubs, classify "
+    "each theorem and lemma name into one of four difficulty categories:\n"
+    "  trivial — provable in 1-2 tactic steps (rfl, simp, omega, norm_num, decide)\n"
+    "  moderate — tractable with real effort (induction, cases, Mathlib lemmas, "
+    "multi-step automation)\n"
+    "  hard_acceptable — requires advanced techniques beyond typical automation "
+    "(deep coinduction, custom Mathlib extensions, novel arguments); sorry is appropriate\n"
+    "  likely_misstated — the statement appears logically incorrect (wrong quantifier, "
+    "type mismatch, impossible precondition/postcondition)\n"
+    "Be conservative: when unsure between moderate and hard_acceptable, prefer "
+    "hard_acceptable. Return theorem/lemma names only, not definitions.",
+)
+
 
 # ── public async entry points ─────────────────────────────────────────────────
 
@@ -231,6 +253,15 @@ async def derive_formal_spec(informal: InformalSpec, lean_code: str) -> FormalSp
         f"### Lean 4 translated code\n{lean_code}"
     )
     return await _run(_formal_spec_writer, prompt)
+
+
+async def estimate_theorem_effort(spec_text: str) -> TheoremEstimate:
+    log.info("Subagent: estimating theorem proof effort")
+    return await _run(
+        _effort_estimator,
+        f"### Lean 4 formal specification\n{spec_text}\n\n"
+        "Classify every theorem and lemma by proof difficulty.",
+    )
 
 
 async def judge_formal_spec(
