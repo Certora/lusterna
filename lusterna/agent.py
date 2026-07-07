@@ -12,9 +12,9 @@ from pydantic_ai import Agent, RunContext
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 
 from . import checkpoint, docs, factory, git_ops, subagents, telemetry, tools
-from .subagents import (
+from .schemas import (
     AbstractInformalSpec, AbstractFormalSpec,
-    InformalSpec, FormalSpec, JudgeVerdict, ProofVerdict, ReconciliationReport,
+    InformalSpec, JudgeVerdict, ProofVerdict, ReconciliationReport,
     TheoremEstimate,
 )
 from .state import AgentDeps
@@ -33,125 +33,6 @@ def run_aeneas(ctx: RunContext[AgentDeps], entry_file: str) -> dict:
         _checkpoint(ctx.deps)
     return result
 
-
-async def infer_spec(ctx: RunContext[AgentDeps]) -> dict:
-    """Call the spec-inferrer subagent to derive an informal specification.
-
-    Reads the Aeneas-translated Lean file and the design document, then returns
-    a structured InformalSpec stored in progress['informal_spec'].
-    """
-    lean_path = ctx.deps.progress.get("aeneas", {}).get("lean_path", "")
-    lean_code = tools.read_output_file(ctx, lean_path) if lean_path else ""
-    try:
-        spec = await subagents.infer_informal_spec(lean_code, ctx.deps.design_doc)
-    except UnexpectedModelBehavior as e:
-        return {"error": f"infer_spec subagent failed: {e}"}
-    ctx.deps.progress["informal_spec"] = spec.model_dump()
-    tools.write_file(ctx, "specs/informal_spec.json", spec.model_dump_json(indent=2))
-    git_ops.commit(ctx.deps.container_id, "feat(spec): informal specification", glob="specs/")
-    _checkpoint(ctx.deps)
-    return spec.model_dump()
-
-
-async def formalise_spec(ctx: RunContext[AgentDeps]) -> dict:
-    """Call the formal-spec subagent to derive Lean 4 theorem stubs.
-
-    Requires progress['informal_spec'] to exist (call infer_spec first).
-    Stores result in progress['formal_spec'] and commits specs/formal_spec.lean.
-    If the subagent fails, return an error dict and write the spec manually with
-    write_file based on the informal spec.
-    """
-    inf_data = ctx.deps.progress.get("informal_spec")
-    if not inf_data:
-        return {"error": "prerequisite missing — call infer_spec first"}
-    informal = InformalSpec(**inf_data)
-    lean_path = ctx.deps.progress.get("aeneas", {}).get("lean_path", "")
-    lean_code = tools.read_output_file(ctx, lean_path) if lean_path else ""
-    try:
-        formal = await subagents.derive_formal_spec(informal, lean_code)
-    except UnexpectedModelBehavior as e:
-        return {
-            "error": (
-                f"formalise_spec subagent failed: {e} — "
-                "retry once or write the spec manually with write_file"
-            )
-        }
-    ctx.deps.progress["formal_spec"] = formal.model_dump()
-    tools.write_file(
-        ctx, "specs/formal_spec.lean",
-        formal.lean_definitions + "\n\n" + formal.lean_theorem_stubs,
-    )
-    git_ops.commit(ctx.deps.container_id, "feat(spec): formal specification stubs", glob="specs/")
-    _checkpoint(ctx.deps)
-    return formal.model_dump()
-
-
-async def infer_abstract_informal_spec(ctx: RunContext[AgentDeps]) -> dict:
-    """Call the doc-inferrer to derive an abstract informal spec from the design document.
-
-    Reads the design document ONLY — no Rust source, no Lean translation.
-    Stores result in progress['abstract_informal_spec'] and commits specs/.
-    """
-    try:
-        spec = await subagents.infer_abstract_informal_spec(ctx.deps.design_doc)
-    except UnexpectedModelBehavior as e:
-        return {"error": f"doc-inferrer failed: {e}"}
-    ctx.deps.progress["abstract_informal_spec"] = spec.model_dump()
-    tools.write_file(ctx, "specs/abstract_informal_spec.json", spec.model_dump_json(indent=2))
-    git_ops.commit(ctx.deps.container_id, "feat(spec): abstract informal specification", glob="specs/")
-    _checkpoint(ctx.deps)
-    return spec.model_dump()
-
-
-async def formalise_abstract_spec(ctx: RunContext[AgentDeps]) -> dict:
-    """Run the doc-formaliser convergence loop to produce Lean 4 abstract theorem stubs.
-
-    Requires progress['abstract_informal_spec']. Iterates up to 3 rounds: the
-    doc-formaliser flags ambiguities; the doc-inferrer resolves them from the design
-    document; repeat until converged or the round cap is reached.
-    Stores result in progress['abstract_formal_spec'] and commits specs/.
-    """
-    inf_data = ctx.deps.progress.get("abstract_informal_spec")
-    if not inf_data:
-        return {"error": "prerequisite missing — call infer_abstract_informal_spec first"}
-    abstract_informal = AbstractInformalSpec(**inf_data)
-
-    _MAX_ROUNDS = 3
-    abstract_formal: AbstractFormalSpec | None = None
-    for round_num in range(_MAX_ROUNDS):
-        try:
-            abstract_formal = await subagents.derive_abstract_formal_spec(abstract_informal)
-        except UnexpectedModelBehavior as e:
-            return {"error": f"doc-formaliser failed: {e}"}
-
-        if not abstract_formal.ambiguities or round_num == _MAX_ROUNDS - 1:
-            break
-
-        log.info(
-            "Doc-formaliser flagged %d ambiguity/ies — refining (round %d/%d)",
-            len(abstract_formal.ambiguities), round_num + 1, _MAX_ROUNDS,
-        )
-        try:
-            abstract_informal = await subagents.refine_abstract_informal_spec(
-                ctx.deps.design_doc, abstract_informal, abstract_formal.ambiguities
-            )
-        except UnexpectedModelBehavior as e:
-            log.warning("Doc-inferrer refinement failed: %s — using last spec", e)
-            break
-
-    if abstract_formal is None:
-        return {"error": "doc-formaliser produced no output"}
-
-    ctx.deps.progress["abstract_informal_spec"] = abstract_informal.model_dump()
-    ctx.deps.progress["abstract_formal_spec"] = abstract_formal.model_dump()
-    tools.write_file(ctx, "specs/abstract_informal_spec.json", abstract_informal.model_dump_json(indent=2))
-    tools.write_file(
-        ctx, "specs/abstract_formal_spec.lean",
-        abstract_formal.lean_definitions + "\n\n" + abstract_formal.lean_theorem_stubs,
-    )
-    git_ops.commit(ctx.deps.container_id, "feat(spec): abstract formal specification", glob="specs/")
-    _checkpoint(ctx.deps)
-    return abstract_formal.model_dump()
 
 
 def check_lean(ctx: RunContext[AgentDeps], lean_file: str) -> dict:
@@ -172,10 +53,17 @@ async def _run_inline_judge(deps: AgentDeps) -> ProofVerdict | None:
     Stores the verdict in deps.progress['proof_verdict'] on success.
     """
     from pydantic_ai.usage import UsageLimits
+    lean_path = deps.progress.get("aeneas", {}).get("lean_path", "")
+    spec_path = lean_path.replace(".lean", "Spec.lean") if lean_path else ""
+    spec_content = tools.read_out(deps, spec_path) if spec_path else ""
+    build = deps.progress.get("lean_build", {})
+    build_line = f"lake build {'passed ✓' if build.get('success') else 'FAILED ✗'}"
+    if not build.get("success") and build.get("stderr"):
+        build_line += f"\n{build['stderr']}"
     prompt = (
         _pipeline_briefing(deps)
-        + "Inline PROOF-JUDGE: classify every theorem as proved / sorry_acceptable / "
-          "likely_misstated based on the current file state."
+        + f"Inline PROOF-JUDGE: classify every theorem as proved / sorry_acceptable / "
+          f"likely_misstated.\n\n{build_line}\n\n### {spec_path}\n{spec_content}"
     )
     try:
         async with _proof_judge.iter(
@@ -228,31 +116,27 @@ async def check_and_judge(ctx: RunContext[AgentDeps], lean_file: str) -> dict:
     return result
 
 
-def get_build_result(ctx: RunContext[AgentDeps]) -> dict:
-    """Return the most recent lake build result from progress."""
-    return ctx.deps.progress.get(
-        "lean_build",
-        {"success": False, "stdout": "", "stderr": "check_lean has not been called yet"},
-    )
-
-
 # ── pipeline stages ───────────────────────────────────────────────────────────
 
 _doc_infer = factory.make_stage_agent("""
 You are the DOC-INFER stage of the Lusterna pipeline.
 
 Derive an abstract informal specification from the design document ALONE.
-You have NO access to the Rust source code or the Lean translation — only the design document.
+You have NO access to the Rust source code or the Lean translation.
 
-Call infer_abstract_informal_spec. It reads the design document and returns a structured
-AbstractInformalSpec: preconditions, postconditions, invariants, edge cases, and open
-questions where the design doc is silent.
+The full design document is provided in your prompt. Read it carefully and return
+a structured AbstractInformalSpec:
+  - preconditions: what must hold before the system is called
+  - postconditions: what the system guarantees on return
+  - invariants: properties that must hold throughout execution
+  - edge_cases: boundary conditions, overflow, empty input, etc.
+  - open_questions: aspects the design document does not specify
 
-When the tool returns (success or error), report the result and stop.
-Do not call any other tool.
+Be precise and concise. Do not invent behaviour not evidenced by the document.
 """,
+    output_type=AbstractInformalSpec,
+    retries=2,
 )
-_doc_infer.tool(infer_abstract_informal_spec)
 
 
 _doc_formalise = factory.make_stage_agent("""
@@ -261,17 +145,18 @@ You are the DOC-FORMALISE stage of the Lusterna pipeline.
 Produce a Lean 4 abstract formal specification from the abstract informal spec.
 You have NO access to the Rust source code or the Lean translation.
 
-Call formalise_abstract_spec. It runs an internal convergence loop:
-  1. The doc-formaliser turns the AbstractInformalSpec into Lean 4 theorem stubs.
-  2. If ambiguities are flagged, the doc-inferrer resolves them from the design document.
-  3. Repeat up to 3 rounds until converged.
+The abstract informal specification is provided in your prompt. From it, derive:
+  - lean_definitions: abstract type definitions and predicates (no Rust types)
+  - lean_theorem_stubs: theorem statements with sorry, referencing only abstract types
+  - rationale: brief explanation of the modelling choices
+  - ambiguities: list any aspects of the informal spec that are too ambiguous to
+    formalise faithfully (field name + question); leave empty when the spec is clear.
 
-The result is committed to specs/abstract_formal_spec.lean.
-When the tool returns (success or error), report the result and stop.
-Do not call any other tool.
+Use abstract mathematical types (Nat, List, Set, etc.). Each theorem stub needs a docstring.
 """,
+    output_type=AbstractFormalSpec,
+    retries=2,
 )
-_doc_formalise.tool(formalise_abstract_spec)
 
 
 _explore = factory.make_stage_agent("""
@@ -329,28 +214,17 @@ _translate.tool(tools.git_log)
 _infer = factory.make_stage_agent("""
 You are the INFER stage of the Lusterna pipeline.
 
-Derive an informal specification from the Aeneas-translated Lean output:
+Derive an informal specification from the Aeneas-translated Lean output and the design
+document. Both are provided directly in your prompt — do not call any tools.
 
-1. Locate the translated Lean file(s) with list_files('lean'). Use search_output_file
-   to find function signatures and definitions, then read_output_lines to read only
-   the relevant sections — avoid loading the entire file unless it is small.
-2. If specs/abstract_informal_spec.json exists (listed in the pipeline context), read
-   it — it is the abstract spec derived from the design document alone and describes
-   intended behaviour independent of the implementation. Align the informal spec
-   structure with it where possible (same postconditions, invariants, edge cases).
-3. Call infer_spec — it spawns a subagent that reads the Lean code and the design
-   document and returns a structured InformalSpec (preconditions, postconditions,
-   invariants, edge cases).
-4. If infer_spec returns an error dict, try once more.
-
-When infer_spec succeeds, your job is done. Do not proceed to formalise_spec.
+Return a structured InformalSpec: preconditions, postconditions, invariants, edge cases.
+Be precise and concise. Do not invent behaviour not evidenced by the code or the design
+document. Where the abstract informal spec (if present) covers the same aspect, align
+with its structure.
 """,
+    output_type=InformalSpec,
+    retries=2,
 )
-_infer.tool(tools.list_files)
-_infer.tool(tools.read_output_file)
-_infer.tool(tools.search_output_file)
-_infer.tool(tools.read_output_lines)
-_infer.tool(infer_spec)
 
 
 _formalise = factory.make_stage_agent("""
@@ -364,13 +238,11 @@ Write theorem stubs only — use `sorry` for all proofs. Do NOT attempt proofs.
    defines the theorems the implementation must satisfy. Use it as a guide for which
    theorems to include; the implementation spec should cover at least these obligations.
 
-2. Call formalise_spec — it spawns a subagent that turns the informal spec into Lean 4
-   theorem stubs and commits specs/formal_spec.lean.
-   If it returns an error, retry once; if it fails again, write the spec manually
-   with write_file using the informal spec in progress.
-
-3. Write the spec file to lean/<CrateName>Spec.lean (if formalise_spec did not).
-   Make sure lean/lakefile.lean declares it as a lean_lib target.
+2. Read specs/informal_spec.json (listed in the pipeline context). Derive Lean 4
+   theorem stubs from it. Write two files:
+     - specs/formal_spec.lean — definitions and theorem stubs (all sorry)
+     - lean/<CrateName>Spec.lean — the same stubs, importing the Aeneas translation
+   Make sure lean/lakefile.lean declares lean/<CrateName>Spec.lean as a lean_lib target.
 
 4. Call check_lean to run `lake build`.
 
@@ -393,7 +265,6 @@ _formalise.tool(tools.search_output_file)
 _formalise.tool(tools.read_output_lines)
 _formalise.tool(tools.patch_output_lines)
 _formalise.tool(tools.write_file)
-_formalise.tool(formalise_spec)
 _formalise.tool(check_lean)
 _formalise.tool(tools.git_commit)
 _formalise.tool(tools.git_log)
@@ -405,19 +276,13 @@ You are the JUDGE stage of the Lusterna pipeline.
 Evaluate the formal Lean 4 specification and return a structured JudgeVerdict that
 includes both an overall verdict and a per-component breakdown.
 
-Steps:
-1. Call get_build_result to see whether lake build passed.
-2. Locate spec files with list_files('lean'). For each file, use search_output_file to
-   find theorem/definition names, then read_output_lines to fetch individual components.
-   Use read_output_file only when you need the full file (e.g. a short spec).
-3. Read specs/informal_spec.json for the implementation-derived informal spec.
-4. Read specs/abstract_formal_spec.lean — this is the ABSTRACT specification derived
-   from the design document alone, with no knowledge of the Rust implementation.
-   It represents the intended behaviour as the author described it, independent of
-   how the code was written. Use it as a ground-truth reference: if a theorem in
-   the implementation spec contradicts or is weaker than the abstract spec, flag it
-   as a critical issue. Gaps in the abstract spec (things it does not mention) are
-   acceptable — they represent design-doc silence, not discrepancies.
+All files you need are injected directly into your prompt — do not call any tools.
+The build result, implementation spec, abstract spec, and informal spec are all provided.
+
+specs/abstract_formal_spec.lean is the ABSTRACT specification derived from the design
+document alone, with no knowledge of the Rust implementation. Use it as a ground-truth
+reference: if a theorem in the implementation spec contradicts or is weaker than the
+abstract spec, flag it as a critical issue. Gaps in the abstract spec are acceptable.
 
 For EACH theorem, definition, and lemma in the spec file, produce a ComponentVerdict:
   - name: the Lean identifier (e.g. "fib_recursive_correct")
@@ -456,11 +321,6 @@ IMPORTANT: if lake build failed, approved MUST be false and score MUST be ≤ 4.
     output_type=JudgeVerdict,
     retries=3,
 )
-_judge.tool(get_build_result)
-_judge.tool(tools.list_files)
-_judge.tool(tools.read_output_file)
-_judge.tool(tools.search_output_file)
-_judge.tool(tools.read_output_lines)
 
 
 _reconcile = factory.make_stage_agent("""
@@ -470,15 +330,13 @@ Compare the abstract formal specification (derived from the design document alon
 against the implementation formal specification (derived from the Aeneas translation).
 Return a structured ReconciliationReport.
 
-Steps:
-1. Locate both spec files with list_files('lean'). Use search_output_file +
-   read_output_lines to read theorems side by side rather than loading entire files.
-   Use read_output_file for small files (under ~100 lines).
-2. specs/abstract_formal_spec.lean is the ABSTRACT spec — produced with zero knowledge
-   of the Rust source; it represents design intent.
-   lean/*Spec.lean is the IMPLEMENTATION spec, derived from the Aeneas translation.
-3. For each theorem/definition, determine whether the two specs agree, diverge, or
-   whether one side is simply silent.
+All files you need are injected directly into your prompt — do not call any tools.
+specs/abstract_formal_spec.lean is the ABSTRACT spec — produced with zero knowledge
+of the Rust source; it represents design intent.
+lean/*Spec.lean is the IMPLEMENTATION spec, derived from the Aeneas translation.
+
+For each theorem/definition, determine whether the two specs agree, diverge, or
+whether one side is simply silent.
 
 Classify each discrepancy with one of four kinds:
 
@@ -520,10 +378,6 @@ whether something is a gap or a real discrepancy, classify it as design_doc_sile
     output_type=ReconciliationReport,
     retries=3,
 )
-_reconcile.tool(tools.list_files)
-_reconcile.tool(tools.read_output_file)
-_reconcile.tool(tools.search_output_file)
-_reconcile.tool(tools.read_output_lines)
 
 
 _prove = factory.make_stage_agent("""
@@ -586,10 +440,8 @@ _proof_judge = factory.make_stage_agent("""
 You are the PROOF JUDGE stage of the Lusterna pipeline.
 
 Evaluate every theorem and lemma in the formal spec and return a ProofVerdict.
-
-Use search_output_file(file, 'theorem|lemma') to enumerate all theorems with their
-line numbers, then read_output_lines to fetch each one individually. This keeps your
-context small — do not load the entire spec with read_output_file unless it is short.
+The current spec file content and build result are injected directly in your prompt —
+do not call any tools.
 
 For each component classify its status:
   "proved"            — proof is complete (no sorry), compiles, and is correct
@@ -617,20 +469,16 @@ STAGNATION — set stagnant=true ONLY when ALL of:
     output_type=ProofVerdict,
     retries=3,
 )
-_proof_judge.tool(get_build_result)
-_proof_judge.tool(tools.list_files)
-_proof_judge.tool(tools.read_output_file)
-_proof_judge.tool(tools.search_output_file)
-_proof_judge.tool(tools.read_output_lines)
 
 
 _report = factory.make_stage_agent("""
 You are the REPORT stage of the Lusterna formal verification pipeline.
 
-Write each section of the verification report as a SEPARATE FILE under report/,
-using write_file once per section. The calling code will concatenate them in order
-into VERIFICATION_REPORT.md — do NOT write that file yourself and do NOT call
-git_commit.
+All artefacts you need are injected directly in your prompt — do not call any read tools.
+
+Write each section as a SEPARATE FILE under report/ using write_file once per section.
+The calling code concatenates them into VERIFICATION_REPORT.md — do NOT write that
+file yourself and do NOT call git_commit.
 
 Write exactly these files, in this order:
 
@@ -643,14 +491,11 @@ Write exactly these files, in this order:
       Aeneas output files, any partial-translation caveats.
 
   report/03_abstract_spec.md
-      Read specs/abstract_formal_spec.lean and specs/abstract_informal_spec.json.
-      List the key theorems and definitions with a one-line gloss for each.
-      Note any open_questions the doc-inferrer flagged.
+      List the key theorems and definitions from the abstract spec with a one-line
+      gloss for each. Note any open_questions the doc-inferrer flagged.
 
   report/04_implementation_spec.md
-      Read specs/informal_spec.json and the formal spec file (lean/*Spec.lean —
-      use list_files('lean') to find it; use search_output_file + read_output_lines
-      to read theorem by theorem). List every theorem stub with its statement and a
+      List every theorem stub from the implementation spec with its statement and a
       one-line explanation. Include the lake build result.
 
   report/05_spec_judge.md
@@ -659,11 +504,9 @@ Write exactly these files, in this order:
       (Verdict data is in the pipeline context above.)
 
   report/06_reconciliation.md
-      Read each specs/reconciliation_cycle_N.json individually (use read_output_file
-      with the exact filename, never the directory). For each cycle: aligned
-      components, discrepancies (with kind, severity, description), refinement
-      obligations. Flag any discrepancy that appeared in an earlier cycle but
-      vanished later — that is suspicious.
+      For each reconciliation cycle: aligned components, discrepancies (with kind,
+      severity, description), refinement obligations. Flag any discrepancy that
+      appeared in an earlier cycle but vanished later — that is suspicious.
 
   report/07_proofs.md
       Proof-judge verdict: per-theorem classification (proved/sorry_acceptable/
@@ -679,11 +522,6 @@ Be thorough — do not summarise away detail that would help a reader understand
 what was verified, what was found, and what remains open.
 """,
 )
-_report.tool(tools.list_files)
-_report.tool(tools.read_file)
-_report.tool(tools.read_output_file)
-_report.tool(tools.search_output_file)
-_report.tool(tools.read_output_lines)
 _report.tool(tools.write_file)
 _report.tool(tools.git_log)
 
@@ -807,6 +645,19 @@ def _pipeline_briefing(deps: AgentDeps) -> str:
             + (f"  misstated={mis}" if mis else "")
         )
 
+    # Effort estimate (survives compaction — re-injected into every briefing)
+    effort = p.get("effort_estimate")
+    if effort:
+        def _ns(lst): return ", ".join(lst) if lst else "none"
+        lines.append(
+            f"\nEffort estimate (PROVE guidance):"
+            f"\n  trivial (attempt):               {_ns(effort.get('trivial', []))}"
+            f"\n  moderate (attempt):              {_ns(effort.get('moderate', []))}"
+            f"\n  hard_acceptable (leave sorry):   {_ns(effort.get('hard_acceptable', []))}"
+            f"\n  likely_misstated (do not touch): {_ns(effort.get('likely_misstated', []))}"
+            f"\nAttempt only trivial and moderate. Mark hard_acceptable as sorry immediately."
+        )
+
     lines.append("")   # trailing newline before stage-specific prompt
     return "\n".join(lines) + "\n"
 
@@ -828,7 +679,8 @@ async def _run_stage(agent: Agent, prompt: str, deps: AgentDeps, label: str) -> 
         usage_limits=UsageLimits(request_limit=config.REQUEST_LIMIT),
     ) as run:
         async for _node in run:
-            pass
+            if deps.progress.get("proof_verdict", {}).get("stagnant"):
+                break
         result = run.result
     log.info(
         "Stage %s complete — session total=%d/%s",
@@ -840,31 +692,77 @@ async def _run_stage(agent: Agent, prompt: str, deps: AgentDeps, label: str) -> 
 # ── pipeline sub-functions ────────────────────────────────────────────────────
 
 async def _run_doc_stages(deps: AgentDeps, resume_note: str) -> str:
-    """Run DOC-INFER and DOC-FORMALISE (skipped if already in progress)."""
+    """Run DOC-INFER and DOC-FORMALISE with an orchestrator-level ambiguity loop."""
     completed = set(deps.progress.keys())
 
-    if "abstract_informal_spec" not in completed:
-        await _run_stage(
+    _MAX_DOC_ROUNDS = 3
+
+    async def _run_doc_infer(prompt_suffix: str = "") -> AbstractInformalSpec | None:
+        result = await _run_stage(
             _doc_infer,
-            "Begin DOC-INFER. Call infer_abstract_informal_spec to derive the abstract "
-            "informal specification from the design document." + resume_note,
+            f"Begin DOC-INFER. Derive the abstract informal specification from this "
+            f"design document:\n\n{deps.design_doc}" + prompt_suffix,
             deps, "DOC-INFER",
         )
+        if result and result.output:
+            spec: AbstractInformalSpec = result.output
+            deps.progress["abstract_informal_spec"] = spec.model_dump()
+            tools.write_out(deps, "specs/abstract_informal_spec.json", spec.model_dump_json(indent=2))
+            return spec
+        return None
+
+    if "abstract_informal_spec" not in completed:
+        informal = await _run_doc_infer(resume_note)
         _checkpoint(deps)
         resume_note = ""
-        completed = set(deps.progress.keys())
-        if "abstract_informal_spec" not in completed:
+        if informal is None:
             log.warning("DOC-INFER produced no output — proceeding without abstract spec")
+            return resume_note
+    else:
+        informal = AbstractInformalSpec(**deps.progress["abstract_informal_spec"])
 
-    if "abstract_informal_spec" in completed and "abstract_formal_spec" not in completed:
-        await _run_stage(
+    if "abstract_formal_spec" in completed:
+        return resume_note
+
+    for round_num in range(_MAX_DOC_ROUNDS):
+        inf_json = AbstractInformalSpec(**deps.progress["abstract_informal_spec"]).model_dump_json(indent=2)
+        formalise_result = await _run_stage(
             _doc_formalise,
-            "Proceed to DOC-FORMALISE. Call formalise_abstract_spec to produce "
-            "Lean 4 abstract theorem stubs from the abstract informal spec." + resume_note,
-            deps, "DOC-FORMALISE",
+            f"DOC-FORMALISE (round {round_num + 1}). Produce Lean 4 abstract theorem stubs "
+            f"from this abstract informal spec:\n\n{inf_json}" + resume_note,
+            deps, f"DOC-FORMALISE (round {round_num + 1})",
+        )
+        resume_note = ""
+
+        if not (formalise_result and formalise_result.output):
+            log.warning("DOC-FORMALISE round %d produced no output", round_num + 1)
+            break
+
+        formal: AbstractFormalSpec = formalise_result.output
+        deps.progress["abstract_formal_spec"] = formal.model_dump()
+        tools.write_out(
+            deps, "specs/abstract_formal_spec.lean",
+            formal.lean_definitions + "\n\n" + formal.lean_theorem_stubs,
+        )
+        git_ops.commit(deps.container_id, "feat(spec): abstract formal specification", glob="specs/")
+        _checkpoint(deps)
+
+        if not formal.ambiguities or round_num == _MAX_DOC_ROUNDS - 1:
+            break
+
+        log.info(
+            "DOC-FORMALISE flagged %d ambiguity/ies — re-running DOC-INFER (round %d/%d)",
+            len(formal.ambiguities), round_num + 1, _MAX_DOC_ROUNDS,
+        )
+        ambiguity_lines = "\n".join(f"  - {a.field}: {a.question}" for a in formal.ambiguities)
+        del deps.progress["abstract_informal_spec"]   # allow re-run
+        informal = await _run_doc_infer(
+            f"\n\nThe doc-formaliser flagged these ambiguities — resolve them using "
+            f"only the design document:\n{ambiguity_lines}"
         )
         _checkpoint(deps)
-        resume_note = ""
+        if informal is None:
+            break
 
     return resume_note
 
@@ -900,12 +798,23 @@ async def _run_translate_stages(deps: AgentDeps, resume_note: str) -> str:
             raise _PipelineAborted("Aeneas translation failed after retries.")
 
     if "informal_spec" not in completed:
-        await _run_stage(
+        lean_path = deps.progress.get("aeneas", {}).get("lean_path", "")
+        lean_content = tools.read_out(deps, lean_path) if lean_path else ""
+        abstract_informal = tools.read_out(deps, "specs/abstract_informal_spec.json")
+        infer_files = f"### {lean_path}\n{lean_content}"
+        if not abstract_informal.startswith("ERROR:"):
+            infer_files += f"\n\n### specs/abstract_informal_spec.json\n{abstract_informal}"
+        infer_result = await _run_stage(
             _infer,
-            "Proceed to INFER. Call infer_spec to derive the informal specification "
-            "from the Lean output and the design document." + resume_note,
+            "Proceed to INFER. Derive a structured InformalSpec from the following files:"
+            f"\n\n{infer_files}" + resume_note,
             deps, "INFER",
         )
+        if infer_result and infer_result.output:
+            spec: InformalSpec = infer_result.output
+            deps.progress["informal_spec"] = spec.model_dump()
+            tools.write_out(deps, "specs/informal_spec.json", spec.model_dump_json(indent=2))
+            git_ops.commit(deps.container_id, "feat(spec): informal specification", glob="specs/")
         _checkpoint(deps)
         resume_note = ""
         completed = set(deps.progress.keys())
@@ -913,6 +822,25 @@ async def _run_translate_stages(deps: AgentDeps, resume_note: str) -> str:
             raise _PipelineAborted("Informal spec inference failed.")
 
     return resume_note
+
+
+def _read_spec_files(deps: AgentDeps) -> str:
+    """Read all spec files needed by judge and reconcile stages and return as a formatted block."""
+    paths = [
+        "specs/abstract_formal_spec.lean",
+        "specs/abstract_informal_spec.json",
+        "specs/informal_spec.json",
+        "specs/formal_spec.lean",
+    ]
+    lean_path = deps.progress.get("aeneas", {}).get("lean_path", "")
+    if lean_path:
+        paths.append(lean_path.replace(".lean", "Spec.lean"))
+    parts = []
+    for path in paths:
+        content = tools.read_out(deps, path)
+        if not content.startswith("ERROR:"):
+            parts.append(f"### {path}\n{content}")
+    return "\n\n".join(parts)
 
 
 async def _run_spec_phase(
@@ -953,10 +881,10 @@ async def _run_spec_phase(
                 proof_amendments = []   # consumed
             elif spec_attempt == 0:
                 formalise_prompt = (
-                    "Proceed to FORMALISE+BUILD. Call formalise_spec to derive "
-                    "Lean 4 theorem stubs (all sorry), write the spec file to lean/, "
-                    "register it in the lakefile, then call check_lean until the "
-                    "build passes (max 3 build attempts)." + resume_note
+                    "Proceed to FORMALISE+BUILD. Read specs/informal_spec.json, "
+                    "derive Lean 4 theorem stubs (all sorry), write specs/formal_spec.lean "
+                    "and lean/<CrateName>Spec.lean, register it in the lakefile, then call "
+                    "check_lean until the build passes (max 3 build attempts)." + resume_note
                 )
             else:
                 failing_comps = [
@@ -987,16 +915,19 @@ async def _run_spec_phase(
                 _formalise, formalise_prompt, deps,
                 f"FORMALISE (cycle {cycle + 1}, round {spec_attempt + 1})",
             )
+            deps.progress["formal_spec"] = True
             _checkpoint(deps)
             resume_note = ""
 
         build_ok = deps.progress.get("lean_build", {}).get("success", False)
+        build_stderr = deps.progress.get("lean_build", {}).get("stderr", "")
+        spec_files = _read_spec_files(deps)
         try:
             sj_result = await _run_stage(
                 _judge,
-                f"Proceed to SPEC-JUDGE. Evaluate the theorem statements only "
-                f"(ignore sorry proofs). "
-                f"lake build {'passed ✓' if build_ok else 'FAILED ✗ — approved must be false'}.",
+                f"SPEC-JUDGE: lake build {'passed ✓' if build_ok else 'FAILED ✗ — approved must be false'}."
+                + (f"\nBuild errors:\n{build_stderr}" if not build_ok and build_stderr else "")
+                + f"\n\nEvaluate theorem statements only (ignore sorry proofs).\n\n{spec_files}",
                 deps,
                 f"SPEC-JUDGE (cycle {cycle + 1}, round {spec_attempt + 1})",
             )
@@ -1040,21 +971,22 @@ async def _run_reconcile_phase(deps: AgentDeps, cycle: int) -> None:
     if "abstract_formal_spec" not in completed or len(rc_history) > cycle:
         return
 
+    spec_files = _read_spec_files(deps)
     prior_note = ""
     if cycle > 0:
-        prior_note = (
-            f" Prior cycle findings are summarised in the pipeline context above "
-            f"and detailed in specs/reconciliation_cycle_{cycle}.json. "
-            "Note whether previous critical discrepancies have been resolved, "
-            "persisted, or worsened."
-        )
+        prior_json = tools.read_out(deps, f"specs/reconciliation_cycle_{cycle}.json")
+        if not prior_json.startswith("ERROR:"):
+            prior_note = (
+                f"\n\nPrior cycle {cycle} findings:\n{prior_json}\n"
+                "Note whether previous critical discrepancies have been resolved, "
+                "persisted, or worsened."
+            )
     rc_result = await _run_stage(
         _reconcile,
-        f"Proceed to RECONCILE (cycle {cycle + 1}). "
-        "Compare specs/abstract_formal_spec.lean (design intent, no implementation "
-        "knowledge) against lean/*Spec.lean (implementation spec). "
+        f"RECONCILE (cycle {cycle + 1}): compare abstract spec vs implementation spec. "
         "Classify every discrepancy and produce refinement obligations for critical ones."
-        + prior_note,
+        + prior_note
+        + f"\n\n{spec_files}",
         deps,
         f"RECONCILE (cycle {cycle + 1})",
     )
@@ -1109,6 +1041,7 @@ async def _run_estimator(deps: AgentDeps, cycle: int) -> TheoremEstimate | None:
             len(estimate.trivial), len(estimate.moderate),
             len(estimate.hard_acceptable), len(estimate.likely_misstated),
         )
+        deps.progress["effort_estimate"] = estimate.model_dump()
         return estimate
     except Exception as e:
         log.warning("Effort estimator failed: %s — proceeding without estimate", e)
@@ -1235,6 +1168,17 @@ async def _run_report(deps: AgentDeps, resume_note: str) -> str:
     rc_cycles        = len(rc_history)
     rc_obligations_n = sum(len(rc_entry.get("refinement_obligations", [])) for rc_entry in rc_history)
 
+    report_files = _read_spec_files(deps)
+    lean_path = deps.progress.get("aeneas", {}).get("lean_path", "")
+    if lean_path:
+        lean_content = tools.read_out(deps, lean_path)
+        if not lean_content.startswith("ERROR:"):
+            report_files = f"### {lean_path}\n{lean_content}\n\n{report_files}"
+    for i, rc_entry in enumerate(rc_history, 1):
+        rc_json = tools.read_out(deps, f"specs/reconciliation_cycle_{i}.json")
+        if not rc_json.startswith("ERROR:"):
+            report_files += f"\n\n### specs/reconciliation_cycle_{i}.json\n{rc_json}"
+
     report_result = await _run_stage(
         _report,
         f"Proceed to REPORT. "
@@ -1242,10 +1186,8 @@ async def _run_report(deps: AgentDeps, resume_note: str) -> str:
         f"Proof-judge: proved={proved_count}, sorry_acceptable={sorry_count}, "
         f"likely_misstated={misstated_count}. "
         f"Reconciliation: {rc_cycles} cycle(s), critical_discrepancies_ever={rc_critical_ever}, "
-        f"total_refinement_obligations={rc_obligations_n}. "
-        f"Reconciliation reports are at specs/reconciliation_cycle_N.json (N=1..{rc_cycles}). "
-        "Read the artefacts (lean/*.lean, specs/*.json) "
-        "and produce the full VERIFICATION_REPORT.md content as your response." + resume_note,
+        f"total_refinement_obligations={rc_obligations_n}."
+        f"\n\n{report_files}" + resume_note,
         deps, "REPORT",
     )
 

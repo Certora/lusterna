@@ -24,8 +24,9 @@ All generated artefacts are git-committed incrementally inside the toolchain con
 lusterna/
 ├── cli.py          — Click entry point; manages the container lifecycle
 ├── agent.py        — Orchestrator agent (pydantic-ai); owns the pipeline loop
-├── subagents.py    — Embedded specialists: spec inferrer, formaliser, summariser (called as tools)
-├── tools.py        — All agent-callable tools (file I/O, Aeneas, Lake, Mathlib search, git)
+├── schemas.py      — Pydantic output schemas shared across stages and subagents
+├── subagents.py    — Embedded specialists: effort estimator, context compaction summariser
+├── tools.py        — All agent-callable tools (file I/O, Aeneas, Lake, git)
 ├── docs.py         — Aeneas/Lean skill documents embedded as agent instructions
 ├── container.py    — Docker lifecycle: start, push repo, exec, pull artefacts, stop
 ├── git_ops.py      — Git commands run inside the container via docker exec
@@ -43,19 +44,18 @@ CLI
      └─ tar-pipe repo → /workspace/repo
      └─ git init /workspace/out
          └─ Orchestrator agent (pydantic-ai)
-             ├─ DOC-INFER    infer_abstract_informal_spec → specs/  (git commit)
-             │                └─ doc-inferrer subagent (design doc only, no code)
-             ├─ DOC-FORMALISE formalise_abstract_spec    → specs/  (git commit)
-             │                └─ doc-formaliser subagent; iterates with doc-inferrer
-             │                   to resolve ambiguities (up to 3 rounds)
+             ├─ DOC-INFER    → specs/abstract_informal_spec.json  (git commit)
+             │                structured output (design doc only, no code)
+             ├─ DOC-FORMALISE → specs/abstract_formal_spec.lean  (git commit)
+             │                structured output; orchestrator re-runs DOC-INFER if
+             │                ambiguities are flagged (up to 3 rounds)
              ├─ EXPLORE      list_files, read_file
              ├─ TRANSLATE    run_aeneas          → lean/     (git commit)
              │                write_rust_file if Charon/Aeneas errors (up to 2 retries)
-             ├─ INFER        infer_spec          → specs/    (git commit)
-             │                └─ spec-inferrer subagent
-             ├─ FORMALISE    formalise_spec      → lean/     (git commit)
-             │   + BUILD     check_lean (lake build) — loop until pass or 3 attempts
-             │                └─ formaliser subagent
+             ├─ INFER        → specs/informal_spec.json      (git commit)
+             │                structured output from Lean translation + design doc
+             ├─ FORMALISE    write_file, check_lean → lean/  (git commit)
+             │   + BUILD     (lake build) — loop until pass or 3 attempts
              ├─ SPEC-JUDGE   (re-formalise if score < 7, up to 10 rounds)
              │                reads abstract spec as ground-truth reference
              ├─ RECONCILE    → specs/reconciliation_cycle_N.json  (git commit)
@@ -89,12 +89,12 @@ Each stage is a full `Agent` run driven by the Python pipeline loop in `run_sess
 
 | Stage | Key tools | Purpose |
 |---|---|---|
-| DOC-INFER | `infer_abstract_informal_spec` | Derive abstract informal spec from design doc — no code access |
-| DOC-FORMALISE | `formalise_abstract_spec` | Derive abstract Lean stubs; iterate with doc-inferrer to resolve ambiguities |
+| DOC-INFER | *(structured output)* | Derive abstract informal spec from design doc — no code access |
+| DOC-FORMALISE | *(structured output)* | Derive abstract Lean stubs; orchestrator re-runs DOC-INFER if ambiguities are flagged (up to 3 rounds) |
 | EXPLORE | `list_files`, `read_file` | Survey the Rust source; flag Aeneas incompatibilities |
 | TRANSLATE | `run_aeneas`, `write_rust_file` | Charon → Aeneas → Lean; massage Rust on errors |
-| INFER | `infer_spec` | Trigger spec-inferrer specialist; store informal spec |
-| FORMALISE | `formalise_spec`, `check_lean`, `write_file` | Derive theorem stubs; iterate until `lake build` passes |
+| INFER | *(structured output)* | Read Lean translation + design doc; return structured InformalSpec |
+| FORMALISE | `write_file`, `check_lean` | Derive theorem stubs from informal spec; iterate until `lake build` passes |
 | SPEC-JUDGE | `read_output_file`, `get_build_result` | Score statements against impl spec and abstract spec; re-formalise if score < 7 |
 | RECONCILE | `read_output_file`, `list_files` | Compare abstract vs impl spec; classify discrepancies; accumulate across cycles |
 | PROVE | `patch_output_lines`, `check_and_judge` | Fill `sorry` proofs for trivial/moderate theorems only; inline proof-judge after each successful build detects stagnation early |
@@ -106,10 +106,6 @@ Specialists are invoked as tool calls from within a pipeline stage. They receive
 
 | Specialist | Output type | Purpose |
 |---|---|---|
-| doc-inferrer | `AbstractInformalSpec` | Reads design doc only → abstract preconditions, postconditions, invariants, open questions |
-| doc-formaliser | `AbstractFormalSpec` | Turns abstract informal spec → Lean 4 abstract theorem stubs; flags ambiguities for doc-inferrer |
-| spec-inferrer | `InformalSpec` | Reads Lean translation + design doc → implementation informal spec |
-| formaliser | `FormalSpec` | Turns informal spec → Lean 4 definitions and theorem stubs |
 | effort-estimator | `TheoremEstimate` | Classifies each theorem as trivial / moderate / hard-acceptable / likely-misstated before PROVE runs |
 | proof-judge | `ProofVerdict` | Classifies each theorem as proved / sorry-acceptable / likely-misstated; runs inline after each successful `lake build` during PROVE |
 

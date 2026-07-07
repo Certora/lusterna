@@ -66,7 +66,7 @@ async def _before_request(
         ctx.deps.message_history = list(model_ctx.messages)
 
     if telemetry.stage.input_tokens >= config.COMPACTION_THRESHOLD:
-        telemetry.stage.reset()
+        telemetry.stage.input_tokens -= config.COMPACTION_THRESHOLD
         boundary = _turn_boundary(model_ctx.messages)
         if boundary > 0:
             to_compact = list(model_ctx.messages[:boundary])
