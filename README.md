@@ -12,8 +12,8 @@ Given a Rust repository and a design document, Lusterna:
 6. Verifies the spec compiles with `lake build`; iterates until it does (max 3 attempts)
 7. Has a spec-judge score the statements against both the implementation and the abstract spec; revises if score < 7
 8. **Reconciles** the abstract spec against the implementation spec — classifies discrepancies and flags critical ones (implementation bugs, mis-stated theorems)
-9. Attempts to fill in proofs using Lean 4 tactics
-10. Has a proof-judge classify each theorem (proved / sorry-acceptable / misstated)
+9. Estimates proof difficulty per theorem (trivial / moderate / hard-acceptable / likely-misstated)
+10. Attempts to fill in proofs for tractable theorems using Lean 4 tactics; after each successful build an embedded proof-judge evaluates progress and stops the stage early if stagnation is detected
 11. Writes a final verification report
 
 All generated artefacts are git-committed incrementally inside the toolchain container and pulled to the host on exit.
@@ -63,10 +63,11 @@ CLI
              │                  implementation_wrong / bridge_wrong (CRITICAL)
              │                  abstract_wrong (minor) / design_doc_silent (gap)
              │                accumulates across cycles — critical findings never dropped
-             ├─ PROVE        write_file, check_lean, search_mathlib
-             │                (fill sorry proofs with tactics; up to 80 messages)
-             │                warned of any critical discrepancies from all prior cycles
-             ├─ PROOF-JUDGE  (proved / sorry-acceptable / misstated; feeds misstated back)
+             ├─ EFFORT-ESTIMATOR  (subagent; trivial/moderate/hard/misstated per theorem)
+             ├─ PROVE        patch_output_lines, check_and_judge, search_mathlib
+             │                attempts only trivial+moderate theorems; after each
+             │                successful build an inline PROOF-JUDGE runs and PROVE
+             │                stops immediately if stagnant or no sorry remain
              └─ REPORT       write_file          → VERIFICATION_REPORT.md
  └─ tar-pipe /workspace/out → host out_dir
  └─ stop container
@@ -96,8 +97,7 @@ Each stage is a full `Agent` run driven by the Python pipeline loop in `run_sess
 | FORMALISE | `formalise_spec`, `check_lean`, `write_file` | Derive theorem stubs; iterate until `lake build` passes |
 | SPEC-JUDGE | `read_output_file`, `get_build_result` | Score statements against impl spec and abstract spec; re-formalise if score < 7 |
 | RECONCILE | `read_output_file`, `list_files` | Compare abstract vs impl spec; classify discrepancies; accumulate across cycles |
-| PROVE | `write_file`, `check_lean`, `search_mathlib` | Fill `sorry` proofs; warned of critical discrepancies from all prior cycles |
-| PROOF-JUDGE | `read_output_file`, `get_build_result` | Classify each theorem; feed misstated back to formaliser |
+| PROVE | `patch_output_lines`, `check_and_judge`, `search_mathlib` | Fill `sorry` proofs for trivial/moderate theorems only; inline proof-judge after each successful build detects stagnation early |
 | REPORT | `read_output_file`, `git_log` | Produce `VERIFICATION_REPORT.md` |
 
 ### Embedded specialists (`subagents.py`)
@@ -110,10 +110,14 @@ Specialists are invoked as tool calls from within a pipeline stage. They receive
 | doc-formaliser | `AbstractFormalSpec` | Turns abstract informal spec → Lean 4 abstract theorem stubs; flags ambiguities for doc-inferrer |
 | spec-inferrer | `InformalSpec` | Reads Lean translation + design doc → implementation informal spec |
 | formaliser | `FormalSpec` | Turns informal spec → Lean 4 definitions and theorem stubs |
+| effort-estimator | `TheoremEstimate` | Classifies each theorem as trivial / moderate / hard-acceptable / likely-misstated before PROVE runs |
+| proof-judge | `ProofVerdict` | Classifies each theorem as proved / sorry-acceptable / likely-misstated; runs inline after each successful `lake build` during PROVE |
 
 ### Proof search approach
 
-The PROVE stage uses `check_lean` (`lake build`) as its only feedback mechanism — no interactive LSP, no retrieval-augmented generation. The stage agent works from its training knowledge of Lean 4 and Aeneas idioms (embedded as skill documents in `docs/`) and can call `search_mathlib` to query [Loogle](https://loogle.lean-lang.org) for specific Mathlib lemmas by name or type signature. This keeps the toolchain simple and avoids the latency and reliability problems of running a Lean language server inside a locked-down, network-isolated container.
+Before PROVE runs, an effort-estimator subagent reads the formal spec and classifies every theorem by difficulty. PROVE then attempts only the `trivial` and `moderate` theorems, leaving `hard_acceptable` ones as `sorry` immediately. This avoids burning tokens on proofs that require advanced techniques beyond automation.
+
+PROVE uses `check_and_judge` (`lake build` + inline proof-judge) as its feedback mechanism — no interactive LSP, no retrieval-augmented generation. After each successful build the inline proof-judge evaluates the current state and PROVE stops immediately if all remaining `sorry` theorems are classified as acceptable or if progress has stagnated. The stage agent works from its training knowledge of Lean 4 and Aeneas idioms (embedded as skill documents in `docs/`) and can call `search_mathlib` to query [Loogle](https://loogle.lean-lang.org) for specific Mathlib lemmas by name or type signature. This keeps the toolchain simple and avoids the latency and reliability problems of running a Lean language server inside a locked-down, network-isolated container.
 
 ### Checkpoints
 
@@ -246,6 +250,7 @@ Print the state JSON for a specific checkpoint (default: latest).
 | `LUSTERNA_IMAGE` | `lusterna-toolchain:latest` | Default Docker image |
 | `LUSTERNA_CONTAINER` | — | Pre-existing container to attach to (skips auto-start) |
 | `LUSTERNA_TOKEN_BUDGET` | (unlimited) | Maximum total tokens across all agents for a session; 0 or unset = unlimited |
+| `LUSTERNA_REQUEST_LIMIT` | (unlimited) | Maximum model requests per pipeline stage; 0 or unset = unlimited |
 | `LUSTERNA_COMPACTION_THRESHOLD` | `500000` | Compact within-stage context when accumulated input tokens reach this value |
 | `LUSTERNA_LOG_LEVEL` | `INFO` | Log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 
