@@ -50,8 +50,8 @@ def read_output_file(ctx: RunContext[AgentDeps], path: str) -> str:
 def write_file(ctx: RunContext[AgentDeps], path: str, content: str = "") -> str:
     """Write content to a file in /workspace/out.
 
-    *path* may be relative (e.g. 'VERIFICATION_REPORT.md') or an absolute path
-    inside /workspace/out (e.g. '/workspace/out/VERIFICATION_REPORT.md') — both
+    *path* may be relative (e.g. 'FOO.md') or an absolute path
+    inside /workspace/out (e.g. '/workspace/out/FOO.md') — both
     are accepted. *content* is required — returns an ERROR: string if omitted or
     on failure so the model can recover.
     """

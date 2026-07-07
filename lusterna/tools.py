@@ -340,6 +340,8 @@ def check_lean(deps: AgentDeps, lean_file: str) -> dict:
     )
     if code != 0:
         log.warning("lake build failed (exit %d): %s", code, err[:200])
+    else:
+        log.info("check_lean: lake build succeeded")
     return {"success": code == 0, "stdout": out, "stderr": err}
 
 

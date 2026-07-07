@@ -39,15 +39,24 @@ async def _after_request(ctx: RunContext, *, request_context: ModelRequestContex
     return response
 
 
+_COMPACTION_KEEP = 20  # keep last N messages verbatim after compaction
+
+
 def _turn_boundary(messages: list) -> int:
-    """Return the index of the last clean turn start — the last ModelRequest that
-    is not purely tool returns. Compacting up to this index never splits a pair."""
-    from pydantic_ai.messages import ModelRequest, ToolReturnPart, RetryPromptPart
-    for i in range(len(messages) - 1, -1, -1):
-        msg = messages[i]
-        if isinstance(msg, ModelRequest) and not all(
-            isinstance(p, (ToolReturnPart, RetryPromptPart)) for p in msg.parts
-        ):
+    """Return the index of the first message to keep after compaction.
+
+    A safe cut point is just before a ModelResponse — to_compact then ends with
+    a complete ModelRequest(ToolReturnPart), never splitting a tool-call/return pair.
+    Scans backwards from len(messages)-KEEP to find the nearest ModelResponse.
+    Returns 0 if there is nothing worth compacting.
+    """
+    from pydantic_ai.messages import ModelResponse
+    if len(messages) <= _COMPACTION_KEEP:
+        return 0
+    target = len(messages) - _COMPACTION_KEEP
+    # Snap forward to the nearest ModelResponse at or after target.
+    for i in range(target, len(messages)):
+        if isinstance(messages[i], ModelResponse):
             return i
     return 0
 

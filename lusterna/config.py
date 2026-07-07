@@ -19,12 +19,17 @@ _budget_env = os.environ.get("LUSTERNA_TOKEN_BUDGET", "0")
 TOKEN_BUDGET: int | None = int(_budget_env) if _budget_env.strip() not in ("", "0") else None
 
 
+MAX_TOKENS = int(os.environ.get("LUSTERNA_MAX_TOKENS", "16000"))
+
+
 def cache_settings(model: str) -> dict:
-    """Return AnthropicModelSettings with prompt caching enabled when *model* is Anthropic.
+    """Return AnthropicModelSettings with prompt caching and raised max_tokens.
 
     Caches system prompt blocks and the last tool-definition block so re-sent
     instructions and tool schemas are billed at the cache-hit rate (~10× cheaper).
-    Returns an empty dict for non-Anthropic providers, keeping agents vendor-agnostic.
+    Raises max_tokens from the pydantic-ai default of 4096 so the model can write
+    complete Lean proofs without hitting the output limit mid-response.
+    Returns an empty dict for non-Anthropic providers.
     """
     if not model.startswith("anthropic:"):
         return {}
@@ -33,6 +38,7 @@ def cache_settings(model: str) -> dict:
         return AnthropicModelSettings(
             anthropic_cache_instructions=True,
             anthropic_cache_tool_definitions=True,
+            max_tokens=MAX_TOKENS,
         )
     except ImportError:
         return {}
