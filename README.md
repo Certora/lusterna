@@ -64,7 +64,7 @@ CLI
              │                  abstract_wrong (minor) / design_doc_silent (gap)
              │                accumulates across cycles — critical findings never dropped
              ├─ EFFORT-ESTIMATOR  (subagent; trivial/moderate/hard/misstated per theorem)
-             ├─ PROVE        patch_output_lines, check_and_judge, search_mathlib
+             ├─ PROVE        patch_output_lines, check_and_judge
              │                attempts only trivial+moderate theorems; after each
              │                successful build an inline PROOF-JUDGE runs and PROVE
              │                stops immediately if stagnant or no sorry remain
@@ -97,7 +97,7 @@ Each stage is a full `Agent` run driven by the Python pipeline loop in `run_sess
 | FORMALISE | `formalise_spec`, `check_lean`, `write_file` | Derive theorem stubs; iterate until `lake build` passes |
 | SPEC-JUDGE | `read_output_file`, `get_build_result` | Score statements against impl spec and abstract spec; re-formalise if score < 7 |
 | RECONCILE | `read_output_file`, `list_files` | Compare abstract vs impl spec; classify discrepancies; accumulate across cycles |
-| PROVE | `patch_output_lines`, `check_and_judge`, `search_mathlib` | Fill `sorry` proofs for trivial/moderate theorems only; inline proof-judge after each successful build detects stagnation early |
+| PROVE | `patch_output_lines`, `check_and_judge` | Fill `sorry` proofs for trivial/moderate theorems only; inline proof-judge after each successful build detects stagnation early |
 | REPORT | `read_output_file`, `git_log` | Produce `VERIFICATION_REPORT.md` |
 
 ### Embedded specialists (`subagents.py`)
@@ -117,7 +117,7 @@ Specialists are invoked as tool calls from within a pipeline stage. They receive
 
 Before PROVE runs, an effort-estimator subagent reads the formal spec and classifies every theorem by difficulty. PROVE then attempts only the `trivial` and `moderate` theorems, leaving `hard_acceptable` ones as `sorry` immediately. This avoids burning tokens on proofs that require advanced techniques beyond automation.
 
-PROVE uses `check_and_judge` (`lake build` + inline proof-judge) as its feedback mechanism — no interactive LSP, no retrieval-augmented generation. After each successful build the inline proof-judge evaluates the current state and PROVE stops immediately if all remaining `sorry` theorems are classified as acceptable or if progress has stagnated. The stage agent works from its training knowledge of Lean 4 and Aeneas idioms (embedded as skill documents in `docs/`) and can call `search_mathlib` to query [Loogle](https://loogle.lean-lang.org) for specific Mathlib lemmas by name or type signature. This keeps the toolchain simple and avoids the latency and reliability problems of running a Lean language server inside a locked-down, network-isolated container.
+PROVE uses `check_and_judge` (`lake build` + inline proof-judge) as its feedback mechanism — no interactive LSP, no retrieval-augmented generation. After each successful build the inline proof-judge evaluates the current state and PROVE stops immediately if all remaining `sorry` theorems are classified as acceptable or if progress has stagnated. The stage agent works from its training knowledge of Lean 4 and Aeneas idioms (embedded as skill documents in `docs/`). This keeps the toolchain simple and avoids the latency and reliability problems of running a Lean language server inside a locked-down, network-isolated container.
 
 ### Checkpoints
 

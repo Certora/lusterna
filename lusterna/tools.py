@@ -349,28 +349,6 @@ def patch_output_lines(ctx: RunContext[AgentDeps], path: str, start: int, end: i
     return f"Patched lines {start}–{end} of {path}"
 
 
-def search_mathlib(query: str, max_results: int = 8) -> list[dict]:
-    """Search Mathlib4 by name fragment or type signature via Loogle (e.g. 'Nat.fib_mono').
-    Returns up to *max_results* hits with name, type, module, doc fields."""
-    import json as _json
-    import urllib.parse
-    import urllib.request
-    url = "https://loogle.lean-lang.org/json?" + urllib.parse.urlencode({"q": query})
-    try:
-        with urllib.request.urlopen(
-            urllib.request.Request(url, headers={"User-Agent": "lusterna/1.0"}), timeout=10
-        ) as resp:
-            data = _json.loads(resp.read())
-    except Exception as exc:
-        log.warning("search_mathlib(%r): %s", query, exc)
-        return [{"error": str(exc)}]
-    hits = data.get("hits", [])[:max_results]
-    log.info("search_mathlib(%r): %d/%s hits", query, len(hits), data.get("count", "?"))
-    return [{"name": h.get("name", ""), "type": h.get("type", ""),
-             "module": h.get("module", ""), "doc": (h.get("doc") or "")[:300]}
-            for h in hits]
-
-
 def git_log(ctx: RunContext[AgentDeps], n: int = 10) -> str:
     """Show the last *n* commits in /workspace/out."""
     return git_ops.log_oneline(ctx.deps.container_id, n=n)

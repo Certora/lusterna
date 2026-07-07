@@ -578,7 +578,6 @@ _prove.tool(tools.read_output_file)
 _prove.tool(tools.patch_output_lines)
 _prove.tool(tools.write_file)
 _prove.tool(check_and_judge)
-_prove.tool_plain(tools.search_mathlib)
 _prove.tool(tools.git_commit)
 _prove.tool(tools.git_log)
 
