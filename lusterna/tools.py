@@ -78,6 +78,29 @@ def read_out(deps: AgentDeps, path: str) -> str:
     return out
 
 
+def read_repo_sources(deps: AgentDeps) -> str:
+    """Read all .rs files plus Cargo.toml and build.rs from the repo.
+
+    Returns a single formatted block suitable for injection into a stage prompt.
+    Files under target/ are excluded. Used by the orchestrator to pre-load sources
+    for EXPLORE without requiring the agent to call list_files / read_file.
+    """
+    _, out, _ = exec_in(deps.container_id, [
+        "find", REPO_IN, "-type", "f",
+        "(", "-name", "*.rs", "-o", "-name", "Cargo.toml", "-o", "-name", "build.rs", ")",
+        "!", "-path", "*/target/*",
+    ])
+    paths = sorted(line for line in out.splitlines() if line.strip())
+    parts = []
+    for abs_path in paths:
+        rel = abs_path.removeprefix(REPO_IN + "/")
+        code, content, _ = exec_in(deps.container_id, ["cat", abs_path])
+        if code == 0:
+            parts.append(f"### {rel}\n{content}")
+    log.info("read_repo_sources: %d files", len(parts))
+    return "\n\n".join(parts)
+
+
 def read_output_file(ctx: RunContext[AgentDeps], path: str) -> str:
     """Read a generated file from /workspace/out (relative or absolute path).
     Use list_files('lean') to discover available files. Returns ERROR: on failure."""

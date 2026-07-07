@@ -14,6 +14,7 @@ from pydantic_ai.exceptions import UnexpectedModelBehavior
 from . import checkpoint, docs, factory, git_ops, subagents, telemetry, tools
 from .schemas import (
     AbstractInformalSpec, AbstractFormalSpec,
+    ExploreResult,
     InformalSpec, JudgeVerdict, ProofVerdict, ReconciliationReport,
     TheoremEstimate,
 )
@@ -162,20 +163,20 @@ Use abstract mathematical types (Nat, List, Set, etc.). Each theorem stub needs 
 _explore = factory.make_stage_agent("""
 You are the EXPLORE stage of the Lusterna formal verification pipeline.
 
-Understand the Rust codebase before translation begins. The goal is formal
-verification via Aeneas (Rust→Lean 4) and Lean 4 proof assistants — flag anything
-that would prevent or degrade an Aeneas translation.
+All Rust source files (*.rs), Cargo.toml, and build.rs are injected directly into
+your prompt — do not call any tools.
 
-- List all .rs and .toml files.
-- Read the key source files (lib.rs, main.rs, Cargo.toml).
-- Identify functions to be translated and flag obvious Aeneas incompatibilities
-  (vec!, println!, trait objects, unsupported std types, etc.).
-
-Write a short structured summary of findings. Then stop — do not run Aeneas.
+Analyse the codebase and return a structured ExploreResult:
+- entry_file: the main translation entry point ("src/lib.rs" or "src/main.rs")
+- entry_functions: function names Aeneas should translate (public API + helpers)
+- aeneas_incompatibilities: concrete issues that would block or degrade translation
+  (vec!, println!, trait objects, closures, unsupported std types, async, etc.)
+- suggested_rust_changes: specific source edits to apply before running Aeneas
+  (e.g. "stub out main body in src/main.rs", "replace Vec<T> with array")
 """,
+    output_type=ExploreResult,
+    retries=2,
 )
-_explore.tool(tools.list_files)
-_explore.tool(tools.read_file)
 
 
 _translate = factory.make_stage_agent("""
@@ -775,19 +776,30 @@ async def _run_translate_stages(deps: AgentDeps, resume_note: str) -> str:
     completed = set(deps.progress.keys())
 
     if "aeneas" not in completed:
-        await _run_stage(
+        sources = tools.read_repo_sources(deps)
+        explore_result = await _run_stage(
             _explore,
-            f"Begin EXPLORE for the Rust repository at {deps.repo_path}.\n"
-            f"Design document:\n{deps.design_doc[:2000]}" + resume_note,
+            f"Rust repository at {deps.repo_path}. Analyse the following sources:\n\n"
+            f"{sources}" + resume_note,
             deps, "EXPLORE",
         )
+        if explore_result and explore_result.output:
+            deps.progress["explore"] = explore_result.output.model_dump()
         _checkpoint(deps)
         resume_note = ""
 
     if "aeneas" not in completed:
+        explore = deps.progress.get("explore", {})
+        explore_brief = (
+            f"EXPLORE findings:\n"
+            f"  entry_file: {explore.get('entry_file', 'unknown')}\n"
+            f"  entry_functions: {', '.join(explore.get('entry_functions', []))}\n"
+            f"  incompatibilities: {'; '.join(explore.get('aeneas_incompatibilities', [])) or 'none'}\n"
+            f"  suggested_changes: {'; '.join(explore.get('suggested_rust_changes', [])) or 'none'}\n"
+        ) if explore else ""
         await _run_stage(
             _translate,
-            "Proceed to TRANSLATE. Run Aeneas on the Rust source; fix any "
+            f"{explore_brief}Proceed to TRANSLATE. Run Aeneas on the Rust source; fix any "
             "Charon/Aeneas errors by massaging the Rust source as needed." + resume_note,
             deps, "TRANSLATE",
         )
