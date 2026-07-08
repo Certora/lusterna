@@ -13,7 +13,7 @@ Given a Rust repository and a design document, Lusterna:
 7. Has a spec-judge score the statements against both the implementation and the abstract spec; revises if score < 7
 8. **Reconciles** the abstract spec against the implementation spec — classifies discrepancies and flags critical ones (implementation bugs, mis-stated theorems)
 9. Estimates proof difficulty per theorem (trivial / moderate / hard-acceptable / likely-misstated)
-10. Attempts to fill in proofs for tractable theorems using Lean 4 tactics; after each successful build an embedded proof-judge evaluates progress and stops the stage early if stagnation is detected
+10. Attempts to fill in proofs for tractable theorems using Lean 4 tactics; the orchestrator ends the stage when no `sorry` remain, the remaining-`sorry` count stops improving, or a round cap is hit. A proof-judge then classifies every theorem once
 11. Writes a final verification report
 
 All generated artefacts are git-committed incrementally inside the toolchain container and pulled to the host on exit.
@@ -23,7 +23,8 @@ All generated artefacts are git-committed incrementally inside the toolchain con
 ```
 lusterna/
 ├── cli.py          — Click entry point; manages the container lifecycle
-├── agent.py        — Orchestrator agent (pydantic-ai); owns the pipeline loop
+├── agent.py        — Pipeline orchestration: sequencing, loops, context, tool wiring
+├── stages.py       — Stage-agent definitions (prompt + output type per stage)
 ├── schemas.py      — Pydantic output schemas for all stage structured outputs
 ├── subagents.py    — Embedded specialists: effort estimator, context compaction summariser
 ├── tools.py        — All agent-callable tools (file I/O, Aeneas, Lake, git)
@@ -59,17 +60,16 @@ CLI
              │   + BUILD     (lake build) — loop until pass or 3 attempts
              ├─ SPEC-JUDGE   (re-formalise if score < 7, up to 10 rounds)
              │                structured output; orchestrator injects all spec files
-             ├─ RECONCILE    → specs/reconciliation_cycle_N.json  (git commit)
+             ├─ RECONCILE    → specs/reconciliation.json  (git commit)
              │                structured output; orchestrator injects abstract + impl specs
              │                classifies discrepancies:
              │                  implementation_wrong / bridge_wrong (CRITICAL)
              │                  abstract_wrong (minor) / design_doc_silent (gap)
-             │                accumulates across cycles — critical findings never dropped
              ├─ EFFORT-ESTIMATOR  (subagent; trivial/moderate/hard/misstated per theorem)
-             ├─ PROVE        patch_output_lines, check_and_judge
-             │                attempts only trivial+moderate theorems; after each
-             │                successful build an inline PROOF-JUDGE runs and PROVE
-             │                stops immediately if stagnant or no sorry remain
+             ├─ PROVE        patch_output_lines, check_lean
+             │                attempts only trivial+moderate theorems; orchestrator ends
+             │                the stage on remaining-sorry count (0 / no improvement /
+             │                round cap), then PROOF-JUDGE classifies every theorem once
              └─ REPORT       write_file, git_log → VERIFICATION_REPORT.md
                               orchestrator injects all spec and reconciliation files
  └─ tar-pipe /workspace/out → host out_dir
@@ -86,9 +86,9 @@ The toolchain (Rust/Cargo, Charon, Aeneas, Lean/Lake) lives entirely inside a Do
 
 All toolchain invocations go through `docker exec`. Git also runs inside the container so the commit history is part of the pulled artefacts.
 
-### Pipeline stages (`agent.py`)
+### Pipeline stages (`stages.py` + `agent.py`)
 
-Each stage is a full `Agent` run driven by the Python pipeline loop in `run_session()`. Each stage starts with a fresh context — stages communicate via the filesystem (git-committed artefacts) and `deps.progress`, not via message history. Within each stage, a manual compaction step triggers when accumulated input tokens exceed `LUSTERNA_COMPACTION_THRESHOLD`: all messages up to the start of the last complete turn are summarised by a lightweight subagent and replaced with a single summary message.
+Each stage agent is declared in `stages.py` (prompt + output type) and driven by the Python pipeline loop in `run_session()` (`agent.py`), which also attaches each stage's tools. Each stage starts with a fresh context — stages communicate via the filesystem (git-committed artefacts) and `deps.progress`, not via message history. Within each stage, a manual compaction step triggers when accumulated input tokens exceed `LUSTERNA_COMPACTION_THRESHOLD`: all messages up to the start of the last complete turn are summarised by a lightweight subagent and replaced with a single summary message.
 
 | Stage | Key tools | Purpose |
 |---|---|---|
@@ -99,8 +99,8 @@ Each stage is a full `Agent` run driven by the Python pipeline loop in `run_sess
 | INFER | *(structured output)* | Orchestrator injects Lean translation + abstract informal spec; returns structured InformalSpec |
 | FORMALISE | `write_file`, `check_lean` | Derive theorem stubs from informal spec; iterate until `lake build` passes |
 | SPEC-JUDGE | *(structured output)* | Orchestrator injects all spec files; scores statements against impl + abstract spec; re-formalise if score < 7 |
-| RECONCILE | *(structured output)* | Orchestrator injects abstract + impl specs; classifies discrepancies; accumulates across cycles |
-| PROVE | `patch_output_lines`, `check_and_judge` | Fill `sorry` proofs for trivial/moderate theorems only; inline proof-judge after each successful build detects stagnation early |
+| RECONCILE | *(structured output)* | Orchestrator injects abstract + impl specs; classifies discrepancies and flags critical ones |
+| PROVE | `patch_output_lines`, `check_lean` | Fill `sorry` proofs for trivial/moderate theorems only; orchestrator ends the stage on the remaining-`sorry` count (0 / no improvement / round cap) |
 | REPORT | `write_file`, `git_log` | Orchestrator injects all spec and reconciliation files; produces `VERIFICATION_REPORT.md` |
 
 ### Embedded specialists (`subagents.py`)
@@ -116,7 +116,7 @@ Specialists run as single-turn agents with no message history. They return struc
 
 Before PROVE runs, an effort-estimator subagent reads the formal spec and classifies every theorem by difficulty. PROVE then attempts only the `trivial` and `moderate` theorems, leaving `hard_acceptable` ones as `sorry` immediately. This avoids burning tokens on proofs that require advanced techniques beyond automation.
 
-PROVE uses `check_and_judge` (`lake build` + inline proof-judge) as its feedback mechanism. The inline proof-judge is a structured-output agent invoked by the orchestrator after each successful build: it evaluates the current theorem state and the orchestrator stops PROVE immediately (Python-side, not via model instruction) if all remaining `sorry` theorems are acceptable or if progress has stagnated. The stage agent works from its training knowledge of Lean 4 and Aeneas idioms (embedded as skill documents in `docs/`). This keeps the toolchain simple and avoids the latency and reliability problems of running a Lean language server inside a locked-down, network-isolated container.
+PROVE uses `check_lean` (`lake build`) as its feedback mechanism. Termination is decided by the orchestrator, not by the model: after each successful build it counts the remaining `sorry` in the spec and ends the stage when that count reaches 0, fails to reach a new minimum for a fixed number of builds, or a hard round cap (`LUSTERNA_MAX_PROVE_ROUNDS`) is hit. This objective, Python-side metric replaces the previous model-emitted "stagnant" signal, which could not reliably compare across rounds. Once PROVE ends, a proof-judge classifies every theorem once (proved / sorry_acceptable / likely_misstated) for the report. The stage agent works from its training knowledge of Lean 4 and Aeneas idioms (embedded as skill documents in `docs/`). This keeps the toolchain simple and avoids the latency and reliability problems of running a Lean language server inside a locked-down, network-isolated container.
 
 ### Checkpoints
 
@@ -289,15 +289,14 @@ After a run, `<out_dir>/` contains a git repository with one commit per pipeline
 <out_dir>/
 ├── lean/
 │   ├── Foo.lean              — Aeneas translation
-│   ├── FooSpec.lean          — Formal specification (theorem stubs + proofs)
+│   ├── Foo/Spec.lean         — Implementation formal spec (stubs from FORMALISE, proofs from PROVE)
 │   ├── lakefile.lean         — Lake project file
 │   └── lake-manifest.json    — Pre-resolved package manifest (offline)
 ├── specs/
 │   ├── abstract_informal_spec.json   — Abstract spec from design doc (no code)
 │   ├── abstract_formal_spec.lean     — Abstract Lean stubs (design intent)
 │   ├── informal_spec.json            — Implementation informal spec
-│   ├── formal_spec.lean              — Raw formal spec from the formaliser subagent
-│   └── reconciliation_cycle_N.json   — Discrepancies between abstract and impl spec (one per cycle)
+│   └── reconciliation.json           — Discrepancies between abstract and impl spec
 ├── report/
 │   ├── 01_overview.md                — General overview
 │   ├── 02_translation.md             — Aeneas/Charon translation report
@@ -308,9 +307,8 @@ After a run, `<out_dir>/` contains a git repository with one commit per pipeline
 ```sh
 git -C <out_dir> log --oneline
 # 0da6a37 stage/report: final pipeline report
-# 524bf30 stage/formalise: FibonacciSpec.lean — improved spec
-# ad4435c stage/formalise: FibonacciSpec.lean with theorem stubs
-# 71e70e0 feat(spec): formal specification stubs
+# 9f1c2a0 stage/prove: proof attempts
+# ad4435c stage/formalise: Fibonacci/Spec.lean with theorem stubs
 # ae3521a stage/infer: informal specification
 # d463a94 feat(spec): informal specification
 # d469df7 feat(aeneas): translate src/main.rs → Lean

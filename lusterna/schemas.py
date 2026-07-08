@@ -62,7 +62,6 @@ class JudgeVerdict(BaseModel):
     issues: list[str]
     suggestions: list[str]
     components: list[ComponentVerdict] = []
-    stagnant: bool = False
 
 
 # ── RECONCILE stage ───────────────────────────────────────────────────────────
@@ -105,7 +104,6 @@ class TheoremProofResult(BaseModel):
 
 class ProofVerdict(BaseModel):
     theorems: list[TheoremProofResult]
-    stagnant: bool = False
     summary: str
 
 

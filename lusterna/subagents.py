@@ -75,15 +75,21 @@ def _messages_to_text(messages: list) -> str:
 
 
 async def compact(messages: list) -> list:
-    """Summarise *messages* and return a replacement single-message list."""
+    """Summarise *messages* into a single replacement message.
+
+    Never fails open: if the summariser errors (transient 5xx, or a payload that
+    exceeds the model context), the old messages are DROPPED rather than kept, so a
+    stage's context can never grow without bound. State lives on disk, so the agent
+    can recover by re-reading files.
+    """
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
     try:
         summary = await _run(_summariser, _messages_to_text(messages))
+        content = f"[COMPACTED CONTEXT — earlier conversation summary]\n{summary}"
+        log.info("Compaction: %d messages → 1 summary message", len(messages))
     except Exception as exc:
-        log.warning("Compaction summariser failed (%s) — keeping messages as-is", exc)
-        return messages
-
-    from pydantic_ai.messages import ModelRequest, UserPromptPart
-    log.info("Compaction: %d messages → 1 summary message", len(messages))
-    return [ModelRequest(parts=[UserPromptPart(
-        content=f"[COMPACTED CONTEXT — earlier conversation summary]\n{summary}"
-    )])]
+        content = ("[COMPACTED CONTEXT — earlier conversation dropped; summariser "
+                   "unavailable. Re-read any files you need from disk.]")
+        log.warning("Compaction summariser failed (%s) — dropping %d messages",
+                    exc, len(messages))
+    return [ModelRequest(parts=[UserPromptPart(content=content)])]

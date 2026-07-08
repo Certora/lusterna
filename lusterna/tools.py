@@ -107,6 +107,25 @@ def read_output_file(ctx: RunContext[AgentDeps], path: str) -> str:
     return read_out(ctx.deps, path)
 
 
+def prune_stray_specs(deps: AgentDeps, translation: str) -> None:
+    """Remove stray files the FORMALISE agent may create outside the canonical layout:
+    the retired specs/formal_spec.lean and any top-level lean/*Spec.lean orphan.
+
+    The real spec is nested at lean/<Crate>/Spec.lean (depth 2), so -maxdepth 1 spares
+    it; *translation* (lean/<Crate>.lean) is excluded by name in case a crate is itself
+    named *Spec.
+    """
+    keep = Path(translation).name if translation else ""
+    cmd = (
+        f"rm -f {OUT_IN}/specs/formal_spec.lean; "
+        f"find {OUT_IN}/lean -maxdepth 1 -name '*Spec.lean'"
+        + (f" ! -name '{keep}'" if keep else "")
+        + " -delete"
+    )
+    exec_in(deps.container_id, ["sh", "-c", cmd])
+    log.info("Pruned stray spec files")
+
+
 def write_out(deps: AgentDeps, path: str, content: str) -> str:
     """Write *content* to *path* in /workspace/out. For direct orchestration calls.
 
