@@ -7,7 +7,6 @@ as module-level strings.
 Usage in agent.py:
     from . import docs
     # append docs.FOR_FORMALISE to formalise agent instructions
-    # append docs.FOR_TRANSLATE to translate agent instructions
 """
 from pathlib import Path
 
@@ -37,14 +36,6 @@ FOR_FORMALISE: str = (
                _read("skills", "aeneas-tactics-quickref.md"))
     + _section("Proof Patterns",
                _read("skills", "proof-patterns.md"))
-)
-
-# For _translate: overview + tips so it understands Charon/Aeneas errors
-FOR_TRANSLATE: str = (
-    _section("Aeneas Overview",
-             _read("prose", "aeneas-overview.md"))
-    + _section("Tips and Tricks",
-               _read("prose", "tips-and-tricks.md"))
 )
 
 # For _prove: everything formalise gets plus proof strategies

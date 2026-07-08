@@ -167,19 +167,22 @@ def append_file(ctx: RunContext[AgentDeps], path: str, content: str) -> str:
 def run_aeneas(deps: AgentDeps, entry_file: str) -> dict:
     """Translate *entry_file* (repo-relative) to Lean 4 via Charon + Aeneas.
 
+    The source is NEVER modified — Aeneas runs on the crate exactly as written, so the
+    translation is a faithful image of the real code. Constructs Aeneas can't handle
+    become explicit `sorry` holes (see `holes`), not failures and not silent rewrites.
+
     Returns a dict with:
-      success      — True if Aeneas produced all files without errors
-      partial      — True if some functions translated but others failed
+      success      — True if Charon+Aeneas produced Lean output (holes are fine)
       lean_files   — list of generated Lean files (relative to /workspace/out)
-      lean_path    — primary Lean file for downstream tools
-      charon_errors — Charon stderr (non-empty on failure)
-      aeneas_errors — parsed Aeneas error lines (list of strings)
+      lean_path    — primary Lean file (the crate module) for downstream tools
+      holes        — names of functions left untranslated (bare `sorry` body)
+      charon_errors — Charon stderr (non-empty only on hard failure)
+      aeneas_errors — parsed Aeneas error/warn lines
       commit       — git SHA if files were committed (empty string otherwise)
 
-    When partial=True or success=False, the caller should inspect aeneas_errors /
-    charon_errors, rewrite the Rust source via write_rust_file to remove
-    untranslatable constructs, then call run_aeneas again.  Only fall back to
-    LLM-based extraction if the translation produces zero output after retries.
+    success is False only on a HARD failure — Charon produced no `.llbc`, or Aeneas
+    produced no `.lean` at all. There is no retry/rewrite path: if the crate can't be
+    translated as written, that is reported, not worked around.
     """
     from . import config
 
@@ -197,8 +200,8 @@ def run_aeneas(deps: AgentDeps, entry_file: str) -> dict:
     if charon_code != 0:
         log.warning("Charon exited %d", charon_code)
         return {
-            "success": False, "partial": False,
-            "lean_files": [], "lean_path": "",
+            "success": False,
+            "lean_files": [], "lean_path": "", "holes": [],
             "charon_errors": charon_err,
             "aeneas_errors": [],
             "commit": "",
@@ -214,8 +217,8 @@ def run_aeneas(deps: AgentDeps, entry_file: str) -> dict:
     if not llbc_files:
         log.warning("No .llbc file found after Charon run")
         return {
-            "success": False, "partial": False,
-            "lean_files": [], "lean_path": "",
+            "success": False,
+            "lean_files": [], "lean_path": "", "holes": [],
             "charon_errors": "no .llbc file produced",
             "aeneas_errors": [],
             "commit": "",
@@ -255,8 +258,8 @@ def run_aeneas(deps: AgentDeps, entry_file: str) -> dict:
 
     if not lean_files:
         return {
-            "success": False, "partial": False,
-            "lean_files": [], "lean_path": "",
+            "success": False,
+            "lean_files": [], "lean_path": "", "holes": [],
             "charon_errors": "",
             "aeneas_errors": aeneas_errors or [aeneas_err[:400]],
             "commit": "",
@@ -267,26 +270,49 @@ def run_aeneas(deps: AgentDeps, entry_file: str) -> dict:
     # Aeneas Lean library.  The package/lib name is derived from the crate name.
     _write_lakefile(deps, lean_out_dir, llbc_path)
 
-    partial = aeneas_code != 0
+    # Aeneas leaves functions it cannot translate as an explicit `sorry` body (a
+    # "hole") rather than failing — e.g. iterator-adaptor chains, or a `main` doing
+    # I/O.  Holes are NOT failures; the surrounding functions are translated faithfully.
+    # Success = Lean output was produced (checked above); the source is never modified.
+    holes = _detect_holes(deps, lean_files)
     sha = git_ops.commit(
         deps.container_id,
-        f"feat(aeneas): translate {entry_file} → Lean" + (" (partial)" if partial else ""),
+        f"feat(aeneas): translate {entry_file} → Lean"
+        + (f" ({len(holes)} hole(s))" if holes else ""),
         glob="lean/",
     )
-    log.info("Aeneas done (partial=%s) — commit %s", partial, sha[:8])
+    log.info("Aeneas done — %d file(s), %d hole(s) — commit %s",
+             len(lean_files), len(holes), sha[:8])
     # Primary module is the crate module (lean/<Crate>.lean), matching the lakefile's
     # lean_lib root — chosen deterministically rather than by find order.
     crate_module = f"lean/{Path(llbc_path).stem.capitalize()}.lean"
     lean_path = crate_module if crate_module in lean_files else lean_files[0]
     return {
-        "success": not partial,
-        "partial": partial,
+        "success": True,
         "lean_files": lean_files,
         "lean_path": lean_path,
+        "holes": holes,
         "charon_errors": "",
         "aeneas_errors": aeneas_errors,
         "commit": sha,
     }
+
+
+def _detect_holes(deps: AgentDeps, lean_files: list[str]) -> list[str]:
+    """Names of functions Aeneas left untranslated (a bare `sorry` body)."""
+    import re
+    holes: list[str] = []
+    for rel in lean_files:
+        code, text, _ = exec_in(deps.container_id, ["cat", f"{OUT_IN}/{rel}"])
+        if code != 0:
+            continue
+        for m in re.finditer(r"(?m)^def\s+([\w.]+)", text):
+            start = m.end()
+            nxt = re.search(r"(?m)^(def|end)\b", text[start:])
+            block = text[start: start + (nxt.start() if nxt else len(text))]
+            if re.search(r"(?m)^\s*sorry\s*$", block):
+                holes.append(m.group(1))
+    return holes
 
 
 AENEAS_LEAN = "/opt/aeneas/backends/lean"
@@ -335,18 +361,6 @@ def _write_lakefile(deps: AgentDeps, lean_out_dir: str, llbc_path: str) -> None:
            f"{lean_out_dir}/.lake/packages"])
 
     log.info("Generated lakefile.lean + package symlinks for crate '%s'", crate)
-
-
-def write_rust_file(ctx: RunContext[AgentDeps], path: str, content: str) -> str:
-    """Overwrite a Rust source file (repo-relative). Use before retrying run_aeneas. Returns ERROR: on failure."""
-    full = f"{REPO_IN}/{path}"
-    exec_in(ctx.deps.container_id, ["mkdir", "-p", str(Path(full).parent)])
-    cmd = ["docker", "exec", "--interactive", "--workdir", REPO_IN, ctx.deps.container_id, "tee", full]
-    r = subprocess.run(cmd, input=content, capture_output=True, text=True)
-    if r.returncode != 0:
-        return f"ERROR: write_rust_file failed for '{path}': {r.stderr.strip()}"
-    log.info("write_rust_file: %s (%d chars)", path, len(content))
-    return f"Written {len(content)} chars to {path}"
 
 
 def search_output_file(ctx: RunContext[AgentDeps], path: str, pattern: str) -> str:

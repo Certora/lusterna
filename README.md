@@ -49,8 +49,9 @@ CLI
              ├─ DOC-FORMALISE → specs/abstract_formal_spec.lean  (git commit)
              │                structured output (abstract informal spec → Lean stubs)
              ├─ EXPLORE      list_files, read_file
-             ├─ TRANSLATE    run_aeneas          → lean/     (git commit)
-             │                write_rust_file if Charon/Aeneas errors (up to 2 retries)
+             ├─ TRANSLATE    Charon → Aeneas → lean/  (git commit) — MECHANICAL
+             │                source is immutable; untranslatable constructs become
+             │                explicit `sorry` holes; hard-failure aborts (no rewriting)
              ├─ INFER        → specs/informal_spec.json      (git commit)
              │                structured output; orchestrator injects Lean translation +
              │                abstract informal spec directly into the prompt
@@ -92,7 +93,7 @@ Each stage agent is declared in `stages.py` (prompt + output type) and driven by
 | DOC-INFER | *(structured output)* | Derive abstract informal spec from design doc — no code access |
 | DOC-FORMALISE | *(structured output)* | Derive abstract Lean stubs from the abstract informal spec |
 | EXPLORE | `list_files`, `read_file` | Survey the Rust source; flag Aeneas incompatibilities |
-| TRANSLATE | `run_aeneas`, `write_rust_file` | Charon → Aeneas → Lean; massage Rust on errors |
+| TRANSLATE | *(mechanical; no LLM)* | Charon → Aeneas on the **untouched** source; untranslatable constructs become explicit `sorry` holes; a hard failure aborts. The source is never modified, so the translation is a faithful image of the real code. |
 | INFER | *(structured output)* | Orchestrator injects Lean translation + abstract informal spec; returns structured InformalSpec |
 | FORMALISE | `write_file`, `check_lean` | Derive theorem stubs from informal spec; iterate until `lake build` passes |
 | SPEC-JUDGE | *(structured output)* | Lists concrete defects in the impl-spec statements (judged against the code + informal spec); re-formalise until the defect list is empty |

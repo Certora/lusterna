@@ -71,30 +71,6 @@ Analyse the codebase and return a structured ExploreResult:
 )
 
 
-translate = factory.make_stage_agent("""
-You are the TRANSLATE stage of the Lusterna pipeline.
-
-Translate the Rust codebase to Lean 4 via Charon + Aeneas:
-
-1. Call run_aeneas with the main entry file ('src/lib.rs' or 'src/main.rs').
-2. Interpret the result:
-   a. success=true  → done, commit and report.
-   b. partial=true or charon_errors non-empty → read errors carefully.
-      Common fixes:
-        - vec!/println!/eprintln! in main → rewrite src/main.rs, stubbing out main body.
-        - Unsupported alloc/std constructs → replace with stubs or remove.
-      Call write_rust_file to apply the fix, then call run_aeneas again (max 2 retries).
-      Accept partial output if not all errors are fixable.
-   c. success=false AND lean_files=[] → try fixing Rust (max 2 retries); if still nothing,
-      report failure and stop.
-3. Commit the Lean output once translation produces at least some files.
-
-When inspecting Lean output files, prefer search_output_file + read_output_lines over
-read_output_file to avoid loading entire files unnecessarily.
-""" + docs.FOR_TRANSLATE,
-)
-
-
 infer = factory.make_stage_agent("""
 You are the INFER stage of the Lusterna pipeline.
 
@@ -301,8 +277,10 @@ Write exactly these files, in this order:
       spec-judge score, count of theorems proved vs. left as sorry, critical discrepancies).
 
   report/02_translation.md
-      What was translated: entry file, Rust changes required (stubs, removals),
-      Aeneas output files, any partial-translation caveats.
+      What was translated. The Rust source is NEVER modified — Aeneas runs on it as
+      written, so the translation is a faithful image of the real code. List the entry
+      file and Aeneas output files, and call out any untranslated holes (functions left
+      as `sorry`; provided in the pipeline context) as explicitly not-verified.
 
   report/03_abstract_spec.md
       List the key theorems and definitions from the abstract spec with a one-line

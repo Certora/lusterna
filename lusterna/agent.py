@@ -18,24 +18,13 @@ from .schemas import (
 )
 from .stages import (
     doc_infer as _doc_infer, doc_formalise as _doc_formalise, explore as _explore,
-    translate as _translate, infer as _infer, formalise as _formalise,
+    infer as _infer, formalise as _formalise,
     judge as _judge, reconcile as _reconcile, prove as _prove, report as _report,
 )
 from .state import AgentDeps
 from . import config
 
 log = logging.getLogger(__name__)
-
-
-def run_aeneas(ctx: RunContext[AgentDeps], entry_file: str) -> dict:
-    """Translate *entry_file* (repo-relative) to Lean 4 via Charon + Aeneas.
-    On success saves the result to progress and checkpoints. Inspect aeneas_errors /
-    charon_errors, fix with write_rust_file, then retry (max 2 times)."""
-    result = tools.run_aeneas(ctx.deps, entry_file)
-    if result.get("success") or result.get("lean_files"):
-        ctx.deps.progress["aeneas"] = result
-        _checkpoint(ctx.deps)
-    return result
 
 
 def check_lean(ctx: RunContext[AgentDeps], lean_file: str) -> dict:
@@ -53,17 +42,9 @@ def check_lean(ctx: RunContext[AgentDeps], lean_file: str) -> dict:
 
 # ── tool registration ───────────────────────────────────────────
 # Stage agents are declared in stages.py; their tools — which depend on the
-# orchestration helpers in this module — are attached here.
-
-_translate.tool(tools.list_files)
-_translate.tool(tools.read_file)
-_translate.tool(tools.read_output_file)
-_translate.tool(tools.search_output_file)
-_translate.tool(tools.read_output_lines)
-_translate.tool(tools.write_rust_file)
-_translate.tool(run_aeneas)
-_translate.tool(tools.git_commit)
-_translate.tool(tools.git_log)
+# orchestration helpers in this module — are attached here. TRANSLATE is NOT an
+# agent: it runs Charon+Aeneas mechanically on the untouched source (see
+# _run_translate_stages), so nothing can rewrite the code under verification.
 
 _formalise.tool(tools.list_files)
 _formalise.tool(tools.read_file)
@@ -322,25 +303,27 @@ async def _run_translate_stages(deps: AgentDeps, resume_note: str) -> str:
         resume_note = ""
 
     if "aeneas" not in completed:
-        explore = deps.progress.get("explore", {})
-        explore_brief = (
-            f"EXPLORE findings:\n"
-            f"  entry_file: {explore.get('entry_file', 'unknown')}\n"
-            f"  entry_functions: {', '.join(explore.get('entry_functions', []))}\n"
-            f"  incompatibilities: {'; '.join(explore.get('aeneas_incompatibilities', [])) or 'none'}\n"
-            f"  suggested_changes: {'; '.join(explore.get('suggested_rust_changes', [])) or 'none'}\n"
-        ) if explore else ""
-        await _run_stage(
-            _translate,
-            f"{explore_brief}Proceed to TRANSLATE. Run Aeneas on the Rust source; fix any "
-            "Charon/Aeneas errors by massaging the Rust source as needed." + resume_note,
-            deps, "TRANSLATE",
-        )
+        # TRANSLATE is mechanical and the source is IMMUTABLE: run Charon+Aeneas on the
+        # crate exactly as written. Untranslatable constructs become explicit `sorry`
+        # holes, never silent rewrites. A hard failure (no output at all) aborts — the
+        # fix is the user's, outside the trust boundary.
+        log.info("─── Stage: TRANSLATE (mechanical, source immutable) ───")
+        entry = deps.progress.get("explore", {}).get("entry_file", "src/lib.rs")
+        result = tools.run_aeneas(deps, entry)
+        if not result.get("success"):
+            raise _PipelineAborted(
+                "TRANSLATE failed — Charon/Aeneas produced no output for the untouched "
+                f"source ({result.get('charon_errors') or result.get('aeneas_errors') or 'unknown'}). "
+                "The source is not modified; expose the logic via a lib target or "
+                "simplify the untranslatable construct, then re-run."
+            )
+        deps.progress["aeneas"] = result
+        if result.get("holes"):
+            log.info("TRANSLATE: %d untranslated hole(s) left as sorry: %s",
+                     len(result["holes"]), ", ".join(result["holes"]))
         _checkpoint(deps)
         resume_note = ""
         completed = set(deps.progress.keys())
-        if "aeneas" not in completed:
-            raise _PipelineAborted("Aeneas translation failed after retries.")
 
     if "informal_spec" not in completed:
         lean_path = deps.progress.get("aeneas", {}).get("lean_path", "")
@@ -614,6 +597,7 @@ async def _run_report(deps: AgentDeps, resume_note: str) -> str:
     """Run the REPORT stage and concatenate section files into VERIFICATION_REPORT.md."""
     spec_defects     = deps.progress.get("verdict", {}).get("defects", [])
     sorry_remaining  = max(_sorry_count(deps), 0)
+    holes            = deps.progress.get("aeneas", {}).get("holes", [])
     rc               = deps.progress.get("reconciliation", {})
     rc_critical     = sum(1 for d in rc.get("discrepancies", []) if d.get("severity") == "critical")
     rc_obligations_n = len(rc.get("refinement_obligations", []))
@@ -631,6 +615,8 @@ async def _run_report(deps: AgentDeps, resume_note: str) -> str:
     report_result = await _run_stage(
         _report,
         f"Proceed to REPORT. "
+        f"Translation: source UNMODIFIED (Aeneas ran on the code as written); "
+        f"untranslated holes: {', '.join(holes) if holes else 'none'}. "
         f"Spec-judge: {'approved (no defects)' if not spec_defects else str(len(spec_defects)) + ' unresolved defect(s)'}. "
         f"Proofs: {sorry_remaining} theorem(s) remain as `sorry` in the implementation "
         f"spec (read the injected spec to report which are proved vs. sorry). "
