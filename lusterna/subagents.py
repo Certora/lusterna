@@ -1,13 +1,12 @@
-"""Embedded specialists: focused agents called from within pipeline stages.
+"""Context-compaction summariser — the one embedded helper agent.
 
-Unlike pipeline stages (agent.py), these agents receive no message history and
-return structured output directly. They are invisible to the pipeline loop.
+Invoked from the compaction hook (factory.py) to fold a stage's older messages into
+a single summary. Receives no pipeline message history and is invisible to the loop.
 """
 import logging
 from pydantic_ai import Agent
 
 from . import config, telemetry
-from .schemas import TheoremEstimate, ProofVerdict  # noqa: F401 — re-exported for callers
 
 log = logging.getLogger(__name__)
 
@@ -25,33 +24,6 @@ async def _run(agent: Agent, prompt: str):
     result = await agent.run(prompt)
     telemetry.session.record(result.usage)
     return result.output
-
-
-# ── effort estimator ──────────────────────────────────────────────────────────
-
-_effort_estimator = _agent(
-    TheoremEstimate,
-    "You are a Lean 4 proof difficulty estimator. Given Lean 4 theorem stubs, classify "
-    "each theorem and lemma name into one of four difficulty categories:\n"
-    "  trivial — provable in 1-2 tactic steps (rfl, simp, omega, norm_num, decide)\n"
-    "  moderate — tractable with real effort (induction, cases, Mathlib lemmas, "
-    "multi-step automation)\n"
-    "  hard_acceptable — requires advanced techniques beyond typical automation "
-    "(deep coinduction, custom Mathlib extensions, novel arguments); sorry is appropriate\n"
-    "  likely_misstated — the statement appears logically incorrect (wrong quantifier, "
-    "type mismatch, impossible precondition/postcondition)\n"
-    "Be conservative: when unsure between moderate and hard_acceptable, prefer "
-    "hard_acceptable. Return theorem/lemma names only, not definitions.",
-)
-
-
-async def estimate_theorem_effort(spec_text: str) -> TheoremEstimate:
-    log.info("Subagent: estimating theorem proof effort")
-    return await _run(
-        _effort_estimator,
-        f"### Lean 4 formal specification\n{spec_text}\n\n"
-        "Classify every theorem and lemma by proof difficulty.",
-    )
 
 
 # ── context compaction ────────────────────────────────────────────────────────

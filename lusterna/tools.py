@@ -249,6 +249,7 @@ def run_aeneas(deps: AgentDeps, entry_file: str) -> dict:
         l.strip().removeprefix(OUT_IN + "/")
         for l in lean_list.splitlines()
         if l.strip() and not Path(l.strip()).name.startswith("._")
+        and Path(l.strip()).name != "lakefile.lean"   # not a translation module
     ]
     log.info("Aeneas wrote %d Lean file(s): %s", len(lean_files), lean_files)
 
@@ -273,11 +274,15 @@ def run_aeneas(deps: AgentDeps, entry_file: str) -> dict:
         glob="lean/",
     )
     log.info("Aeneas done (partial=%s) — commit %s", partial, sha[:8])
+    # Primary module is the crate module (lean/<Crate>.lean), matching the lakefile's
+    # lean_lib root — chosen deterministically rather than by find order.
+    crate_module = f"lean/{Path(llbc_path).stem.capitalize()}.lean"
+    lean_path = crate_module if crate_module in lean_files else lean_files[0]
     return {
         "success": not partial,
         "partial": partial,
         "lean_files": lean_files,
-        "lean_path": lean_files[0],
+        "lean_path": lean_path,
         "charon_errors": "",
         "aeneas_errors": aeneas_errors,
         "commit": sha,

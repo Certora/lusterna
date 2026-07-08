@@ -1,4 +1,4 @@
-"""Pydantic output schemas shared across pipeline stages and subagents."""
+"""Pydantic output schemas for the structured-output pipeline stages."""
 from typing import Literal
 from pydantic import BaseModel
 
@@ -23,16 +23,10 @@ class AbstractInformalSpec(BaseModel):
     open_questions: list[str]
 
 
-class Ambiguity(BaseModel):
-    field: str
-    question: str
-
-
 class AbstractFormalSpec(BaseModel):
     lean_definitions: str
     lean_theorem_stubs: str
     rationale: str
-    ambiguities: list[Ambiguity] = []
 
 
 # ── INFER / FORMALISE stages ──────────────────────────────────────────────────
@@ -90,25 +84,3 @@ class ReconciliationReport(BaseModel):
     discrepancies: list[Discrepancy]
     refinement_obligations: list[RefinementObligation]
     summary: str
-
-
-# ── PROVE stage ───────────────────────────────────────────────────────────────
-
-class TheoremProofResult(BaseModel):
-    name: str
-    kind: str
-    status: Literal["proved", "sorry_acceptable", "likely_misstated"]
-    proof_attempt: str
-    misstatement_reason: str = ""
-
-
-class ProofVerdict(BaseModel):
-    theorems: list[TheoremProofResult]
-    summary: str
-
-
-class TheoremEstimate(BaseModel):
-    trivial: list[str]
-    moderate: list[str]
-    hard_acceptable: list[str]
-    likely_misstated: list[str]

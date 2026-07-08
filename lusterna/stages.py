@@ -9,7 +9,7 @@ also lives in agent.py.
 from . import docs, factory
 from .schemas import (
     AbstractInformalSpec, AbstractFormalSpec, ExploreResult,
-    InformalSpec, JudgeVerdict, ProofVerdict, ReconciliationReport,
+    InformalSpec, JudgeVerdict, ReconciliationReport,
 )
 
 
@@ -44,8 +44,6 @@ The abstract informal specification is provided in your prompt. From it, derive:
   - lean_definitions: abstract type definitions and predicates (no Rust types)
   - lean_theorem_stubs: theorem statements with sorry, referencing only abstract types
   - rationale: brief explanation of the modelling choices
-  - ambiguities: list any aspects of the informal spec that are too ambiguous to
-    formalise faithfully (field name + question); leave empty when the spec is clear.
 
 Use abstract mathematical types (Nat, List, Set, etc.). Each theorem stub needs a docstring.
 """,
@@ -246,16 +244,22 @@ The formal spec has passed the spec-judge threshold (score ≥ 7 or approved). Y
 job is to attempt to prove as many theorems and lemmas as possible using Lean 4
 tactics, without changing any theorem or definition statements.
 
-An EFFORT ESTIMATE is provided in the runtime prompt. Follow it strictly:
-  trivial / moderate  →  attempt these; spend up to 2-3 tactic tries each
-  hard_acceptable     →  leave as sorry immediately without any proof attempt
-  likely_misstated    →  do NOT touch; note the name in your commit message
+Attempt EVERY `sorry` theorem. Spend at most 2-3 tactic tries per theorem; if none
+work, leave it as `sorry` and move on. Leaving hard theorems unproved is expected —
+the build is the judge of what actually works.
+
+ORDER MATTERS: attempt the theorems most likely to fall to a single simple tactic
+FIRST — base cases, concrete value checks, direct equalities and bounds (the kind
+provable by rfl / simp / decide / native_decide / omega / norm_num). Do the
+structurally hard ones (induction over the monadic fixpoint, existence/no-error
+statements, refinement obligations) LAST. Landing the easy proofs early secures
+progress before you spend effort on the hard ones.
 
 Workflow — work ONE theorem at a time to keep context small:
 1. Call list_files('lean') to find spec files.
 2. Call search_output_file(file, 'theorem|lemma') to list all theorem/lemma names
    with their line numbers.
-3. For each sorry theorem classified trivial or moderate, in order:
+3. Working easiest-first (see ORDER above), for each sorry theorem:
    a. Call search_output_file to locate it precisely, then read_output_lines to fetch
       just that theorem block (from its `theorem` line to its `:= by sorry` line).
    b. Attempt tactics in this order: rfl, simp, omega, norm_num, decide,
@@ -265,7 +269,7 @@ Workflow — work ONE theorem at a time to keep context small:
       anything outside that range.
    d. Call check_lean. If the build fails, call patch_output_lines again to
       revert that theorem to `sorry` (restore the exact original lines), then move on.
-4. After attempting all tractable theorems, call check_lean one final time,
+4. After attempting all theorems, call check_lean one final time,
    then call git_commit and stop.
 
 STRICT RULES:
@@ -277,34 +281,6 @@ STRICT RULES:
 - If a proof takes more than 2-3 tactic attempts, leave it as `sorry` and move on.
 - It is acceptable — even expected — to leave hard theorems as `sorry`.
 """ + docs.FOR_PROVE,
-)
-
-
-proof_judge = factory.make_stage_agent("""
-You are the PROOF JUDGE stage of the Lusterna pipeline.
-
-Evaluate every theorem and lemma in the formal spec and return a ProofVerdict.
-The current spec file content and build result are injected directly in your prompt —
-do not call any tools.
-
-For each component classify its status:
-  "proved"            — proof is complete (no sorry), compiles, and is correct
-  "sorry_acceptable"  — theorem is correctly stated but requires advanced techniques
-                        beyond automation (deep induction, non-trivial Mathlib lemmas,
-                        novel mathematical arguments). sorry is the right placeholder.
-  "likely_misstated"  — the theorem CANNOT be proved as stated because the statement
-                        itself is logically wrong: wrong quantifier, wrong bound,
-                        inconsistent precondition, output type mismatch, etc.
-
-CRITICAL — only use "likely_misstated" when you can state a SPECIFIC logical reason:
-  ✓ "Precondition `n < 100` should be `n ≤ 93` — UInt64 overflows at fib(94)"
-  ✓ "Postcondition equates UInt64 and Nat directly; needs a cast or modular equivalence"
-  ✗ "I could not find a proof" — this is sorry_acceptable, not likely_misstated
-  ✗ "The proof is complex" — same, sorry_acceptable
-  When in doubt, classify as sorry_acceptable.
-""",
-    output_type=ProofVerdict,
-    retries=3,
 )
 
 
@@ -321,7 +297,7 @@ Write exactly these files, in this order:
 
   report/01_overview.md
       Title, one-paragraph executive summary, overview table (translation result,
-      spec-judge score, proved/sorry/misstated counts, critical discrepancies).
+      spec-judge score, count of theorems proved vs. left as sorry, critical discrepancies).
 
   report/02_translation.md
       What was translated: entry file, Rust changes required (stubs, removals),
@@ -345,10 +321,9 @@ Write exactly these files, in this order:
       description), and refinement obligations.
 
   report/07_proofs.md
-      Proof-judge verdict: per-theorem classification (proved/sorry_acceptable/
-      likely_misstated), proof sketch for each proved theorem, suggested strategy
-      for each sorry_acceptable, precise reason for any likely_misstated.
-      (Verdict data is in the pipeline context above.)
+      Proof status read from the implementation spec: for each theorem state whether
+      it is proved (no `sorry`) or left as `sorry`. Give a one-line proof sketch for
+      each proved theorem and a suggested strategy for each remaining `sorry`.
 
   report/08_summary.md
       Open proof obligations (each sorry with a concrete next step), known gaps

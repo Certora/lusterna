@@ -12,9 +12,8 @@ Given a Rust repository and a design document, Lusterna:
 6. Verifies the spec compiles with `lake build`; iterates until it does (max 3 attempts)
 7. Has a spec-judge score the statements against both the implementation and the abstract spec; revises if score < 7
 8. **Reconciles** the abstract spec against the implementation spec — classifies discrepancies and flags critical ones (implementation bugs, mis-stated theorems)
-9. Estimates proof difficulty per theorem (trivial / moderate / hard-acceptable / likely-misstated)
-10. Attempts to fill in proofs for tractable theorems using Lean 4 tactics; the orchestrator ends the stage when no `sorry` remain, the remaining-`sorry` count stops improving, or a round cap is hit. A proof-judge then classifies every theorem once
-11. Writes a final verification report
+9. Attempts to fill in proofs using Lean 4 tactics; the orchestrator ends the stage when no `sorry` remain, the remaining-`sorry` count stops improving, or a round cap is hit
+10. Writes a final verification report
 
 All generated artefacts are git-committed incrementally inside the toolchain container and pulled to the host on exit.
 
@@ -26,7 +25,7 @@ lusterna/
 ├── agent.py        — Pipeline orchestration: sequencing, loops, context, tool wiring
 ├── stages.py       — Stage-agent definitions (prompt + output type per stage)
 ├── schemas.py      — Pydantic output schemas for all stage structured outputs
-├── subagents.py    — Embedded specialists: effort estimator, context compaction summariser
+├── subagents.py    — Context-compaction summariser (the one embedded helper agent)
 ├── tools.py        — All agent-callable tools (file I/O, Aeneas, Lake, git)
 ├── docs.py         — Aeneas/Lean skill documents embedded as agent instructions
 ├── container.py    — Docker lifecycle: start, push repo, exec, pull artefacts, stop
@@ -48,8 +47,7 @@ CLI
              ├─ DOC-INFER    → specs/abstract_informal_spec.json  (git commit)
              │                structured output (design doc only, no code)
              ├─ DOC-FORMALISE → specs/abstract_formal_spec.lean  (git commit)
-             │                structured output; orchestrator re-runs DOC-INFER if
-             │                ambiguities are flagged (up to 3 rounds)
+             │                structured output (abstract informal spec → Lean stubs)
              ├─ EXPLORE      list_files, read_file
              ├─ TRANSLATE    run_aeneas          → lean/     (git commit)
              │                write_rust_file if Charon/Aeneas errors (up to 2 retries)
@@ -65,11 +63,9 @@ CLI
              │                classifies discrepancies:
              │                  implementation_wrong / bridge_wrong (CRITICAL)
              │                  abstract_wrong (minor) / design_doc_silent (gap)
-             ├─ EFFORT-ESTIMATOR  (subagent; trivial/moderate/hard/misstated per theorem)
              ├─ PROVE        patch_output_lines, check_lean
-             │                attempts only trivial+moderate theorems; orchestrator ends
-             │                the stage on remaining-sorry count (0 / no improvement /
-             │                round cap), then PROOF-JUDGE classifies every theorem once
+             │                attempts every sorry theorem; orchestrator ends the stage
+             │                on remaining-sorry count (0 / no improvement / round cap)
              └─ REPORT       write_file, git_log → VERIFICATION_REPORT.md
                               orchestrator injects all spec and reconciliation files
  └─ tar-pipe /workspace/out → host out_dir
@@ -93,30 +89,27 @@ Each stage agent is declared in `stages.py` (prompt + output type) and driven by
 | Stage | Key tools | Purpose |
 |---|---|---|
 | DOC-INFER | *(structured output)* | Derive abstract informal spec from design doc — no code access |
-| DOC-FORMALISE | *(structured output)* | Derive abstract Lean stubs; orchestrator re-runs DOC-INFER if ambiguities are flagged (up to 3 rounds) |
+| DOC-FORMALISE | *(structured output)* | Derive abstract Lean stubs from the abstract informal spec |
 | EXPLORE | `list_files`, `read_file` | Survey the Rust source; flag Aeneas incompatibilities |
 | TRANSLATE | `run_aeneas`, `write_rust_file` | Charon → Aeneas → Lean; massage Rust on errors |
 | INFER | *(structured output)* | Orchestrator injects Lean translation + abstract informal spec; returns structured InformalSpec |
 | FORMALISE | `write_file`, `check_lean` | Derive theorem stubs from informal spec; iterate until `lake build` passes |
 | SPEC-JUDGE | *(structured output)* | Orchestrator injects all spec files; scores statements against impl + abstract spec; re-formalise if score < 7 |
 | RECONCILE | *(structured output)* | Orchestrator injects abstract + impl specs; classifies discrepancies and flags critical ones |
-| PROVE | `patch_output_lines`, `check_lean` | Fill `sorry` proofs for trivial/moderate theorems only; orchestrator ends the stage on the remaining-`sorry` count (0 / no improvement / round cap) |
+| PROVE | `patch_output_lines`, `check_lean` | Attempt a proof for every `sorry` theorem; orchestrator ends the stage on the remaining-`sorry` count (0 / no improvement / round cap) |
 | REPORT | `write_file`, `git_log` | Orchestrator injects all spec and reconciliation files; produces `VERIFICATION_REPORT.md` |
 
 ### Embedded specialists (`subagents.py`)
 
-Specialists run as single-turn agents with no message history. They return structured Pydantic output to the orchestrator and are invisible to the pipeline loop.
+The one embedded helper is a single-turn agent with no message history, invisible to the pipeline loop.
 
 | Specialist | Output type | Purpose |
 |---|---|---|
-| effort-estimator | `TheoremEstimate` | Classifies each theorem as trivial / moderate / hard-acceptable / likely-misstated before PROVE runs |
-| compaction-summariser | `str` | Summarises compacted message history within a stage to keep context size manageable |
+| compaction-summariser | `str` | Summarises a stage's older messages into one message to keep context size manageable |
 
 ### Proof search approach
 
-Before PROVE runs, an effort-estimator subagent reads the formal spec and classifies every theorem by difficulty. PROVE then attempts only the `trivial` and `moderate` theorems, leaving `hard_acceptable` ones as `sorry` immediately. This avoids burning tokens on proofs that require advanced techniques beyond automation.
-
-PROVE uses `check_lean` (`lake build`) as its feedback mechanism. Termination is decided by the orchestrator, not by the model: after each successful build it counts the remaining `sorry` in the spec and ends the stage when that count reaches 0, fails to reach a new minimum for a fixed number of builds, or a hard round cap (`LUSTERNA_MAX_PROVE_ROUNDS`) is hit. This objective, Python-side metric replaces the previous model-emitted "stagnant" signal, which could not reliably compare across rounds. Once PROVE ends, a proof-judge classifies every theorem once (proved / sorry_acceptable / likely_misstated) for the report. The stage agent works from its training knowledge of Lean 4 and Aeneas idioms (embedded as skill documents in `docs/`). This keeps the toolchain simple and avoids the latency and reliability problems of running a Lean language server inside a locked-down, network-isolated container.
+PROVE uses `check_lean` (`lake build`) as its feedback mechanism — the build is the only judge of what actually works, so PROVE attempts every `sorry` theorem rather than pre-filtering by a difficulty guess. Termination is decided by the orchestrator, not by the model: after each successful build it counts the remaining `sorry` in the spec and ends the stage when that count reaches 0, fails to reach a new minimum for a fixed number of builds, or a hard round cap (`LUSTERNA_MAX_PROVE_ROUNDS`) is hit. This objective, Python-side metric replaces the previous model-emitted "stagnant" signal, which could not reliably compare across rounds. Proof status in the report is read straight from the spec (proved = no `sorry`). The stage agent works from its training knowledge of Lean 4 and Aeneas idioms (embedded as skill documents in `docs/`). This keeps the toolchain simple and avoids the latency and reliability problems of running a Lean language server inside a locked-down, network-isolated container.
 
 ### Checkpoints
 
@@ -198,7 +191,7 @@ Output (stdout, JSON):
   "out_dir": "/path/to/rust-repo-lusterna",
   "container_id": "...",
   "summary": "...",
-  "progress_keys": ["aeneas", "informal_spec", "formal_spec", "lean_build", "verdict", "proof_verdict"]
+  "progress_keys": ["aeneas", "informal_spec", "formal_spec", "lean_build", "verdict", "reconciliation", "proofs_done"]
 }
 ```
 

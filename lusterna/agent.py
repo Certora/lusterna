@@ -3,8 +3,7 @@
 Stage agents are declared in stages.py; this module imports them, attaches their
 tools, and drives them. Each stage runs independently with no shared message
 history — stages communicate via the filesystem and deps.progress, not via
-conversation context. Embedded specialists (subagents.py) are invoked as tool
-calls from within a stage and return structured data directly to the caller.
+conversation context.
 """
 import logging
 from typing import Any, Callable
@@ -12,17 +11,15 @@ from typing import Any, Callable
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 
-from . import checkpoint, git_ops, subagents, telemetry, tools
+from . import checkpoint, git_ops, telemetry, tools
 from .schemas import (
     AbstractInformalSpec, AbstractFormalSpec,
-    InformalSpec, JudgeVerdict, ProofVerdict, ReconciliationReport,
-    TheoremEstimate,
+    InformalSpec, JudgeVerdict, ReconciliationReport,
 )
 from .stages import (
     doc_infer as _doc_infer, doc_formalise as _doc_formalise, explore as _explore,
     translate as _translate, infer as _infer, formalise as _formalise,
-    judge as _judge, reconcile as _reconcile, prove as _prove,
-    proof_judge as _proof_judge, report as _report,
+    judge as _judge, reconcile as _reconcile, prove as _prove, report as _report,
 )
 from .state import AgentDeps
 from . import config
@@ -52,44 +49,6 @@ def check_lean(ctx: RunContext[AgentDeps], lean_file: str) -> dict:
     ctx.deps.progress["build_seq"] = ctx.deps.progress.get("build_seq", 0) + 1
     _checkpoint(ctx.deps)
     return result
-
-
-async def _run_proof_judge(deps: AgentDeps) -> ProofVerdict | None:
-    """Classify every theorem once after PROVE finishes.
-
-    Stores the verdict in deps.progress['proof_verdict']. This judge is purely a
-    classifier (proved / sorry_acceptable / likely_misstated) — loop termination is
-    decided by the orchestrator from an objective metric, not by this judge.
-    """
-    from pydantic_ai.usage import UsageLimits
-    spec_path = _impl_spec(deps)
-    spec_content = tools.read_out(deps, spec_path) if spec_path else ""
-    build = deps.progress.get("lean_build", {})
-    build_line = f"lake build {'passed ✓' if build.get('success') else 'FAILED ✗'}"
-    if not build.get("success") and build.get("stderr"):
-        build_line += f"\n{build['stderr']}"
-    prompt = (
-        _pipeline_briefing(deps)
-        + f"PROOF-JUDGE: classify every theorem as proved / sorry_acceptable / "
-          f"likely_misstated.\n\n{build_line}\n\n### {spec_path}\n{spec_content}"
-    )
-    try:
-        async with _proof_judge.iter(
-            prompt, deps=deps,
-            usage_limits=UsageLimits(request_limit=config.REQUEST_LIMIT),
-        ) as run:
-            async for _ in run:
-                pass
-            result = run.result
-    except UnexpectedModelBehavior as e:
-        log.warning("Proof-judge failed: %s", e)
-        return None
-    if not (result and result.output):
-        return None
-    pv: ProofVerdict = result.output
-    deps.progress["proof_verdict"] = pv.model_dump()
-    _checkpoint(deps)
-    return pv
 
 
 # ── tool registration ───────────────────────────────────────────
@@ -204,7 +163,7 @@ def _pipeline_briefing(deps: AgentDeps) -> str:
         ("formal_spec",            "FORMALISE"),
         ("verdict",                "SPEC-JUDGE"),
         ("reconciliation",         "RECONCILE"),
-        ("proof_verdict",          "PROOF-JUDGE"),
+        ("proofs_done",            "PROVE"),
     ]
     done = [label for key, label in stage_flags if key in p]
 
@@ -266,32 +225,6 @@ def _pipeline_briefing(deps: AgentDeps) -> str:
         for d in critical:
             lines.append(f"  [CRITICAL {d.get('kind','')}] {d.get('description','')[:120]}")
 
-    # Proof-judge verdict
-    proof_verdict = p.get("proof_verdict")
-    if proof_verdict:
-        theorems = proof_verdict.get("theorems", [])
-        proved   = [t["name"] for t in theorems if t.get("status") == "proved"]
-        sorry    = [t["name"] for t in theorems if t.get("status") == "sorry_acceptable"]
-        mis      = [t["name"] for t in theorems if t.get("status") == "likely_misstated"]
-        lines.append(
-            f"\nProof-judge verdict: proved={len(proved)} sorry_acceptable={len(sorry)} "
-            f"likely_misstated={len(mis)}"
-            + (f"  misstated={mis}" if mis else "")
-        )
-
-    # Effort estimate (survives compaction — re-injected into every briefing)
-    effort = p.get("effort_estimate")
-    if effort:
-        def _ns(lst): return ", ".join(lst) if lst else "none"
-        lines.append(
-            f"\nEffort estimate (PROVE guidance):"
-            f"\n  trivial (attempt):               {_ns(effort.get('trivial', []))}"
-            f"\n  moderate (attempt):              {_ns(effort.get('moderate', []))}"
-            f"\n  hard_acceptable (leave sorry):   {_ns(effort.get('hard_acceptable', []))}"
-            f"\n  likely_misstated (do not touch): {_ns(effort.get('likely_misstated', []))}"
-            f"\nAttempt only trivial and moderate. Mark hard_acceptable as sorry immediately."
-        )
-
     lines.append("")   # trailing newline before stage-specific prompt
     return "\n".join(lines) + "\n"
 
@@ -328,77 +261,45 @@ async def _run_stage(agent: Agent, prompt: str, deps: AgentDeps, label: str,
 # ── pipeline sub-functions ────────────────────────────────────────────────────
 
 async def _run_doc_stages(deps: AgentDeps, resume_note: str) -> str:
-    """Run DOC-INFER and DOC-FORMALISE with an orchestrator-level ambiguity loop."""
+    """Run DOC-INFER then DOC-FORMALISE (once each) from the design document alone."""
     completed = set(deps.progress.keys())
 
-    _MAX_DOC_ROUNDS = 3
-
-    async def _run_doc_infer(prompt_suffix: str = "") -> AbstractInformalSpec | None:
+    if "abstract_informal_spec" not in completed:
         result = await _run_stage(
             _doc_infer,
             f"Begin DOC-INFER. Derive the abstract informal specification from this "
-            f"design document:\n\n{deps.design_doc}" + prompt_suffix,
+            f"design document:\n\n{deps.design_doc}" + resume_note,
             deps, "DOC-INFER",
         )
-        if result and result.output:
-            spec: AbstractInformalSpec = result.output
-            deps.progress["abstract_informal_spec"] = spec.model_dump()
-            tools.write_out(deps, "specs/abstract_informal_spec.json", spec.model_dump_json(indent=2))
-            return spec
-        return None
-
-    if "abstract_informal_spec" not in completed:
-        informal = await _run_doc_infer(resume_note)
-        _checkpoint(deps)
         resume_note = ""
-        if informal is None:
+        if not (result and result.output):
             log.warning("DOC-INFER produced no output — proceeding without abstract spec")
             return resume_note
-    else:
-        informal = AbstractInformalSpec(**deps.progress["abstract_informal_spec"])
+        spec: AbstractInformalSpec = result.output
+        deps.progress["abstract_informal_spec"] = spec.model_dump()
+        tools.write_out(deps, "specs/abstract_informal_spec.json", spec.model_dump_json(indent=2))
+        _checkpoint(deps)
 
-    if "abstract_formal_spec" in completed:
-        return resume_note
-
-    for round_num in range(_MAX_DOC_ROUNDS):
+    if "abstract_formal_spec" not in completed and "abstract_informal_spec" in deps.progress:
         inf_json = AbstractInformalSpec(**deps.progress["abstract_informal_spec"]).model_dump_json(indent=2)
-        formalise_result = await _run_stage(
+        result = await _run_stage(
             _doc_formalise,
-            f"DOC-FORMALISE (round {round_num + 1}). Produce Lean 4 abstract theorem stubs "
-            f"from this abstract informal spec:\n\n{inf_json}" + resume_note,
-            deps, f"DOC-FORMALISE (round {round_num + 1})",
+            f"Proceed to DOC-FORMALISE. Produce Lean 4 abstract theorem stubs from this "
+            f"abstract informal spec:\n\n{inf_json}" + resume_note,
+            deps, "DOC-FORMALISE",
         )
         resume_note = ""
-
-        if not (formalise_result and formalise_result.output):
-            log.warning("DOC-FORMALISE round %d produced no output", round_num + 1)
-            break
-
-        formal: AbstractFormalSpec = formalise_result.output
-        deps.progress["abstract_formal_spec"] = formal.model_dump()
-        tools.write_out(
-            deps, "specs/abstract_formal_spec.lean",
-            formal.lean_definitions + "\n\n" + formal.lean_theorem_stubs,
-        )
-        git_ops.commit(deps.container_id, "feat(spec): abstract formal specification", glob="specs/")
-        _checkpoint(deps)
-
-        if not formal.ambiguities or round_num == _MAX_DOC_ROUNDS - 1:
-            break
-
-        log.info(
-            "DOC-FORMALISE flagged %d ambiguity/ies — re-running DOC-INFER (round %d/%d)",
-            len(formal.ambiguities), round_num + 1, _MAX_DOC_ROUNDS,
-        )
-        ambiguity_lines = "\n".join(f"  - {a.field}: {a.question}" for a in formal.ambiguities)
-        del deps.progress["abstract_informal_spec"]   # allow re-run
-        informal = await _run_doc_infer(
-            f"\n\nThe doc-formaliser flagged these ambiguities — resolve them using "
-            f"only the design document:\n{ambiguity_lines}"
-        )
-        _checkpoint(deps)
-        if informal is None:
-            break
+        if result and result.output:
+            formal: AbstractFormalSpec = result.output
+            deps.progress["abstract_formal_spec"] = formal.model_dump()
+            tools.write_out(
+                deps, "specs/abstract_formal_spec.lean",
+                formal.lean_definitions + "\n\n" + formal.lean_theorem_stubs,
+            )
+            git_ops.commit(deps.container_id, "feat(spec): abstract formal specification", glob="specs/")
+            _checkpoint(deps)
+        else:
+            log.warning("DOC-FORMALISE produced no output")
 
     return resume_note
 
@@ -595,8 +496,6 @@ async def _run_spec_phase(deps: AgentDeps, resume_note: str) -> str:
     else:
         log.warning("Spec-judge loop hit hard cap of %d rounds", _HARD_CAP)
 
-    tools.prune_stray_specs(deps, deps.progress.get("aeneas", {}).get("lean_path", ""))
-    git_ops.commit(deps.container_id, "chore(spec): prune stray spec files", glob=".")
     return resume_note
 
 
@@ -639,43 +538,16 @@ async def _run_reconcile_phase(deps: AgentDeps) -> None:
     _checkpoint(deps)
 
 
-async def _run_estimator(deps: AgentDeps) -> TheoremEstimate | None:
-    """Run the effort estimator on the current formal spec + any reconciliation obligations."""
-    formal = tools.read_out(deps, _impl_spec(deps))
-    if formal.startswith("ERROR:"):
-        log.warning("Effort estimator: cannot read impl spec — %s", formal)
-        return None
-    obls = deps.progress.get("reconciliation", {}).get("refinement_obligations", [])
-    extras = ""
-    if obls:
-        extras = "\n\nRefinement obligations (from RECONCILE):\n" + "\n".join(
-            f"  theorem {o['name']}: {o['statement'][:200]}" for o in obls
-        )
-    try:
-        estimate = await subagents.estimate_theorem_effort(formal + extras)
-        log.info(
-            "Effort estimate: trivial=%d moderate=%d hard=%d misstated=%d",
-            len(estimate.trivial), len(estimate.moderate),
-            len(estimate.hard_acceptable), len(estimate.likely_misstated),
-        )
-        deps.progress["effort_estimate"] = estimate.model_dump()
-        return estimate
-    except Exception as e:
-        log.warning("Effort estimator failed: %s — proceeding without estimate", e)
-        return None
-
-
 async def _run_prove_phase(deps: AgentDeps) -> None:
-    """Run EFFORT-ESTIMATOR → PROVE → PROOF-JUDGE.
+    """Run PROVE, stopped by the orchestrator on an objective metric.
 
-    PROVE is stopped by the orchestrator on an objective metric — the remaining
-    `sorry` count in the spec after each successful build: stop when it reaches 0,
-    shows no new minimum for _NO_PROGRESS builds, or MAX_PROVE_ROUNDS builds elapse.
-    The proof-judge then classifies every theorem once. Mis-stated theorems are
-    reported, not amended (no feedback loop).
+    After each successful build the remaining `sorry` count in the spec is checked:
+    the stage ends when it reaches 0, shows no new minimum for _NO_PROGRESS builds, or
+    MAX_PROVE_ROUNDS builds elapse. Proof status is read from the file (proved = no
+    `sorry`); there is no separate proof-judge.
     """
-    if "proof_verdict" in deps.progress:
-        log.info("proof_verdict already in progress — skipping proof stage")
+    if "proofs_done" in deps.progress:
+        log.info("PROVE already complete — skipping proof stage")
         return
 
     rc = deps.progress.get("reconciliation", {})
@@ -698,20 +570,6 @@ async def _run_prove_phase(deps: AgentDeps) -> None:
             f"{critical_lines}\n"
             "These indicate a potential bug in the implementation or a mis-stated theorem. "
             "Leave the corresponding obligations unproved and note them clearly."
-        )
-
-    estimate = await _run_estimator(deps)
-    if estimate:
-        def _names(lst: list[str]) -> str:
-            return ", ".join(lst) if lst else "none"
-        prove_note += (
-            f"\n\nEFFORT ESTIMATE:\n"
-            f"  trivial (attempt):             {_names(estimate.trivial)}\n"
-            f"  moderate (attempt):            {_names(estimate.moderate)}\n"
-            f"  hard_acceptable (leave sorry): {_names(estimate.hard_acceptable)}\n"
-            f"  likely_misstated (do not touch): {_names(estimate.likely_misstated)}\n"
-            "Attempt only trivial and moderate theorems. Mark hard_acceptable as sorry "
-            "without spending further effort."
         )
 
     # Objective stop: end PROVE when no sorry remain, no new minimum sorry-count for
@@ -759,32 +617,17 @@ async def _run_prove_phase(deps: AgentDeps) -> None:
     if not deps.progress.get("lean_build", {}).get("success"):
         raise _PipelineAborted("PROVE produced no successful lake build")
 
-    pv = await _run_proof_judge(deps)
-    if pv is None:
-        raise _PipelineAborted("Proof-judge produced no verdict")
-
-    proved    = [t for t in pv.theorems if t.status == "proved"]
-    sorry_ok  = [t for t in pv.theorems if t.status == "sorry_acceptable"]
-    misstated = [t for t in pv.theorems if t.status == "likely_misstated"]
-    log.info(
-        "Proof-judge: proved=%d sorry_acceptable=%d misstated=%s",
-        len(proved), len(sorry_ok), [t.name for t in misstated] or "none",
-    )
-    if misstated:
-        log.warning(
-            "PROVE left %d likely-misstated theorem(s): %s — reported, not amended",
-            len(misstated), [t.name for t in misstated],
-        )
+    deps.progress["proofs_done"] = True
+    _checkpoint(deps)
+    log.info("PROVE complete — %d sorry remaining in the implementation spec",
+             max(_sorry_count(deps), 0))
 
 
 async def _run_report(deps: AgentDeps, resume_note: str) -> str:
     """Run the REPORT stage and concatenate section files into VERIFICATION_REPORT.md."""
-    verdict_data    = deps.progress.get("verdict", {})
-    proof_verd_data = deps.progress.get("proof_verdict", {})
-    proved_count    = sum(1 for t in proof_verd_data.get("theorems", []) if t.get("status") == "proved")
-    sorry_count     = sum(1 for t in proof_verd_data.get("theorems", []) if t.get("status") == "sorry_acceptable")
-    misstated_count = sum(1 for t in proof_verd_data.get("theorems", []) if t.get("status") == "likely_misstated")
-    rc              = deps.progress.get("reconciliation", {})
+    verdict_data     = deps.progress.get("verdict", {})
+    sorry_remaining  = max(_sorry_count(deps), 0)
+    rc               = deps.progress.get("reconciliation", {})
     rc_critical     = sum(1 for d in rc.get("discrepancies", []) if d.get("severity") == "critical")
     rc_obligations_n = len(rc.get("refinement_obligations", []))
 
@@ -802,8 +645,8 @@ async def _run_report(deps: AgentDeps, resume_note: str) -> str:
         _report,
         f"Proceed to REPORT. "
         f"Spec-judge: approved={verdict_data.get('approved')}, score={verdict_data.get('score')}. "
-        f"Proof-judge: proved={proved_count}, sorry_acceptable={sorry_count}, "
-        f"likely_misstated={misstated_count}. "
+        f"Proofs: {sorry_remaining} theorem(s) remain as `sorry` in the implementation "
+        f"spec (read the injected spec to report which are proved vs. sorry). "
         f"Reconciliation: critical_discrepancies={rc_critical}, "
         f"total_refinement_obligations={rc_obligations_n}."
         f"\n\n{report_files}" + resume_note,
@@ -835,8 +678,8 @@ async def _run_report(deps: AgentDeps, resume_note: str) -> str:
     if report_text:
         try:
             tools.write_out(deps, "VERIFICATION_REPORT.md", report_text)
-            git_ops.commit(deps.container_id, "stage/report: final pipeline report",
-                           glob="VERIFICATION_REPORT.md")
+            # glob="." stages the report/ sections too (only report files are pending here).
+            git_ops.commit(deps.container_id, "stage/report: final pipeline report", glob=".")
             log.info("Report written and committed (%d chars)", len(report_text))
         except Exception as e:
             log.warning("Could not write report: %s", e)
@@ -869,6 +712,11 @@ async def run_session(deps: AgentDeps) -> str:
         await _run_prove_phase(deps)
 
         result = await _run_report(deps, resume_note)
+
+        # Final tidy: any stage may leave stray spec files; prune once at the end.
+        tools.prune_stray_specs(deps, deps.progress.get("aeneas", {}).get("lean_path", ""))
+        git_ops.commit(deps.container_id, "chore: prune stray spec files", glob=".")
+
         u = telemetry.session.as_dict()
         log.info(
             "Pipeline complete — session usage: in=%d out=%d cache_read=%d cache_write=%d total=%d/%s",
