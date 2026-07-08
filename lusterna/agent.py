@@ -199,18 +199,15 @@ def _pipeline_briefing(deps: AgentDeps) -> str:
 
     # Spec-judge verdict
     verdict = p.get("verdict")
-    if verdict:
-        approved = verdict.get("approved", False)
-        score = verdict.get("score", "?")
-        issues = verdict.get("issues", [])
-        comps = verdict.get("components", [])
-        failing = [c["name"] for c in comps if not c.get("approved")]
-        lines.append(
-            f"\nSpec-judge verdict: {'approved ✓' if approved else 'not approved ✗'} "
-            f"score={score}"
-            + (f"  failing={failing}" if failing else "")
-            + (f"  issues={issues[:2]}" if issues else "")
-        )
+    if verdict is not None:
+        defects = verdict.get("defects", [])
+        if defects:
+            lines.append(
+                f"\nSpec-judge: {len(defects)} open defect(s): "
+                + ", ".join(f"{d['theorem']}[{d['kind']}]" for d in defects)
+            )
+        else:
+            lines.append("\nSpec-judge: no defects (spec approved ✓)")
 
     # Reconciliation summary
     rc = p.get("reconciliation")
@@ -390,7 +387,13 @@ def _read_spec_files(deps: AgentDeps) -> str:
 
 
 async def _run_spec_phase(deps: AgentDeps, resume_note: str) -> str:
-    """Run the FORMALISE+SPEC-JUDGE loop until approved, no score progress, or capped."""
+    """Run the FORMALISE→SPEC-JUDGE loop until the spec has no defects, the same defects
+    persist (no progress), or the round cap is hit.
+
+    SPEC-JUDGE returns a list of concrete defects; approval is the Python-decided
+    `defects == []`. It judges the impl spec against the code + informal spec only —
+    abstract-vs-impl drift is RECONCILE's job.
+    """
     completed = set(deps.progress.keys())
 
     if "verdict" in completed:
@@ -398,8 +401,7 @@ async def _run_spec_phase(deps: AgentDeps, resume_note: str) -> str:
 
     _ensure_impl_spec(deps)
     impl_spec = _impl_spec(deps)
-    best_score = -1
-    no_progress = 0
+    prev_defects: frozenset | None = None
     spec_attempt = 0
     while spec_attempt < _HARD_CAP:
         skip_formalise = (
@@ -419,29 +421,16 @@ async def _run_spec_phase(deps: AgentDeps, resume_note: str) -> str:
                     + resume_note
                 )
             else:
-                failing_comps = [
-                    c for c in deps.progress.get("verdict", {}).get("components", [])
-                    if not c.get("approved")
-                ]
-                if failing_comps:
-                    component_lines = "\n".join(
-                        f"  - {c['name']} ({c['kind']}): "
-                        + ("; ".join(c.get("issues", [])) or "no details")
-                        for c in failing_comps
-                    )
-                    formalise_prompt = (
-                        f"Spec judge did not approve (round {spec_attempt + 1}). "
-                        f"Fix only these {len(failing_comps)} component(s):\n"
-                        f"{component_lines}\n\n"
-                        "Then call check_lean to confirm the build still passes."
-                    )
-                else:
-                    formalise_prompt = (
-                        f"Spec judge did not approve (round {spec_attempt + 1}). "
-                        "Revise the spec based on the spec-judge verdict in the "
-                        "pipeline context above, then call check_lean to confirm "
-                        "the build passes."
-                    )
+                defects = deps.progress.get("verdict", {}).get("defects", [])
+                defect_lines = "\n".join(
+                    f"  - {d['theorem']} [{d['kind']}]: {d['detail']} → fix: {d['fix']}"
+                    for d in defects
+                )
+                formalise_prompt = (
+                    f"The spec-judge found {len(defects)} defect(s) (round {spec_attempt + 1}). "
+                    f"Fix exactly these, changing nothing else:\n{defect_lines}\n\n"
+                    "Then call check_lean to confirm the build still passes."
+                )
 
             await _run_stage(
                 _formalise, formalise_prompt, deps,
@@ -451,15 +440,19 @@ async def _run_spec_phase(deps: AgentDeps, resume_note: str) -> str:
             _checkpoint(deps)
             resume_note = ""
 
-        build_ok = deps.progress.get("lean_build", {}).get("success", False)
-        build_stderr = deps.progress.get("lean_build", {}).get("stderr", "")
-        spec_files = _read_spec_files(deps)
+        # Judge the impl spec against the code + informal spec (not the abstract spec).
+        judge_files = ""
+        lean_path = deps.progress.get("aeneas", {}).get("lean_path", "")
+        for path in (lean_path, "specs/informal_spec.json", impl_spec):
+            content = tools.read_out(deps, path) if path else "ERROR:"
+            if not content.startswith("ERROR:"):
+                judge_files += f"### {path}\n{content}\n\n"
         try:
             sj_result = await _run_stage(
                 _judge,
-                f"SPEC-JUDGE: lake build {'passed ✓' if build_ok else 'FAILED ✗ — approved must be false'}."
-                + (f"\nBuild errors:\n{build_stderr}" if not build_ok and build_stderr else "")
-                + f"\n\nEvaluate theorem statements only (ignore sorry proofs).\n\n{spec_files}",
+                "SPEC-JUDGE: list every defect in the implementation spec's theorem "
+                "statements (ignore sorry proofs); return an empty list if it is sound."
+                f"\n\n{judge_files}",
                 deps,
                 f"SPEC-JUDGE (round {spec_attempt + 1})",
             )
@@ -473,25 +466,19 @@ async def _run_spec_phase(deps: AgentDeps, resume_note: str) -> str:
 
         sv: JudgeVerdict = sj_result.output
         deps.progress["verdict"] = sv.model_dump()
-        failing_names = sorted(c.name for c in sv.components if not c.approved)
-        log.info(
-            "Spec-judge round %d: approved=%s score=%d components=%d failing=%s",
-            spec_attempt + 1, sv.approved, sv.score,
-            len(sv.components), failing_names or "none",
-        )
         _checkpoint(deps)
-
-        if sv.approved or sv.score >= 7:
-            log.info("Spec verdict accepted")
+        if not sv.defects:
+            log.info("Spec-judge round %d: no defects — spec approved", spec_attempt + 1)
             break
-        if sv.score > best_score:
-            best_score, no_progress = sv.score, 0
-        else:
-            no_progress += 1
-            if no_progress >= _NO_PROGRESS:
-                log.warning("Spec-judge: no score improvement in %d rounds — stopping",
-                            _NO_PROGRESS)
-                break
+        log.info("Spec-judge round %d: %d defect(s): %s", spec_attempt + 1, len(sv.defects),
+                 ", ".join(f"{d.theorem}[{d.kind}]" for d in sv.defects))
+
+        defect_sig = frozenset((d.theorem, d.kind) for d in sv.defects)
+        if defect_sig == prev_defects:
+            log.warning("Spec-judge: same defects as last round — FORMALISE made no "
+                        "progress, stopping")
+            break
+        prev_defects = defect_sig
         spec_attempt += 1
     else:
         log.warning("Spec-judge loop hit hard cap of %d rounds", _HARD_CAP)
@@ -625,7 +612,7 @@ async def _run_prove_phase(deps: AgentDeps) -> None:
 
 async def _run_report(deps: AgentDeps, resume_note: str) -> str:
     """Run the REPORT stage and concatenate section files into VERIFICATION_REPORT.md."""
-    verdict_data     = deps.progress.get("verdict", {})
+    spec_defects     = deps.progress.get("verdict", {}).get("defects", [])
     sorry_remaining  = max(_sorry_count(deps), 0)
     rc               = deps.progress.get("reconciliation", {})
     rc_critical     = sum(1 for d in rc.get("discrepancies", []) if d.get("severity") == "critical")
@@ -644,7 +631,7 @@ async def _run_report(deps: AgentDeps, resume_note: str) -> str:
     report_result = await _run_stage(
         _report,
         f"Proceed to REPORT. "
-        f"Spec-judge: approved={verdict_data.get('approved')}, score={verdict_data.get('score')}. "
+        f"Spec-judge: {'approved (no defects)' if not spec_defects else str(len(spec_defects)) + ' unresolved defect(s)'}. "
         f"Proofs: {sorry_remaining} theorem(s) remain as `sorry` in the implementation "
         f"spec (read the injected spec to report which are proved vs. sorry). "
         f"Reconciliation: critical_discrepancies={rc_critical}, "

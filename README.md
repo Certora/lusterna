@@ -10,7 +10,7 @@ Given a Rust repository and a design document, Lusterna:
 4. Infers an informal specification from the translated code and the design document
 5. Derives a formal Lean 4 specification (theorem stubs with `sorry`)
 6. Verifies the spec compiles with `lake build`; iterates until it does (max 3 attempts)
-7. Has a spec-judge score the statements against both the implementation and the abstract spec; revises if score < 7
+7. Has a spec-judge list concrete defects in the theorem statements (checked against the code and the informal spec); revises until the defect list is empty
 8. **Reconciles** the abstract spec against the implementation spec — classifies discrepancies and flags critical ones (implementation bugs, mis-stated theorems)
 9. Attempts to fill in proofs using Lean 4 tactics; the orchestrator ends the stage when no `sorry` remain, the remaining-`sorry` count stops improving, or a round cap is hit
 10. Writes a final verification report
@@ -56,8 +56,9 @@ CLI
              │                abstract informal spec directly into the prompt
              ├─ FORMALISE    write_file, check_lean → lean/  (git commit)
              │   + BUILD     (lake build) — loop until pass or 3 attempts
-             ├─ SPEC-JUDGE   (re-formalise if score < 7, up to 10 rounds)
-             │                structured output; orchestrator injects all spec files
+             ├─ SPEC-JUDGE   (re-formalise until no defects remain, up to 10 rounds)
+             │                structured output; lists defects in the impl spec, judged
+             │                against the code + informal spec (approval = empty list)
              ├─ RECONCILE    → specs/reconciliation.json  (git commit)
              │                structured output; orchestrator injects abstract + impl specs
              │                classifies discrepancies:
@@ -94,7 +95,7 @@ Each stage agent is declared in `stages.py` (prompt + output type) and driven by
 | TRANSLATE | `run_aeneas`, `write_rust_file` | Charon → Aeneas → Lean; massage Rust on errors |
 | INFER | *(structured output)* | Orchestrator injects Lean translation + abstract informal spec; returns structured InformalSpec |
 | FORMALISE | `write_file`, `check_lean` | Derive theorem stubs from informal spec; iterate until `lake build` passes |
-| SPEC-JUDGE | *(structured output)* | Orchestrator injects all spec files; scores statements against impl + abstract spec; re-formalise if score < 7 |
+| SPEC-JUDGE | *(structured output)* | Lists concrete defects in the impl-spec statements (judged against the code + informal spec); re-formalise until the defect list is empty |
 | RECONCILE | *(structured output)* | Orchestrator injects abstract + impl specs; classifies discrepancies and flags critical ones |
 | PROVE | `patch_output_lines`, `check_lean` | Attempt a proof for every `sorry` theorem; orchestrator ends the stage on the remaining-`sorry` count (0 / no improvement / round cap) |
 | REPORT | `write_file`, `git_log` | Orchestrator injects all spec and reconciliation files; produces `VERIFICATION_REPORT.md` |

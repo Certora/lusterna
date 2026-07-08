@@ -145,35 +145,36 @@ Do NOT attempt proofs — that is the PROVE stage's responsibility.
 
 
 judge = factory.make_stage_agent("""
-You are the JUDGE stage of the Lusterna pipeline.
+You are the SPEC-JUDGE stage of the Lusterna pipeline.
 
-Evaluate the formal Lean 4 specification and return a structured JudgeVerdict that
-includes both an overall verdict and a per-component breakdown.
+Review the IMPLEMENTATION formal specification and return a JudgeVerdict that LISTS
+EVERY DEFECT in its theorem statements. Do NOT score. Do NOT judge proofs — every
+theorem is `sorry` at this stage, so judge the STATEMENTS only. An empty defect list
+means the spec is sound and the pipeline proceeds; that is the goal.
 
-All files you need are injected directly into your prompt — do not call any tools.
-The build result, implementation spec, abstract spec, and informal spec are all provided.
+Injected in your prompt (do not call any tools):
+  - the Aeneas-translated Lean code — ground truth for what the implementation does
+  - specs/informal_spec.json — the properties the spec is meant to capture
+  - the implementation spec file — the theorem statements you are judging
 
-specs/abstract_formal_spec.lean is the ABSTRACT specification derived from the design
-document alone, with no knowledge of the Rust implementation. Use it as a ground-truth
-reference: if a theorem in the implementation spec contradicts or is weaker than the
-abstract spec, flag it as a critical issue. Gaps in the abstract spec are acceptable.
+Report one SpecDefect per concrete problem. Each must name a specific theorem (or
+"coverage") plus a concrete fix. Use exactly these kinds:
 
-For EACH theorem, definition, and lemma in the spec file, produce a ComponentVerdict:
-  - name: the Lean identifier (e.g. "fib_recursive_correct")
-  - kind: "theorem" | "definition" | "lemma" | "other"
-  - approved: true only if the statement is sound and complete for its purpose
-  - score: 0-10 for this component
-  - issues: specific problems (wrong quantifier, missing edge case, unsound statement…)
-  - suggestions: concrete fixes the formaliser should apply
+  "vacuous"          — trivially true, constrains nothing: a tautology (∀ x, f x = f x),
+                       or a Hoare-triple postcondition that also holds when the function
+                       fails (it only constrains the success case).
+  "too_weak"         — provable but weaker than the intended guarantee (e.g. omits a
+                       no-error / totality obligation the design implies).
+  "wrong_statement"  — cannot be right as written: wrong quantifier or bound, a type
+                       mismatch (e.g. UInt64 equated to Nat with no cast), an
+                       inconsistent hypothesis.
+  "missing_coverage" — a property in informal_spec.json has no corresponding theorem
+                       (set theorem = "coverage").
+  "over_specified"   — asserts behaviour the translated code does not evidence.
 
-Then produce the overall JudgeVerdict:
-  - approved: true only if lake build passed AND all critical components are approved
-  - score: 0-10 weighted average across components
-  - issues: cross-cutting problems not tied to one component
-  - suggestions: overall structural improvements
-  - components: the list of ComponentVerdicts above
-
-IMPORTANT: if lake build failed, approved MUST be false and score MUST be ≤ 4.
+Be strict but concrete: never invent a defect you cannot pin to a specific theorem and
+reason. When the spec faithfully and non-trivially captures the code and the informal
+spec, return defects = [].
 """,
     output_type=JudgeVerdict,
     retries=3,
@@ -312,8 +313,8 @@ Write exactly these files, in this order:
       one-line explanation. Include the lake build result.
 
   report/05_spec_judge.md
-      Spec-judge verdict: overall score, approved/not, per-component breakdown.
-      Quote the judge's issues and suggestions for any component scoring < 8.
+      Spec-judge result: approved (no defects) or the list of unresolved defects —
+      each with its theorem, kind, detail, and suggested fix.
       (Verdict data is in the pipeline context above.)
 
   report/06_reconciliation.md

@@ -41,21 +41,16 @@ class InformalSpec(BaseModel):
 
 # ── SPEC-JUDGE stage ──────────────────────────────────────────────────────────
 
-class ComponentVerdict(BaseModel):
-    name: str
-    kind: str
-    approved: bool
-    score: int
-    issues: list[str]
-    suggestions: list[str]
+class SpecDefect(BaseModel):
+    theorem: str   # Lean identifier, or "coverage" for a missing property
+    kind: Literal["vacuous", "too_weak", "wrong_statement",
+                  "missing_coverage", "over_specified"]
+    detail: str    # the specific reason it is a defect
+    fix: str       # concrete change FORMALISE should make
 
 
 class JudgeVerdict(BaseModel):
-    approved: bool
-    score: int
-    issues: list[str]
-    suggestions: list[str]
-    components: list[ComponentVerdict] = []
+    defects: list[SpecDefect]   # empty == sound spec; approval is derived in Python
 
 
 # ── RECONCILE stage ───────────────────────────────────────────────────────────
