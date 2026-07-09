@@ -92,7 +92,7 @@ class _PipelineAborted(Exception):
 
 
 _HARD_CAP = 10    # max spec-judge rounds
-_NO_PROGRESS = 2  # stop a judge loop after this many rounds with no objective progress
+_NO_PROGRESS = 3  # PROVE: give up after this many successful builds with no new sorry minimum
 
 
 def _impl_spec(deps: AgentDeps) -> str:

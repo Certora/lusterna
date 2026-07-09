@@ -137,14 +137,23 @@ Injected in your prompt (do not call any tools):
   - specs/informal_spec.json — the properties the spec is meant to capture
   - the implementation spec file — the theorem statements you are judging
 
+Judge each theorem by what it actually asserts — do not penalise a statement for the
+FORM it uses. In this toolchain the Aeneas postcondition triple `f args ⦃ r => P r ⦄`
+is TOTAL: it means "f args succeeds (returns `ok r`) AND P r holds". So a triple already
+carries the no-error / ok-ness guarantee; it is NOT vacuous or weak merely for being a
+triple. An equality like `f args = ok v` is equally valid. The model is free to choose
+whichever formalism fits the target.
+
 Report one SpecDefect per concrete problem. Each must name a specific theorem (or
 "coverage") plus a concrete fix. Use exactly these kinds:
 
-  "vacuous"          — trivially true, constrains nothing: a tautology (∀ x, f x = f x),
-                       or a Hoare-triple postcondition that also holds when the function
-                       fails (it only constrains the success case).
-  "too_weak"         — provable but weaker than the intended guarantee (e.g. omits a
-                       no-error / totality obligation the design implies).
+  "vacuous"          — trivially true for ANY implementation, constraining nothing about
+                       the actual result: a tautology (∀ x, f x = f x), or a postcondition
+                       of `True`. (A triple with a real postcondition is NOT vacuous.)
+  "too_weak"         — true, but strictly weaker than the design's intended guarantee: it
+                       fails to pin the result down as tightly as the design requires
+                       (e.g. only a loose bound where an exact value is intended, or a
+                       narrower input domain than the guaranteed one).
   "wrong_statement"  — cannot be right as written: wrong quantifier or bound, a type
                        mismatch (e.g. UInt64 equated to Nat with no cast), an
                        inconsistent hypothesis.

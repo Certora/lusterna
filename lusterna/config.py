@@ -51,7 +51,7 @@ _req_limit_env = os.environ.get("LUSTERNA_REQUEST_LIMIT", "0")
 REQUEST_LIMIT: int | None = int(_req_limit_env) if _req_limit_env.strip() not in ("", "0") else None
 
 # Maximum PROVE→PROOF-JUDGE rounds per cycle before giving up.
-MAX_PROVE_ROUNDS: int = int(os.environ.get("LUSTERNA_MAX_PROVE_ROUNDS", "6"))
+MAX_PROVE_ROUNDS: int = int(os.environ.get("LUSTERNA_MAX_PROVE_ROUNDS", "8"))
 
 # Manual compaction: compact when a stage accumulates this many input tokens.
 COMPACTION_THRESHOLD = int(os.environ.get("LUSTERNA_COMPACTION_THRESHOLD", "500000"))
