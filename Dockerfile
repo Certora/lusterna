@@ -98,11 +98,12 @@ RUN mkdir -p /opt/lean-template \
 # (the agent container runs `--network none`; the essential LSP tools are all local).
 RUN apt-get update -qq \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-       python3 python3-venv \
+       python3 python3-venv ripgrep \
     && rm -rf /var/lib/apt/lists/* \
     && python3 -m venv /opt/leanmcp \
     && /opt/leanmcp/bin/pip install --quiet --upgrade pip \
     && /opt/leanmcp/bin/pip install --quiet lean-lsp-mcp
+# ripgrep (rg) is required by lean-lsp-mcp's `lean_local_search`.
 ENV LEAN_LSP_MCP_BIN=/opt/leanmcp/bin/lean-lsp-mcp
 
 # ── Workspace layout ───────────────────────────────────────────────────────────
