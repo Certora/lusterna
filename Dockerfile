@@ -67,13 +67,16 @@ RUN LEAN_TC=$(cat /opt/aeneas/backends/lean/lean-toolchain) \
     && curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
        | sh -s -- -y --no-modify-path --default-toolchain "$LEAN_TC"
 
-# Pre-fetch Mathlib and the Aeneas Lean runtime library so the container can
-# work with --network none at run time.
-# `lake exe cache get` downloads pre-compiled .olean files from the Mathlib CDN
-# instead of compiling Mathlib from source (~hours vs ~minutes).
+# Pre-fetch Mathlib and pre-compile the Aeneas Lean runtime library so the
+# container can work with --network none at run time AND never pay to compile
+# the Aeneas lib on the first `lake build` of a session.
+# `lake exe cache get` downloads pre-compiled Mathlib .olean files from the CDN
+# (~minutes vs ~hours from source); `lake build` then compiles the Aeneas lib's
+# own modules (which are NOT on the Mathlib CDN) into oleans baked into the image.
 WORKDIR /opt/aeneas/backends/lean
 RUN lake update \
-    && lake exe cache get || echo "WARNING: Mathlib CDN unavailable; oleans not pre-cached"
+    && (lake exe cache get || echo "WARNING: Mathlib CDN unavailable; oleans not pre-cached") \
+    && lake build
 
 # ── Lean project template ──────────────────────────────────────────────────────
 # Pre-create a minimal lake project that depends on the bundled Aeneas runtime.
