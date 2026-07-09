@@ -1,7 +1,0 @@
-#!/bin/sh
-# Stub charon: mimics `charon cargo --preset=aeneas`
-# Produces a minimal .llbc file named after the crate (read from Cargo.toml).
-CRATE=$(grep '^name' Cargo.toml | head -1 | sed 's/.*= *"\(.*\)"/\1/')
-OUT="${CRATE}.llbc"
-printf '{"format_version":1,"crate_name":"%s","declarations":[]}' "$CRATE" > "$OUT"
-echo "charon: wrote $OUT"

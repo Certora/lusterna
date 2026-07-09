@@ -315,13 +315,13 @@ git -C <out_dir> log --oneline
 ```sh
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e . pytest
+pip install -e .
 
-# Use the fast stub image (aeneas and lake are shell scripts that return immediately)
-docker build -f Dockerfile.test -t lusterna-toolchain:latest .
+# Build the toolchain image (one-time, ~30 min)
+lusterna build-image
 
 # Run against the included example
 ANTHROPIC_API_KEY=sk-... lusterna run tests/fibonacci tests/fibonacci/DESIGN.md
 ```
 
-The `Dockerfile` (as opposed to `Dockerfile.test`) installs the real toolchain: Rust via `rustup`, [Charon](https://github.com/AeneasVerif/charon) from its nightly release, Aeneas built from source with Lake, and Lean 4 via `elan`. Building it takes approximately 30 minutes and several gigabytes of disk space.
+The `Dockerfile` installs the real toolchain: Rust via `rustup`, [Charon](https://github.com/AeneasVerif/charon) from its nightly release, Aeneas built from source with Lake, and Lean 4 via `elan`. Building it takes approximately 30 minutes and several gigabytes of disk space.
