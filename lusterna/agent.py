@@ -10,7 +10,7 @@ import logging
 from typing import Any, Callable
 
 from pydantic_ai import Agent, RunContext
-from pydantic_ai.exceptions import UnexpectedModelBehavior
+from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
 
 from . import checkpoint, git_ops, telemetry, tools
 from .container import OUT_IN
@@ -528,6 +528,7 @@ async def _run_spec_phase(deps: AgentDeps, resume_note: str) -> str:
     # Airtight: start + verify ONE warm LSP before any FORMALISE round (reused across rounds).
     formalise_lsp = await _start_lean_lsp(deps, config.LEAN_LSP_DISABLED_TOOLS_FORMALISE)
     prev_defects: frozenset | None = None
+    prev_build_err: str | None = None
     feedback = ""            # revision feedback carried between rounds (build errors / defects)
     attempt = 0
     while attempt < _HARD_CAP:
@@ -558,11 +559,17 @@ async def _run_spec_phase(deps: AgentDeps, resume_note: str) -> str:
 
         # 2) Build — validate the STATEMENTS typecheck (bodies are all `sorry`, so fast).
         if not _build(deps).get("success"):
+            err = deps.progress["lean_build"].get("stderr", "")
+            if err == prev_build_err:
+                log.warning("FORMALISE: identical build errors two rounds running — no "
+                            "progress, stopping spec loop")
+                break
+            prev_build_err = err
             log.info("FORMALISE round %d: statements do not compile — feeding errors back",
                      attempt + 1)
             feedback = ("The assembled spec did NOT compile. Fix the STATEMENTS and/or the "
                         "preamble so it typechecks (you still write no proofs — bodies are "
-                        f"`sorry`). Build errors:\n{deps.progress['lean_build'].get('stderr','')[:2000]}")
+                        f"`sorry`). Build errors:\n{err[:2000]}")
             attempt += 1
             continue
 
@@ -613,6 +620,13 @@ async def _run_spec_phase(deps: AgentDeps, resume_note: str) -> str:
         attempt += 1
     else:
         log.warning("Spec loop hit hard cap of %d rounds", _HARD_CAP)
+
+    # Fail fast: a spec whose statements never compiled is unverifiable — do not waste
+    # RECONCILE and PROVE on it (mirrors PROVE's authoritative final-build gate).
+    if not deps.progress.get("lean_build", {}).get("success"):
+        raise _PipelineAborted(
+            f"FORMALISE could not produce a spec whose statements compile "
+            f"(after up to {_HARD_CAP} rounds) — cannot verify")
 
     _footprint(deps)   # which Aeneas holes (if any) actually touch the stated properties
     return resume_note
@@ -705,8 +719,10 @@ async def _run_prove_phase(deps: AgentDeps) -> None:
         f"compiles when you finish (revert any failed tactic to `sorry`), then git_commit."
         + prove_note
     )
+    # Airtight LSP gate BEFORE the proof attempt — a startup failure aborts the pipeline
+    # here (via _PipelineAborted), never mid-proof.
+    prove_lsp = await _start_lean_lsp(deps, config.LEAN_LSP_DISABLED_TOOLS)
     try:
-        prove_lsp = await _start_lean_lsp(deps, config.LEAN_LSP_DISABLED_TOOLS)
         await _run_stage(
             _prove, prompt, deps, "PROVE",
             toolsets=[prove_lsp],
@@ -714,6 +730,10 @@ async def _run_prove_phase(deps: AgentDeps) -> None:
         )
     except UnexpectedModelBehavior as e:
         log.warning("PROVE stage failed after retries: %s", e)
+    except UsageLimitExceeded as e:
+        # Hit the request-count backstop — stop PROVE gracefully and finalize with whatever
+        # it proved (the authoritative final build + axiom gate below still run).
+        log.warning("PROVE hit the request-limit backstop (%s) — finalizing", e)
     _checkpoint(deps)
     # The agent may stop before committing — commit here so the proven state lands in git.
     git_ops.commit(deps.container_id, "stage/prove: proof attempts", glob="lean/")
@@ -817,6 +837,54 @@ async def _run_report(deps: AgentDeps, resume_note: str) -> str:
     return report_text or "(no report generated)"
 
 
+def _write_abort_notes(deps: AgentDeps, reason: str) -> None:
+    """On a hard abort, drop an 'incomplete verification' notes artefact (committed, so it
+    is pulled with the rest of the output) summarising what was accomplished and what could
+    not be — so an aborted run leaves something actionable rather than empty output."""
+    p = deps.progress
+    stages = [
+        ("abstract_informal_spec", "DOC-INFER — abstract informal spec"),
+        ("abstract_formal_spec",   "DOC-FORMALISE — abstract Lean stubs"),
+        ("aeneas",                 "TRANSLATE — Aeneas translation"),
+        ("informal_spec",          "INFER — implementation informal spec"),
+        ("formal_spec",            "FORMALISE — implementation spec assembled"),
+        ("verdict",                "SPEC-JUDGE — statements judged"),
+        ("reconciliation",         "RECONCILE — abstract vs impl"),
+        ("proofs_done",            "PROVE — proofs attempted"),
+    ]
+    done = [f"- {label}" for key, label in stages if key in p] or ["- (nothing yet)"]
+    todo = [f"- {label}" for key, label in stages if key not in p] or ["- (all reached)"]
+    lines = [
+        "# Verification incomplete",
+        "",
+        f"The pipeline aborted before finishing. **Reason:** {reason}",
+        "",
+        "## Completed", *done, "",
+        "## Not reached", *todo, "",
+    ]
+    if "aeneas" in p:
+        holes = p["aeneas"].get("holes", [])
+        lines += ["## Translation",
+                  f"- Untranslated Aeneas holes: {', '.join(holes) if holes else 'none'}", ""]
+    build = p.get("lean_build", {})
+    if build and not build.get("success"):
+        lines += ["## Last build errors (the implementation spec did not compile)",
+                  "```", (build.get("stderr", "") or "")[:3000], "```", ""]
+    defects = (p.get("verdict") or {}).get("defects", [])
+    if defects:
+        lines += ["## Outstanding spec-judge defects",
+                  *(f"- {d['theorem']} [{d['kind']}]: {d['detail']}" for d in defects), ""]
+    lines += ["## What this means",
+              "No end-to-end verification was produced. Review the artefacts (specs/, lean/) "
+              "and the reason above, address the blocker, then re-run.", ""]
+    try:
+        tools.write_out(deps, "VERIFICATION_INCOMPLETE.md", "\n".join(lines))
+        git_ops.commit(deps.container_id, "chore: incomplete-verification notes", glob=".")
+        log.info("Wrote VERIFICATION_INCOMPLETE.md (abort notes)")
+    except Exception as e:
+        log.warning("Could not write abort notes: %s", e)
+
+
 # ── main entry point ──────────────────────────────────────────────────────────
 
 async def run_session(deps: AgentDeps) -> str:
@@ -857,4 +925,5 @@ async def run_session(deps: AgentDeps) -> str:
 
     except _PipelineAborted as e:
         log.error("Pipeline aborted: %s", e)
+        _write_abort_notes(deps, str(e))
         return f"Pipeline aborted: {e}"
