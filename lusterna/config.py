@@ -50,8 +50,18 @@ def cache_settings(model: str) -> dict:
 _req_limit_env = os.environ.get("LUSTERNA_REQUEST_LIMIT", "0")
 REQUEST_LIMIT: int | None = int(_req_limit_env) if _req_limit_env.strip() not in ("", "0") else None
 
-# Maximum PROVE→PROOF-JUDGE rounds per cycle before giving up.
-MAX_PROVE_ROUNDS: int = int(os.environ.get("LUSTERNA_MAX_PROVE_ROUNDS", "8"))
+# PROVE drives the Lean language server via lean-lsp-mcp (baked into the image). Launched
+# over `docker exec -i <cid> <bin> --transport stdio --lean-project-path /workspace/out/lean`.
+LEAN_LSP_MCP_BIN = os.environ.get("LUSTERNA_LEAN_LSP_MCP_BIN", "/opt/leanmcp/bin/lean-lsp-mcp")
+# lean-lsp-mcp tools that need network — disabled under the container's `--network none`.
+LEAN_LSP_DISABLED_TOOLS = os.environ.get(
+    "LUSTERNA_LEAN_LSP_DISABLED_TOOLS",
+    "lean_build,lean_leansearch,lean_loogle,lean_leanfinder,lean_state_search",
+)
+# Backstop on PROVE model requests (the agent self-paces via LSP feedback; this only guards
+# against a runaway). 0/unset = unlimited.
+_prove_req = os.environ.get("LUSTERNA_PROVE_REQUEST_LIMIT", "150")
+PROVE_REQUEST_LIMIT: int | None = int(_prove_req) if _prove_req.strip() not in ("", "0") else None
 
 # Manual compaction: compact when a stage accumulates this many input tokens.
 COMPACTION_THRESHOLD = int(os.environ.get("LUSTERNA_COMPACTION_THRESHOLD", "500000"))

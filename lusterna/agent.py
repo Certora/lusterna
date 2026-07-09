@@ -12,6 +12,7 @@ from pydantic_ai import Agent, RunContext
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 
 from . import checkpoint, git_ops, telemetry, tools
+from .container import OUT_IN
 from .schemas import (
     AbstractInformalSpec, AbstractFormalSpec,
     InformalSpec, FormalSpec, JudgeVerdict, ReconciliationReport,
@@ -67,6 +68,23 @@ _report.tool(tools.git_log)
 
 # ── internal helpers ──────────────────────────────────────────────────────────
 
+def _lean_mcp_toolset(deps: AgentDeps):
+    """MCP toolset giving PROVE interactive Lean feedback (lean_goal, lean_multi_attempt,
+    lean_diagnostic_messages, …) via lean-lsp-mcp running INSIDE the container, driven over
+    `docker exec -i` stdio. Network-only tools are disabled (the container is offline);
+    the essential LSP tools are local. Attached per-run because the container id is runtime."""
+    from fastmcp import Client
+    from pydantic_ai.mcp import MCPToolset, StdioTransport
+    transport = StdioTransport(
+        command="docker",
+        args=["exec", "-i", deps.container_id, config.LEAN_LSP_MCP_BIN,
+              "--transport", "stdio",
+              "--lean-project-path", f"{OUT_IN}/lean",
+              "--disable-tools", config.LEAN_LSP_DISABLED_TOOLS],
+    )
+    return MCPToolset(Client(transport, init_timeout=90))
+
+
 def _checkpoint(deps: AgentDeps) -> None:
     checkpoint.save(
         deps.session_id,
@@ -86,7 +104,6 @@ class _PipelineAborted(Exception):
 
 
 _HARD_CAP = 10    # max spec-judge rounds
-_NO_PROGRESS = 3  # PROVE: give up after this many successful builds with no new sorry minimum
 
 
 def _impl_spec(deps: AgentDeps) -> str:
@@ -288,12 +305,16 @@ def _pipeline_briefing(deps: AgentDeps) -> str:
 
 
 async def _run_stage(agent: Agent, prompt: str, deps: AgentDeps, label: str,
-                     stop_check: Callable[[AgentDeps], bool] | None = None) -> Any:
+                     stop_check: Callable[[AgentDeps], bool] | None = None,
+                     toolsets: list | None = None,
+                     request_limit: Any = "default") -> Any:
     """Run one stage agent. Each stage starts with no prior history.
 
     Stages communicate via the filesystem and deps.progress, not via conversation
     context — so no history is passed in or accumulated across stages. When stop_check
-    is given it is polled between nodes; returning True ends the run early.
+    is given it is polled between nodes; returning True ends the run early. `toolsets`
+    attaches extra toolsets for this run only (e.g. the Lean LSP MCP for PROVE);
+    `request_limit` overrides config.REQUEST_LIMIT when not "default".
     Re-raises UnexpectedModelBehavior; judge stages catch it locally.
     """
     log.info("─── Stage: %s ───", label)
@@ -301,9 +322,11 @@ async def _run_stage(agent: Agent, prompt: str, deps: AgentDeps, label: str,
     deps.message_history = []
     full_prompt = _pipeline_briefing(deps) + prompt
     from pydantic_ai.usage import UsageLimits
+    rl = config.REQUEST_LIMIT if request_limit == "default" else request_limit
     async with agent.iter(
         full_prompt, deps=deps,
-        usage_limits=UsageLimits(request_limit=config.REQUEST_LIMIT),
+        usage_limits=UsageLimits(request_limit=rl),
+        toolsets=toolsets or [],
     ) as run:
         async for _node in run:
             if stop_check and stop_check(deps):
@@ -602,13 +625,13 @@ async def _run_reconcile_phase(deps: AgentDeps) -> None:
 
 
 async def _run_prove_phase(deps: AgentDeps) -> None:
-    """Run PROVE, stopped by the orchestrator on an objective metric.
+    """Run PROVE with interactive Lean feedback via lean-lsp-mcp.
 
-    After each successful build the remaining `sorry` count in the spec is checked:
-    the stage ends when it reaches 0, shows no new minimum for _NO_PROGRESS builds, or
-    MAX_PROVE_ROUNDS builds elapse. Proof status is read from the file (proved = no
-    `sorry`); there is no separate proof-judge.
-    """
+    The agent inspects goals (`lean_goal`), tries tactics without editing
+    (`lean_multi_attempt`), and tracks remaining sorries/errors (`lean_diagnostic_messages`)
+    — self-pacing rather than blind full-build guessing. The orchestrator's role is a
+    request-count backstop, one authoritative final `lake build`, and the `#print axioms`
+    gate. Proof status is read from the file (proved = no `sorry`)."""
     if "proofs_done" in deps.progress:
         log.info("PROVE already complete — skipping proof stage")
         return
@@ -635,50 +658,36 @@ async def _run_prove_phase(deps: AgentDeps) -> None:
             "Leave the corresponding obligations unproved and note them clearly."
         )
 
-    # Objective stop: end PROVE when no sorry remain, no new minimum sorry-count for
-    # _NO_PROGRESS successful builds, or MAX_PROVE_ROUNDS builds elapse. Evaluated once
-    # per new successful build (tracked via build_seq), never on intermediate nodes.
-    track = {"seq": deps.progress.get("build_seq", 0), "best": None, "flat": 0, "rounds": 0}
-
-    def _prove_stop(deps: AgentDeps) -> bool:
-        seq = deps.progress.get("build_seq", 0)
-        if seq == track["seq"]:
-            return False
-        track["seq"] = seq
-        if not deps.progress.get("lean_build", {}).get("success"):
-            return False
-        track["rounds"] += 1
-        n = _sorry_count(deps)
-        if n < 0:
-            log.warning("PROVE build %d: impl spec unreadable — deferring to round cap",
-                        track["rounds"])
-            return track["rounds"] >= config.MAX_PROVE_ROUNDS
-        if track["best"] is None or n < track["best"]:
-            track["best"], track["flat"] = n, 0
-        else:
-            track["flat"] += 1
-        log.info("PROVE build %d: sorry=%d (best=%d, no-progress=%d)",
-                 track["rounds"], n, track["best"], track["flat"])
-        return (n == 0 or track["flat"] >= _NO_PROGRESS
-                or track["rounds"] >= config.MAX_PROVE_ROUNDS)
-
+    impl_spec = _impl_spec(deps)
+    lsp_path = impl_spec.removeprefix("lean/")   # path relative to the Lean project root
+    prompt = (
+        f"Proceed to PROVE. Fill in as many proofs as you can without changing any "
+        f"statement. Spec file paths:\n"
+        f"  - read/patch tools (search_output_file, read_output_lines, patch_output_lines): "
+        f"`{impl_spec}`\n"
+        f"  - lean-lsp tools (lean_goal, lean_multi_attempt, lean_diagnostic_messages): "
+        f"`{lsp_path}`\n"
+        f"Use the lean-lsp tools for goal-directed proving — inspect the goal with lean_goal "
+        f"and try candidates with lean_multi_attempt before editing. Ensure the file still "
+        f"compiles when you finish (revert any failed tactic to `sorry`), then git_commit."
+        + prove_note
+    )
     try:
         await _run_stage(
-            _prove,
-            "Proceed to PROVE. Attempt to fill in proofs "
-            "for all sorry theorems in the spec. Do not alter any statement. "
-            "Commit the result when done." + prove_note,
-            deps, "PROVE", stop_check=_prove_stop,
+            _prove, prompt, deps, "PROVE",
+            toolsets=[_lean_mcp_toolset(deps)],
+            request_limit=config.PROVE_REQUEST_LIMIT,
         )
     except UnexpectedModelBehavior as e:
         log.warning("PROVE stage failed after retries: %s", e)
     _checkpoint(deps)
-    # The orchestrator may force-stop PROVE before the agent commits — commit here so
-    # the proven state always lands in git history.
+    # The agent may stop before committing — commit here so the proven state lands in git.
     git_ops.commit(deps.container_id, "stage/prove: proof attempts", glob="lean/")
 
-    if not deps.progress.get("lean_build", {}).get("success"):
-        raise _PipelineAborted("PROVE produced no successful lake build")
+    # Authoritative final build (container-side timeout-guarded), independent of whatever
+    # the agent's LSP diagnostics reported.
+    if not _build(deps).get("success"):
+        raise _PipelineAborted("PROVE left the spec in a non-compiling state")
 
     deps.progress["proofs_done"] = True
     _footprint(deps)   # cheap pre-oracle estimate — proofs may reference defs the stubs did not

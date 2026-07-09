@@ -233,53 +233,49 @@ whether something is a gap or a real discrepancy, classify it as design_doc_sile
 prove = factory.make_stage_agent("""
 You are the PROVE stage of the Lusterna pipeline.
 
-The formal spec has been approved by the spec-judge (no outstanding defects). Your
-job is to attempt to prove as many theorems and lemmas as possible using Lean 4
-tactics, without changing any theorem or definition statements.
+The implementation spec is approved and compiles with every theorem `:= by sorry`. Fill
+in as many proofs as you can WITHOUT changing any statement. Leaving hard theorems as
+`sorry` is expected and honest — never fake a proof.
 
-Attempt EVERY `sorry` theorem. Spend at most 2-3 tactic tries per theorem; if none
-work, leave it as `sorry` and move on. Leaving hard theorems unproved is expected —
-the build is the judge of what actually works.
+PREREQUISITE — interactive proof development: you have the lean-lsp-mcp tools, which give
+LIVE Lean feedback with no rebuild. USE THEM instead of guessing tactics and running full
+builds. The two spec-file paths (for the file tools vs. the lean-lsp tools) are given in
+the runtime prompt — they differ, so use the right one for each tool.
 
-ORDER MATTERS: attempt the theorems most likely to fall to a single simple tactic
-FIRST — base cases, concrete value checks, direct equalities and bounds (the kind
-provable by rfl / simp / decide / native_decide / omega / norm_num). Do the
-structurally hard ones (induction over the monadic fixpoint, existence/no-error
-statements, refinement obligations) LAST. Landing the easy proofs early secures
-progress before you spend effort on the hard ones.
+Key tools:
+  - lean_goal(file_path, line, column) — THE most important tool: the proof goal and
+    hypotheses at a position. Inspect the goal BEFORE choosing a tactic, and after each edit.
+  - lean_multi_attempt(file_path, line, snippets=[...]) — try several candidate tactics at
+    once WITHOUT editing the file; see which close or advance the goal. Prefer this to
+    edit-and-rebuild trial and error.
+  - lean_diagnostic_messages(file_path) — errors and remaining `sorry` warnings, no rebuild.
+    This is your progress signal: fewer sorries/errors = progress.
+  - lean_hover_info / lean_local_search — look up a symbol or a lemma (local, offline).
+  - lean_verify — confirm a finished proof depends on no `sorryAx`.
 
-Workflow — work ONE theorem at a time to keep context small:
-1. Call list_files('lean') to find spec files.
-2. Call search_output_file(file, 'theorem|lemma') to list all theorem/lemma names
-   with their line numbers.
-3. Working easiest-first (see ORDER above), for each sorry theorem:
-   a. Call search_output_file to locate it precisely, then read_output_lines to fetch
-      just that theorem block (from its `theorem` line to its `:= by sorry` line).
-   b. Attempt tactics in this order: rfl, simp, omega, norm_num, decide,
-      native_decide, ring, linarith, then induction/cases with sub-goal tactics.
-   c. When you have a candidate proof, call patch_output_lines to replace ONLY the
-      proof body (the lines from `:= by` to the closing `sorry`) — do not touch
-      anything outside that range.
-   d. Call check_lean. If the build fails, call patch_output_lines again to
-      revert that theorem to `sorry` (restore the exact original lines), then move on.
-4. After attempting all theorems, call check_lean one final time,
-   then call git_commit and stop.
+Workflow — ONE theorem at a time, easiest first (base cases, concrete equalities, bounds):
+1. search_output_file(spec, 'theorem|lemma') to list theorems and their line numbers.
+2. For each `sorry` theorem:
+   a. lean_goal at the sorry to see the obligation.
+   b. lean_multi_attempt a few candidates (rfl, simp, omega, norm_num, the function's
+      equation lemmas, induction/cases, `Nat.fib` lemmas). See what closes/advances it.
+   c. Apply the winner with patch_output_lines — replace ONLY the proof body.
+   d. lean_goal / lean_diagnostic_messages to confirm it closed with no new error; if not,
+      revert that theorem to `:= by sorry` and move on.
+3. When done, make sure the file COMPILES (every unproved goal left as `sorry`, no broken
+   tactic), then git_commit and stop.
 
 STRICT RULES:
-- NEVER use `decide` or `native_decide` on a goal that requires EVALUATING a
-  recursively-defined function at a non-trivial argument (e.g. a naive `fib` at 50 or 93,
-  or any Aeneas `Result`-returning recursive def). These tactics *compute* the term, which
-  for naive recursion is exponential and will hang the build until it times out. Prove such
-  goals by reasoning (induction, `simp` with the function's equation lemmas, `Nat.fib`
-  lemmas), or leave them as `sorry`. `decide`/`native_decide` are fine ONLY on genuinely
-  small, cheap closed terms.
-- NEVER alter a theorem's statement (the part before `:= by`).
-- NEVER use write_file or append_file to replace a whole spec file — use
-  patch_output_lines for targeted edits and read_output_lines to inspect context.
-  write_file is allowed ONLY for creating brand-new files (e.g. reconciliation stubs).
-- NEVER introduce an axiom or `#check` that weakens the spec.
-- If a proof takes more than 2-3 tactic attempts, leave it as `sorry` and move on.
-- It is acceptable — even expected — to leave hard theorems as `sorry`.
+- NEVER use `decide`/`native_decide` on a goal that EVALUATES a recursively-defined
+  function at a non-trivial argument (e.g. naive `fib` at 50 or 93, or an Aeneas
+  `Result`-returning recursive def) — it computes the term, which for naive recursion is
+  exponential and will be killed by the build timeout. Prove by reasoning (induction,
+  equation lemmas, `Nat.fib` lemmas) or leave `sorry`. These tactics are fine ONLY on
+  genuinely small, cheap closed terms.
+- NEVER alter a theorem's statement (anything before `:= by`).
+- Use patch_output_lines for targeted edits; do NOT rewrite the whole spec file.
+- NEVER introduce an axiom or `sorry`-hiding trick to fake a proof.
+- It is acceptable — expected — to leave hard theorems as `sorry`.
 """ + docs.FOR_PROVE,
 )
 
