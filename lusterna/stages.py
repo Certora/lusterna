@@ -21,6 +21,8 @@ You have NO access to the Rust source code or the Lean translation.
 
 The full design document is provided in your prompt. Read it carefully and return
 a structured AbstractInformalSpec:
+  - target_name: the Rust function this document specifies (the verification target);
+    use the exact identifier the document names (e.g. "reward", "fib_recursive")
   - preconditions: what must hold before the system is called
   - postconditions: what the system guarantees on return
   - invariants: properties that must hold throughout execution
@@ -60,11 +62,10 @@ your prompt — do not call any tools.
 
 Analyse the codebase and return a structured ExploreResult:
 - entry_file: the main translation entry point ("src/lib.rs" or "src/main.rs")
-- entry_functions: function names Aeneas should translate (public API + helpers)
-- aeneas_incompatibilities: concrete issues that would block or degrade translation
-  (vec!, println!, trait objects, closures, unsupported std types, async, etc.)
-- suggested_rust_changes: specific source edits to apply before running Aeneas
-  (e.g. "stub out main body in src/main.rs", "replace Vec<T> with array")
+- entry_functions: public function names present in the crate
+
+The source is translated exactly as written (never modified), so you do not need to
+flag or fix incompatibilities — untranslatable constructs simply become explicit holes.
 """,
     output_type=ExploreResult,
     retries=2,
@@ -74,13 +75,14 @@ Analyse the codebase and return a structured ExploreResult:
 infer = factory.make_stage_agent("""
 You are the INFER stage of the Lusterna pipeline.
 
-Derive an informal specification from the Aeneas-translated Lean output and the design
-document. Both are provided directly in your prompt — do not call any tools.
+Derive an informal specification for the VERIFICATION TARGET — a single function, named
+in the runtime prompt — from the Aeneas-translated Lean of that function and its
+call-closure (provided in your prompt) and the design document. Do not call any tools.
 
-Return a structured InformalSpec: preconditions, postconditions, invariants, edge cases.
-Be precise and concise. Do not invent behaviour not evidenced by the code or the design
-document. Where the abstract informal spec (if present) covers the same aspect, align
-with its structure.
+Return a structured InformalSpec (preconditions, postconditions, invariants, edge cases)
+describing the target function specifically. Be precise and concise; do not invent
+behaviour not evidenced by the code or the document. Where the abstract informal spec
+covers the same aspect, align with its structure.
 """,
     output_type=InformalSpec,
     retries=2,
@@ -99,9 +101,11 @@ Write theorem stubs only — use `sorry` for all proofs. Do NOT attempt proofs.
    theorems to include; the implementation spec should cover at least these obligations.
 
 2. Read specs/informal_spec.json (listed in the pipeline context). Derive Lean 4
-   definitions and theorem stubs (all `sorry`) and write them into the implementation
-   spec file whose exact path is given in the runtime prompt. That file already exists,
-   already imports the Aeneas translation, and is already wired into the Lake build.
+   definitions and theorem stubs (all `sorry`) FOR THE VERIFICATION TARGET — the single
+   function named in the runtime prompt — and write them into the implementation spec
+   file whose exact path is given in the runtime prompt. Theorems must be about the
+   target function (you may add helper lemmas about functions in its call-closure). That
+   file already exists, imports the Aeneas translation, and is wired into the Lake build.
    Do NOT create any other Lean file, rename it, or edit the lakefile.
 
 4. Call check_lean to run `lake build`.

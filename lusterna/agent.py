@@ -127,6 +127,55 @@ def _sorry_count(deps: AgentDeps) -> int:
     return -1 if content.startswith("ERROR:") else content.count("sorry")
 
 
+def _resolve_lean_name(lean_text: str, rust_name: str) -> str:
+    """Map a Rust function name to its Aeneas-mangled Lean def (e.g. reward →
+    reward_1.reward, fib_recursive → fibonacci.fib_recursive), by last dotted component."""
+    import re
+    for m in re.finditer(r"(?m)^def\s+([\w.]+)", lean_text):
+        if m.group(1).split(".")[-1] == rust_name:
+            return m.group(1)
+    return ""
+
+
+def _bind_target(deps: AgentDeps) -> None:
+    """Bind the design-doc target function onto the translation: resolve its Lean def,
+    compute its call-closure, and classify holes inside that closure. Aborts if the
+    target itself is missing or a hole (nothing to verify)."""
+    name = deps.progress.get("target_name", "")
+    aeneas = deps.progress.get("aeneas", {})
+    text = tools.read_out(deps, aeneas.get("lean_path", ""))
+    holes = aeneas.get("holes", [])
+    lean_name = _resolve_lean_name(text, name) if not text.startswith("ERROR:") else ""
+    if not lean_name:
+        raise _PipelineAborted(f"target function '{name}' not found in the translation")
+    if lean_name in holes:
+        raise _PipelineAborted(
+            f"target function '{name}' could not be translated (left as a `sorry` hole) "
+            "— it uses a construct Aeneas cannot model; cannot verify")
+    closure = tools.call_closure(text, [lean_name])
+    holes_in_closure = [h for h in holes if h in closure]
+    deps.progress["target"] = {
+        "kind": "function", "name": name, "lean_name": lean_name,
+        "closure": closure, "holes_in_closure": holes_in_closure,
+    }
+    log.info("Target bound: %s (%s) — closure=%d def(s), holes_in_closure=%s",
+             name, lean_name, len(closure), holes_in_closure or "none")
+    if holes_in_closure:
+        log.warning("Target '%s' reaches untranslated hole(s) %s — will be reported "
+                    "NOT fully verified", name, holes_in_closure)
+    _checkpoint(deps)
+
+
+def _closure_lean(deps: AgentDeps) -> str:
+    """The Lean source of the target's call-closure — injected into stages instead of
+    the whole crate translation, so verification is scoped to the target function."""
+    t = deps.progress.get("target", {})
+    text = tools.read_out(deps, deps.progress.get("aeneas", {}).get("lean_path", ""))
+    if text.startswith("ERROR:") or not t.get("closure"):
+        return "" if text.startswith("ERROR:") else text
+    return tools.closure_lean(text, t["closure"])
+
+
 def _pipeline_briefing(deps: AgentDeps) -> str:
     """Return a structured context block describing pipeline state so far.
 
@@ -148,13 +197,25 @@ def _pipeline_briefing(deps: AgentDeps) -> str:
     ]
     done = [label for key, label in stage_flags if key in p]
 
+    target = p.get("target") or {}
+    target_line = (
+        f"Verification target: function `{target['name']}` "
+        f"(Lean `{target['lean_name']}`)"
+        + (f" — NOT fully verifiable: reaches untranslated hole(s) {target['holes_in_closure']}"
+           if target.get("holes_in_closure") else "")
+    ) if target else (
+        f"Verification target: function `{p['target_name']}`" if p.get("target_name") else ""
+    )
+
     lines = [
         "## Pipeline context",
-        f"Goal: formally verify the Rust crate against the design document.",
+        f"Goal: formally verify a single target function against the design document.",
         f"Design document (excerpt):\n{deps.design_doc[:600].rstrip()}",
         "",
         f"Completed stages: {', '.join(done) if done else 'none yet'}",
     ]
+    if target_line:
+        lines.append(target_line)
 
     # Artefact inventory
     artefacts = []
@@ -255,7 +316,9 @@ async def _run_doc_stages(deps: AgentDeps, resume_note: str) -> str:
             return resume_note
         spec: AbstractInformalSpec = result.output
         deps.progress["abstract_informal_spec"] = spec.model_dump()
+        deps.progress["target_name"] = spec.target_name   # the function the doc specifies
         tools.write_out(deps, "specs/abstract_informal_spec.json", spec.model_dump_json(indent=2))
+        log.info("Verification target (from design doc): %s", spec.target_name)
         _checkpoint(deps)
 
     if "abstract_formal_spec" not in completed and "abstract_informal_spec" in deps.progress:
@@ -325,16 +388,20 @@ async def _run_translate_stages(deps: AgentDeps, resume_note: str) -> str:
         resume_note = ""
         completed = set(deps.progress.keys())
 
+    if "target" not in completed:
+        _bind_target(deps)   # resolve target fn, closure, holes-in-closure (may abort)
+
     if "informal_spec" not in completed:
-        lean_path = deps.progress.get("aeneas", {}).get("lean_path", "")
-        lean_content = tools.read_out(deps, lean_path) if lean_path else ""
+        target = deps.progress["target"]
+        closure_lean = _closure_lean(deps)
         abstract_informal = tools.read_out(deps, "specs/abstract_informal_spec.json")
-        infer_files = f"### {lean_path}\n{lean_content}"
+        infer_files = f"### call-closure of `{target['lean_name']}`\n{closure_lean}"
         if not abstract_informal.startswith("ERROR:"):
             infer_files += f"\n\n### specs/abstract_informal_spec.json\n{abstract_informal}"
         infer_result = await _run_stage(
             _infer,
-            "Proceed to INFER. Derive a structured InformalSpec from the following files:"
+            f"Proceed to INFER. The verification target is function `{target['name']}`. "
+            f"Derive a structured InformalSpec for it from the following:"
             f"\n\n{infer_files}" + resume_note,
             deps, "INFER",
         )
@@ -384,6 +451,7 @@ async def _run_spec_phase(deps: AgentDeps, resume_note: str) -> str:
 
     _ensure_impl_spec(deps)
     impl_spec = _impl_spec(deps)
+    target = deps.progress["target"]
     prev_defects: frozenset | None = None
     spec_attempt = 0
     while spec_attempt < _HARD_CAP:
@@ -396,8 +464,10 @@ async def _run_spec_phase(deps: AgentDeps, resume_note: str) -> str:
         if not skip_formalise:
             if spec_attempt == 0:
                 formalise_prompt = (
-                    f"Proceed to FORMALISE+BUILD. Read specs/informal_spec.json, derive "
-                    f"Lean 4 theorem stubs (all sorry), and write them to {impl_spec}. "
+                    f"Proceed to FORMALISE+BUILD. The verification target is function "
+                    f"`{target['name']}` (Lean `{target['lean_name']}`). Read "
+                    f"specs/informal_spec.json, derive Lean 4 theorem stubs (all sorry) "
+                    f"ABOUT THE TARGET, and write them to {impl_spec}. "
                     f"That file already exists, imports the Aeneas translation, and is in "
                     f"the Lake build — do NOT create other Lean files or edit the lakefile. "
                     f"Then call check_lean until the build passes (max 3 build attempts)."
@@ -423,11 +493,11 @@ async def _run_spec_phase(deps: AgentDeps, resume_note: str) -> str:
             _checkpoint(deps)
             resume_note = ""
 
-        # Judge the impl spec against the code + informal spec (not the abstract spec).
-        judge_files = ""
-        lean_path = deps.progress.get("aeneas", {}).get("lean_path", "")
-        for path in (lean_path, "specs/informal_spec.json", impl_spec):
-            content = tools.read_out(deps, path) if path else "ERROR:"
+        # Judge the impl spec against the target's closure code + informal spec
+        # (not the abstract spec, and not the whole crate).
+        judge_files = f"### call-closure of `{target['lean_name']}`\n{_closure_lean(deps)}\n\n"
+        for path in ("specs/informal_spec.json", impl_spec):
+            content = tools.read_out(deps, path)
             if not content.startswith("ERROR:"):
                 judge_files += f"### {path}\n{content}\n\n"
         try:
@@ -598,6 +668,8 @@ async def _run_report(deps: AgentDeps, resume_note: str) -> str:
     spec_defects     = deps.progress.get("verdict", {}).get("defects", [])
     sorry_remaining  = max(_sorry_count(deps), 0)
     holes            = deps.progress.get("aeneas", {}).get("holes", [])
+    target           = deps.progress.get("target", {})
+    target_holes     = target.get("holes_in_closure", [])
     rc               = deps.progress.get("reconciliation", {})
     rc_critical     = sum(1 for d in rc.get("discrepancies", []) if d.get("severity") == "critical")
     rc_obligations_n = len(rc.get("refinement_obligations", []))
@@ -615,6 +687,9 @@ async def _run_report(deps: AgentDeps, resume_note: str) -> str:
     report_result = await _run_stage(
         _report,
         f"Proceed to REPORT. "
+        f"Verification target: function `{target.get('name', '?')}`"
+        + (f" — NOT fully verified: its call-closure reaches untranslated hole(s) {target_holes}"
+           if target_holes else "") + ". "
         f"Translation: source UNMODIFIED (Aeneas ran on the code as written); "
         f"untranslated holes: {', '.join(holes) if holes else 'none'}. "
         f"Spec-judge: {'approved (no defects)' if not spec_defects else str(len(spec_defects)) + ' unresolved defect(s)'}. "

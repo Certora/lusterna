@@ -8,13 +8,12 @@ from pydantic import BaseModel
 class ExploreResult(BaseModel):
     entry_file: str
     entry_functions: list[str]
-    aeneas_incompatibilities: list[str]
-    suggested_rust_changes: list[str]
 
 
 # ── DOC stages ────────────────────────────────────────────────────────────────
 
 class AbstractInformalSpec(BaseModel):
+    target_name: str        # the Rust function this design document specifies
     summary: str
     preconditions: list[str]
     postconditions: list[str]

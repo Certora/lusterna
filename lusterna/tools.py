@@ -298,6 +298,50 @@ def run_aeneas(deps: AgentDeps, entry_file: str) -> dict:
     }
 
 
+def _def_blocks(text: str) -> dict[str, str]:
+    """Map each `def NAME` to its source block (header through just before the next
+    top-level `def`/`end`)."""
+    import re
+    blocks: dict[str, str] = {}
+    for m in re.finditer(r"(?m)^def\s+([\w.]+)", text):
+        rest = text[m.end():]
+        nxt = re.search(r"(?m)^(def|end)\b", rest)
+        end = m.end() + (nxt.start() if nxt else len(rest))
+        blocks[m.group(1)] = text[m.start():end].rstrip()
+    return blocks
+
+
+def _strip_lean_comments(s: str) -> str:
+    """Drop Lean block comments (incl. `/-- … -/` docstrings) and line comments, so a
+    following def's docstring — swallowed into a block — can't create a false call edge."""
+    import re
+    s = re.sub(r"/-.*?-/", " ", s, flags=re.S)
+    return re.sub(r"(?m)--.*$", " ", s)
+
+
+def call_closure(text: str, roots: list[str]) -> list[str]:
+    """Textual transitive closure: def names reachable from *roots* by reference in
+    Lean *text* (comments stripped). Approximate (token-boundary match); over-
+    approximation is the safe direction for the hole check. Precise LLBC-graph closure
+    is a later refinement."""
+    import re
+    blocks = {n: _strip_lean_comments(b) for n, b in _def_blocks(text).items()}
+    seen, stack = set(roots), list(roots)
+    while stack:
+        body = blocks.get(stack.pop(), "")
+        for other in blocks:
+            if other not in seen and re.search(r"(?<![\w])" + re.escape(other) + r"(?![\w])", body):
+                seen.add(other)
+                stack.append(other)
+    return sorted(seen)
+
+
+def closure_lean(text: str, names: list[str]) -> str:
+    """Concatenated source of the given def blocks — the closure's Lean, for injection."""
+    blocks = _def_blocks(text)
+    return "\n\n".join(blocks[n] for n in names if n in blocks)
+
+
 def _detect_holes(deps: AgentDeps, lean_files: list[str]) -> list[str]:
     """Names of functions Aeneas left untranslated (a bare `sorry` body)."""
     import re
