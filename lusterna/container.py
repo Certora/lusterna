@@ -142,7 +142,17 @@ def exec_in(
 
     full_cmd = ["docker", "exec", "--workdir", workdir, *env_flags, container_id, *cmd]
     log.debug("exec: %s", " ".join(full_cmd))
-    r = subprocess.run(full_cmd, capture_output=True, timeout=timeout)
+    try:
+        r = subprocess.run(full_cmd, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        # The host-side `docker exec` client is killed, but the in-container process is
+        # NOT — so this is only a backstop. Long-running commands (lake build) should wrap
+        # themselves with a container-side `timeout` that kills the process tree. Degrade to
+        # a normal non-zero result (124) so callers treat it as a failure, never a crash.
+        log.warning("exec timed out after %ss: %s", timeout, " ".join(cmd)[:120])
+        out = e.stdout.decode("utf-8", errors="replace") if e.stdout else ""
+        err = e.stderr.decode("utf-8", errors="replace") if e.stderr else ""
+        return 124, out, (err + f"\n[command timed out after {timeout}s]").strip()
     stdout = r.stdout.decode("utf-8", errors="replace")
     stderr = r.stderr.decode("utf-8", errors="replace")
     if r.returncode != 0:

@@ -426,8 +426,9 @@ def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
     if (w := write_out(deps, checker_rel, body)).startswith("ERROR:"):
         return {"clean": [], "tainted": [], "raw": w}
     _, out, err = exec_in(deps.container_id,
-                          [config.LAKE_BIN, "env", "lean", f"{OUT_IN}/{checker_rel}"],
-                          workdir=f"{OUT_IN}/lean", timeout=_BUILD_TIMEOUT)
+                          ["timeout", "-k", "10", str(_BUILD_TIMEOUT),
+                           config.LAKE_BIN, "env", "lean", f"{OUT_IN}/{checker_rel}"],
+                          workdir=f"{OUT_IN}/lean", timeout=_BUILD_TIMEOUT + 30)
     exec_in(deps.container_id, ["rm", "-f", f"{OUT_IN}/{checker_rel}"])
 
     text = f"{out}\n{err}"
@@ -594,8 +595,21 @@ def check_lean(deps: AgentDeps, lean_file: str) -> dict:  # noqa: ARG001
     """
     from . import config
     lean_out_dir = f"{OUT_IN}/lean"
-    code, out, err = exec_in(deps.container_id, [config.LAKE_BIN, "build"],
-                             workdir=lean_out_dir, timeout=_BUILD_TIMEOUT)
+    # Wrap in a container-side `timeout` so a runaway tactic (e.g. `native_decide` evaluating
+    # naive recursion) is KILLED inside the container — killing only the host-side docker-exec
+    # client would leave the build burning a core. `-k 10` escalates to SIGKILL if needed. The
+    # host-side timeout is a slightly-larger backstop.
+    code, out, err = exec_in(
+        deps.container_id,
+        ["timeout", "-k", "10", str(_BUILD_TIMEOUT), config.LAKE_BIN, "build"],
+        workdir=lean_out_dir, timeout=_BUILD_TIMEOUT + 30)
+    if code in (124, 137):
+        log.warning("lake build exceeded %ds and was terminated", _BUILD_TIMEOUT)
+        return {"success": False, "stderr": (
+            f"lake build exceeded the {_BUILD_TIMEOUT}s limit and was terminated — most "
+            "likely a tactic that evaluates a recursive definition (e.g. `native_decide`/"
+            "`decide` on a naive `fib`). Treat this as a failed attempt: prove by reasoning "
+            "(induction / equation lemmas) or leave the theorem as `sorry`.")}
     if code != 0:
         log.warning("lake build failed (exit %d)", code)
         log.debug("lake build stderr:\n%s", err)
