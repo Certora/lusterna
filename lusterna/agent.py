@@ -5,6 +5,7 @@ tools, and drives them. Each stage runs independently with no shared message
 history — stages communicate via the filesystem and deps.progress, not via
 conversation context.
 """
+import asyncio
 import logging
 from typing import Any, Callable
 
@@ -68,21 +69,35 @@ _report.tool(tools.git_log)
 
 # ── internal helpers ──────────────────────────────────────────────────────────
 
-def _lean_mcp_toolset(deps: AgentDeps):
-    """MCP toolset giving PROVE interactive Lean feedback (lean_goal, lean_multi_attempt,
-    lean_diagnostic_messages, …) via lean-lsp-mcp running INSIDE the container, driven over
-    `docker exec -i` stdio. Network-only tools are disabled (the container is offline);
-    the essential LSP tools are local. Attached per-run because the container id is runtime."""
+async def _start_lean_lsp(deps: AgentDeps, disabled_tools: str):
+    """Airtight LSP startup for a stage. Launches lean-lsp-mcp inside the container (over
+    `docker exec -i` stdio), CONFIRMS it responds with a warm-up `lean_diagnostic_messages`
+    call, and returns an MCPToolset on a keep-alive transport so the heavy Lean env loads
+    ONCE and stays warm across every round of the stage (never restarted per round, never
+    used before it is up). Aborts the pipeline early with a clear message if the LSP does
+    not come up. `disabled_tools` selects which tools to switch off (PROVE keeps the full
+    prover set minus network; FORMALISE additionally drops the proving/eval tools)."""
     from fastmcp import Client
     from pydantic_ai.mcp import MCPToolset, StdioTransport
     transport = StdioTransport(
         command="docker",
         args=["exec", "-i", deps.container_id, config.LEAN_LSP_MCP_BIN,
-              "--transport", "stdio",
-              "--lean-project-path", f"{OUT_IN}/lean",
-              "--disable-tools", config.LEAN_LSP_DISABLED_TOOLS],
+              "--transport", "stdio", "--lean-project-path", f"{OUT_IN}/lean",
+              "--disable-tools", disabled_tools],
+        keep_alive=True,   # keep the warmed LSP process alive across per-round reconnects
     )
-    return MCPToolset(Client(transport, init_timeout=90))
+    # Warm up on the crate module (always present post-TRANSLATE) — forces the LSP to load
+    # its env, so later per-theorem calls are fast and we fail fast here if it is broken.
+    crate = (deps.progress.get("aeneas", {}).get("lean_path", "") or "?.lean").rsplit("/", 1)[-1]
+    try:
+        async with Client(transport, init_timeout=180) as c:
+            await asyncio.wait_for(
+                c.call_tool("lean_diagnostic_messages", {"file_path": crate}), timeout=180)
+    except Exception as e:
+        raise _PipelineAborted(
+            f"Lean LSP did not come up ({type(e).__name__}: {str(e)[:200]}) — cannot proceed")
+    log.info("Lean LSP up and warm (project %s/lean, warm-up=%s)", OUT_IN, crate)
+    return MCPToolset(Client(transport))
 
 
 def _checkpoint(deps: AgentDeps) -> None:
@@ -496,7 +511,22 @@ async def _run_spec_phase(deps: AgentDeps, resume_note: str) -> str:
         return resume_note
 
     impl_spec = _impl_spec(deps)
+    lsp_path = impl_spec.removeprefix("lean/")   # spec path relative to the Lean project root
     base_inputs = _formalise_inputs(deps)
+    lsp_hint = (
+        "\n\nYou have read-only Lean tools — USE them so the spec actually TYPECHECKS:\n"
+        "  - lean_local_search(query): find the exact name and signature of a definition or "
+        "lemma (e.g. search 'fib' to see how to refer to `Nat.fib`), so your imports and "
+        "statement types are right.\n"
+        f"  - lean_diagnostic_messages('{lsp_path}'): the precise errors on the currently "
+        "assembled spec — read them to fix the real problem.\n"
+        "  - lean_hover_info: a symbol's type.\n"
+        "You write NO proofs — every theorem body is `:= by sorry`, added automatically. "
+        "If you are unsure which Mathlib module provides something, prefer a broad "
+        "`import Mathlib` in the preamble rather than guessing a submodule path."
+    )
+    # Airtight: start + verify ONE warm LSP before any FORMALISE round (reused across rounds).
+    formalise_lsp = await _start_lean_lsp(deps, config.LEAN_LSP_DISABLED_TOOLS_FORMALISE)
     prev_defects: frozenset | None = None
     feedback = ""            # revision feedback carried between rounds (build errors / defects)
     attempt = 0
@@ -514,8 +544,11 @@ async def _run_spec_phase(deps: AgentDeps, resume_note: str) -> str:
                 f"FORMALISE revision (round {attempt + 1}). Return an updated FormalSpec. "
                 f"{feedback}\n\n### current assembled spec\n{cur}"
             )
-        fr = await _run_stage(_formalise, f"{instruction}\n\n{base_inputs}" + resume_note,
-                              deps, f"FORMALISE (round {attempt + 1})")
+        fr = await _run_stage(
+            _formalise, f"{instruction}{lsp_hint}\n\n{base_inputs}" + resume_note,
+            deps, f"FORMALISE (round {attempt + 1})",
+            toolsets=[formalise_lsp],
+        )
         resume_note = ""
         if not (fr and fr.output):
             log.warning("FORMALISE produced no output — stopping spec loop")
@@ -673,9 +706,10 @@ async def _run_prove_phase(deps: AgentDeps) -> None:
         + prove_note
     )
     try:
+        prove_lsp = await _start_lean_lsp(deps, config.LEAN_LSP_DISABLED_TOOLS)
         await _run_stage(
             _prove, prompt, deps, "PROVE",
-            toolsets=[_lean_mcp_toolset(deps)],
+            toolsets=[prove_lsp],
             request_limit=config.PROVE_REQUEST_LIMIT,
         )
     except UnexpectedModelBehavior as e:
