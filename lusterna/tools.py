@@ -6,6 +6,7 @@ values and are called internally.  run_aeneas and check_lean are implementation 
 called from agent.py wrappers that carry additional pipeline logic (progress, checkpoint).
 """
 import logging
+import os
 import subprocess
 from pathlib import Path
 
@@ -342,6 +343,113 @@ def closure_lean(text: str, names: list[str]) -> str:
     return "\n\n".join(blocks[n] for n in names if n in blocks)
 
 
+def referenced_defs(spec_text: str, translation_text: str) -> list[str]:
+    """Translation def names that *spec_text* mentions by name (comments stripped) — the
+    seeds of a stated property's footprint. `call_closure` then expands them transitively.
+    Approximate (token-boundary match); over-approximation is the safe direction for the
+    hole check."""
+    import re
+    body = _strip_lean_comments(spec_text)
+    return [
+        name for name in _def_blocks(translation_text)
+        if re.search(r"(?<![\w])" + re.escape(name) + r"(?![\w])", body)
+    ]
+
+
+def _theorem_names(spec_text: str) -> list[str]:
+    """Names as written after `theorem`/`lemma` in the implementation spec."""
+    import re
+    return [m.group(2) for m in re.finditer(r"(?m)^\s*(theorem|lemma)\s+([\w.]+)", spec_text)]
+
+
+def stub_proofs(text: str) -> str:
+    """Force every `theorem`/`lemma` proof body to `:= by sorry`, preserving statements,
+    definitions, imports and docstrings. FORMALISE emits statement-only structured output,
+    so its theorems never carry proofs; this is a safety net for any stray theorem the
+    model puts in the free-form `preamble` — keeping proofs (and pathological tactics like
+    `native_decide`) out of the spec until the PROVE stage."""
+    import re
+    lines = text.split("\n")
+    decl = re.compile(r"^\s*(theorem|lemma)\b")
+    newtop = re.compile(r"^\s*(theorem|lemma|def|abbrev|noncomputable|instance|structure|"
+                        r"inductive|namespace|end|section|open|variable|@\[|/-|--|#|import)")
+    out, i, n = [], 0, len(lines)
+    while i < n:
+        if decl.match(lines[i]):
+            block = [lines[i]]
+            i += 1
+            while i < n and not newtop.match(lines[i]):
+                block.append(lines[i]); i += 1
+            joined = "\n".join(block)
+            m = re.search(r":=", joined)
+            out.append((joined[:m.start()].rstrip() + " := by sorry") if m else joined)
+        else:
+            out.append(lines[i]); i += 1
+    return "\n".join(out)
+
+
+def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
+    """Authoritative hole-impact oracle. Ask Lean which impl-spec theorems are GENUINELY
+    established — i.e. whose proof term depends on no `sorryAx`. This subsumes both the
+    textual footprint check and the sorry-count: an untranslated Aeneas hole and an
+    unfinished proof BOTH introduce `sorryAx`, and `#print axioms` follows the real proof
+    term through simp sets, instances and every definition — closing the blind spot of the
+    name-based footprint approximation.
+
+    Returns {"clean": [names], "tainted": [names], "raw": <trimmed lean output>}, where
+    tainted = depends on sorryAx OR could not be resolved (the conservative direction).
+
+    Mechanism: write a throwaway checker that IMPORTS the already-built `Spec.olean` and
+    runs `#print axioms` against it, then elaborate just that checker with `lake env lean`.
+    The spec is never re-elaborated — no proofs (or `native_decide`) rerun, and imports
+    resolve from the compiled artifacts the pipeline already built. The checker is deleted
+    afterwards. (Re-elaborating the spec from source instead is fragile: one import or
+    proof failure auto-`sorry`s every declaration and taints the whole batch.)
+    """
+    import re
+    from . import config
+    original = read_out(deps, spec_rel)
+    if original.startswith("ERROR:"):
+        return {"clean": [], "tainted": [], "raw": original}
+    names = _theorem_names(original)
+    if not names:
+        return {"clean": [], "tainted": [], "raw": ""}
+
+    # spec_rel = lean/<Lib>/Spec.lean  →  spec module <Lib>.Spec (matches the lean_lib root)
+    parts = _norm_out(spec_rel).split("/")
+    if len(parts) < 3 or parts[0] != "lean":
+        return {"clean": [], "tainted": [], "raw": f"ERROR: unexpected spec path {spec_rel!r}"}
+    spec_module = ".".join(parts[1:]).removesuffix(".lean")
+
+    checker_rel = "_axiom_check.lean"          # at out root — outside the lean_lib srcDir
+    body = f"import {spec_module}\n\n" + "\n".join(f"#print axioms {n}" for n in names) + "\n"
+    if (w := write_out(deps, checker_rel, body)).startswith("ERROR:"):
+        return {"clean": [], "tainted": [], "raw": w}
+    _, out, err = exec_in(deps.container_id,
+                          [config.LAKE_BIN, "env", "lean", f"{OUT_IN}/{checker_rel}"],
+                          workdir=f"{OUT_IN}/lean", timeout=_BUILD_TIMEOUT)
+    exec_in(deps.container_id, ["rm", "-f", f"{OUT_IN}/{checker_rel}"])
+
+    text = f"{out}\n{err}"
+    verdict: dict[str, bool] = {}
+    for line in text.splitlines():
+        m = re.search(r"'([\w.]+)' (?:depends on axioms|does not depend)", line)
+        if m:
+            verdict[m.group(1).split(".")[-1]] = "sorryAx" not in line
+    clean = [n for n in names if verdict.get(n.split(".")[-1]) is True]
+    tainted = [n for n in names if verdict.get(n.split(".")[-1]) is not True]  # False or unresolved
+    unresolved = [n for n in names if n.split(".")[-1] not in verdict]
+    if unresolved:
+        # Not a soundness signal — the checker couldn't read these back. Surface it loudly
+        # instead of silently reporting them as tainted.
+        log.warning("check_axioms: %d/%d theorem(s) UNRESOLVED (conservatively tainted, not a "
+                    "real sorryAx finding): %s — lean output tail:\n%s",
+                    len(unresolved), len(names), unresolved, text[-1200:])
+    log.info("check_axioms: %d genuinely established (no sorryAx), %d tainted, of %d theorem(s)",
+             len(clean), len(tainted), len(names))
+    return {"clean": clean, "tainted": tainted, "raw": text[-3000:]}
+
+
 def _detect_holes(deps: AgentDeps, lean_files: list[str]) -> list[str]:
     """Names of functions Aeneas left untranslated (a bare `sorry` body)."""
     import re
@@ -374,12 +482,19 @@ def _write_lakefile(deps: AgentDeps, lean_out_dir: str, llbc_path: str) -> None:
     crate = Path(llbc_path).stem      # "fibonacci"
     lib_name = crate.capitalize()     # "Fibonacci"
 
+    # `@[default_target]` is essential: without it, a bare `lake build` (what check_lean
+    # runs) builds NOTHING ("0 jobs") and returns success — silently disconnecting the
+    # build oracle so broken specs/proofs pass unchecked. `globs := .andSubmodules` makes
+    # the lib build ALL its modules (crucially Fibonacci.Spec, which the root module does
+    # not import), so the implementation spec is actually compiled.
     lakefile = (
         "import Lake\n"
         "open Lake DSL\n\n"
         f'require aeneas from "{AENEAS_LEAN}"\n\n'
         f'package «{crate}» where\n\n'
+        f'@[default_target]\n'
         f'lean_lib «{lib_name}» where\n'
+        f'  globs := #[.andSubmodules `{lib_name}]\n'
     )
 
     def _exec(cmd_args: list[str]) -> None:
@@ -465,6 +580,9 @@ def git_commit(ctx: RunContext[AgentDeps], message: str) -> str:
 
 
 _BUILD_TAIL = 200  # lines of stderr to keep on failure — errors appear at the end
+# A legitimate build is seconds; this hard cap fails-fast on a pathological tactic
+# (e.g. `native_decide` evaluating naive recursion) instead of pegging a core for 20 min.
+_BUILD_TIMEOUT = int(os.environ.get("LUSTERNA_BUILD_TIMEOUT", "180"))
 
 
 def check_lean(deps: AgentDeps, lean_file: str) -> dict:  # noqa: ARG001
@@ -477,7 +595,7 @@ def check_lean(deps: AgentDeps, lean_file: str) -> dict:  # noqa: ARG001
     from . import config
     lean_out_dir = f"{OUT_IN}/lean"
     code, out, err = exec_in(deps.container_id, [config.LAKE_BIN, "build"],
-                             workdir=lean_out_dir, timeout=1200)
+                             workdir=lean_out_dir, timeout=_BUILD_TIMEOUT)
     if code != 0:
         log.warning("lake build failed (exit %d)", code)
         log.debug("lake build stderr:\n%s", err)
@@ -486,3 +604,25 @@ def check_lean(deps: AgentDeps, lean_file: str) -> dict:  # noqa: ARG001
         return {"success": False, "stderr": trimmed}
     log.info("check_lean: lake build succeeded")
     return {"success": True, "stderr": ""}
+
+
+if __name__ == "__main__":
+    # Worked example of the footprint idea: a hole taints a property ONLY when it lies in
+    # the closure of the defs that property references. Run: `python -m lusterna.tools`.
+    _TRANSLATION = """
+def foo.helper (x : Nat) : Nat := x + 1
+def foo.compute (x : Nat) : Nat := foo.helper x
+def foo.untranslatable (x : Nat) : Nat :=
+  sorry
+def foo.other (x : Nat) : Nat := foo.untranslatable x
+"""
+    _HOLES = ["foo.untranslatable"]  # what Aeneas left as a bare `sorry`
+    for label, spec in [
+        ("clean   (property touches compute → helper)", "theorem t : foo.compute 0 = 1 := by sorry"),
+        ("tainted (property reaches other → untranslatable)", "theorem t : foo.other 0 = 0 := by sorry"),
+    ]:
+        roots = referenced_defs(spec, _TRANSLATION)
+        footprint = call_closure(_TRANSLATION, roots)
+        holes_in_footprint = [h for h in _HOLES if h in footprint]
+        verdict = "SOUND" if not holes_in_footprint else f"NOT SOUND — holes {holes_in_footprint}"
+        print(f"{label}\n  roots={roots} footprint={footprint} → {verdict}\n")

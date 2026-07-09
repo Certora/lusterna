@@ -9,7 +9,7 @@ also lives in agent.py.
 from . import docs, factory
 from .schemas import (
     AbstractInformalSpec, AbstractFormalSpec, ExploreResult,
-    InformalSpec, JudgeVerdict, ReconciliationReport,
+    InformalSpec, FormalSpec, JudgeVerdict, ReconciliationReport,
 )
 
 
@@ -21,8 +21,8 @@ You have NO access to the Rust source code or the Lean translation.
 
 The full design document is provided in your prompt. Read it carefully and return
 a structured AbstractInformalSpec:
-  - target_name: the Rust function this document specifies (the verification target);
-    use the exact identifier the document names (e.g. "reward", "fib_recursive")
+  - summary: what behaviour the document specifies (the subject of verification — it may
+    be one function or an ensemble of functions and types working together)
   - preconditions: what must hold before the system is called
   - postconditions: what the system guarantees on return
   - invariants: properties that must hold throughout execution
@@ -75,14 +75,15 @@ flag or fix incompatibilities — untranslatable constructs simply become explic
 infer = factory.make_stage_agent("""
 You are the INFER stage of the Lusterna pipeline.
 
-Derive an informal specification for the VERIFICATION TARGET — a single function, named
-in the runtime prompt — from the Aeneas-translated Lean of that function and its
-call-closure (provided in your prompt) and the design document. Do not call any tools.
+Derive an informal specification of the behaviour the design document describes, AS
+REALISED BY THE CRATE — from the Aeneas-translated Lean of the whole crate (provided in
+your prompt) and the design document. Do not call any tools.
 
-Return a structured InformalSpec (preconditions, postconditions, invariants, edge cases)
-describing the target function specifically. Be precise and concise; do not invent
-behaviour not evidenced by the code or the document. Where the abstract informal spec
-covers the same aspect, align with its structure.
+The behaviour may be realised by a single function or by an ensemble of functions and
+types working together; capture what actually matters, not an arbitrary unit. Return a
+structured InformalSpec (preconditions, postconditions, invariants, edge cases). Be
+precise and concise; do not invent behaviour not evidenced by the code or the document.
+Where the abstract informal spec covers the same aspect, align with its structure.
 """,
     output_type=InformalSpec,
     retries=2,
@@ -90,37 +91,39 @@ covers the same aspect, align with its structure.
 
 
 formalise = factory.make_stage_agent("""
-You are the FORMALISE+BUILD stage of the Lusterna pipeline.
+You are the FORMALISE stage of the Lusterna pipeline.
 
-Produce a Lean 4 formal specification that compiles with `lake build`.
-Write theorem stubs only — use `sorry` for all proofs. Do NOT attempt proofs.
+Produce the IMPLEMENTATION formal specification as STRUCTURED output — a `preamble` and a
+list of `theorems`. You do NOT write proofs: every theorem body is filled in as
+`:= by sorry` automatically, and the PROVE stage discharges them later. Your job is to
+state, precisely, WHAT should hold — not to prove it.
 
-1. If specs/abstract_formal_spec.lean exists (listed in the pipeline context), read it
-   first — it is the ABSTRACT specification derived from the design document alone and
-   defines the theorems the implementation must satisfy. Use it as a guide for which
-   theorems to include; the implementation spec should cover at least these obligations.
+All inputs are injected in your prompt (do not call any tools):
+  - the Aeneas-translated crate — ground truth for what the code does
+  - specs/informal_spec.json — the properties to capture
+  - specs/abstract_formal_spec.lean (if present) — the design-intent obligations; the impl
+    spec should cover at least these
+  - on a revision round, the current spec plus the build errors or spec-judge defects to fix
 
-2. Read specs/informal_spec.json (listed in the pipeline context). Derive Lean 4
-   definitions and theorem stubs (all `sorry`) FOR THE VERIFICATION TARGET — the single
-   function named in the runtime prompt — and write them into the implementation spec
-   file whose exact path is given in the runtime prompt. Theorems must be about the
-   target function (you may add helper lemmas about functions in its call-closure). That
-   file already exists, imports the Aeneas translation, and is wired into the Lake build.
-   Do NOT create any other Lean file, rename it, or edit the lakefile.
+Return a FormalSpec:
+  preamble — the Lean prelude: `import`/`open` lines and any helper `def`s you need (e.g.
+    an abstract model function). Put NO theorems here. (`import Aeneas` and the crate
+    module import are added automatically if you omit them.)
+  theorems — one entry per property that matters. Capture the behaviour the design
+    document describes, as realised by the crate; a property may be about one function or
+    span several functions and types (a relationship between functions, an invariant
+    preserved across method calls, …). You decide what genuinely matters. Each entry:
+      name      — a valid Lean identifier
+      signature — the binders and the proposition ONLY: everything that would appear
+                  BETWEEN the theorem name and the `:=`. Example:
+                  "(n : Std.U32) (h : n.val ≤ 93) : ∃ v : Std.U64, fib_recursive n = ok v"
+                  Do NOT include `:=` or any proof/tactic.
 
-4. Call check_lean to run `lake build`.
-
-5. If the build fails:
-   - Read stdout/stderr carefully.
-   - Fix type errors, missing imports, namespace issues. For targeted fixes use
-     search_output_file to locate the relevant lines, then patch_output_lines to
-     replace only those lines. Use write_file only to create or fully replace a file.
-   - Call check_lean again. Repeat up to 3 total build attempts.
-
-6. Commit everything once the build passes (or after all attempts, noting any failures).
-
-Do NOT attempt proofs — that is the PROVE stage's responsibility.
+Signatures may reference any def in the Aeneas translation. Be precise and non-trivial;
+state the real guarantee, not a tautology.
 """ + docs.FOR_FORMALISE,
+    output_type=FormalSpec,
+    retries=2,
 )
 
 
@@ -230,7 +233,7 @@ whether something is a gap or a real discrepancy, classify it as design_doc_sile
 prove = factory.make_stage_agent("""
 You are the PROVE stage of the Lusterna pipeline.
 
-The formal spec has passed the spec-judge threshold (score ≥ 7 or approved). Your
+The formal spec has been approved by the spec-judge (no outstanding defects). Your
 job is to attempt to prove as many theorems and lemmas as possible using Lean 4
 tactics, without changing any theorem or definition statements.
 
@@ -263,6 +266,13 @@ Workflow — work ONE theorem at a time to keep context small:
    then call git_commit and stop.
 
 STRICT RULES:
+- NEVER use `decide` or `native_decide` on a goal that requires EVALUATING a
+  recursively-defined function at a non-trivial argument (e.g. a naive `fib` at 50 or 93,
+  or any Aeneas `Result`-returning recursive def). These tactics *compute* the term, which
+  for naive recursion is exponential and will hang the build until it times out. Prove such
+  goals by reasoning (induction, `simp` with the function's equation lemmas, `Nat.fib`
+  lemmas), or leave them as `sorry`. `decide`/`native_decide` are fine ONLY on genuinely
+  small, cheap closed terms.
 - NEVER alter a theorem's statement (the part before `:= by`).
 - NEVER use write_file or append_file to replace a whole spec file — use
   patch_output_lines for targeted edits and read_output_lines to inspect context.
@@ -287,13 +297,18 @@ Write exactly these files, in this order:
 
   report/01_overview.md
       Title, one-paragraph executive summary, overview table (translation result,
-      spec-judge score, count of theorems proved vs. left as sorry, critical discrepancies).
+      spec-judge result, theorems genuinely established (Lean `#print axioms`: no
+      sorryAx) vs. resting on sorry, holes in the property footprint / soundness,
+      critical discrepancies).
 
   report/02_translation.md
       What was translated. The Rust source is NEVER modified — Aeneas runs on it as
       written, so the translation is a faithful image of the real code. List the entry
       file and Aeneas output files, and call out any untranslated holes (functions left
-      as `sorry`; provided in the pipeline context) as explicitly not-verified.
+      as `sorry`; provided in the pipeline context). Distinguish clearly: a hole matters
+      to this verification ONLY if it lies inside the footprint of a proven property
+      (given in the pipeline context) — holes elsewhere in the crate do not taint the
+      proven properties. State which holes, if any, fall inside the footprint.
 
   report/03_abstract_spec.md
       List the key theorems and definitions from the abstract spec with a one-line
@@ -313,9 +328,12 @@ Write exactly these files, in this order:
       description), and refinement obligations.
 
   report/07_proofs.md
-      Proof status read from the implementation spec: for each theorem state whether
-      it is proved (no `sorry`) or left as `sorry`. Give a one-line proof sketch for
-      each proved theorem and a suggested strategy for each remaining `sorry`.
+      Proof status. The AUTHORITATIVE verdict is Lean's `#print axioms` (in the pipeline
+      context): a theorem is GENUINELY ESTABLISHED only if its proof depends on no
+      `sorryAx` — a proof can look complete yet still rest on an untranslated hole or a
+      leftover `sorry`, and the axiom check is what catches that. For each theorem, mark
+      it: established (no sorryAx) / rests-on-sorry / unproved. Give a one-line proof
+      sketch for each established theorem and a suggested strategy for each other.
 
   report/08_summary.md
       Open proof obligations (each sorry with a concrete next step), known gaps

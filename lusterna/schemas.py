@@ -13,7 +13,6 @@ class ExploreResult(BaseModel):
 # ── DOC stages ────────────────────────────────────────────────────────────────
 
 class AbstractInformalSpec(BaseModel):
-    target_name: str        # the Rust function this design document specifies
     summary: str
     preconditions: list[str]
     postconditions: list[str]
@@ -36,6 +35,19 @@ class InformalSpec(BaseModel):
     postconditions: list[str]
     invariants: list[str]
     edge_cases: list[str]
+
+
+class TheoremStub(BaseModel):
+    name: str        # a valid Lean identifier
+    signature: str   # binders + " : " + proposition — everything BEFORE `:=`; NO proof
+
+
+class FormalSpec(BaseModel):
+    """Structured FORMALISE output. A proof is deliberately NOT a field: the orchestrator
+    assembles each theorem as `theorem <name> <signature> := by sorry`, so FORMALISE
+    structurally cannot write proofs (that is PROVE's job)."""
+    preamble: str                # imports, opens, and any helper `def`s — no theorems
+    theorems: list[TheoremStub]
 
 
 # ── SPEC-JUDGE stage ──────────────────────────────────────────────────────────

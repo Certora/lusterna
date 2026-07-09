@@ -14,7 +14,7 @@ from pydantic_ai.exceptions import UnexpectedModelBehavior
 from . import checkpoint, git_ops, telemetry, tools
 from .schemas import (
     AbstractInformalSpec, AbstractFormalSpec,
-    InformalSpec, JudgeVerdict, ReconciliationReport,
+    InformalSpec, FormalSpec, JudgeVerdict, ReconciliationReport,
 )
 from .stages import (
     doc_infer as _doc_infer, doc_formalise as _doc_formalise, explore as _explore,
@@ -46,16 +46,10 @@ def check_lean(ctx: RunContext[AgentDeps], lean_file: str) -> dict:
 # agent: it runs Charon+Aeneas mechanically on the untouched source (see
 # _run_translate_stages), so nothing can rewrite the code under verification.
 
-_formalise.tool(tools.list_files)
-_formalise.tool(tools.read_file)
-_formalise.tool(tools.read_output_file)
-_formalise.tool(tools.search_output_file)
-_formalise.tool(tools.read_output_lines)
-_formalise.tool(tools.patch_output_lines)
-_formalise.tool(tools.write_file)
-_formalise.tool(check_lean)
-_formalise.tool(tools.git_commit)
-_formalise.tool(tools.git_log)
+# FORMALISE is now a structured, tool-less stage: the orchestrator injects its inputs and
+# receives a FormalSpec (statements only), then assembles + builds the .lean itself. This
+# removes the free-form build loop where the agent used to (against instructions) write and
+# debug proofs — proofs are now structurally impossible until PROVE.
 
 _prove.tool(tools.list_files)
 _prove.tool(tools.search_output_file)
@@ -106,18 +100,32 @@ def _impl_spec(deps: AgentDeps) -> str:
     return f"lean/{stem}/Spec.lean"
 
 
-def _ensure_impl_spec(deps: AgentDeps) -> None:
-    """Create the canonical impl-spec skeleton if absent, so the file exists and is in
-    the Lake build before FORMALISE runs — FORMALISE only fills in its content."""
+def _assemble_impl_spec(deps: AgentDeps, fs: FormalSpec) -> None:
+    """Write the implementation spec from a structured FormalSpec: the preamble followed by
+    one `theorem <name> <signature> := by sorry` per stub. Proofs are added here as `sorry`
+    — never by the model — so FORMALISE cannot smuggle in a proof (or a hanging tactic).
+    The preamble is passed through stub_proofs as a safety net for any stray theorem."""
     path = _impl_spec(deps)
-    if not path or not tools.read_out(deps, path).startswith("ERROR:"):
-        return
     stem = path.split("/")[1]
-    tools.write_out(deps, path,
-        f"import Aeneas\nimport {stem}\n\n"
-        f"/-- Implementation specification for `{stem}`. Theorem stubs (all `sorry`) are\n"
-        f"written by FORMALISE; proofs are filled in by PROVE. -/\n")
-    log.info("Pre-created impl-spec skeleton at %s", path)
+    preamble = tools.stub_proofs(fs.preamble.rstrip())
+    header = "".join(
+        f"import {m}\n" for m in ("Aeneas", stem) if f"import {m}" not in preamble
+    )
+    body = "\n\n".join(
+        f"theorem {t.name} {t.signature.split(':=')[0].strip()} := by sorry"
+        for t in fs.theorems
+    )
+    tools.write_out(deps, path, f"{header}{preamble}\n\n{body}\n")
+    log.info("Assembled impl spec: %d theorem stub(s) at %s", len(fs.theorems), path)
+
+
+def _build(deps: AgentDeps) -> dict:
+    """Run `lake build` on the impl spec and record it as PROVE's progress metric does."""
+    result = tools.check_lean(deps, _impl_spec(deps))
+    deps.progress["lean_build"] = result
+    deps.progress["build_seq"] = deps.progress.get("build_seq", 0) + 1
+    _checkpoint(deps)
+    return result
 
 
 def _sorry_count(deps: AgentDeps) -> int:
@@ -127,53 +135,47 @@ def _sorry_count(deps: AgentDeps) -> int:
     return -1 if content.startswith("ERROR:") else content.count("sorry")
 
 
-def _resolve_lean_name(lean_text: str, rust_name: str) -> str:
-    """Map a Rust function name to its Aeneas-mangled Lean def (e.g. reward →
-    reward_1.reward, fib_recursive → fibonacci.fib_recursive), by last dotted component."""
-    import re
-    for m in re.finditer(r"(?m)^def\s+([\w.]+)", lean_text):
-        if m.group(1).split(".")[-1] == rust_name:
-            return m.group(1)
-    return ""
+def _translation_text(deps: AgentDeps) -> str:
+    """Concatenated Lean source of the whole Aeneas translation — the material the spec
+    stages reason over. The source is immutable, so this is a faithful image of the crate.
+    The tool chooses which properties to state; it is not scoped to a pre-picked unit."""
+    parts = []
+    for rel in deps.progress.get("aeneas", {}).get("lean_files", []):
+        text = tools.read_out(deps, rel)
+        if not text.startswith("ERROR:"):
+            parts.append(text)
+    return "\n\n".join(parts)
 
 
-def _bind_target(deps: AgentDeps) -> None:
-    """Bind the design-doc target function onto the translation: resolve its Lean def,
-    compute its call-closure, and classify holes inside that closure. Aborts if the
-    target itself is missing or a hole (nothing to verify)."""
-    name = deps.progress.get("target_name", "")
-    aeneas = deps.progress.get("aeneas", {})
-    text = tools.read_out(deps, aeneas.get("lean_path", ""))
-    holes = aeneas.get("holes", [])
-    lean_name = _resolve_lean_name(text, name) if not text.startswith("ERROR:") else ""
-    if not lean_name:
-        raise _PipelineAborted(f"target function '{name}' not found in the translation")
-    if lean_name in holes:
-        raise _PipelineAborted(
-            f"target function '{name}' could not be translated (left as a `sorry` hole) "
-            "— it uses a construct Aeneas cannot model; cannot verify")
-    closure = tools.call_closure(text, [lean_name])
-    holes_in_closure = [h for h in holes if h in closure]
-    deps.progress["target"] = {
-        "kind": "function", "name": name, "lean_name": lean_name,
-        "closure": closure, "holes_in_closure": holes_in_closure,
-    }
-    log.info("Target bound: %s (%s) — closure=%d def(s), holes_in_closure=%s",
-             name, lean_name, len(closure), holes_in_closure or "none")
-    if holes_in_closure:
-        log.warning("Target '%s' reaches untranslated hole(s) %s — will be reported "
-                    "NOT fully verified", name, holes_in_closure)
+def _footprint(deps: AgentDeps) -> dict:
+    """Compute the footprint of the current implementation spec: the translation defs its
+    theorems (statements + proofs) reference transitively, and which Aeneas holes fall
+    inside it.
+
+    This is the SOLE role of the 'unit' concept — a stated property is soundly grounded
+    iff no hole lies in its footprint. Holes elsewhere in the crate are irrelevant to it.
+    Recomputed after FORMALISE and after PROVE (proofs may pull in more defs). Stored in
+    progress['footprint'] = {defs, holes_in_footprint}."""
+    translation = _translation_text(deps)
+    spec = tools.read_out(deps, _impl_spec(deps))
+    holes = deps.progress.get("aeneas", {}).get("holes", [])
+    if translation.startswith("ERROR:") or spec.startswith("ERROR:"):
+        # Can't compute — take the conservative (never-claim-sound) direction.
+        fp = {"defs": [], "holes_in_footprint": list(holes)}
+    else:
+        roots = tools.referenced_defs(spec, translation)
+        defs = tools.call_closure(translation, roots)
+        fp = {"defs": defs, "holes_in_footprint": [h for h in holes if h in defs]}
+    deps.progress["footprint"] = fp
+    hif = fp["holes_in_footprint"]
+    if hif:
+        log.warning("Footprint reaches %d untranslated hole(s) %s — properties touching "
+                    "them are NOT soundly grounded", len(hif), hif)
+    else:
+        log.info("Footprint: %d translation def(s), no Aeneas holes inside — "
+                 "properties soundly grounded", len(fp["defs"]))
     _checkpoint(deps)
-
-
-def _closure_lean(deps: AgentDeps) -> str:
-    """The Lean source of the target's call-closure — injected into stages instead of
-    the whole crate translation, so verification is scoped to the target function."""
-    t = deps.progress.get("target", {})
-    text = tools.read_out(deps, deps.progress.get("aeneas", {}).get("lean_path", ""))
-    if text.startswith("ERROR:") or not t.get("closure"):
-        return "" if text.startswith("ERROR:") else text
-    return tools.closure_lean(text, t["closure"])
+    return fp
 
 
 def _pipeline_briefing(deps: AgentDeps) -> str:
@@ -197,25 +199,42 @@ def _pipeline_briefing(deps: AgentDeps) -> str:
     ]
     done = [label for key, label in stage_flags if key in p]
 
-    target = p.get("target") or {}
-    target_line = (
-        f"Verification target: function `{target['name']}` "
-        f"(Lean `{target['lean_name']}`)"
-        + (f" — NOT fully verifiable: reaches untranslated hole(s) {target['holes_in_closure']}"
-           if target.get("holes_in_closure") else "")
-    ) if target else (
-        f"Verification target: function `{p['target_name']}`" if p.get("target_name") else ""
-    )
+    fp = p.get("footprint")
+    fp_line = ""
+    if fp is not None:
+        hif = fp.get("holes_in_footprint", [])
+        fp_line = (
+            f"Property footprint: {len(fp.get('defs', []))} translation def(s); "
+            + ("no Aeneas holes inside — proven properties are soundly grounded"
+               if not hif else
+               f"⚠ {len(hif)} untranslated hole(s) INSIDE the footprint ({hif}) — "
+               f"properties touching them are NOT soundly grounded")
+        )
+    holes = (p.get("aeneas") or {}).get("holes", [])
 
     lines = [
         "## Pipeline context",
-        f"Goal: formally verify a single target function against the design document.",
+        "Goal: formally verify the properties the design document describes against the "
+        "Aeneas-translated crate. What to specify is the tool's choice; a property may be "
+        "about one function or span several functions and types. The source is never "
+        "modified, so the translation is a faithful image of the real code.",
         f"Design document (excerpt):\n{deps.design_doc[:600].rstrip()}",
         "",
         f"Completed stages: {', '.join(done) if done else 'none yet'}",
     ]
-    if target_line:
-        lines.append(target_line)
+    if holes:
+        lines.append(f"Aeneas holes (untranslated defs) in the crate: {holes}")
+    if fp_line:
+        lines.append(fp_line)
+    ax = p.get("axioms")
+    if ax is not None:
+        tainted = ax.get("tainted", [])
+        lines.append(
+            f"Axiom check (Lean `#print axioms`, authoritative): "
+            f"{len(ax.get('clean', []))} theorem(s) genuinely established (no sorryAx), "
+            f"{len(tainted)} still resting on sorry"
+            + (f" — tainted: {tainted}" if tainted else "")
+        )
 
     # Artefact inventory
     artefacts = []
@@ -316,9 +335,7 @@ async def _run_doc_stages(deps: AgentDeps, resume_note: str) -> str:
             return resume_note
         spec: AbstractInformalSpec = result.output
         deps.progress["abstract_informal_spec"] = spec.model_dump()
-        deps.progress["target_name"] = spec.target_name   # the function the doc specifies
         tools.write_out(deps, "specs/abstract_informal_spec.json", spec.model_dump_json(indent=2))
-        log.info("Verification target (from design doc): %s", spec.target_name)
         _checkpoint(deps)
 
     if "abstract_formal_spec" not in completed and "abstract_informal_spec" in deps.progress:
@@ -388,20 +405,16 @@ async def _run_translate_stages(deps: AgentDeps, resume_note: str) -> str:
         resume_note = ""
         completed = set(deps.progress.keys())
 
-    if "target" not in completed:
-        _bind_target(deps)   # resolve target fn, closure, holes-in-closure (may abort)
-
     if "informal_spec" not in completed:
-        target = deps.progress["target"]
-        closure_lean = _closure_lean(deps)
+        translation = _translation_text(deps)
         abstract_informal = tools.read_out(deps, "specs/abstract_informal_spec.json")
-        infer_files = f"### call-closure of `{target['lean_name']}`\n{closure_lean}"
+        infer_files = f"### Aeneas-translated crate\n{translation}"
         if not abstract_informal.startswith("ERROR:"):
             infer_files += f"\n\n### specs/abstract_informal_spec.json\n{abstract_informal}"
         infer_result = await _run_stage(
             _infer,
-            f"Proceed to INFER. The verification target is function `{target['name']}`. "
-            f"Derive a structured InformalSpec for it from the following:"
+            f"Proceed to INFER. Derive a structured InformalSpec of the behaviour the "
+            f"design document describes, as realised by the crate, from the following:"
             f"\n\n{infer_files}" + resume_note,
             deps, "INFER",
         )
@@ -436,110 +449,116 @@ def _read_spec_files(deps: AgentDeps) -> str:
     return "\n\n".join(parts)
 
 
+def _formalise_inputs(deps: AgentDeps) -> str:
+    """Static inputs injected into every FORMALISE round: the translated crate, the
+    informal spec, and the abstract formal spec (if present)."""
+    block = f"### Aeneas-translated crate\n{_translation_text(deps)}\n\n"
+    for path in ("specs/informal_spec.json", "specs/abstract_formal_spec.lean"):
+        content = tools.read_out(deps, path)
+        if not content.startswith("ERROR:"):
+            block += f"### {path}\n{content}\n\n"
+    return block
+
+
 async def _run_spec_phase(deps: AgentDeps, resume_note: str) -> str:
-    """Run the FORMALISE→SPEC-JUDGE loop until the spec has no defects, the same defects
-    persist (no progress), or the round cap is hit.
-
-    SPEC-JUDGE returns a list of concrete defects; approval is the Python-decided
-    `defects == []`. It judges the impl spec against the code + informal spec only —
-    abstract-vs-impl drift is RECONCILE's job.
-    """
-    completed = set(deps.progress.keys())
-
-    if "verdict" in completed:
+    """Drive FORMALISE (structured, statements only) → assemble → build → SPEC-JUDGE in one
+    loop. Each round FORMALISE (re)states the properties as a FormalSpec; the orchestrator
+    assembles them as `:= by sorry` stubs (so no proof can be smuggled in) and builds — the
+    build here only validates that the STATEMENTS typecheck. A failed statement build and a
+    spec-judge defect list are both fed back as revision feedback. Ends when the spec builds
+    AND has no defects, the defects repeat (no progress), or the round cap is hit."""
+    if "verdict" in deps.progress:
+        if "footprint" not in deps.progress:
+            _footprint(deps)
         return resume_note
 
-    _ensure_impl_spec(deps)
     impl_spec = _impl_spec(deps)
-    target = deps.progress["target"]
+    base_inputs = _formalise_inputs(deps)
     prev_defects: frozenset | None = None
-    spec_attempt = 0
-    while spec_attempt < _HARD_CAP:
-        skip_formalise = (
-            spec_attempt == 0
-            and "formal_spec" in completed
-            and deps.progress.get("lean_build", {}).get("success")
-        )
-
-        if not skip_formalise:
-            if spec_attempt == 0:
-                formalise_prompt = (
-                    f"Proceed to FORMALISE+BUILD. The verification target is function "
-                    f"`{target['name']}` (Lean `{target['lean_name']}`). Read "
-                    f"specs/informal_spec.json, derive Lean 4 theorem stubs (all sorry) "
-                    f"ABOUT THE TARGET, and write them to {impl_spec}. "
-                    f"That file already exists, imports the Aeneas translation, and is in "
-                    f"the Lake build — do NOT create other Lean files or edit the lakefile. "
-                    f"Then call check_lean until the build passes (max 3 build attempts)."
-                    + resume_note
-                )
-            else:
-                defects = deps.progress.get("verdict", {}).get("defects", [])
-                defect_lines = "\n".join(
-                    f"  - {d['theorem']} [{d['kind']}]: {d['detail']} → fix: {d['fix']}"
-                    for d in defects
-                )
-                formalise_prompt = (
-                    f"The spec-judge found {len(defects)} defect(s) (round {spec_attempt + 1}). "
-                    f"Apply the `fix` for EVERY one below — do not skip any and do not decide "
-                    f"a defect is redundant or minor. If a fix says to add a theorem, add it "
-                    f"verbatim as a `:= by sorry` stub (even if a more general theorem already "
-                    f"entails it — the judge wants it stated explicitly). Change nothing else "
-                    f"in the spec.\n{defect_lines}\n\n"
-                    "Then call check_lean to confirm the build still passes."
-                )
-
-            await _run_stage(
-                _formalise, formalise_prompt, deps,
-                f"FORMALISE (round {spec_attempt + 1})",
+    feedback = ""            # revision feedback carried between rounds (build errors / defects)
+    attempt = 0
+    while attempt < _HARD_CAP:
+        # 1) FORMALISE — (re)state the properties as structured, proof-free stubs.
+        if attempt == 0:
+            instruction = (
+                "FORMALISE: return a FormalSpec (preamble + statement-only theorems) "
+                "capturing the properties that matter — the behaviour the design document "
+                "describes, as realised by the crate. You write no proofs."
             )
-            deps.progress["formal_spec"] = True
-            _checkpoint(deps)
-            resume_note = ""
+        else:
+            cur = tools.read_out(deps, impl_spec)
+            instruction = (
+                f"FORMALISE revision (round {attempt + 1}). Return an updated FormalSpec. "
+                f"{feedback}\n\n### current assembled spec\n{cur}"
+            )
+        fr = await _run_stage(_formalise, f"{instruction}\n\n{base_inputs}" + resume_note,
+                              deps, f"FORMALISE (round {attempt + 1})")
+        resume_note = ""
+        if not (fr and fr.output):
+            log.warning("FORMALISE produced no output — stopping spec loop")
+            break
+        _assemble_impl_spec(deps, fr.output)
+        deps.progress["formal_spec"] = True
 
-        # Judge the impl spec against the target's closure code + informal spec
-        # (not the abstract spec, and not the whole crate).
-        judge_files = f"### call-closure of `{target['lean_name']}`\n{_closure_lean(deps)}\n\n"
+        # 2) Build — validate the STATEMENTS typecheck (bodies are all `sorry`, so fast).
+        if not _build(deps).get("success"):
+            log.info("FORMALISE round %d: statements do not compile — feeding errors back",
+                     attempt + 1)
+            feedback = ("The assembled spec did NOT compile. Fix the STATEMENTS and/or the "
+                        "preamble so it typechecks (you still write no proofs — bodies are "
+                        f"`sorry`). Build errors:\n{deps.progress['lean_build'].get('stderr','')[:2000]}")
+            attempt += 1
+            continue
+
+        # 3) SPEC-JUDGE — judge the statements against the crate + informal spec.
+        judge_files = f"### Aeneas-translated crate\n{_translation_text(deps)}\n\n"
         for path in ("specs/informal_spec.json", impl_spec):
             content = tools.read_out(deps, path)
             if not content.startswith("ERROR:"):
                 judge_files += f"### {path}\n{content}\n\n"
         try:
-            sj_result = await _run_stage(
+            sj = await _run_stage(
                 _judge,
                 "SPEC-JUDGE: list every defect in the implementation spec's theorem "
                 "statements (ignore sorry proofs); return an empty list if it is sound."
                 f"\n\n{judge_files}",
-                deps,
-                f"SPEC-JUDGE (round {spec_attempt + 1})",
+                deps, f"SPEC-JUDGE (round {attempt + 1})",
             )
         except UnexpectedModelBehavior as e:
             log.warning("Spec judge failed after retries: %s — stopping spec loop", e)
             break
-
-        if not (sj_result and sj_result.output):
+        if not (sj and sj.output):
             log.warning("Spec judge produced no output — stopping spec loop")
             break
 
-        sv: JudgeVerdict = sj_result.output
+        sv: JudgeVerdict = sj.output
         deps.progress["verdict"] = sv.model_dump()
         _checkpoint(deps)
         if not sv.defects:
-            log.info("Spec-judge round %d: no defects — spec approved", spec_attempt + 1)
+            log.info("Spec-judge round %d: no defects — spec approved", attempt + 1)
             break
-        log.info("Spec-judge round %d: %d defect(s): %s", spec_attempt + 1, len(sv.defects),
+        log.info("Spec-judge round %d: %d defect(s): %s", attempt + 1, len(sv.defects),
                  ", ".join(f"{d.theorem}[{d.kind}]" for d in sv.defects))
 
         defect_sig = frozenset((d.theorem, d.kind) for d in sv.defects)
         if defect_sig == prev_defects:
-            log.warning("Spec-judge: same defects as last round — FORMALISE made no "
-                        "progress, stopping")
+            log.warning("Spec-judge: same defects as last round — no progress, stopping")
             break
         prev_defects = defect_sig
-        spec_attempt += 1
+        defect_lines = "\n".join(
+            f"  - {d.theorem} [{d.kind}]: {d.detail} → fix: {d.fix}" for d in sv.defects
+        )
+        feedback = (
+            f"The spec-judge found {len(sv.defects)} defect(s) in the STATEMENTS. Revise to "
+            f"fix EVERY one below — do not skip or deem any redundant. If a fix asks for a "
+            f"theorem, add it as a stub (state it explicitly even if another theorem entails "
+            f"it). Change nothing else.\n{defect_lines}"
+        )
+        attempt += 1
     else:
-        log.warning("Spec-judge loop hit hard cap of %d rounds", _HARD_CAP)
+        log.warning("Spec loop hit hard cap of %d rounds", _HARD_CAP)
 
+    _footprint(deps)   # which Aeneas holes (if any) actually touch the stated properties
     return resume_note
 
 
@@ -662,9 +681,15 @@ async def _run_prove_phase(deps: AgentDeps) -> None:
         raise _PipelineAborted("PROVE produced no successful lake build")
 
     deps.progress["proofs_done"] = True
+    _footprint(deps)   # cheap pre-oracle estimate — proofs may reference defs the stubs did not
+    # Authoritative soundness verdict: ask Lean which theorems depend on no `sorryAx`.
+    ax = tools.check_axioms(deps, _impl_spec(deps))
+    deps.progress["axioms"] = {"clean": ax["clean"], "tainted": ax["tainted"]}
     _checkpoint(deps)
-    log.info("PROVE complete — %d sorry remaining in the implementation spec",
-             max(_sorry_count(deps), 0))
+    log.info("PROVE complete — %d sorry remaining; genuinely established (no sorryAx): "
+             "%d/%d theorem(s); clean=%s tainted=%s",
+             max(_sorry_count(deps), 0), len(ax["clean"]),
+             len(ax["clean"]) + len(ax["tainted"]), ax["clean"], ax["tainted"])
 
 
 async def _run_report(deps: AgentDeps, resume_note: str) -> str:
@@ -672,8 +697,11 @@ async def _run_report(deps: AgentDeps, resume_note: str) -> str:
     spec_defects     = deps.progress.get("verdict", {}).get("defects", [])
     sorry_remaining  = max(_sorry_count(deps), 0)
     holes            = deps.progress.get("aeneas", {}).get("holes", [])
-    target           = deps.progress.get("target", {})
-    target_holes     = target.get("holes_in_closure", [])
+    fp               = deps.progress.get("footprint", {})
+    holes_in_fp      = fp.get("holes_in_footprint", [])
+    axioms           = deps.progress.get("axioms", {})
+    ax_clean         = axioms.get("clean", [])
+    ax_tainted       = axioms.get("tainted", [])
     rc               = deps.progress.get("reconciliation", {})
     rc_critical     = sum(1 for d in rc.get("discrepancies", []) if d.get("severity") == "critical")
     rc_obligations_n = len(rc.get("refinement_obligations", []))
@@ -691,14 +719,20 @@ async def _run_report(deps: AgentDeps, resume_note: str) -> str:
     report_result = await _run_stage(
         _report,
         f"Proceed to REPORT. "
-        f"Verification target: function `{target.get('name', '?')}`"
-        + (f" — NOT fully verified: its call-closure reaches untranslated hole(s) {target_holes}"
-           if target_holes else "") + ". "
-        f"Translation: source UNMODIFIED (Aeneas ran on the code as written); "
-        f"untranslated holes: {', '.join(holes) if holes else 'none'}. "
+        f"Verification approach: the tool chose which properties to specify over the whole "
+        f"translated crate; a property is soundly grounded only if no Aeneas hole lies in "
+        f"its footprint. Footprint: {len(fp.get('defs', []))} translation def(s) — "
+        + ("no holes inside, properties soundly grounded. "
+           if not holes_in_fp else
+           f"NOT fully verified: {len(holes_in_fp)} hole(s) INSIDE the footprint "
+           f"({holes_in_fp}) taint the properties touching them. ")
+        + f"Translation: source UNMODIFIED (Aeneas ran on the code as written); "
+        f"untranslated holes in crate: {', '.join(holes) if holes else 'none'}. "
         f"Spec-judge: {'approved (no defects)' if not spec_defects else str(len(spec_defects)) + ' unresolved defect(s)'}. "
-        f"Proofs: {sorry_remaining} theorem(s) remain as `sorry` in the implementation "
-        f"spec (read the injected spec to report which are proved vs. sorry). "
+        f"Proofs: {sorry_remaining} theorem(s) remain as `sorry`. AUTHORITATIVE soundness "
+        f"(Lean `#print axioms`): {len(ax_clean)} theorem(s) genuinely established with no "
+        f"sorryAx ({ax_clean}); {len(ax_tainted)} still depend on sorry ({ax_tainted}) — "
+        f"a proof that looks complete but touches an untranslated hole is caught here. "
         f"Reconciliation: critical_discrepancies={rc_critical}, "
         f"total_refinement_obligations={rc_obligations_n}."
         f"\n\n{report_files}" + resume_note,
