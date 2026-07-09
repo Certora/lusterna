@@ -113,6 +113,18 @@ The one embedded helper is a single-turn agent with no message history, invisibl
 
 PROVE uses `check_lean` (`lake build`) as its feedback mechanism — the build is the only judge of what actually works, so PROVE attempts every `sorry` theorem rather than pre-filtering by a difficulty guess. Termination is decided by the orchestrator, not by the model: after each successful build it counts the remaining `sorry` in the spec and ends the stage when that count reaches 0, fails to reach a new minimum for a fixed number of builds, or a hard round cap (`LUSTERNA_MAX_PROVE_ROUNDS`) is hit. This objective, Python-side metric replaces the previous model-emitted "stagnant" signal, which could not reliably compare across rounds. Proof status in the report is read straight from the spec (proved = no `sorry`). The stage agent works from its training knowledge of Lean 4 and Aeneas idioms (embedded as skill documents in `docs/`). This keeps the toolchain simple and avoids the latency and reliability problems of running a Lean language server inside a locked-down, network-isolated container.
 
+### Soundness: holes and footprint
+
+The Rust source is never modified, so anything Aeneas cannot translate is left as an
+explicit `sorry` **hole** rather than a rewrite or a crash. A property is only sound if no
+hole lies underneath it. Lusterna checks this two ways: a cheap **footprint** (does a
+stated property textually reach a hole?) computed after FORMALISE and PROVE, and — the
+authoritative one — Lean's `#print axioms` after PROVE, which reports whether a *proved*
+theorem depends on `sorryAx` (introduced by both untranslated holes and unfinished
+proofs). A theorem counts as genuinely established only when its axiom set is free of
+`sorryAx`. See **[HOLES_AND_FOOTPRINT.md](HOLES_AND_FOOTPRINT.md)** for the full story with
+runnable code (`python -m lusterna.tools`).
+
 ### Checkpoints
 
 After every pipeline stage that mutates state the agent saves a checkpoint. Checkpoints are stored as numbered JSON files inside a per-session directory:
@@ -309,19 +321,3 @@ git -C <out_dir> log --oneline
 # d469df7 feat(aeneas): translate src/main.rs → Lean
 # ...      chore: init lusterna session
 ```
-
-## Development
-
-```sh
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
-
-# Build the toolchain image (one-time, ~30 min)
-lusterna build-image
-
-# Run against the included example
-ANTHROPIC_API_KEY=sk-... lusterna run tests/fibonacci tests/fibonacci/DESIGN.md
-```
-
-The `Dockerfile` installs the real toolchain: Rust via `rustup`, [Charon](https://github.com/AeneasVerif/charon) from its nightly release, Aeneas built from source with Lake, and Lean 4 via `elan`. Building it takes approximately 30 minutes and several gigabytes of disk space.
