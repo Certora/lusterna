@@ -481,7 +481,11 @@ async def _run_spec_phase(deps: AgentDeps, resume_note: str) -> str:
                 )
                 formalise_prompt = (
                     f"The spec-judge found {len(defects)} defect(s) (round {spec_attempt + 1}). "
-                    f"Fix exactly these, changing nothing else:\n{defect_lines}\n\n"
+                    f"Apply the `fix` for EVERY one below — do not skip any and do not decide "
+                    f"a defect is redundant or minor. If a fix says to add a theorem, add it "
+                    f"verbatim as a `:= by sorry` stub (even if a more general theorem already "
+                    f"entails it — the judge wants it stated explicitly). Change nothing else "
+                    f"in the spec.\n{defect_lines}\n\n"
                     "Then call check_lean to confirm the build still passes."
                 )
 
