@@ -89,6 +89,22 @@ RUN mkdir -p /opt/lean-template \
        > /opt/lean-template/lakefile.lean \
     && cd /opt/lean-template && lake update
 
+# ── Lean LSP MCP (interactive proof development) ─────────────────────────────────
+# PROVE drives the Lean language server through lean-lsp-mcp (lean_goal,
+# lean_multi_attempt, lean_diagnostic_messages, …) for goal-directed proofs instead of
+# blind `lake build` guessing. It is a Python package, so install Python and place the
+# MCP server in an isolated venv. At run time it is launched over `docker exec -i` with
+# `--transport stdio`; the network-only search tools are disabled via `--disable-tools`
+# (the agent container runs `--network none`; the essential LSP tools are all local).
+RUN apt-get update -qq \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+       python3 python3-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m venv /opt/leanmcp \
+    && /opt/leanmcp/bin/pip install --quiet --upgrade pip \
+    && /opt/leanmcp/bin/pip install --quiet lean-lsp-mcp
+ENV LEAN_LSP_MCP_BIN=/opt/leanmcp/bin/lean-lsp-mcp
+
 # ── Workspace layout ───────────────────────────────────────────────────────────
 RUN git config --global user.email "lusterna@agent" \
     && git config --global user.name "Lusterna"
