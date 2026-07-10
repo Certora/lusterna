@@ -1,6 +1,23 @@
-"""Pydantic output schemas for the structured-output pipeline stages."""
-from typing import Literal
+"""Data types for the pipeline: the shared dependency object plus the pydantic output
+schemas for the structured-output stages."""
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Literal
+
 from pydantic import BaseModel
+
+
+# ── shared dependency object (injected into every agent tool via RunContext) ─────
+
+@dataclass
+class AgentDeps:
+    container_id: str
+    repo_path: Path        # host path — used only for initial docker cp push
+    work_path: Path        # host path — used only for final docker cp pull
+    session_id: str
+    design_doc: str
+    progress: dict[str, Any] = field(default_factory=dict)
+    message_history: list = field(default_factory=list)
 
 
 # ── EXPLORE stage ────────────────────────────────────────────────────────────

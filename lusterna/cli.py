@@ -8,8 +8,8 @@ from pathlib import Path
 
 import click
 
-from . import checkpoint, config, logging_setup, telemetry
-from .state import AgentDeps
+from . import checkpoint, config, telemetry
+from .schemas import AgentDeps
 
 log = logging.getLogger(__name__)
 
@@ -20,7 +20,7 @@ _DOCKERFILE_DIR = Path(__file__).parent.parent
 @click.option("--verbose", "-v", is_flag=True, help="Set log level to DEBUG")
 def main(verbose: bool) -> None:
     """Lusterna — Rust → Lean formal verification agent."""
-    logging_setup.setup(verbose=verbose)
+    config.setup_logging(verbose=verbose)
 
 
 @main.command()

@@ -1,6 +1,21 @@
-"""Central configuration drawn from environment variables."""
+"""Central configuration drawn from environment variables, plus logging setup."""
+import logging
 import os
+import sys
 from pathlib import Path
+
+
+def setup_logging(verbose: bool = False) -> None:
+    """Configure stdlib logging: structured lines on stderr, level from env/-v."""
+    level_name = os.environ.get("LUSTERNA_LOG_LEVEL", "DEBUG" if verbose else "INFO")
+    level = getattr(logging, level_name.upper(), logging.INFO)
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s [%(name)s] %(message)s", datefmt="%Y-%m-%dT%H:%M:%S"))
+    root = logging.getLogger()
+    root.setLevel(level)
+    root.handlers = [handler]
+
 
 MODEL = os.environ.get("LUSTERNA_MODEL", "anthropic:claude-sonnet-4-6")
 JUDGE_MODEL = os.environ.get("LUSTERNA_JUDGE_MODEL", "anthropic:claude-sonnet-4-6")

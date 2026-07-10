@@ -14,8 +14,8 @@ from pydantic_ai import Agent, RunContext
 from pydantic_ai.capabilities.hooks import Hooks
 from pydantic_ai.models import ModelRequestContext
 
-from . import config, subagents, telemetry
-from .state import AgentDeps
+from . import config, telemetry
+from .schemas import AgentDeps
 
 log = logging.getLogger(__name__)
 
@@ -75,7 +75,7 @@ async def _before_request(
                 "Compaction triggered: compacting %d messages, keeping %d",
                 len(to_compact), len(to_keep),
             )
-            compacted = await subagents.compact(to_compact)
+            compacted = await _compact(to_compact)
             model_ctx = dataclasses.replace(model_ctx, messages=compacted + to_keep)
         else:
             log.debug("Compaction triggered but no compactable messages — resetting counter only")
@@ -108,3 +108,43 @@ def make_stage_agent(
     if retries:
         kwargs["retries"] = retries
     return Agent(m, **kwargs)
+
+
+# ── context-compaction summariser ───────────────────────────────────────────────
+# The one embedded helper agent, invoked by the compaction hook above to fold a stage's
+# older messages into a single summary. It is a PLAIN agent (NO _hooks capability) so it
+# never recurses into compaction on its own context.
+
+_summariser = Agent(
+    config.MODEL, output_type=str, model_settings=config.cache_settings(config.MODEL),
+    instructions=(
+        "Summarise the following agent conversation into a concise technical paragraph. "
+        "Preserve all file paths, Lean theorem names, lake build errors, git commit SHAs, "
+        "and any decisions made. Focus on what was attempted, what succeeded, and what failed."),
+)
+
+
+def _messages_to_text(messages: list) -> str:
+    import json
+    try:
+        from pydantic_ai.messages import ModelMessagesTypeAdapter
+        return json.dumps(ModelMessagesTypeAdapter.dump_python(messages, mode="json"), indent=2)
+    except Exception:
+        return str(messages)
+
+
+async def _compact(messages: list) -> list:
+    """Summarise *messages* into a single replacement message. Never fails open: on a summariser
+    error the old messages are DROPPED (state lives on disk; the agent re-reads what it needs),
+    so a stage's context can never grow without bound."""
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+    try:
+        result = await _summariser.run(_messages_to_text(messages))
+        telemetry.session.record(result.usage)
+        content = f"[COMPACTED CONTEXT — earlier conversation summary]\n{result.output}"
+        log.info("Compaction: %d messages → 1 summary message", len(messages))
+    except Exception as exc:
+        content = ("[COMPACTED CONTEXT — earlier conversation dropped; summariser unavailable. "
+                   "Re-read any files you need from disk.]")
+        log.warning("Compaction summariser failed (%s) — dropping %d messages", exc, len(messages))
+    return [ModelRequest(parts=[UserPromptPart(content=content)])]
