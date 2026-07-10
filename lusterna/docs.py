@@ -36,13 +36,11 @@ def _section(title: str, content: str) -> str:
 FOR_FORMALISE: str = _section("Aeneas Lean Core (translation semantics)",
                               _read("skills", "aeneas-lean-core.md"))
 
-# PROVE gets the lean-lsp-mcp interactive-proof skill FIRST (the Aeneas skill files list it
-# as a PREREQUISITE), then translation semantics, the tactic/pattern references, and the
-# prose proof strategies.
+# PROVE proves against the `lake build` oracle (check_lean surfaces the real diagnostics), so
+# it gets the Aeneas translation semantics, the tactic/pattern references, and the prose proof
+# strategies — no interactive-LSP skill (that tooling was removed from PROVE).
 FOR_PROVE: str = (
-    _section("Lean LSP MCP — interactive proof development (PREREQUISITE)",
-             _read("skills", "lean-lsp-mcp.md"))
-    + FOR_FORMALISE
+    FOR_FORMALISE
     + _section("Aeneas Tactics Quick-Reference",
                _read("skills", "aeneas-tactics-quickref.md"))
     + _section("Proof Patterns",

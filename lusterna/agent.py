@@ -5,7 +5,6 @@ tools, and drives them. Each stage runs independently with no shared message
 history — stages communicate via the filesystem and deps.progress, not via
 conversation context.
 """
-import asyncio
 import logging
 from typing import Any, Callable
 
@@ -13,7 +12,6 @@ from pydantic_ai import Agent, RunContext
 from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
 
 from . import checkpoint, git_ops, telemetry, tools
-from .container import OUT_IN
 from .schemas import (
     AbstractInformalSpec, AbstractFormalSpec,
     InformalSpec, FormalSpec, JudgeVerdict, ReconciliationReport,
@@ -33,32 +31,16 @@ def check_lean(ctx: RunContext[AgentDeps], lean_file: str) -> dict:
     """Run `lake build` in the Lean project and return {success, stderr}.
 
     The result is stored in progress['lean_build'] and a checkpoint is saved.
-    Always call this after writing or modifying any Lean file.
+    Always call this after writing or modifying any Lean file. On a SUCCESSFUL build this also
+    snapshots the compiling impl-spec if it reached a new `sorry` minimum (PROVE's best-state
+    preservation — see _record_prove_best); only build-verified states ever count as progress.
     """
     result = tools.check_lean(ctx.deps, lean_file)
     ctx.deps.progress["lean_build"] = result
     ctx.deps.progress["build_seq"] = ctx.deps.progress.get("build_seq", 0) + 1
+    if result.get("success"):
+        _record_prove_best(ctx.deps)
     _checkpoint(ctx.deps)
-    return result
-
-
-# PROVE applies proofs by editing the spec file (the lean-lsp tools are read-only), so these
-# thin wrappers bump `edit_seq` — the objective cadence for PROVE's genuine-progress stop
-# (see _run_prove_phase). REPORT keeps using the un-wrapped tools.write_file.
-
-def patch_output_lines(ctx: RunContext[AgentDeps], path: str, start: int, end: int, content: str) -> str:
-    """Replace lines *start*–*end* (1-indexed, inclusive) with *content*; all other lines are preserved.
-    *path* may be relative or absolute. Use to update a single theorem proof. Returns ERROR: on failure."""
-    result = tools.patch_output_lines(ctx, path, start, end, content)
-    ctx.deps.progress["edit_seq"] = ctx.deps.progress.get("edit_seq", 0) + 1
-    return result
-
-
-def write_file(ctx: RunContext[AgentDeps], path: str, content: str = "") -> str:
-    """Write *content* to *path* in /workspace/out (relative or absolute).
-    Returns ERROR: if content is empty, the path is protected, or the write fails."""
-    result = tools.write_file(ctx, path, content)
-    ctx.deps.progress["edit_seq"] = ctx.deps.progress.get("edit_seq", 0) + 1
     return result
 
 
@@ -77,8 +59,8 @@ _prove.tool(tools.list_files)
 _prove.tool(tools.search_output_file)
 _prove.tool(tools.read_output_lines)
 _prove.tool(tools.read_output_file)
-_prove.tool(patch_output_lines)   # edit_seq-bumping wrappers (PROVE progress cadence)
-_prove.tool(write_file)
+_prove.tool(tools.patch_output_lines)
+_prove.tool(tools.write_file)
 _prove.tool(check_lean)
 _prove.tool(tools.git_commit)
 _prove.tool(tools.git_log)
@@ -88,36 +70,6 @@ _report.tool(tools.git_log)
 
 
 # ── internal helpers ──────────────────────────────────────────────────────────
-
-async def _start_lean_lsp(deps: AgentDeps, disabled_tools: str):
-    """Airtight LSP startup for PROVE. Launches lean-lsp-mcp inside the container (over
-    `docker exec -i` stdio), CONFIRMS it responds with a warm-up `lean_diagnostic_messages`
-    call, and returns an MCPToolset on a keep-alive transport so the heavy Lean env loads ONCE
-    and stays warm across the stage (never restarted per round, never used before it is up).
-    Aborts the pipeline early with a clear message if the LSP does not come up. Only PROVE
-    uses interactive Lean tools; FORMALISE is a tool-less structured stage."""
-    from fastmcp import Client
-    from pydantic_ai.mcp import MCPToolset, StdioTransport
-    transport = StdioTransport(
-        command="docker",
-        args=["exec", "-i", deps.container_id, config.LEAN_LSP_MCP_BIN,
-              "--transport", "stdio", "--lean-project-path", f"{OUT_IN}/lean",
-              "--disable-tools", disabled_tools],
-        keep_alive=True,   # keep the warmed LSP process alive across per-round reconnects
-    )
-    # Warm up on the crate module (always present post-TRANSLATE) — forces the LSP to load its
-    # env, so later per-theorem calls are fast and we fail fast here if it is broken.
-    crate = (deps.progress.get("aeneas", {}).get("lean_path", "") or "?.lean").rsplit("/", 1)[-1]
-    try:
-        async with Client(transport, init_timeout=180) as c:
-            await asyncio.wait_for(
-                c.call_tool("lean_diagnostic_messages", {"file_path": crate}), timeout=180)
-    except Exception as e:
-        raise _PipelineAborted(
-            f"Lean LSP did not come up ({type(e).__name__}: {str(e)[:200]}) — cannot proceed")
-    log.info("Lean LSP up and warm (project %s/lean, warm-up=%s)", OUT_IN, crate)
-    return MCPToolset(Client(transport))
-
 
 def _checkpoint(deps: AgentDeps) -> None:
     checkpoint.save(
@@ -138,7 +90,8 @@ class _PipelineAborted(Exception):
 
 
 _HARD_CAP = 10        # max spec-judge rounds
-_NO_PROGRESS = 4      # PROVE: give up after this many spec edits with no new sorry-count minimum
+_PROVE_STALL = 15     # PROVE: stop after this many turns with no new sorry-min (post first proof)
+_PROVE_WARMUP = 25    # PROVE: also stop if no FIRST proof lands within this many turns
 _QUARANTINE_AFTER = 3 # FORMALISE: drop a theorem after this many rounds failing to compile
 
 
@@ -248,6 +201,22 @@ def _sorry_count(deps: AgentDeps) -> int:
     Returns -1 if the file can't be read, so the caller never mistakes it for done."""
     content = tools.read_out(deps, _impl_spec(deps))
     return -1 if content.startswith("ERROR:") else content.count("sorry")
+
+
+def _record_prove_best(deps: AgentDeps) -> None:
+    """Snapshot the impl spec as PROVE's best state iff it COMPILES (caller checked) and reached
+    a new `sorry` minimum. Only build-verified states count: a failing tactic removes a `sorry`
+    but does not compile, so raw sorry-count is not progress — a compiling snapshot is. PROVE
+    restores this at the end, so it always finalizes on its best verified state, never a later
+    broken edit. progress['prove_best'] = {'sorry': n, 'spec': <content>}."""
+    spec = tools.read_out(deps, _impl_spec(deps))
+    if spec.startswith("ERROR:"):
+        return
+    n = spec.count("sorry")
+    best = deps.progress.get("prove_best")
+    if best is None or n < best["sorry"]:
+        deps.progress["prove_best"] = {"sorry": n, "spec": spec}
+        log.info("PROVE: new best compiling spec — %d sorry remaining", n)
 
 
 def _translation_text(deps: AgentDeps) -> str:
@@ -403,15 +372,13 @@ def _pipeline_briefing(deps: AgentDeps) -> str:
 
 
 async def _run_stage(agent: Agent, prompt: str, deps: AgentDeps, label: str,
-                     stop_check: Callable[[AgentDeps], bool] | None = None,
-                     toolsets: list | None = None,
+                     stop_check: Callable[[AgentDeps, Any], bool] | None = None,
                      request_limit: Any = "default") -> Any:
     """Run one stage agent. Each stage starts with no prior history.
 
     Stages communicate via the filesystem and deps.progress, not via conversation
     context — so no history is passed in or accumulated across stages. When stop_check
-    is given it is polled between nodes; returning True ends the run early. `toolsets`
-    attaches extra toolsets for this run only (e.g. the Lean LSP MCP for PROVE);
+    is given it is polled on each graph node (deps, node); returning True ends the run early.
     `request_limit` overrides config.REQUEST_LIMIT when not "default".
     Re-raises UnexpectedModelBehavior; judge stages catch it locally.
     """
@@ -424,10 +391,9 @@ async def _run_stage(agent: Agent, prompt: str, deps: AgentDeps, label: str,
     async with agent.iter(
         full_prompt, deps=deps,
         usage_limits=UsageLimits(request_limit=rl),
-        toolsets=toolsets or [],
     ) as run:
-        async for _node in run:
-            if stop_check and stop_check(deps):
+        async for node in run:
+            if stop_check and stop_check(deps, node):
                 break
         result = run.result
     log.info(
@@ -827,15 +793,17 @@ async def _run_reconcile_phase(deps: AgentDeps) -> None:
 
 
 async def _run_prove_phase(deps: AgentDeps) -> None:
-    """Run PROVE with interactive Lean feedback via lean-lsp-mcp.
-
-    The agent inspects goals (`lean_goal`), tries tactics without editing
-    (`lean_multi_attempt`), and tracks remaining sorries/errors (`lean_diagnostic_messages`)
-    — self-pacing rather than blind full-build guessing. The orchestrator owns the objective
-    guards: a compile gate BEFORE any effort (never prove a non-building spec), a
-    genuine-progress stop (halt when the spec's sorry count hits 0 or plateaus for
-    _NO_PROGRESS edits), a request-count backstop, one authoritative final `lake build`, and
-    the `#print axioms` gate. Proof status is read from the file (proved = no `sorry`)."""
+    """Run PROVE against the real build oracle: the agent edits proof bodies and calls
+    check_lean, whose output now carries the actual Lean diagnostics (`unsolved goals` with the
+    remaining goal state, type errors, …) — enough to prove goal-directed without the
+    lean-lsp-mcp tooling, which drove context bloat and compaction thrash for no throughput gain.
+    The orchestrator owns the objective guards: a compile gate BEFORE any effort (never prove a
+    non-building spec); a genuine-progress stop keyed on the BUILD-VERIFIED sorry minimum (only
+    a successful build counts — a failing tactic removes a `sorry` but does not compile), halting
+    at 0, or no new verified minimum for _PROVE_STALL turns, or no verified proof within
+    _PROVE_WARMUP turns; a request-count backstop; best-state RESTORE (finalize on the best
+    compiling spec seen, never a later broken edit); one authoritative final `lake build`; and
+    the `#print axioms` gate. Proof status is read from the restored file (proved = no `sorry`)."""
     if "proofs_done" in deps.progress:
         log.info("PROVE already complete — skipping proof stage")
         return
@@ -848,6 +816,10 @@ async def _run_prove_phase(deps: AgentDeps) -> None:
         raise _PipelineAborted(
             "PROVE not started — the implementation spec does not compile "
             "(FORMALISE did not produce a spec whose statements build)")
+    # Baseline best-state = the entry (all-sorry) spec, which just built. This is the floor PROVE
+    # restores to if no proof survives, so it can never abort away a compiling spec.
+    deps.progress.pop("prove_best", None)
+    _record_prove_best(deps)
 
     rc = deps.progress.get("reconciliation", {})
     critical = [d for d in rc.get("discrepancies", []) if d.get("severity") == "critical"]
@@ -872,49 +844,50 @@ async def _run_prove_phase(deps: AgentDeps) -> None:
         )
 
     impl_spec = _impl_spec(deps)
-    lsp_path = impl_spec.removeprefix("lean/")   # path relative to the Lean project root
     prompt = (
-        f"Proceed to PROVE. Fill in as many proofs as you can without changing any "
-        f"statement. Spec file paths:\n"
-        f"  - read/patch tools (search_output_file, read_output_lines, patch_output_lines): "
-        f"`{impl_spec}`\n"
-        f"  - lean-lsp tools (lean_goal, lean_multi_attempt, lean_diagnostic_messages): "
-        f"`{lsp_path}`\n"
-        f"Use the lean-lsp tools for goal-directed proving — inspect the goal with lean_goal "
-        f"and try candidates with lean_multi_attempt before editing. Ensure the file still "
-        f"compiles when you finish (revert any failed tactic to `sorry`), then git_commit."
+        f"Proceed to PROVE. Fill in proofs for as many `sorry` theorems in `{impl_spec}` as "
+        f"you can, WITHOUT changing any statement. Work ONE theorem at a time, easiest first "
+        f"(base cases, concrete values, simple bounds). For each: search_output_file to locate "
+        f"it, read_output_lines to read its block, patch_output_lines to replace ONLY the proof "
+        f"body, then check_lean to build. The build output shows the REAL errors — an "
+        f"incomplete proof reports `unsolved goals` with the remaining goal state, so read it to "
+        f"choose the next tactic. If a proof fails, revert that theorem to `:= by sorry` and "
+        f"move on — leaving hard theorems as `sorry` is expected and honest. Make sure the file "
+        f"still compiles when you finish, then git_commit."
         + prove_note
     )
-    # Objective genuine-progress stop. PROVE applies proofs by EDITING the spec (the lean-lsp
-    # tools are read-only), so each edit bumps edit_seq. On every new edit, re-read the spec's
-    # sorry count: stop when it reaches 0, or when it fails to reach a new minimum for
-    # _NO_PROGRESS consecutive edits (genuine stagnation, not mid-exploration). The
-    # request-limit backstop only catches a pathology this misses.
-    track = {"edits": deps.progress.get("edit_seq", 0), "best": None, "flat": 0}
+    # Objective genuine-progress stop, polled once per LLM turn (model-request node). The metric
+    # is the BUILD-VERIFIED sorry minimum (progress['prove_best'], updated only on a successful
+    # build), NOT the raw file count — a failing tactic drops the raw count while breaking the
+    # build, and must not read as progress. Stop at 0, or after _PROVE_STALL turns with no new
+    # verified minimum, or _PROVE_WARMUP turns with no verified proof at all (bounds an agent
+    # that edits blindly / never builds cleanly).
+    track = {"best": None, "stall": 0, "improved": False, "turns": 0}
 
-    def _prove_stop(deps: AgentDeps) -> bool:
-        edits = deps.progress.get("edit_seq", 0)
-        if edits == track["edits"]:
+    def _prove_stop(deps: AgentDeps, node: Any) -> bool:
+        if not Agent.is_model_request_node(node):   # one poll per LLM turn
             return False
-        track["edits"] = edits
-        n = _sorry_count(deps)
-        if n < 0:
-            return False   # spec transiently unreadable — wait; runaway is bounded elsewhere
-        if track["best"] is None or n < track["best"]:
-            track["best"], track["flat"] = n, 0
+        track["turns"] += 1
+        best = (deps.progress.get("prove_best") or {}).get("sorry")
+        if best is None:
+            return False
+        if track["best"] is None or best < track["best"]:
+            if track["best"] is not None:      # a verified decrease below the entry baseline
+                track["improved"] = True
+            track["best"], track["stall"] = best, 0
+        elif track["improved"]:
+            track["stall"] += 1
+        if track["improved"]:
+            stalled, cap, phase = track["stall"], _PROVE_STALL, "no-improvement"
         else:
-            track["flat"] += 1
-        log.info("PROVE progress: %d edit(s), sorry=%d (best=%d, no-progress=%d/%d)",
-                 edits, n, track["best"], track["flat"], _NO_PROGRESS)
-        return n == 0 or track["flat"] >= _NO_PROGRESS
+            stalled, cap, phase = track["turns"], _PROVE_WARMUP, "no verified proof"
+        log.info("PROVE progress: best verified sorry=%d (%s %d/%d turns)",
+                 best, phase, stalled, cap)
+        return best == 0 or stalled >= cap
 
-    # Airtight LSP gate BEFORE the proof attempt — a startup failure aborts the pipeline
-    # here (via _PipelineAborted), never mid-proof.
-    prove_lsp = await _start_lean_lsp(deps, config.LEAN_LSP_DISABLED_TOOLS)
     try:
         await _run_stage(
             _prove, prompt, deps, "PROVE",
-            toolsets=[prove_lsp],
             request_limit=config.PROVE_REQUEST_LIMIT,
             stop_check=_prove_stop,
         )
@@ -925,11 +898,18 @@ async def _run_prove_phase(deps: AgentDeps) -> None:
         # it proved (the authoritative final build + axiom gate below still run).
         log.warning("PROVE hit the request-limit backstop (%s) — finalizing", e)
     _checkpoint(deps)
+    # Restore PROVE's best VERIFIED spec — finalize on the best compiling state seen, never a
+    # later broken/blind edit (worst case, the entry all-sorry baseline). Then commit + build.
+    best = deps.progress.get("prove_best")
+    if best is not None and tools.read_out(deps, impl_spec) != best["spec"]:
+        tools.write_out(deps, impl_spec, best["spec"])
+        log.info("PROVE: restored best verified spec (%d sorry) over the final edit state",
+                 best["sorry"])
     # The agent may stop before committing — commit here so the proven state lands in git.
     git_ops.commit(deps.container_id, "stage/prove: proof attempts", glob="lean/")
 
-    # Authoritative final build (container-side timeout-guarded), independent of whatever
-    # the agent's LSP diagnostics reported.
+    # Authoritative final build (container-side timeout-guarded). With the restore above this is
+    # the best verified state, so it builds — the abort is a last-resort invariant check.
     if not _build(deps).get("success"):
         raise _PipelineAborted("PROVE left the spec in a non-compiling state")
 

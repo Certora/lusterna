@@ -7,7 +7,7 @@ description: Tactic decision tree, banned tactics, and common combinations for A
 
 ## Decision Tree: Which Tactic?
 
-**PREREQUISITE:** Always use the lean-lsp-mcp tools for interactive proof development. Use `lean_goal` to inspect the proof state before choosing a tactic. See the `lean-lsp-mcp` skill file.
+**Checking:** Proofs are checked with `check_lean` (`lake build`); read the `unsolved goals` state in its output to inspect what remains before choosing the next tactic.
 
 > **🔑 DEFAULT TACTIC: When you don't know what to do, use `agrind`.**
 > `agrind` is always the first tactic to try — it is fast, handles arithmetic,

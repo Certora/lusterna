@@ -50,19 +50,8 @@ def cache_settings(model: str) -> dict:
 _req_limit_env = os.environ.get("LUSTERNA_REQUEST_LIMIT", "0")
 REQUEST_LIMIT: int | None = int(_req_limit_env) if _req_limit_env.strip() not in ("", "0") else None
 
-# PROVE drives the Lean language server via lean-lsp-mcp (baked into the image). Launched
-# over `docker exec -i <cid> <bin> --transport stdio --lean-project-path /workspace/out/lean`.
-LEAN_LSP_MCP_BIN = os.environ.get("LUSTERNA_LEAN_LSP_MCP_BIN", "/opt/leanmcp/bin/lean-lsp-mcp")
-# lean-lsp-mcp tools that need network — disabled under the container's `--network none`.
-LEAN_LSP_DISABLED_TOOLS = os.environ.get(
-    "LUSTERNA_LEAN_LSP_DISABLED_TOOLS",
-    "lean_build,lean_leansearch,lean_loogle,lean_leanfinder,lean_state_search",
-)
-# FORMALISE is a tool-less structured stage (the whole translation is injected in its prompt
-# and the build loop is its convergence gate), so it gets no LSP tools at all — only PROVE
-# uses lean-lsp-mcp.
-# Backstop on PROVE model requests (the agent self-paces via LSP feedback; this only guards
-# against a runaway). 0/unset = unlimited.
+# Backstop on PROVE model requests (the genuine-progress stop ends PROVE in the normal case;
+# this only guards against a runaway). 0/unset = unlimited.
 _prove_req = os.environ.get("LUSTERNA_PROVE_REQUEST_LIMIT", "150")
 PROVE_REQUEST_LIMIT: int | None = int(_prove_req) if _prove_req.strip() not in ("", "0") else None
 

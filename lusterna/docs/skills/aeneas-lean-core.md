@@ -8,10 +8,11 @@ description: Translation model, spec patterns, tactic reference, and pitfalls fo
 ## Context
 Aeneas translates Rust programs to pure Lean code via the LLBC intermediate representation. The generated code uses the `Result` error monad. Proofs verify functional correctness by writing specification theorems tagged with `@[step]`.
 
-## PREREQUISITE: Use lean-lsp-mcp for All Proof Work
+## Checking Proofs
 
-**Before writing or editing any Lean proof**, use the lean-lsp-mcp tools.
-See the `lean-lsp-mcp` skill file for the full tool reference and workflow.
+Proofs are checked with `check_lean` (which runs `lake build`); its output carries the real
+Lean diagnostics — `unsolved goals` with the remaining goal state, plus any type/name errors.
+Read that output to choose and refine tactics.
 
 ## Reading Aeneas-Generated Code
 
@@ -278,17 +279,13 @@ goal asks the invariant for `[0, next_start)`. Split with `by_cases hjj : j = it
 
 ## Proof Development Workflow
 
-### ⛔ Use the LSP for all checking — `lake build` only at the very end
+### Check proofs with `check_lean` (`lake build`)
 
-**Use only the lean-lsp-mcp tools** (diagnostics, goal, multi_attempt, etc.) when
-developing proofs: they give you incremental proof checking.
-**Do NOT run `lake build`** while developing proofs — the LSP server and `lake build`
-write to the same `.lake/build/` directory concurrently, causing file corruption,
-transient build failures, and wasted rebuild time.
-
-**`lake build` is allowed only once, at the very end**, as a final verification that
-the entire project builds. During proof development, the LSP gives you instant
-feedback on individual files without the overhead or corruption risk of a full build.
+`check_lean` runs `lake build` and returns the real Lean diagnostics — an incomplete proof
+reports `unsolved goals` with the remaining goal state, and type/name errors report their
+location and message. That is your feedback signal while developing proofs. Prove a few cheap
+theorems, then `check_lean` once (rather than after every single edit) to keep builds fast,
+and always finish with a clean build.
 
 ### The step*? → fix → collapse workflow:
 1. `step*?` — generates expanded proof script (one `step` per monadic call)
