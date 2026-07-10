@@ -8,17 +8,9 @@ expressed in **basis points** (1 basis point = 0.01% = 1/10000).
 A single pure function `reward(principal: u64, rate_bps: u64) -> u64`.
 
 ## Definition
-The reward is the principal scaled by the rate:
-
-    reward = principal * rate_bps / 10000
-
-The multiplication is performed first and the division by 10000 is applied **once, at
-the very end**, truncating toward zero (integer division). This ordering matters:
-scaling before dividing preserves precision, so a principal smaller than 10000 still
-earns a proportional, non-zero reward when the rate is large enough.
+The reward is the principal scaled by the rate. The scaling operation must preserve precision.
 
 ## Functional requirements
-- `reward(principal, rate_bps) = principal * rate_bps / 10000` (division applied last).
 - `reward(principal, 0) = 0` (a zero rate yields no reward).
 - `reward(0, rate_bps) = 0` (zero principal yields no reward).
 - The reward is monotonic non-decreasing in `rate_bps`.
