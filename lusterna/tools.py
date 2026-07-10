@@ -388,16 +388,22 @@ def stub_proofs(text: str) -> str:
     return "\n".join(out)
 
 
+_STD_AXIOMS = {"propext", "Classical.choice", "Quot.sound"}  # the standard, trusted Lean axioms
+
+
 def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
     """Authoritative hole-impact oracle. Ask Lean which impl-spec theorems are GENUINELY
-    established — i.e. whose proof term depends on no `sorryAx`. This subsumes both the
-    textual footprint check and the sorry-count: an untranslated Aeneas hole and an
-    unfinished proof BOTH introduce `sorryAx`, and `#print axioms` follows the real proof
-    term through simp sets, instances and every definition — closing the blind spot of the
-    name-based footprint approximation.
+    established — i.e. whose proof term depends on NOTHING beyond the standard trusted axioms
+    (propext, Classical.choice, Quot.sound). This subsumes the textual footprint check and the
+    sorry-count: an untranslated Aeneas hole and an unfinished proof BOTH introduce `sorryAx`,
+    and `#print axioms` follows the real proof term through simp sets, instances and every
+    definition — closing the blind spot of the name-based footprint approximation. Crucially it
+    also rejects any OTHER non-standard axiom: `sorryAx`, `Lean.ofReduceBool`/`Lean.trustCompiler`
+    (native_decide's compiler trust), and any `axiom` the model might smuggle in all taint a
+    theorem — "established" means kernel-checked with only the standard axioms.
 
     Returns {"clean": [names], "tainted": [names], "raw": <trimmed lean output>}, where
-    tainted = depends on sorryAx OR could not be resolved (the conservative direction).
+    tainted = depends on a non-standard axiom OR could not be resolved (the conservative direction).
 
     Mechanism: write a throwaway checker that IMPORTS the already-built `Spec.olean` and
     runs `#print axioms` against it, then elaborate just that checker with `lake env lean`.
@@ -432,11 +438,19 @@ def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
     exec_in(deps.container_id, ["rm", "-f", f"{OUT_IN}/{checker_rel}"])
 
     text = f"{out}\n{err}"
+    # Each verdict line is either "'name' does not depend on any axioms" (clean) or
+    # "'name' depends on axioms: [a, b, ...]" — clean iff every listed axiom is standard.
     verdict: dict[str, bool] = {}
     for line in text.splitlines():
-        m = re.search(r"'([\w.]+)' (?:depends on axioms|does not depend)", line)
-        if m:
-            verdict[m.group(1).split(".")[-1]] = "sorryAx" not in line
+        m = re.search(r"'([\w.]+)' (?:does not depend|depends on axioms: \[([^\]]*)\])", line)
+        if not m:
+            continue
+        short = m.group(1).split(".")[-1]
+        if m.group(2) is None:          # "does not depend on any axioms"
+            verdict[short] = True
+        else:
+            axes = [a.strip() for a in m.group(2).split(",") if a.strip()]
+            verdict[short] = all(a in _STD_AXIOMS for a in axes)
     clean = [n for n in names if verdict.get(n.split(".")[-1]) is True]
     tainted = [n for n in names if verdict.get(n.split(".")[-1]) is not True]  # False or unresolved
     unresolved = [n for n in names if n.split(".")[-1] not in verdict]
@@ -444,9 +458,9 @@ def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
         # Not a soundness signal — the checker couldn't read these back. Surface it loudly
         # instead of silently reporting them as tainted.
         log.warning("check_axioms: %d/%d theorem(s) UNRESOLVED (conservatively tainted, not a "
-                    "real sorryAx finding): %s — lean output tail:\n%s",
+                    "real axiom finding): %s — lean output tail:\n%s",
                     len(unresolved), len(names), unresolved, text[-1200:])
-    log.info("check_axioms: %d genuinely established (no sorryAx), %d tainted, of %d theorem(s)",
+    log.info("check_axioms: %d established (only standard axioms), %d tainted, of %d theorem(s)",
              len(clean), len(tainted), len(names))
     return {"clean": clean, "tainted": tainted, "raw": text[-3000:]}
 

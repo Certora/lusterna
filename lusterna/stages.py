@@ -296,10 +296,14 @@ file yourself and do NOT call git_commit.
 Write exactly these files, in this order:
 
   report/01_overview.md
-      Title, one-paragraph executive summary, overview table (translation result,
-      spec-judge result, theorems genuinely established (Lean `#print axioms`: no
-      sorryAx) vs. resting on sorry, holes in the property footprint / soundness,
-      critical discrepancies).
+      Title, one-paragraph executive summary, overview table. The HEADLINE metric is the
+      number of theorems that VERIFY THE IMPLEMENTATION — kernel-established (Lean `#print
+      axioms`, standard axioms only) AND referencing an Aeneas-translated def (given in the
+      pipeline context). Report abstract helper lemmas (established but not referencing the
+      implementation) SEPARATELY and never as the verification result. If theorems were proved
+      but NONE reference the implementation, say plainly that 0 properties of the code were
+      verified. Also: translation result, spec-judge result, footprint holes, critical
+      discrepancies.
 
   report/02_translation.md
       What was translated. The Rust source is NEVER modified — Aeneas runs on it as
@@ -329,11 +333,15 @@ Write exactly these files, in this order:
 
   report/07_proofs.md
       Proof status. The AUTHORITATIVE verdict is Lean's `#print axioms` (in the pipeline
-      context): a theorem is GENUINELY ESTABLISHED only if its proof depends on no
-      `sorryAx` — a proof can look complete yet still rest on an untranslated hole or a
-      leftover `sorry`, and the axiom check is what catches that. For each theorem, mark
-      it: established (no sorryAx) / rests-on-sorry / unproved. Give a one-line proof
-      sketch for each established theorem and a suggested strategy for each other.
+      context): a theorem is ESTABLISHED only if its proof depends on nothing beyond the
+      standard axioms (propext/Classical.choice/Quot.sound) — a proof can look complete yet
+      rest on an untranslated hole, a leftover `sorry`, `native_decide`'s compiler trust, or a
+      smuggled axiom, and the axiom check catches all of these. Then split the established
+      theorems into (a) those that VERIFY THE IMPLEMENTATION (reference an Aeneas-translated
+      def) and (b) abstract helper lemmas (about preamble-only definitions) — only (a) is
+      verification of the code. For each theorem mark: implementation-verified / abstract-only-
+      lemma / not-established. Give a one-line proof sketch for each established theorem and a
+      suggested strategy for each unproved one.
 
   report/08_summary.md
       Open proof obligations (each sorry with a concrete next step), known gaps

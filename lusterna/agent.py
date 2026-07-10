@@ -219,6 +219,19 @@ def _record_prove_best(deps: AgentDeps) -> None:
         log.info("PROVE: new best compiling spec — %d sorry remaining", n)
 
 
+def _theorem_statement(spec_text: str, name: str) -> str:
+    """The statement text of theorem *name* — binders + proposition, up to (not including) `:=`.
+    Used to decide whether a theorem references the implementation (referenced_defs on it).
+    Returns '' if not found."""
+    import re
+    m = re.search(rf"(?m)^theorem\s+{re.escape(name)}\b", spec_text)
+    if not m:
+        return ""
+    tail = spec_text[m.start():]
+    cut = tail.find(":=")
+    return tail[:cut] if cut != -1 else tail.split("\n\n", 1)[0]
+
+
 def _translation_text(deps: AgentDeps) -> str:
     """Concatenated Lean source of the whole Aeneas translation — the material the spec
     stages reason over. The source is immutable, so this is a faithful image of the crate.
@@ -915,14 +928,30 @@ async def _run_prove_phase(deps: AgentDeps) -> None:
 
     deps.progress["proofs_done"] = True
     _footprint(deps)   # cheap pre-oracle estimate — proofs may reference defs the stubs did not
-    # Authoritative soundness verdict: ask Lean which theorems depend on no `sorryAx`.
+    # Authoritative soundness verdict: which theorems are kernel-established on only standard axioms.
     ax = tools.check_axioms(deps, _impl_spec(deps))
-    deps.progress["axioms"] = {"clean": ax["clean"], "tainted": ax["tainted"]}
+    # Partition the established set: a theorem only VERIFIES THE IMPLEMENTATION if its statement
+    # references a real Aeneas translation def (referenced_defs is non-empty). Established
+    # theorems about abstract preamble defs alone (e.g. a self-defined `fib`) are helper lemmas,
+    # not verification of the code — a mechanical distinction, not a judgment.
+    translation = _translation_text(deps)
+    spec_text = tools.read_out(deps, _impl_spec(deps))
+    impl_verified, abstract_only = [], []
+    for name in ax["clean"]:
+        stmt = _theorem_statement(spec_text, name)
+        (impl_verified if stmt and tools.referenced_defs(stmt, translation) else abstract_only).append(name)
+    deps.progress["axioms"] = {"clean": ax["clean"], "tainted": ax["tainted"],
+                               "impl_verified": impl_verified, "abstract_only": abstract_only}
     _checkpoint(deps)
-    log.info("PROVE complete — %d sorry remaining; genuinely established (no sorryAx): "
-             "%d/%d theorem(s); clean=%s tainted=%s",
+    if ax["clean"] and not impl_verified:
+        log.warning("PROVE: ⚠ CRITICAL — %d theorem(s) established but NONE reference the "
+                    "implementation; 0 properties of the code are verified. Established are "
+                    "abstract helper lemmas only: %s", len(ax["clean"]), abstract_only)
+    log.info("PROVE complete — %d sorry remaining; established (standard axioms only): %d/%d "
+             "theorem(s) — %d verify the implementation %s, %d abstract-only %s; tainted=%s",
              max(_sorry_count(deps), 0), len(ax["clean"]),
-             len(ax["clean"]) + len(ax["tainted"]), ax["clean"], ax["tainted"])
+             len(ax["clean"]) + len(ax["tainted"]), len(impl_verified), impl_verified,
+             len(abstract_only), abstract_only, ax["tainted"])
 
 
 async def _run_report(deps: AgentDeps, resume_note: str) -> str:
@@ -935,6 +964,8 @@ async def _run_report(deps: AgentDeps, resume_note: str) -> str:
     axioms           = deps.progress.get("axioms", {})
     ax_clean         = axioms.get("clean", [])
     ax_tainted       = axioms.get("tainted", [])
+    ax_impl          = axioms.get("impl_verified", [])
+    ax_abstract      = axioms.get("abstract_only", [])
     rc               = deps.progress.get("reconciliation", {})
     rc_critical     = sum(1 for d in rc.get("discrepancies", []) if d.get("severity") == "critical")
     rc_obligations_n = len(rc.get("refinement_obligations", []))
@@ -963,10 +994,18 @@ async def _run_report(deps: AgentDeps, resume_note: str) -> str:
         f"untranslated holes in crate: {', '.join(holes) if holes else 'none'}. "
         f"Spec-judge: {'approved (no defects)' if not spec_defects else str(len(spec_defects)) + ' unresolved defect(s)'}. "
         f"Proofs: {sorry_remaining} theorem(s) remain as `sorry`. AUTHORITATIVE soundness "
-        f"(Lean `#print axioms`): {len(ax_clean)} theorem(s) genuinely established with no "
-        f"sorryAx ({ax_clean}); {len(ax_tainted)} still depend on sorry ({ax_tainted}) — "
-        f"a proof that looks complete but touches an untranslated hole is caught here. "
-        f"Reconciliation: critical_discrepancies={rc_critical}, "
+        f"(Lean `#print axioms`, standard axioms only): {len(ax_clean)} theorem(s) kernel-"
+        f"established. Of those, the HEADLINE RESULT is the {len(ax_impl)} that actually VERIFY "
+        f"THE IMPLEMENTATION (reference an Aeneas-translated def): {ax_impl or 'NONE'}"
+        + (f". ⚠ CRITICAL: {len(ax_clean)} theorem(s) were proved but NONE reference the "
+           f"implementation — 0 properties of the real code are verified; the established "
+           f"theorems are abstract helper lemmas ({ax_abstract}). Report this prominently as the "
+           f"headline, NOT as a success. " if ax_clean and not ax_impl else
+           (f"; the other {len(ax_abstract)} established are abstract helper lemmas "
+            f"({ax_abstract}) — report them separately, not as code verification. " if ax_abstract
+            else ". "))
+        + f"{len(ax_tainted)} theorem(s) are NOT established ({ax_tainted}) — still `sorry` or "
+        f"dependent on a non-standard axiom. Reconciliation: critical_discrepancies={rc_critical}, "
         f"total_refinement_obligations={rc_obligations_n}."
         f"\n\n{report_files}" + resume_note,
         deps, "REPORT",
