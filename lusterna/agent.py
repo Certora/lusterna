@@ -42,6 +42,26 @@ def check_lean(ctx: RunContext[AgentDeps], lean_file: str) -> dict:
     return result
 
 
+# PROVE applies proofs by editing the spec file (the lean-lsp tools are read-only), so these
+# thin wrappers bump `edit_seq` — the objective cadence for PROVE's genuine-progress stop
+# (see _run_prove_phase). REPORT keeps using the un-wrapped tools.write_file.
+
+def patch_output_lines(ctx: RunContext[AgentDeps], path: str, start: int, end: int, content: str) -> str:
+    """Replace lines *start*–*end* (1-indexed, inclusive) with *content*; all other lines are preserved.
+    *path* may be relative or absolute. Use to update a single theorem proof. Returns ERROR: on failure."""
+    result = tools.patch_output_lines(ctx, path, start, end, content)
+    ctx.deps.progress["edit_seq"] = ctx.deps.progress.get("edit_seq", 0) + 1
+    return result
+
+
+def write_file(ctx: RunContext[AgentDeps], path: str, content: str = "") -> str:
+    """Write *content* to *path* in /workspace/out (relative or absolute).
+    Returns ERROR: if content is empty, the path is protected, or the write fails."""
+    result = tools.write_file(ctx, path, content)
+    ctx.deps.progress["edit_seq"] = ctx.deps.progress.get("edit_seq", 0) + 1
+    return result
+
+
 # ── tool registration ───────────────────────────────────────────
 # Stage agents are declared in stages.py; their tools — which depend on the
 # orchestration helpers in this module — are attached here. TRANSLATE is NOT an
@@ -57,8 +77,8 @@ _prove.tool(tools.list_files)
 _prove.tool(tools.search_output_file)
 _prove.tool(tools.read_output_lines)
 _prove.tool(tools.read_output_file)
-_prove.tool(tools.patch_output_lines)
-_prove.tool(tools.write_file)
+_prove.tool(patch_output_lines)   # edit_seq-bumping wrappers (PROVE progress cadence)
+_prove.tool(write_file)
 _prove.tool(check_lean)
 _prove.tool(tools.git_commit)
 _prove.tool(tools.git_log)
@@ -70,13 +90,12 @@ _report.tool(tools.git_log)
 # ── internal helpers ──────────────────────────────────────────────────────────
 
 async def _start_lean_lsp(deps: AgentDeps, disabled_tools: str):
-    """Airtight LSP startup for a stage. Launches lean-lsp-mcp inside the container (over
+    """Airtight LSP startup for PROVE. Launches lean-lsp-mcp inside the container (over
     `docker exec -i` stdio), CONFIRMS it responds with a warm-up `lean_diagnostic_messages`
-    call, and returns an MCPToolset on a keep-alive transport so the heavy Lean env loads
-    ONCE and stays warm across every round of the stage (never restarted per round, never
-    used before it is up). Aborts the pipeline early with a clear message if the LSP does
-    not come up. `disabled_tools` selects which tools to switch off (PROVE keeps the full
-    prover set minus network; FORMALISE additionally drops the proving/eval tools)."""
+    call, and returns an MCPToolset on a keep-alive transport so the heavy Lean env loads ONCE
+    and stays warm across the stage (never restarted per round, never used before it is up).
+    Aborts the pipeline early with a clear message if the LSP does not come up. Only PROVE
+    uses interactive Lean tools; FORMALISE is a tool-less structured stage."""
     from fastmcp import Client
     from pydantic_ai.mcp import MCPToolset, StdioTransport
     transport = StdioTransport(
@@ -86,8 +105,8 @@ async def _start_lean_lsp(deps: AgentDeps, disabled_tools: str):
               "--disable-tools", disabled_tools],
         keep_alive=True,   # keep the warmed LSP process alive across per-round reconnects
     )
-    # Warm up on the crate module (always present post-TRANSLATE) — forces the LSP to load
-    # its env, so later per-theorem calls are fast and we fail fast here if it is broken.
+    # Warm up on the crate module (always present post-TRANSLATE) — forces the LSP to load its
+    # env, so later per-theorem calls are fast and we fail fast here if it is broken.
     crate = (deps.progress.get("aeneas", {}).get("lean_path", "") or "?.lean").rsplit("/", 1)[-1]
     try:
         async with Client(transport, init_timeout=180) as c:
@@ -118,7 +137,9 @@ class _PipelineAborted(Exception):
     pass
 
 
-_HARD_CAP = 10    # max spec-judge rounds
+_HARD_CAP = 10        # max spec-judge rounds
+_NO_PROGRESS = 4      # PROVE: give up after this many spec edits with no new sorry-count minimum
+_QUARANTINE_AFTER = 3 # FORMALISE: drop a theorem after this many rounds failing to compile
 
 
 def _impl_spec(deps: AgentDeps) -> str:
@@ -132,23 +153,85 @@ def _impl_spec(deps: AgentDeps) -> str:
     return f"lean/{stem}/Spec.lean"
 
 
-def _assemble_impl_spec(deps: AgentDeps, fs: FormalSpec) -> None:
+def _assemble_impl_spec(deps: AgentDeps, fs: FormalSpec,
+                        drop: frozenset[str] = frozenset()) -> list[str]:
     """Write the implementation spec from a structured FormalSpec: the preamble followed by
     one `theorem <name> <signature> := by sorry` per stub. Proofs are added here as `sorry`
     — never by the model — so FORMALISE cannot smuggle in a proof (or a hanging tactic).
-    The preamble is passed through stub_proofs as a safety net for any stray theorem."""
+    The preamble is passed through stub_proofs as a safety net for any stray theorem.
+
+    Theorems whose name is in *drop* (quarantined — repeatedly un-compilable) are omitted.
+    Returns the list of theorem names actually written, so the caller can attribute build
+    errors back to specific theorems and track the quarantine set."""
     path = _impl_spec(deps)
     stem = path.split("/")[1]
     preamble = tools.stub_proofs(fs.preamble.rstrip())
     header = "".join(
         f"import {m}\n" for m in ("Aeneas", stem) if f"import {m}" not in preamble
     )
+    kept = [t for t in fs.theorems if t.name not in drop]
     body = "\n\n".join(
         f"theorem {t.name} {t.signature.split(':=')[0].strip()} := by sorry"
-        for t in fs.theorems
+        for t in kept
     )
     tools.write_out(deps, path, f"{header}{preamble}\n\n{body}\n")
-    log.info("Assembled impl spec: %d theorem stub(s) at %s", len(fs.theorems), path)
+    log.info("Assembled impl spec: %d theorem stub(s)%s at %s", len(kept),
+             f" ({len(drop)} quarantined)" if drop else "", path)
+    return [t.name for t in kept]
+
+
+def _attribute_errors(spec_text: str, stderr: str, basename: str = "Spec.lean") -> dict:
+    """Map Lean build errors back to the impl-spec theorem they occur in, so FORMALISE can be
+    told exactly which statements to fix (and which already compile).
+
+    `lake build` diagnostics are `<severity>: <path>:<line>:<col>: <msg>` (severity FIRST), with
+    the message continuing on following lines until the next diagnostic or a lake/lean structural
+    line. (`lake env lean` uses path-first; FORMALISE's oracle is `lake build`, so we match that.)
+    `sorry` produces a WARNING, not an error — so a stub that type-checks shows only a warning;
+    only an `error` marks a theorem as failing. Returns
+    {"failing": {theorem: msg}, "preamble": [msg], "unattributed": [msg]}."""
+    import re
+    thm = list(re.finditer(r"(?m)^theorem\s+([\w.]+)", spec_text))
+    nlines = spec_text.count("\n") + 1
+    spans = []
+    for i, m in enumerate(thm):
+        start = spec_text.count("\n", 0, m.start()) + 1
+        end = spec_text.count("\n", 0, thm[i + 1].start()) if i + 1 < len(thm) else nlines
+        spans.append((m.group(1), start, end))
+    first_thm = spans[0][1] if spans else nlines + 1
+
+    def owner(line: int) -> str | None:
+        return next((n for n, s, e in spans if s <= line <= e), None)
+
+    marker = re.compile(r"^(error|warning): (\S+):(\d+):(\d+): (.*)$")
+    stop = re.compile(r"^(?:error|warning|info|trace):|^\s*✖|^Some required|^- ")
+    failing: dict[str, list[str]] = {}
+    preamble: list[str] = []
+    unattributed: list[str] = []
+    lines = stderr.splitlines()
+    i = 0
+    while i < len(lines):
+        mm = marker.match(lines[i])
+        if not mm or not mm.group(2).endswith(basename):   # only diagnostics for the impl spec
+            i += 1
+            continue
+        sev, ln = mm.group(1), int(mm.group(3))
+        block = [f"{basename}:{ln}:{mm.group(4)}: {mm.group(5)}".rstrip()]   # path-stripped
+        j = i + 1
+        while j < len(lines) and not marker.match(lines[j]) and not stop.match(lines[j]):
+            block.append(lines[j]); j += 1
+        i = j
+        if sev != "error":                              # ignore sorry/other warnings
+            continue
+        msg = "\n".join(block).strip()
+        if (who := owner(ln)) is not None:
+            failing.setdefault(who, []).append(msg)
+        elif ln < first_thm:
+            preamble.append(msg)
+        else:
+            unattributed.append(msg)
+    return {"failing": {k: "\n".join(v) for k, v in failing.items()},
+            "preamble": preamble, "unattributed": unattributed}
 
 
 def _build(deps: AgentDeps) -> dict:
@@ -511,28 +594,19 @@ async def _run_spec_phase(deps: AgentDeps, resume_note: str) -> str:
         return resume_note
 
     impl_spec = _impl_spec(deps)
-    lsp_path = impl_spec.removeprefix("lean/")   # spec path relative to the Lean project root
     base_inputs = _formalise_inputs(deps)
-    lsp_hint = (
-        "\n\nYou have read-only Lean tools — USE them so the spec actually TYPECHECKS:\n"
-        "  - lean_local_search(query): find the exact name and signature of a definition or "
-        "lemma (e.g. search 'fib' to see how to refer to `Nat.fib`), so your imports and "
-        "statement types are right.\n"
-        f"  - lean_diagnostic_messages('{lsp_path}'): the precise errors on the currently "
-        "assembled spec — read them to fix the real problem.\n"
-        "  - lean_hover_info: a symbol's type.\n"
-        "You write NO proofs — every theorem body is `:= by sorry`, added automatically. "
-        "If you are unsure which Mathlib module provides something, prefer a broad "
-        "`import Mathlib` in the preamble rather than guessing a submodule path."
-    )
-    # Airtight: start + verify ONE warm LSP before any FORMALISE round (reused across rounds).
-    formalise_lsp = await _start_lean_lsp(deps, config.LEAN_LSP_DISABLED_TOOLS_FORMALISE)
     prev_defects: frozenset | None = None
     prev_build_err: str | None = None
     feedback = ""            # revision feedback carried between rounds (build errors / defects)
+    dropped: set[str] = set()          # theorems quarantined as repeatedly un-compilable
+    fail_streak: dict[str, int] = {}   # per-theorem consecutive compile-failure count
+    last_good_sigs: dict[str, str] = {}  # name→signature of the last spec that compiled
     attempt = 0
     while attempt < _HARD_CAP:
-        # 1) FORMALISE — (re)state the properties as structured, proof-free stubs.
+        # 1) FORMALISE — (re)state the properties as structured, proof-free stubs. This is a
+        # ONE-SHOT structured emit with NO tools: the whole Aeneas translation is injected in
+        # base_inputs (every def name + signature is right there to read), and the build below
+        # is the objective convergence gate. FORMALISE does not inspect/search/prove.
         if attempt == 0:
             instruction = (
                 "FORMALISE: return a FormalSpec (preamble + statement-only theorems) "
@@ -545,33 +619,108 @@ async def _run_spec_phase(deps: AgentDeps, resume_note: str) -> str:
                 f"FORMALISE revision (round {attempt + 1}). Return an updated FormalSpec. "
                 f"{feedback}\n\n### current assembled spec\n{cur}"
             )
-        fr = await _run_stage(
-            _formalise, f"{instruction}{lsp_hint}\n\n{base_inputs}" + resume_note,
-            deps, f"FORMALISE (round {attempt + 1})",
-            toolsets=[formalise_lsp],
-        )
+        try:
+            fr = await _run_stage(
+                _formalise, f"{instruction}\n\n{base_inputs}" + resume_note,
+                deps, f"FORMALISE (round {attempt + 1})",
+            )
+        except UnexpectedModelBehavior as e:
+            # A tool/output-validation retry blow-up must never hard-crash the pipeline (as it
+            # did when FORMALISE had LSP tools) — stop the loop; the compile gate below turns
+            # this into a graceful abort-with-notes if no building spec was produced.
+            log.warning("FORMALISE failed after retries: %s — stopping spec loop", e)
+            break
         resume_note = ""
         if not (fr and fr.output):
             log.warning("FORMALISE produced no output — stopping spec loop")
             break
-        _assemble_impl_spec(deps, fr.output)
+        kept = _assemble_impl_spec(deps, fr.output, drop=frozenset(dropped))
         deps.progress["formal_spec"] = True
+        if not kept:
+            log.warning("FORMALISE: every theorem is quarantined or none was produced — "
+                        "nothing left to verify, stopping spec loop")
+            break
 
         # 2) Build — validate the STATEMENTS typecheck (bodies are all `sorry`, so fast).
         if not _build(deps).get("success"):
             err = deps.progress["lean_build"].get("stderr", "")
-            if err == prev_build_err:
-                log.warning("FORMALISE: identical build errors two rounds running — no "
+            spec_text = tools.read_out(deps, impl_spec)
+            attr = _attribute_errors(spec_text, err)
+            failing, preamble_errs, other_errs = (
+                attr["failing"], attr["preamble"], attr["unattributed"])
+            cur_sigs = {t.name: t.signature for t in fr.output.theorems if t.name not in dropped}
+
+            # Culprits to quarantine: prefer errors attributed to a specific theorem; when the
+            # build broke but no error can be pinned to one (and it is not a preamble error),
+            # fall back to the theorems that CHANGED since the last compiling spec.
+            changed = [n for n, s in cur_sigs.items() if last_good_sigs.get(n) != s]
+            culprits = list(failing) if failing else ([] if preamble_errs else changed)
+
+            # Quarantine: a culprit that has failed for _QUARANTINE_AFTER rounds is dropped
+            # (recorded, reported as not formalised) so the loop converges to the compiling
+            # subset instead of hammering an un-stateable theorem to the cap.
+            newly_dropped = []
+            for name in culprits:
+                fail_streak[name] = fail_streak.get(name, 0) + 1
+                if fail_streak[name] >= _QUARANTINE_AFTER:
+                    dropped.add(name); newly_dropped.append(name)
+            # Only claim a theorem "compiles" if it is unchanged from a spec that DID compile
+            # and is not a culprit — never infer compilation from an absent error.
+            ok_names = [n for n in cur_sigs
+                        if n not in culprits and last_good_sigs.get(n) == cur_sigs[n]]
+            for name in ok_names:
+                fail_streak[name] = 0
+            if newly_dropped:
+                deps.progress["dropped_theorems"] = sorted(dropped)
+                log.warning("FORMALISE: quarantined %d theorem(s) after %d failed rounds: %s",
+                            len(newly_dropped), _QUARANTINE_AFTER, newly_dropped)
+
+            # No progress possible if the build output is unchanged and there is nothing to
+            # quarantine (e.g. an unfixable preamble error) — stop.
+            if err == prev_build_err and not newly_dropped:
+                log.warning("FORMALISE: identical build errors and nothing to quarantine — no "
                             "progress, stopping spec loop")
                 break
             prev_build_err = err
-            log.info("FORMALISE round %d: statements do not compile — feeding errors back",
-                     attempt + 1)
-            feedback = ("The assembled spec did NOT compile. Fix the STATEMENTS and/or the "
-                        "preamble so it typechecks (you still write no proofs — bodies are "
-                        f"`sorry`). Build errors:\n{err[:2000]}")
+            log.info("FORMALISE round %d: %d attributed-failing, %d culprit(s), %d known-ok, "
+                     "%d dropped", attempt + 1, len(failing), len(culprits), len(ok_names),
+                     len(dropped))
+
+            # Targeted feedback: name each failing theorem with its own error; tell the model to
+            # keep the compiling ones verbatim and never re-introduce the dropped ones.
+            parts = ["The assembled spec did NOT compile. You still write NO proofs (bodies are "
+                     "`:= by sorry`)."]
+            if preamble_errs:
+                parts.append("PREAMBLE errors — fix the imports/helper defs in `preamble`:\n"
+                             + "\n".join(preamble_errs))
+            if failing:
+                parts.append(
+                    "These theorem STATEMENTS do not typecheck — restate each so it compiles "
+                    "(same intent; use the EXACT Aeneas names/types from the injected "
+                    "translation), or state it more simply:\n"
+                    + "\n\n".join(f"  • {n}:\n{msg}" for n, msg in failing.items()))
+            elif not preamble_errs:
+                # Build broke but no error pinned to a theorem — point at what changed + raw tail.
+                parts.append(
+                    "The build failed but the error could not be pinned to one theorem. It "
+                    "broke after these theorems changed — revert them to a form that compiled, "
+                    f"or state them more simply: {', '.join(changed) or '(unknown)'}\n"
+                    "Build output:\n" + err[-1500:])
+            if other_errs:
+                parts.append("Other build errors:\n" + "\n".join(other_errs))
+            if ok_names:
+                parts.append("These already COMPILE — keep them EXACTLY as they are: "
+                             + ", ".join(ok_names))
+            if dropped:
+                parts.append("DROPPED as un-stateable — do NOT re-introduce these (they are "
+                             "reported as not formalised): " + ", ".join(sorted(dropped)))
+            feedback = "\n\n".join(parts)
             attempt += 1
             continue
+
+        # Build succeeded — remember this compiling spec so a later failed round can identify
+        # (and quarantine) the theorems that broke it even when the error can't be pinned.
+        last_good_sigs = {t.name: t.signature for t in fr.output.theorems if t.name not in dropped}
 
         # 3) SPEC-JUDGE — judge the statements against the crate + informal spec.
         judge_files = f"### Aeneas-translated crate\n{_translation_text(deps)}\n\n"
@@ -579,12 +728,18 @@ async def _run_spec_phase(deps: AgentDeps, resume_note: str) -> str:
             content = tools.read_out(deps, path)
             if not content.startswith("ERROR:"):
                 judge_files += f"### {path}\n{content}\n\n"
+        # Quarantine handshake: theorems dropped as un-compilable are gone for good — the judge
+        # must not re-demand them as missing_coverage, or judge and compiler fight forever.
+        dropped_note = (
+            "\n\nNOTE: the following properties could NOT be stated in a way that compiles and "
+            "were dropped from the spec — do NOT report them (or their absence) as a defect or "
+            f"missing_coverage: {', '.join(sorted(dropped))}." if dropped else "")
         try:
             sj = await _run_stage(
                 _judge,
                 "SPEC-JUDGE: list every defect in the implementation spec's theorem "
                 "statements (ignore sorry proofs); return an empty list if it is sound."
-                f"\n\n{judge_files}",
+                + dropped_note + f"\n\n{judge_files}",
                 deps, f"SPEC-JUDGE (round {attempt + 1})",
             )
         except UnexpectedModelBehavior as e:
@@ -676,12 +831,23 @@ async def _run_prove_phase(deps: AgentDeps) -> None:
 
     The agent inspects goals (`lean_goal`), tries tactics without editing
     (`lean_multi_attempt`), and tracks remaining sorries/errors (`lean_diagnostic_messages`)
-    — self-pacing rather than blind full-build guessing. The orchestrator's role is a
-    request-count backstop, one authoritative final `lake build`, and the `#print axioms`
-    gate. Proof status is read from the file (proved = no `sorry`)."""
+    — self-pacing rather than blind full-build guessing. The orchestrator owns the objective
+    guards: a compile gate BEFORE any effort (never prove a non-building spec), a
+    genuine-progress stop (halt when the spec's sorry count hits 0 or plateaus for
+    _NO_PROGRESS edits), a request-count backstop, one authoritative final `lake build`, and
+    the `#print axioms` gate. Proof status is read from the file (proved = no `sorry`)."""
     if "proofs_done" in deps.progress:
         log.info("PROVE already complete — skipping proof stage")
         return
+
+    # Airtight compile gate: NEVER spend proof effort on a spec that does not build.
+    # _run_spec_phase fail-fasts on a fresh run, but a RESUMED session can re-enter here with
+    # a spec that only ever built in a previous container — so re-verify with a real build
+    # now (cheap: incremental when the olean is warm from the spec phase).
+    if not _build(deps).get("success"):
+        raise _PipelineAborted(
+            "PROVE not started — the implementation spec does not compile "
+            "(FORMALISE did not produce a spec whose statements build)")
 
     rc = deps.progress.get("reconciliation", {})
     critical = [d for d in rc.get("discrepancies", []) if d.get("severity") == "critical"]
@@ -719,6 +885,29 @@ async def _run_prove_phase(deps: AgentDeps) -> None:
         f"compiles when you finish (revert any failed tactic to `sorry`), then git_commit."
         + prove_note
     )
+    # Objective genuine-progress stop. PROVE applies proofs by EDITING the spec (the lean-lsp
+    # tools are read-only), so each edit bumps edit_seq. On every new edit, re-read the spec's
+    # sorry count: stop when it reaches 0, or when it fails to reach a new minimum for
+    # _NO_PROGRESS consecutive edits (genuine stagnation, not mid-exploration). The
+    # request-limit backstop only catches a pathology this misses.
+    track = {"edits": deps.progress.get("edit_seq", 0), "best": None, "flat": 0}
+
+    def _prove_stop(deps: AgentDeps) -> bool:
+        edits = deps.progress.get("edit_seq", 0)
+        if edits == track["edits"]:
+            return False
+        track["edits"] = edits
+        n = _sorry_count(deps)
+        if n < 0:
+            return False   # spec transiently unreadable — wait; runaway is bounded elsewhere
+        if track["best"] is None or n < track["best"]:
+            track["best"], track["flat"] = n, 0
+        else:
+            track["flat"] += 1
+        log.info("PROVE progress: %d edit(s), sorry=%d (best=%d, no-progress=%d/%d)",
+                 edits, n, track["best"], track["flat"], _NO_PROGRESS)
+        return n == 0 or track["flat"] >= _NO_PROGRESS
+
     # Airtight LSP gate BEFORE the proof attempt — a startup failure aborts the pipeline
     # here (via _PipelineAborted), never mid-proof.
     prove_lsp = await _start_lean_lsp(deps, config.LEAN_LSP_DISABLED_TOOLS)
@@ -727,6 +916,7 @@ async def _run_prove_phase(deps: AgentDeps) -> None:
             _prove, prompt, deps, "PROVE",
             toolsets=[prove_lsp],
             request_limit=config.PROVE_REQUEST_LIMIT,
+            stop_check=_prove_stop,
         )
     except UnexpectedModelBehavior as e:
         log.warning("PROVE stage failed after retries: %s", e)

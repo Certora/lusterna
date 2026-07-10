@@ -589,9 +589,11 @@ _BUILD_TIMEOUT = int(os.environ.get("LUSTERNA_BUILD_TIMEOUT", "180"))
 def check_lean(deps: AgentDeps, lean_file: str) -> dict:  # noqa: ARG001
     """Run `lake build` on the Lean project.
 
-    Returns {"success": bool, "stderr": str}.  stdout is discarded (it carries no
-    actionable info).  On failure, stderr is trimmed to the last 200 lines so only
-    the relevant error messages reach the model.  On success, stderr is empty.
+    Returns {"success": bool, "stderr": str}, where on failure "stderr" holds the actionable
+    build DIAGNOSTICS. Note: `lake build` prints the per-declaration errors
+    (`error: <file>:<line>:<col>: ...`) to STDOUT and only a terse `error: build failed` to
+    real stderr — so we combine stdout+stderr and strip the `trace:`/`✖`-prefixed build-log
+    decoration, keeping the last 200 lines (errors are at the end). On success "stderr" is empty.
     """
     from . import config
     lean_out_dir = f"{OUT_IN}/lean"
@@ -612,9 +614,12 @@ def check_lean(deps: AgentDeps, lean_file: str) -> dict:  # noqa: ARG001
             "(induction / equation lemmas) or leave the theorem as `sorry`.")}
     if code != 0:
         log.warning("lake build failed (exit %d)", code)
-        log.debug("lake build stderr:\n%s", err)
-        lines = err.splitlines()
-        trimmed = "\n".join(lines[-_BUILD_TAIL:]) if len(lines) > _BUILD_TAIL else err
+        # Diagnostics are on STDOUT; strip the noisy build-log lines (`trace: .> …` command
+        # echoes and `✖ [k/n] Building …` headers) and keep stdout+stderr.
+        diag = [ln for ln in (out + "\n" + err).splitlines()
+                if not ln.startswith("trace:") and not ln.lstrip().startswith("✖")]
+        log.debug("lake build diagnostics:\n%s", "\n".join(diag))
+        trimmed = "\n".join(diag[-_BUILD_TAIL:])
         return {"success": False, "stderr": trimmed}
     log.info("check_lean: lake build succeeded")
     return {"success": True, "stderr": ""}

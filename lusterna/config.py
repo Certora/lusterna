@@ -58,14 +58,9 @@ LEAN_LSP_DISABLED_TOOLS = os.environ.get(
     "LUSTERNA_LEAN_LSP_DISABLED_TOOLS",
     "lean_build,lean_leansearch,lean_loogle,lean_leanfinder,lean_state_search",
 )
-# FORMALISE only INSPECTS and SEARCHES (to get statements to typecheck and to find correct
-# names/imports) — it never proves — so on top of the network tools it also gets the
-# proving/eval tools disabled, leaving lean_diagnostic_messages, lean_local_search,
-# lean_hover_info, etc.
-LEAN_LSP_DISABLED_TOOLS_FORMALISE = os.environ.get(
-    "LUSTERNA_LEAN_LSP_DISABLED_TOOLS_FORMALISE",
-    LEAN_LSP_DISABLED_TOOLS + ",lean_goal,lean_multi_attempt,lean_run_code",
-)
+# FORMALISE is a tool-less structured stage (the whole translation is injected in its prompt
+# and the build loop is its convergence gate), so it gets no LSP tools at all — only PROVE
+# uses lean-lsp-mcp.
 # Backstop on PROVE model requests (the agent self-paces via LSP feedback; this only guards
 # against a runaway). 0/unset = unlimited.
 _prove_req = os.environ.get("LUSTERNA_PROVE_REQUEST_LIMIT", "150")
