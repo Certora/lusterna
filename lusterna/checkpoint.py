@@ -17,9 +17,23 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import config
+from . import config, tools
+from .schemas import AgentDeps
 
 log = logging.getLogger(__name__)
+
+
+def snapshot(deps: AgentDeps) -> int:
+    """Persist the full pipeline state for *deps* as the next checkpoint — the single place
+    that knows how to serialise a run (paths, container, design doc, progress, git head)."""
+    return save(deps.session_id, {
+        "repo_path": str(deps.repo_path),
+        "work_path": str(deps.work_path),
+        "container_id": deps.container_id,
+        "design_doc": deps.design_doc,
+        "progress": deps.progress,
+        "git_head": tools.head_sha(deps.container_id),
+    })
 
 
 # ── paths ─────────────────────────────────────────────────────────────────────

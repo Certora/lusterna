@@ -1,14 +1,12 @@
-"""Pipeline orchestration: sequencing, loops, per-stage context, and tool wiring.
-
-Stage agents are declared in stages.py; this module imports them, attaches their
-tools, and drives them. Each stage runs independently with no shared message
-history — stages communicate via the filesystem and deps.progress, not via
-conversation context.
-"""
+"""The pipeline itself: the stage phases (SpecPhase, ProvePhase) and the linear stage
+drivers, sequenced by run_session. Companion modules: stages.py declares the stage agents;
+runner.py has the generic stage-runner and tool wiring; lean.py the Aeneas/Lean operations;
+checkpoint.py the state snapshots. Each stage runs with no shared message history — stages
+communicate via the filesystem and deps.progress."""
 import logging
-from typing import Any, Callable
+from typing import Any
 
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent
 from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
 
 from . import checkpoint, lean, telemetry, tools
@@ -16,6 +14,7 @@ from .schemas import (
     AbstractInformalSpec, AbstractFormalSpec,
     InformalSpec, FormalSpec, JudgeVerdict, ReconciliationReport,
 )
+from .runner import _run_stage
 from .stages import (
     doc_infer as _doc_infer, doc_formalise as _doc_formalise, explore as _explore,
     infer as _infer, formalise as _formalise,
@@ -27,323 +26,9 @@ from . import config
 log = logging.getLogger(__name__)
 
 
-def check_lean(ctx: RunContext[AgentDeps], lean_file: str) -> dict:
-    """Run `lake build` in the Lean project and return {success, stderr}.
-
-    The result is stored in progress['lean_build'] and a checkpoint is saved.
-    Always call this after writing or modifying any Lean file. On a SUCCESSFUL build this also
-    snapshots the compiling impl-spec if it reached a new `sorry` minimum (PROVE's best-state
-    preservation — see _record_prove_best); only build-verified states ever count as progress.
-    """
-    result = lean.check_lean(ctx.deps, lean_file)
-    ctx.deps.progress["lean_build"] = result
-    ctx.deps.progress["build_seq"] = ctx.deps.progress.get("build_seq", 0) + 1
-    if result.get("success"):
-        _record_prove_best(ctx.deps)
-    _checkpoint(ctx.deps)
-    return result
-
-
-# ── tool registration ───────────────────────────────────────────
-# Stage agents are declared in stages.py; their tools — which depend on the
-# orchestration helpers in this module — are attached here. TRANSLATE is NOT an
-# agent: it runs Charon+Aeneas mechanically on the untouched source (see
-# _run_translate_stages), so nothing can rewrite the code under verification.
-
-# FORMALISE is now a structured, tool-less stage: the orchestrator injects its inputs and
-# receives a FormalSpec (statements only), then assembles + builds the .lean itself. This
-# removes the free-form build loop where the agent used to (against instructions) write and
-# debug proofs — proofs are now structurally impossible until PROVE.
-
-_prove.tool(tools.list_files)
-_prove.tool(tools.search_output_file)
-_prove.tool(tools.read_output_lines)
-_prove.tool(tools.read_output_file)
-_prove.tool(tools.patch_output_lines)
-_prove.tool(tools.write_file)
-_prove.tool(check_lean)
-_prove.tool(tools.git_commit)
-_prove.tool(tools.git_log)
-
-_report.tool(tools.write_file)
-_report.tool(tools.git_log)
-
-
-# ── internal helpers ──────────────────────────────────────────────────────────
-
-def _checkpoint(deps: AgentDeps) -> None:
-    checkpoint.save(
-        deps.session_id,
-        {
-            "repo_path": str(deps.repo_path),
-            "work_path": str(deps.work_path),
-            "container_id": deps.container_id,
-            "design_doc": deps.design_doc,
-            "progress": deps.progress,
-            "git_head": tools.head_sha(deps.container_id),
-        },
-    )
-
-
 class _PipelineAborted(Exception):
     pass
 
-
-def _impl_spec(deps: AgentDeps) -> str:
-    """Canonical implementation-spec path — the single file FORMALISE fills and PROVE
-    proves. Placed under the Aeneas lib root (lean/<Crate>/) so the existing lakefile
-    builds it with no lakefile changes. Deterministic, never agent-chosen."""
-    lean_path = deps.progress.get("aeneas", {}).get("lean_path", "")
-    if not lean_path:
-        return ""
-    stem = lean_path.rsplit("/", 1)[-1].removesuffix(".lean")
-    return f"lean/{stem}/Spec.lean"
-
-
-def _assemble_impl_spec(deps: AgentDeps, fs: FormalSpec,
-                        drop: frozenset[str] = frozenset()) -> list[str]:
-    """Write the implementation spec from a structured FormalSpec: the preamble followed by
-    one `theorem <name> <signature> := by sorry` per stub. Proofs are added here as `sorry`
-    — never by the model — so FORMALISE cannot smuggle in a proof (or a hanging tactic).
-    The preamble is passed through stub_proofs as a safety net for any stray theorem.
-
-    Theorems whose name is in *drop* (quarantined — repeatedly un-compilable) are omitted.
-    Returns the list of theorem names actually written, so the caller can attribute build
-    errors back to specific theorems and track the quarantine set."""
-    path = _impl_spec(deps)
-    stem = path.split("/")[1]
-    preamble = lean.stub_proofs(fs.preamble.rstrip())
-    header = "".join(
-        f"import {m}\n" for m in ("Aeneas", stem) if f"import {m}" not in preamble
-    )
-    kept = [t for t in fs.theorems if t.name not in drop]
-    body = "\n\n".join(
-        f"theorem {t.name} {t.signature.split(':=')[0].strip()} := by sorry"
-        for t in kept
-    )
-    tools.write_out(deps, path, f"{header}{preamble}\n\n{body}\n")
-    log.info("Assembled impl spec: %d theorem stub(s)%s at %s", len(kept),
-             f" ({len(drop)} quarantined)" if drop else "", path)
-    return [t.name for t in kept]
-
-
-def _build(deps: AgentDeps) -> dict:
-    """Run `lake build` on the impl spec and record it as PROVE's progress metric does."""
-    result = lean.check_lean(deps, _impl_spec(deps))
-    deps.progress["lean_build"] = result
-    deps.progress["build_seq"] = deps.progress.get("build_seq", 0) + 1
-    _checkpoint(deps)
-    return result
-
-
-def _sorry_count(deps: AgentDeps) -> int:
-    """Remaining `sorry` in the implementation spec — PROVE's progress metric.
-    Returns -1 if the file can't be read, so the caller never mistakes it for done."""
-    content = tools.read_out(deps, _impl_spec(deps))
-    return -1 if content.startswith("ERROR:") else content.count("sorry")
-
-
-def _record_prove_best(deps: AgentDeps) -> None:
-    """Snapshot the impl spec as PROVE's best state iff it COMPILES (caller checked) and reached
-    a new `sorry` minimum. Only build-verified states count: a failing tactic removes a `sorry`
-    but does not compile, so raw sorry-count is not progress — a compiling snapshot is. PROVE
-    restores this at the end, so it always finalizes on its best verified state, never a later
-    broken edit. progress['prove_best'] = {'sorry': n, 'spec': <content>}."""
-    spec = tools.read_out(deps, _impl_spec(deps))
-    if spec.startswith("ERROR:"):
-        return
-    n = spec.count("sorry")
-    best = deps.progress.get("prove_best")
-    if best is None or n < best["sorry"]:
-        deps.progress["prove_best"] = {"sorry": n, "spec": spec}
-        log.info("PROVE: new best compiling spec — %d sorry remaining", n)
-
-
-def _translation_text(deps: AgentDeps) -> str:
-    """Concatenated Lean source of the whole Aeneas translation — the material the spec
-    stages reason over. The source is immutable, so this is a faithful image of the crate.
-    The tool chooses which properties to state; it is not scoped to a pre-picked unit."""
-    parts = []
-    for rel in deps.progress.get("aeneas", {}).get("lean_files", []):
-        text = tools.read_out(deps, rel)
-        if not text.startswith("ERROR:"):
-            parts.append(text)
-    return "\n\n".join(parts)
-
-
-def _footprint(deps: AgentDeps) -> dict:
-    """Compute the footprint of the current implementation spec: the translation defs its
-    theorems (statements + proofs) reference transitively, and which Aeneas holes fall
-    inside it.
-
-    This is the SOLE role of the 'unit' concept — a stated property is soundly grounded
-    iff no hole lies in its footprint. Holes elsewhere in the crate are irrelevant to it.
-    Recomputed after FORMALISE and after PROVE (proofs may pull in more defs). Stored in
-    progress['footprint'] = {defs, holes_in_footprint}."""
-    translation = _translation_text(deps)
-    spec = tools.read_out(deps, _impl_spec(deps))
-    holes = deps.progress.get("aeneas", {}).get("holes", [])
-    if translation.startswith("ERROR:") or spec.startswith("ERROR:"):
-        # Can't compute — take the conservative (never-claim-sound) direction.
-        fp = {"defs": [], "holes_in_footprint": list(holes)}
-    else:
-        roots = lean.referenced_defs(spec, translation)
-        defs = lean.call_closure(translation, roots)
-        fp = {"defs": defs, "holes_in_footprint": [h for h in holes if h in defs]}
-    deps.progress["footprint"] = fp
-    hif = fp["holes_in_footprint"]
-    if hif:
-        log.warning("Footprint reaches %d untranslated hole(s) %s — properties touching "
-                    "them are NOT soundly grounded", len(hif), hif)
-    else:
-        log.info("Footprint: %d translation def(s), no Aeneas holes inside — "
-                 "properties soundly grounded", len(fp["defs"]))
-    _checkpoint(deps)
-    return fp
-
-
-def _pipeline_briefing(deps: AgentDeps) -> str:
-    """Return a structured context block describing pipeline state so far.
-
-    Prepended to every stage's runtime prompt so each stage agent understands
-    the overall goal, what has been completed, and key findings from prior stages.
-    """
-    p = deps.progress
-
-    # Completed stages
-    stage_flags = [
-        ("abstract_informal_spec", "DOC-INFER"),
-        ("abstract_formal_spec",   "DOC-FORMALISE"),
-        ("aeneas",                 "EXPLORE+TRANSLATE"),
-        ("informal_spec",          "INFER"),
-        ("formal_spec",            "FORMALISE"),
-        ("verdict",                "SPEC-JUDGE"),
-        ("reconciliation",         "RECONCILE"),
-        ("proofs_done",            "PROVE"),
-    ]
-    done = [label for key, label in stage_flags if key in p]
-
-    fp = p.get("footprint")
-    fp_line = ""
-    if fp is not None:
-        hif = fp.get("holes_in_footprint", [])
-        fp_line = (
-            f"Property footprint: {len(fp.get('defs', []))} translation def(s); "
-            + ("no Aeneas holes inside — proven properties are soundly grounded"
-               if not hif else
-               f"⚠ {len(hif)} untranslated hole(s) INSIDE the footprint ({hif}) — "
-               f"properties touching them are NOT soundly grounded")
-        )
-    holes = (p.get("aeneas") or {}).get("holes", [])
-
-    lines = [
-        "## Pipeline context",
-        "Goal: formally verify the properties the design document describes against the "
-        "Aeneas-translated crate. What to specify is the tool's choice; a property may be "
-        "about one function or span several functions and types. The source is never "
-        "modified, so the translation is a faithful image of the real code.",
-        f"Design document (excerpt):\n{deps.design_doc[:600].rstrip()}",
-        "",
-        f"Completed stages: {', '.join(done) if done else 'none yet'}",
-    ]
-    if holes:
-        lines.append(f"Aeneas holes (untranslated defs) in the crate: {holes}")
-    if fp_line:
-        lines.append(fp_line)
-    ax = p.get("axioms")
-    if ax is not None:
-        tainted = ax.get("tainted", [])
-        lines.append(
-            f"Axiom check (Lean `#print axioms`, authoritative): "
-            f"{len(ax.get('clean', []))} theorem(s) genuinely established (no sorryAx), "
-            f"{len(tainted)} still resting on sorry"
-            + (f" — tainted: {tainted}" if tainted else "")
-        )
-
-    # Artefact inventory
-    artefacts = []
-    if "aeneas" in p:
-        lean_path = p["aeneas"].get("lean_path", "")
-        if lean_path:
-            artefacts.append(lean_path)
-    for key, path in [
-        ("abstract_informal_spec", "specs/abstract_informal_spec.json"),
-        ("abstract_formal_spec",   "specs/abstract_formal_spec.lean"),
-        ("informal_spec",          "specs/informal_spec.json"),
-        ("formal_spec",            _impl_spec(deps)),
-    ]:
-        if key in p and path:
-            artefacts.append(path)
-    if "reconciliation" in p:
-        artefacts.append("specs/reconciliation.json")
-    if artefacts:
-        lines.append(
-            f"Key artefacts (all in /workspace/out — use read_output_file): "
-            + ", ".join(artefacts)
-        )
-
-    # Spec-judge verdict
-    verdict = p.get("verdict")
-    if verdict is not None:
-        defects = verdict.get("defects", [])
-        if defects:
-            lines.append(
-                f"\nSpec-judge: {len(defects)} open defect(s): "
-                + ", ".join(f"{d['theorem']}[{d['kind']}]" for d in defects)
-            )
-        else:
-            lines.append("\nSpec-judge: no defects (spec approved ✓)")
-
-    # Reconciliation summary
-    rc = p.get("reconciliation")
-    if rc:
-        discrepancies = rc.get("discrepancies", [])
-        critical = [d for d in discrepancies if d.get("severity") == "critical"]
-        obligations = rc.get("refinement_obligations", [])
-        lines.append(
-            f"\nReconciliation: {len(discrepancies)} discrepancy/ies "
-            f"({len(critical)} critical), {len(obligations)} refinement obligation(s)"
-        )
-        for d in critical:
-            lines.append(f"  [CRITICAL {d.get('kind','')}] {d.get('description','')[:120]}")
-
-    lines.append("")   # trailing newline before stage-specific prompt
-    return "\n".join(lines) + "\n"
-
-
-async def _run_stage(agent: Agent, prompt: str, deps: AgentDeps, label: str,
-                     stop_check: Callable[[AgentDeps, Any], bool] | None = None,
-                     request_limit: Any = "default") -> Any:
-    """Run one stage agent. Each stage starts with no prior history.
-
-    Stages communicate via the filesystem and deps.progress, not via conversation
-    context — so no history is passed in or accumulated across stages. When stop_check
-    is given it is polled on each graph node (deps, node); returning True ends the run early.
-    `request_limit` overrides config.REQUEST_LIMIT when not "default".
-    Re-raises UnexpectedModelBehavior; judge stages catch it locally.
-    """
-    log.info("─── Stage: %s ───", label)
-    telemetry.stage.reset()
-    deps.message_history = []
-    full_prompt = _pipeline_briefing(deps) + prompt
-    from pydantic_ai.usage import UsageLimits
-    rl = config.REQUEST_LIMIT if request_limit == "default" else request_limit
-    async with agent.iter(
-        full_prompt, deps=deps,
-        usage_limits=UsageLimits(request_limit=rl),
-    ) as run:
-        async for node in run:
-            if stop_check and stop_check(deps, node):
-                break
-        result = run.result
-    log.info(
-        "Stage %s complete — session total=%d/%s",
-        label, telemetry.session.total(), telemetry.budget or "∞",
-    )
-    return result
-
-
-# ── pipeline sub-functions ────────────────────────────────────────────────────
 
 async def _run_doc_stages(deps: AgentDeps, resume_note: str) -> str:
     """Run DOC-INFER then DOC-FORMALISE (once each) from the design document alone."""
@@ -363,7 +48,7 @@ async def _run_doc_stages(deps: AgentDeps, resume_note: str) -> str:
         spec: AbstractInformalSpec = result.output
         deps.progress["abstract_informal_spec"] = spec.model_dump()
         tools.write_out(deps, "specs/abstract_informal_spec.json", spec.model_dump_json(indent=2))
-        _checkpoint(deps)
+        checkpoint.snapshot(deps)
 
     if "abstract_formal_spec" not in completed and "abstract_informal_spec" in deps.progress:
         inf_json = AbstractInformalSpec(**deps.progress["abstract_informal_spec"]).model_dump_json(indent=2)
@@ -382,7 +67,7 @@ async def _run_doc_stages(deps: AgentDeps, resume_note: str) -> str:
                 formal.lean_definitions + "\n\n" + formal.lean_theorem_stubs,
             )
             tools.commit(deps.container_id, "feat(spec): abstract formal specification", glob="specs/")
-            _checkpoint(deps)
+            checkpoint.snapshot(deps)
         else:
             log.warning("DOC-FORMALISE produced no output")
 
@@ -406,7 +91,7 @@ async def _run_translate_stages(deps: AgentDeps, resume_note: str) -> str:
         )
         if explore_result and explore_result.output:
             deps.progress["explore"] = explore_result.output.model_dump()
-        _checkpoint(deps)
+        checkpoint.snapshot(deps)
         resume_note = ""
 
     if "aeneas" not in completed:
@@ -428,12 +113,12 @@ async def _run_translate_stages(deps: AgentDeps, resume_note: str) -> str:
         if result.get("holes"):
             log.info("TRANSLATE: %d untranslated hole(s) left as sorry: %s",
                      len(result["holes"]), ", ".join(result["holes"]))
-        _checkpoint(deps)
+        checkpoint.snapshot(deps)
         resume_note = ""
         completed = set(deps.progress.keys())
 
     if "informal_spec" not in completed:
-        translation = _translation_text(deps)
+        translation = lean.translation_text(deps)
         abstract_informal = tools.read_out(deps, "specs/abstract_informal_spec.json")
         infer_files = f"### Aeneas-translated crate\n{translation}"
         if not abstract_informal.startswith("ERROR:"):
@@ -450,7 +135,7 @@ async def _run_translate_stages(deps: AgentDeps, resume_note: str) -> str:
             deps.progress["informal_spec"] = spec.model_dump()
             tools.write_out(deps, "specs/informal_spec.json", spec.model_dump_json(indent=2))
             tools.commit(deps.container_id, "feat(spec): informal specification", glob="specs/")
-        _checkpoint(deps)
+        checkpoint.snapshot(deps)
         resume_note = ""
         completed = set(deps.progress.keys())
         if "informal_spec" not in completed:
@@ -466,7 +151,7 @@ def _read_spec_files(deps: AgentDeps) -> str:
         "specs/abstract_informal_spec.json",
         "specs/informal_spec.json",
     ]
-    if impl := _impl_spec(deps):
+    if impl := lean.impl_spec(deps):
         paths.append(impl)
     parts = []
     for path in paths:
@@ -479,7 +164,7 @@ def _read_spec_files(deps: AgentDeps) -> str:
 def _formalise_inputs(deps: AgentDeps) -> str:
     """Static inputs injected into every FORMALISE round: the translated crate, the
     informal spec, and the abstract formal spec (if present)."""
-    block = f"### Aeneas-translated crate\n{_translation_text(deps)}\n\n"
+    block = f"### Aeneas-translated crate\n{lean.translation_text(deps)}\n\n"
     for path in ("specs/informal_spec.json", "specs/abstract_formal_spec.lean"):
         content = tools.read_out(deps, path)
         if not content.startswith("ERROR:"):
@@ -504,7 +189,7 @@ class SpecPhase:
     def __init__(self, deps: AgentDeps, resume_note: str):
         self.deps = deps
         self.resume_note = resume_note
-        self.impl_spec = _impl_spec(deps)
+        self.impl_spec = lean.impl_spec(deps)
         self.base_inputs = _formalise_inputs(deps)
         self.dropped: set[str] = set()
         self.fail_streak: dict[str, int] = {}
@@ -520,20 +205,20 @@ class SpecPhase:
         never compiled — RECONCILE and PROVE must not run on an unverifiable spec."""
         if "verdict" in self.deps.progress:                 # resuming past this phase
             if "footprint" not in self.deps.progress:
-                _footprint(self.deps)
+                lean.footprint(self.deps)
             return self.resume_note
 
         while self.attempt < self.MAX_ROUNDS:
             fs = await self._formalise()
             if fs is None:
                 break
-            kept = _assemble_impl_spec(self.deps, fs, drop=frozenset(self.dropped))
+            kept = lean.assemble_impl_spec(self.deps, fs, drop=frozenset(self.dropped))
             self.deps.progress["formal_spec"] = True
             if not kept:
                 log.warning("FORMALISE: every theorem is quarantined or none was produced — "
                             "nothing left to verify, stopping spec loop")
                 break
-            if not _build(self.deps).get("success"):
+            if not lean.build(self.deps).get("success"):
                 if not self._handle_build_failure(fs):
                     break
                 self.attempt += 1
@@ -555,14 +240,14 @@ class SpecPhase:
         # thrown away just because the final revision broke the build. (Mirrors PROVE's restore.)
         if not self.deps.progress.get("lean_build", {}).get("success") and self.best_spec:
             tools.write_out(self.deps, self.impl_spec, self.best_spec)
-            _build(self.deps)
+            lean.build(self.deps)
             log.info("FORMALISE: restored the last compiling spec after a non-compiling final round")
 
         if not self.deps.progress.get("lean_build", {}).get("success"):
             raise _PipelineAborted(
                 f"FORMALISE could not produce a spec whose statements compile "
                 f"(after up to {self.MAX_ROUNDS} rounds) — cannot verify")
-        _footprint(self.deps)   # which Aeneas holes (if any) actually touch the stated properties
+        lean.footprint(self.deps)   # which Aeneas holes (if any) actually touch the stated properties
         return self.resume_note
 
     async def _formalise(self) -> "FormalSpec | None":
@@ -662,7 +347,7 @@ class SpecPhase:
     async def _judge(self) -> bool:
         """Judge the compiling statements; store the verdict and set defect feedback. Returns
         False to stop the loop (approved / no-progress / error), True to keep revising."""
-        judge_files = f"### Aeneas-translated crate\n{_translation_text(self.deps)}\n\n"
+        judge_files = f"### Aeneas-translated crate\n{lean.translation_text(self.deps)}\n\n"
         for path in ("specs/informal_spec.json", self.impl_spec):
             content = tools.read_out(self.deps, path)
             if not content.startswith("ERROR:"):
@@ -688,7 +373,7 @@ class SpecPhase:
             return False
         sv: JudgeVerdict = sj.output
         self.deps.progress["verdict"] = sv.model_dump()
-        _checkpoint(self.deps)
+        checkpoint.snapshot(self.deps)
         if not sv.defects:
             log.info("Spec-judge round %d: no defects — spec approved", self.attempt + 1)
             return False
@@ -745,7 +430,7 @@ async def _run_reconcile_phase(deps: AgentDeps) -> None:
                 len(critical),
                 [d.kind + ": " + d.description[:60] for d in critical],
             )
-    _checkpoint(deps)
+    checkpoint.snapshot(deps)
 
 
 class ProvePhase:
@@ -764,7 +449,7 @@ class ProvePhase:
 
     def __init__(self, deps: AgentDeps):
         self.deps = deps
-        self.impl_spec = _impl_spec(deps)
+        self.impl_spec = lean.impl_spec(deps)
         self.best: int | None = None   # best build-verified sorry count seen
         self.stall = 0                 # turns since a new verified minimum
         self.improved = False          # has any verified proof landed (below the baseline)?
@@ -778,14 +463,14 @@ class ProvePhase:
         # Airtight compile gate: NEVER spend proof effort on a spec that does not build. The spec
         # phase fail-fasts on a fresh run, but a RESUMED session can re-enter with a spec that
         # only ever built in a previous container — so re-verify with a real build now.
-        if not _build(deps).get("success"):
+        if not lean.build(deps).get("success"):
             raise _PipelineAborted(
                 "PROVE not started — the implementation spec does not compile "
                 "(FORMALISE did not produce a spec whose statements build)")
         # Baseline best-state = the entry (all-sorry) spec, which just built — the floor PROVE
         # restores to if no proof survives, so it can never abort away a compiling spec.
         deps.progress.pop("prove_best", None)
-        _record_prove_best(deps)
+        lean.record_prove_best(deps)
 
         try:
             await _run_stage(_prove, self._prompt(), deps, "PROVE",
@@ -796,16 +481,16 @@ class ProvePhase:
             # Hit the request-count backstop — finalize with whatever it proved (the final build
             # + axiom gate below still run).
             log.warning("PROVE hit the request-limit backstop (%s) — finalizing", e)
-        _checkpoint(deps)
+        checkpoint.snapshot(deps)
         self._restore_best()
         # The agent may stop before committing — commit here so the proven state lands in git.
         tools.commit(deps.container_id, "stage/prove: proof attempts", glob="lean/")
         # Authoritative final build. With the restore above this is the best verified state, so it
         # builds — the abort is a last-resort invariant check.
-        if not _build(deps).get("success"):
+        if not lean.build(deps).get("success"):
             raise _PipelineAborted("PROVE left the spec in a non-compiling state")
         deps.progress["proofs_done"] = True
-        _footprint(deps)   # cheap pre-oracle estimate — proofs may reference defs the stubs did not
+        lean.footprint(deps)   # cheap pre-oracle estimate — proofs may reference defs the stubs did not
         self._record_axioms()
 
     def _prompt(self) -> str:
@@ -874,7 +559,7 @@ class ProvePhase:
         helper lemmas, not verification of the code — a mechanical distinction, not a judgment."""
         deps = self.deps
         ax = lean.check_axioms(deps, self.impl_spec)
-        translation = _translation_text(deps)
+        translation = lean.translation_text(deps)
         spec_text = tools.read_out(deps, self.impl_spec)
         impl_verified, abstract_only = [], []
         for name in ax["clean"]:
@@ -883,14 +568,14 @@ class ProvePhase:
              else abstract_only).append(name)
         deps.progress["axioms"] = {"clean": ax["clean"], "tainted": ax["tainted"],
                                    "impl_verified": impl_verified, "abstract_only": abstract_only}
-        _checkpoint(deps)
+        checkpoint.snapshot(deps)
         if ax["clean"] and not impl_verified:
             log.warning("PROVE: ⚠ CRITICAL — %d theorem(s) established but NONE reference the "
                         "implementation; 0 properties of the code are verified. Established are "
                         "abstract helper lemmas only: %s", len(ax["clean"]), abstract_only)
         log.info("PROVE complete — %d sorry remaining; established (standard axioms only): %d/%d "
                  "theorem(s) — %d verify the implementation %s, %d abstract-only %s; tainted=%s",
-                 max(_sorry_count(deps), 0), len(ax["clean"]),
+                 max(lean.sorry_count(deps), 0), len(ax["clean"]),
                  len(ax["clean"]) + len(ax["tainted"]), len(impl_verified), impl_verified,
                  len(abstract_only), abstract_only, ax["tainted"])
 
@@ -898,7 +583,7 @@ class ProvePhase:
 async def _run_report(deps: AgentDeps, resume_note: str) -> str:
     """Run the REPORT stage and concatenate section files into VERIFICATION_REPORT.md."""
     spec_defects     = deps.progress.get("verdict", {}).get("defects", [])
-    sorry_remaining  = max(_sorry_count(deps), 0)
+    sorry_remaining  = max(lean.sorry_count(deps), 0)
     holes            = deps.progress.get("aeneas", {}).get("holes", [])
     fp               = deps.progress.get("footprint", {})
     holes_in_fp      = fp.get("holes_in_footprint", [])
@@ -983,7 +668,7 @@ async def _run_report(deps: AgentDeps, resume_note: str) -> str:
         except Exception as e:
             log.warning("Could not write report: %s", e)
 
-    _checkpoint(deps)
+    checkpoint.snapshot(deps)
     return report_text or "(no report generated)"
 
 

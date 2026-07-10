@@ -50,7 +50,7 @@ def run(
     token_budget: int | None,
 ) -> None:
     """Run the verification pipeline on REPO using DESIGN_DOC."""
-    from . import agent as agent_module
+    from . import pipeline
     from . import container as container_mod
 
     # Token budget: CLI flag takes precedence over env var.
@@ -109,7 +109,7 @@ def run(
     )
 
     try:
-        summary = asyncio.run(agent_module.run_session(deps))
+        summary = asyncio.run(pipeline.run_session(deps))
     finally:
         container_mod.pull_artefacts(container_id, work_path)
         log.info("Artefacts written to %s", work_path)

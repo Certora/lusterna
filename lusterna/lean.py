@@ -7,9 +7,9 @@ import re
 import subprocess
 from pathlib import Path
 
-from . import config, tools
+from . import checkpoint, config, tools
 from .container import exec_in, OUT_IN, REPO_IN
-from .schemas import AgentDeps
+from .schemas import AgentDeps, FormalSpec
 
 log = logging.getLogger(__name__)
 
@@ -378,6 +378,8 @@ def _write_lakefile(deps: AgentDeps, lean_out_dir: str, llbc_path: str) -> None:
            f"{lean_out_dir}/.lake/packages"])
 
     log.info("Generated lakefile.lean + package symlinks for crate '%s'", crate)
+
+
 _BUILD_TAIL = 200  # lines of stderr to keep on failure — errors appear at the end
 # A legitimate build is seconds; this hard cap fails-fast on a pathological tactic
 # (e.g. `native_decide` evaluating naive recursion) instead of pegging a core for 20 min.
@@ -421,28 +423,6 @@ def check_lean(deps: AgentDeps, lean_file: str) -> dict:  # noqa: ARG001
         return {"success": False, "stderr": trimmed}
     log.info("check_lean: lake build succeeded")
     return {"success": True, "stderr": ""}
-
-
-if __name__ == "__main__":
-    # Worked example of the footprint idea: a hole taints a property ONLY when it lies in
-    # the closure of the defs that property references. Run: `python -m lusterna.tools`.
-    _TRANSLATION = """
-def foo.helper (x : Nat) : Nat := x + 1
-def foo.compute (x : Nat) : Nat := foo.helper x
-def foo.untranslatable (x : Nat) : Nat :=
-  sorry
-def foo.other (x : Nat) : Nat := foo.untranslatable x
-"""
-    _HOLES = ["foo.untranslatable"]  # what Aeneas left as a bare `sorry`
-    for label, spec in [
-        ("clean   (property touches compute → helper)", "theorem t : foo.compute 0 = 1 := by sorry"),
-        ("tainted (property reaches other → untranslatable)", "theorem t : foo.other 0 = 0 := by sorry"),
-    ]:
-        roots = referenced_defs(spec, _TRANSLATION)
-        footprint = call_closure(_TRANSLATION, roots)
-        holes_in_footprint = [h for h in _HOLES if h in footprint]
-        verdict = "SOUND" if not holes_in_footprint else f"NOT SOUND — holes {holes_in_footprint}"
-        print(f"{label}\n  roots={roots} footprint={footprint} → {verdict}\n")
 
 
 def attribute_errors(spec_text: str, stderr: str, basename: str = "Spec.lean") -> dict:
@@ -510,3 +490,142 @@ def theorem_statement(spec_text: str, name: str) -> str:
     tail = spec_text[m.start():]
     cut = tail.find(":=")
     return tail[:cut] if cut != -1 else tail.split("\n\n", 1)[0]
+
+
+# ── implementation-spec operations ─────────────────────────────────────────────
+
+def impl_spec(deps: AgentDeps) -> str:
+    """Canonical implementation-spec path — the single file FORMALISE fills and PROVE
+    proves. Placed under the Aeneas lib root (lean/<Crate>/) so the existing lakefile
+    builds it with no lakefile changes. Deterministic, never agent-chosen."""
+    lean_path = deps.progress.get("aeneas", {}).get("lean_path", "")
+    if not lean_path:
+        return ""
+    stem = lean_path.rsplit("/", 1)[-1].removesuffix(".lean")
+    return f"lean/{stem}/Spec.lean"
+
+
+def assemble_impl_spec(deps: AgentDeps, fs: FormalSpec,
+                        drop: frozenset[str] = frozenset()) -> list[str]:
+    """Write the implementation spec from a structured FormalSpec: the preamble followed by
+    one `theorem <name> <signature> := by sorry` per stub. Proofs are added here as `sorry`
+    — never by the model — so FORMALISE cannot smuggle in a proof (or a hanging tactic).
+    The preamble is passed through stub_proofs as a safety net for any stray theorem.
+
+    Theorems whose name is in *drop* (quarantined — repeatedly un-compilable) are omitted.
+    Returns the list of theorem names actually written, so the caller can attribute build
+    errors back to specific theorems and track the quarantine set."""
+    path = impl_spec(deps)
+    stem = path.split("/")[1]
+    preamble = stub_proofs(fs.preamble.rstrip())
+    header = "".join(
+        f"import {m}\n" for m in ("Aeneas", stem) if f"import {m}" not in preamble
+    )
+    kept = [t for t in fs.theorems if t.name not in drop]
+    body = "\n\n".join(
+        f"theorem {t.name} {t.signature.split(':=')[0].strip()} := by sorry"
+        for t in kept
+    )
+    tools.write_out(deps, path, f"{header}{preamble}\n\n{body}\n")
+    log.info("Assembled impl spec: %d theorem stub(s)%s at %s", len(kept),
+             f" ({len(drop)} quarantined)" if drop else "", path)
+    return [t.name for t in kept]
+
+
+def build(deps: AgentDeps) -> dict:
+    """Run `lake build` on the impl spec and record it as PROVE's progress metric does."""
+    result = check_lean(deps, impl_spec(deps))
+    deps.progress["lean_build"] = result
+    deps.progress["build_seq"] = deps.progress.get("build_seq", 0) + 1
+    checkpoint.snapshot(deps)
+    return result
+
+
+def sorry_count(deps: AgentDeps) -> int:
+    """Remaining `sorry` in the implementation spec — PROVE's progress metric.
+    Returns -1 if the file can't be read, so the caller never mistakes it for done."""
+    content = tools.read_out(deps, impl_spec(deps))
+    return -1 if content.startswith("ERROR:") else content.count("sorry")
+
+
+def record_prove_best(deps: AgentDeps) -> None:
+    """Snapshot the impl spec as PROVE's best state iff it COMPILES (caller checked) and reached
+    a new `sorry` minimum. Only build-verified states count: a failing tactic removes a `sorry`
+    but does not compile, so raw sorry-count is not progress — a compiling snapshot is. PROVE
+    restores this at the end, so it always finalizes on its best verified state, never a later
+    broken edit. progress['prove_best'] = {'sorry': n, 'spec': <content>}."""
+    spec = tools.read_out(deps, impl_spec(deps))
+    if spec.startswith("ERROR:"):
+        return
+    n = spec.count("sorry")
+    best = deps.progress.get("prove_best")
+    if best is None or n < best["sorry"]:
+        deps.progress["prove_best"] = {"sorry": n, "spec": spec}
+        log.info("PROVE: new best compiling spec — %d sorry remaining", n)
+
+
+def translation_text(deps: AgentDeps) -> str:
+    """Concatenated Lean source of the whole Aeneas translation — the material the spec
+    stages reason over. The source is immutable, so this is a faithful image of the crate.
+    The tool chooses which properties to state; it is not scoped to a pre-picked unit."""
+    parts = []
+    for rel in deps.progress.get("aeneas", {}).get("lean_files", []):
+        text = tools.read_out(deps, rel)
+        if not text.startswith("ERROR:"):
+            parts.append(text)
+    return "\n\n".join(parts)
+
+
+def footprint(deps: AgentDeps) -> dict:
+    """Compute the footprint of the current implementation spec: the translation defs its
+    theorems (statements + proofs) reference transitively, and which Aeneas holes fall
+    inside it.
+
+    This is the SOLE role of the 'unit' concept — a stated property is soundly grounded
+    iff no hole lies in its footprint. Holes elsewhere in the crate are irrelevant to it.
+    Recomputed after FORMALISE and after PROVE (proofs may pull in more defs). Stored in
+    progress['footprint'] = {defs, holes_in_footprint}."""
+    translation = translation_text(deps)
+    spec = tools.read_out(deps, impl_spec(deps))
+    holes = deps.progress.get("aeneas", {}).get("holes", [])
+    if translation.startswith("ERROR:") or spec.startswith("ERROR:"):
+        # Can't compute — take the conservative (never-claim-sound) direction.
+        fp = {"defs": [], "holes_in_footprint": list(holes)}
+    else:
+        roots = referenced_defs(spec, translation)
+        defs = call_closure(translation, roots)
+        fp = {"defs": defs, "holes_in_footprint": [h for h in holes if h in defs]}
+    deps.progress["footprint"] = fp
+    hif = fp["holes_in_footprint"]
+    if hif:
+        log.warning("Footprint reaches %d untranslated hole(s) %s — properties touching "
+                    "them are NOT soundly grounded", len(hif), hif)
+    else:
+        log.info("Footprint: %d translation def(s), no Aeneas holes inside — "
+                 "properties soundly grounded", len(fp["defs"]))
+    checkpoint.snapshot(deps)
+    return fp
+
+
+if __name__ == "__main__":
+    # Worked example of the footprint idea: a hole taints a property ONLY when it lies in
+    # the closure of the defs that property references. Run: `python -m lusterna.tools`.
+    _TRANSLATION = """
+def foo.helper (x : Nat) : Nat := x + 1
+def foo.compute (x : Nat) : Nat := foo.helper x
+def foo.untranslatable (x : Nat) : Nat :=
+  sorry
+def foo.other (x : Nat) : Nat := foo.untranslatable x
+"""
+    _HOLES = ["foo.untranslatable"]  # what Aeneas left as a bare `sorry`
+    for label, spec in [
+        ("clean   (property touches compute → helper)", "theorem t : foo.compute 0 = 1 := by sorry"),
+        ("tainted (property reaches other → untranslatable)", "theorem t : foo.other 0 = 0 := by sorry"),
+    ]:
+        roots = referenced_defs(spec, _TRANSLATION)
+        footprint = call_closure(_TRANSLATION, roots)
+        holes_in_footprint = [h for h in _HOLES if h in footprint]
+        verdict = "SOUND" if not holes_in_footprint else f"NOT SOUND — holes {holes_in_footprint}"
+        print(f"{label}\n  roots={roots} footprint={footprint} → {verdict}\n")
+
+
