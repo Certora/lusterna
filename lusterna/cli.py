@@ -92,9 +92,14 @@ def run(
         _owned = True
         container_mod.push_repo(container_id, repo_path)
         if resuming and work_path.exists():
-            # Restore partial artefacts so the agent can continue where it left off.
+            # Restore partial artefacts so the agent can continue where it left off,
+            # then pin the output repo to the checkpoint's commit so we resume from
+            # exactly that state rather than trusting whatever drifted onto disk.
             container_mod.push_artefacts(container_id, work_path)
             log.info("Restored artefacts from %s into container", work_path)
+            git_head = saved.get("git_head")
+            if git_head:
+                container_mod.reset_out(container_id, git_head)
         else:
             container_mod.init_out(container_id)
 

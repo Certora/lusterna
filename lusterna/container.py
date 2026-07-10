@@ -103,6 +103,29 @@ def push_artefacts(container_id: str, src: Path) -> None:
     log.info("Artefacts pushed %s → %s inside %s", src, OUT_IN, container_id[:12])
 
 
+def reset_out(container_id: str, git_head: str) -> None:
+    """Hard-reset the output repo to *git_head* — the commit a checkpoint captured.
+
+    After push_artefacts restores whatever tree was last on the host, this pins the
+    output back to exactly the state of the checkpoint being resumed, discarding any
+    later commits and untracked files. Without it, resume trusts the on-disk tree
+    rather than the checkpoint, so a drifted work_path silently resumes stale Lean
+    files. Raises if the commit is absent from the restored history (the artefacts do
+    not match the checkpoint) rather than continuing from a mismatched state.
+    """
+    code, _, _ = exec_in(
+        container_id, ["git", "cat-file", "-e", f"{git_head}^{{commit}}"], workdir=OUT_IN)
+    if code != 0:
+        raise RuntimeError(
+            f"Checkpoint commit {git_head[:12]} is not present in the restored output "
+            f"at {OUT_IN}. The artefacts on disk do not match this checkpoint — refusing "
+            f"to resume from a mismatched state.")
+    exec_in(container_id, ["git", "reset", "--hard", git_head], workdir=OUT_IN)
+    exec_in(container_id, ["git", "clean", "-fdq"], workdir=OUT_IN)
+    log.info("Output repo reset to checkpoint commit %s inside %s",
+             git_head[:12], container_id[:12])
+
+
 def pull_artefacts(container_id: str, dest: Path) -> None:
     """Copy the output directory from the container to *dest* on the host."""
     dest.mkdir(parents=True, exist_ok=True)

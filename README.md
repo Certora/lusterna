@@ -19,21 +19,30 @@ All generated artefacts are git-committed incrementally inside the toolchain con
 
 ## Architecture
 
+The package is organised by responsibility — orchestration, stage-running machinery,
+domain operations, and the agent I/O surface are separate modules:
+
 ```
 lusterna/
 ├── cli.py          — Click entry point; manages the container lifecycle
-├── agent.py        — Pipeline orchestration: sequencing, loops, context, tool wiring
+├── pipeline.py     — The pipeline itself: the stage phases (SpecPhase, ProvePhase),
+│                     the linear stage drivers, and run_session sequencing them
+├── runner.py       — Generic stage-running machinery: per-stage prompt briefing,
+│                     running a stage agent with history/limits, and tool wiring
 ├── stages.py       — Stage-agent definitions (prompt + output type per stage)
-├── schemas.py      — Pydantic output schemas for all stage structured outputs
-├── subagents.py    — Context-compaction summariser (the one embedded helper agent)
-├── tools.py        — All agent-callable tools (file I/O, Aeneas, Lake, git)
+├── factory.py      — Agent factory: stage-agent construction + shared hooks
+│                     (token tracking, compaction summariser, budget, history)
+├── lean.py         — All Aeneas/Lean domain logic: run_aeneas, check_lean,
+│                     #print axioms partition, call-closure/footprint analysis,
+│                     and the implementation-spec operations
+├── tools.py        — Agent-callable file & git tools (the plain I/O surface)
+├── schemas.py      — AgentDeps (the injected dependency bundle) + all Pydantic
+│                     structured-output schemas
 ├── docs.py         — Aeneas/Lean skill documents embedded as agent instructions
-├── container.py    — Docker lifecycle: start, push repo, exec, pull artefacts, stop
-├── git_ops.py      — Git commands run inside the container via docker exec
-├── state.py        — AgentDeps: typed dependency bundle injected into every tool
-├── checkpoint.py   — Per-session checkpoint directories with incremental numbered files
-├── config.py       — All knobs via environment variables
-└── logging_setup.py — stdlib logging → stderr; level from LUSTERNA_LOG_LEVEL
+├── container.py    — Docker lifecycle: start, push repo, exec, reset/pull artefacts, stop
+├── checkpoint.py   — Per-session numbered checkpoints + snapshot(deps) serialisation
+├── telemetry.py    — Session-wide token-usage tracking
+└── config.py       — All env-driven knobs, plus logging setup
 ```
 
 ### Pipeline
@@ -43,20 +52,22 @@ CLI
  └─ start container
      └─ tar-pipe repo → /workspace/repo
      └─ git init /workspace/out
-         └─ Orchestrator agent (pydantic-ai)
+         └─ Python pipeline (pipeline.py) driving per-stage agents (pydantic-ai)
              ├─ DOC-INFER    → specs/abstract_informal_spec.json  (git commit)
              │                structured output (design doc only, no code)
              ├─ DOC-FORMALISE → specs/abstract_formal_spec.lean  (git commit)
              │                structured output (abstract informal spec → Lean stubs)
-             ├─ EXPLORE      list_files, read_file
+             ├─ EXPLORE      structured output (ExploreResult); Rust sources injected,
+             │                no tools — identifies entry file + public functions
              ├─ TRANSLATE    Charon → Aeneas → lean/  (git commit) — MECHANICAL
              │                source is immutable; untranslatable constructs become
              │                explicit `sorry` holes; hard-failure aborts (no rewriting)
              ├─ INFER        → specs/informal_spec.json      (git commit)
              │                structured output; orchestrator injects Lean translation +
              │                abstract informal spec directly into the prompt
-             ├─ FORMALISE    write_file, check_lean → lean/  (git commit)
-             │   + BUILD     (lake build) — loop until pass or 3 attempts
+             ├─ FORMALISE    structured output (FormalSpec); no tools — the agent emits
+             │                theorem stubs, the orchestrator assembles them into the spec
+             │   + BUILD     (lake build) — the orchestrator's convergence gate
              ├─ SPEC-JUDGE   (re-formalise until no defects remain, up to 10 rounds)
              │                structured output; lists defects in the impl spec, judged
              │                against the code + informal spec (approval = empty list)
@@ -65,9 +76,9 @@ CLI
              │                classifies discrepancies:
              │                  implementation_wrong / bridge_wrong (CRITICAL)
              │                  abstract_wrong (minor) / design_doc_silent (gap)
-             ├─ PROVE        patch_output_lines, check_lean
+             ├─ PROVE        patch_output_lines, write_file, check_lean, git (tools)
              │                attempts every sorry theorem; orchestrator ends the stage
-             │                on remaining-sorry count (0 / no improvement / round cap)
+             │                on build-verified sorry count (0 / no improvement / round cap)
              └─ REPORT       write_file, git_log → VERIFICATION_REPORT.md
                               orchestrator injects all spec and reconciliation files
  └─ tar-pipe /workspace/out → host out_dir
@@ -84,24 +95,26 @@ The toolchain (Rust/Cargo, Charon, Aeneas, Lean/Lake) lives entirely inside a Do
 
 All toolchain invocations go through `docker exec`. Git also runs inside the container so the commit history is part of the pulled artefacts.
 
-### Pipeline stages (`stages.py` + `agent.py`)
+### Pipeline stages (`stages.py` + `pipeline.py` + `runner.py`)
 
-Each stage agent is declared in `stages.py` (prompt + output type) and driven by the Python pipeline loop in `run_session()` (`agent.py`), which also attaches each stage's tools. Each stage starts with a fresh context — stages communicate via the filesystem (git-committed artefacts) and `deps.progress`, not via message history. Within each stage, a manual compaction step triggers when accumulated input tokens exceed `LUSTERNA_COMPACTION_THRESHOLD`: all messages up to the start of the last complete turn are summarised by a lightweight subagent and replaced with a single summary message.
+Each stage agent is declared in `stages.py` (prompt + output type), constructed by `factory.py`, and driven by the pipeline in `pipeline.py` (`run_session()` and the two stateful phases). The generic per-stage machinery — briefing, running the agent under history/limits, and attaching the tools that the PROVE/REPORT agents use — lives in `runner.py`. Each stage starts with a fresh context — stages communicate via the filesystem (git-committed artefacts) and `deps.progress`, not via message history. Within each stage, a manual compaction step triggers when accumulated input tokens exceed `LUSTERNA_COMPACTION_THRESHOLD`: all messages up to the start of the last complete turn are summarised by a lightweight summariser (in `factory.py`) and replaced with a single summary message.
+
+Most stages are **tool-less**: their inputs (Rust sources, the Lean translation, prior specs) are injected directly into the prompt and they return structured output. Only PROVE and REPORT are given tools, because they must iterate against the build and write the final report.
 
 | Stage | Key tools | Purpose |
 |---|---|---|
 | DOC-INFER | *(structured output)* | Derive abstract informal spec from design doc — no code access |
 | DOC-FORMALISE | *(structured output)* | Derive abstract Lean stubs from the abstract informal spec |
-| EXPLORE | `list_files`, `read_file` | Survey the Rust source; flag Aeneas incompatibilities |
+| EXPLORE | *(structured output)* | Rust sources injected; identify the entry file and public functions |
 | TRANSLATE | *(mechanical; no LLM)* | Charon → Aeneas on the **untouched** source; untranslatable constructs become explicit `sorry` holes; a hard failure aborts. The source is never modified, so the translation is a faithful image of the real code. |
 | INFER | *(structured output)* | Orchestrator injects Lean translation + abstract informal spec; returns structured InformalSpec |
-| FORMALISE | `write_file`, `check_lean` | Derive theorem stubs from informal spec; iterate until `lake build` passes |
+| FORMALISE | *(structured output)* | Emit theorem stubs (FormalSpec); the orchestrator assembles them and uses `lake build` as the convergence gate |
 | SPEC-JUDGE | *(structured output)* | Lists concrete defects in the impl-spec statements (judged against the code + informal spec); re-formalise until the defect list is empty |
 | RECONCILE | *(structured output)* | Orchestrator injects abstract + impl specs; classifies discrepancies and flags critical ones |
-| PROVE | `patch_output_lines`, `check_lean` | Attempt a proof for every `sorry` theorem; orchestrator ends the stage on the remaining-`sorry` count (0 / no improvement / round cap) |
+| PROVE | `patch_output_lines`, `write_file`, `check_lean`, git | Attempt a proof for every `sorry` theorem; orchestrator ends the stage on the build-verified `sorry` count (0 / no improvement / round cap) |
 | REPORT | `write_file`, `git_log` | Orchestrator injects all spec and reconciliation files; produces `VERIFICATION_REPORT.md` |
 
-### Embedded specialists (`subagents.py`)
+### Embedded specialists (`factory.py`)
 
 The one embedded helper is a single-turn agent with no message history, invisible to the pipeline loop.
 
@@ -111,7 +124,7 @@ The one embedded helper is a single-turn agent with no message history, invisibl
 
 ### Proof search approach
 
-PROVE uses `check_lean` (`lake build`) as its feedback mechanism — the build is the only judge of what actually works, so PROVE attempts every `sorry` theorem rather than pre-filtering by a difficulty guess. Termination is decided by the orchestrator, not by the model: after each successful build it counts the remaining `sorry` in the spec and ends the stage when that count reaches 0, fails to reach a new minimum for a fixed number of builds, or a hard round cap (`LUSTERNA_MAX_PROVE_ROUNDS`) is hit. This objective, Python-side metric replaces the previous model-emitted "stagnant" signal, which could not reliably compare across rounds. Proof status in the report is read straight from the spec (proved = no `sorry`). The stage agent works from its training knowledge of Lean 4 and Aeneas idioms (embedded as skill documents in `docs/`). This keeps the toolchain simple and avoids the latency and reliability problems of running a Lean language server inside a locked-down, network-isolated container.
+PROVE uses `check_lean` (`lake build`) as its feedback mechanism — the build is the only judge of what actually works, so PROVE attempts every `sorry` theorem rather than pre-filtering by a difficulty guess. Termination is decided by the `ProvePhase` loop, not by the model: the `sorry` count is measured **only on a successful build** (a broken edit can't fake progress), and the stage ends when that count reaches 0, when no new verified minimum is reached for `ProvePhase.STALL` turns, or when no verified proof lands at all within `ProvePhase.WARMUP` turns. These caps are class constants on the phase that owns them, not module globals or env vars. This objective, Python-side metric replaces the previous model-emitted "stagnant" signal, which could not reliably compare across rounds. Proof status in the report is read straight from the spec (proved = no `sorry`). The stage agent works from its training knowledge of Lean 4 and Aeneas idioms (embedded as skill documents in `docs/`). This keeps the toolchain simple and avoids the latency and reliability problems of running a Lean language server inside a locked-down, network-isolated container.
 
 ### Soundness: holes and footprint
 
@@ -143,7 +156,7 @@ Each file records:
 - `state` — progress dict, container ID, repo/work paths, design doc
 - `git_head` — SHA of `/workspace/out` HEAD at save time
 
-The `git_head` field lets you reset the output repo to the exact git state that matches any given checkpoint before resuming. Since each stage starts with fresh context, resuming simply skips completed stages (tracked via the progress dict) and re-runs from the first incomplete one.
+On resume, the pipeline restores the artefacts from `--out` into a fresh container and then hard-resets the output repo to the resumed checkpoint's `git_head`, so you always continue from exactly that checkpoint's state — never from whatever happens to be left in the work directory. If those artefacts don't contain the checkpoint's commit, resume refuses rather than continuing from a mismatch. Since each stage starts with fresh context, resuming simply skips completed stages (tracked via the progress dict) and re-runs from the first incomplete one.
 
 ## Requirements
 
@@ -248,8 +261,8 @@ Print the state JSON for a specific checkpoint (default: latest).
 | Variable | Default | Description |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | — | **Required.** Anthropic API key |
-| `LUSTERNA_MODEL` | `anthropic:claude-sonnet-4-6` | Model for the orchestrator and most subagents |
-| `LUSTERNA_JUDGE_MODEL` | `anthropic:claude-sonnet-4-6` | Model for the judge subagent |
+| `LUSTERNA_MODEL` | `anthropic:claude-sonnet-4-6` | Model for most stage agents |
+| `LUSTERNA_JUDGE_MODEL` | `anthropic:claude-sonnet-4-6` | Model for the SPEC-JUDGE stage agent |
 | `LUSTERNA_SESSIONS_DIR` | `~/.local/share/lusterna/sessions` | Root directory for per-session checkpoint directories |
 | `LUSTERNA_AENEAS_BIN` | `aeneas` | Aeneas binary name inside the container |
 | `LUSTERNA_LAKE_BIN` | `lake` | Lake binary name inside the container |
@@ -279,14 +292,12 @@ lusterna list-checkpoints <session-id>
 # Resume from the latest checkpoint (default)
 lusterna run /path/to/repo design.md --session-id <uuid> --out /path/to/out
 
-# Resume from a specific checkpoint
-# First reset the output repo git state to match:
-git -C /path/to/out reset --hard <git_head from checkpoint N>
-# Then resume:
+# Resume from a specific checkpoint — no manual git reset needed;
+# the output repo is pinned to that checkpoint's git_head automatically.
 lusterna run /path/to/repo design.md --session-id <uuid> --checkpoint-number N --out /path/to/out
 ```
 
-When resuming, if the recorded container is no longer running a fresh one is started automatically and any existing artefacts in `--out` are pushed back into it before the agent continues.
+When resuming, if the recorded container is no longer running a fresh one is started automatically, the artefacts in `--out` are pushed back into it, and the output repo is hard-reset to the resumed checkpoint's `git_head` before the agent continues — so you resume from exactly that checkpoint's state. If the artefacts don't contain that commit, resume aborts rather than continuing from a mismatched tree.
 
 ## Output artefacts
 
