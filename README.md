@@ -47,6 +47,94 @@ lusterna/
 
 ### Pipeline
 
+> **The core invariant:** the pipeline never claims a property is _verified_ unless
+> Lean's kernel agrees. "Verified" means **kernel-established on the standard axioms only**
+> _and_ the theorem statement references the real, mechanically-translated code.
+> Everything else is reported honestly as unproven or as an abstract helper.
+
+```mermaid
+flowchart TD
+
+  %% ---------------- inputs ----------------
+  DESIGN["📄 DESIGN.md<br/>intended behaviour"]:::src
+  RUST["🦀 Rust crate<br/>the real code"]:::src
+
+  %% ---------------- design / spec track ----------------
+  subgraph DT ["Design–intent track"]
+    direction TB
+    DOCINFER["DOC-INFER<br/>abstract informal spec"]:::doc
+    DOCFORM["DOC-FORMALISE<br/>abstract Lean stubs"]:::doc
+    DOCINFER --> DOCFORM
+  end
+
+  %% ---------------- implementation track ----------------
+  subgraph IT ["Implementation track"]
+    direction TB
+    EXPLORE["EXPLORE<br/>entry file + public fns"]:::impl
+    TRANSLATE["TRANSLATE ⚙<br/>Charon → Aeneas → Lean<br/>mechanical · source immutable"]:::impl
+    INFER["INFER<br/>implementation informal spec"]:::impl
+    FORMALISE["FORMALISE<br/>emit theorem stubs"]:::impl
+    FBUILD{"lake build<br/>compiles?"}:::gate
+    JUDGE["SPEC-JUDGE<br/>defect list"]:::impl
+    EXPLORE --> TRANSLATE --> INFER --> FORMALISE --> FBUILD
+    FBUILD -- "✗ fix" --> FORMALISE
+    FBUILD -- "✓" --> JUDGE
+    JUDGE -- "defects — re-formalise<br/>(≤10 rounds; drop after 3 fails)" --> FORMALISE
+  end
+
+  DESIGN --> DOCINFER
+  RUST --> EXPLORE
+
+  %% ---------------- reconcile + prove + verify ----------------
+  RECONCILE["RECONCILE<br/>abstract ⟷ implementation spec"]:::recon
+  PROVE["PROVE<br/>discharge every sorry"]:::impl
+  PBUILD{"lake build ✓<br/>and sorry-count ↓?"}:::gate
+  AXIOMS["#print axioms<br/>kernel soundness check"]:::verify
+  REPORT["REPORT<br/>VERIFICATION_REPORT.md"]:::report
+
+  JUDGE -- "clean · best compiling spec" --> RECONCILE
+  DOCFORM --> RECONCILE
+  RECONCILE -- "only on a compiling spec" --> PROVE
+  PROVE --> PBUILD
+  PBUILD -- "✗ / no new min<br/>(stall 15, warmup 25) · restore best" --> PROVE
+  PBUILD -- "✓ 0 sorry / stop" --> AXIOMS
+  AXIOMS --> REPORT
+
+  %% ---------------- concept callouts (always visible) ----------------
+  FAITH["🔒 FAITHFULNESS<br/>source never modified;<br/>untranslatable code → explicit sorry holes"]:::coFaith
+  ORACLE["⚖ BUILD ORACLE<br/>lake build is the objective gate —<br/>the sole judge of what compiles / works"]:::coOracle
+  CONV["🎯 CONVERGENCE<br/>re-formalise until the defect list is empty;<br/>the last COMPILING spec is preserved"]:::coConv
+  COMPL["🧭 COMPLETENESS<br/>does the impl spec match design intent?<br/>critical = implementation_wrong / bridge_wrong"]:::coCompl
+  SOUND["🛡 SOUNDNESS<br/>verified = kernel-established on the 3 standard<br/>axioms only — rejects sorryAx, native_decide,<br/>and any smuggled axiom"]:::coSound
+  IMPL["🏅 IMPL-VERIFIED (headline)<br/>counts only if the statement references an<br/>Aeneas-translated def; else it is a helper lemma"]:::coImpl
+
+  TRANSLATE -.- FAITH
+  FBUILD -.- ORACLE
+  PBUILD -.- ORACLE
+  JUDGE -.- CONV
+  RECONCILE -.- COMPL
+  AXIOMS -.- SOUND
+  AXIOMS -.- IMPL
+
+  %% ---------------- styling ----------------
+  classDef src    fill:#e2e8f0,stroke:#475569,stroke-width:1.5px,color:#0f172a;
+  classDef doc    fill:#e0e7ff,stroke:#4f46e5,stroke-width:1.5px,color:#1e1b4b;
+  classDef impl   fill:#cffafe,stroke:#0891b2,stroke-width:1.5px,color:#083344;
+  classDef gate   fill:#fef3c7,stroke:#d97706,stroke-width:1.5px,color:#451a03;
+  classDef recon  fill:#f3e8ff,stroke:#7c3aed,stroke-width:1.5px,color:#3b0764;
+  classDef verify fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#052e16;
+  classDef report fill:#e2e8f0,stroke:#334155,stroke-width:1.5px,color:#0f172a;
+
+  classDef coFaith  fill:#eff6ff,stroke:#2563eb,stroke-width:1px,stroke-dasharray:4 3,color:#1e3a8a;
+  classDef coOracle fill:#fffbeb,stroke:#d97706,stroke-width:1px,stroke-dasharray:4 3,color:#78350f;
+  classDef coConv   fill:#ecfeff,stroke:#0891b2,stroke-width:1px,stroke-dasharray:4 3,color:#164e63;
+  classDef coCompl  fill:#faf5ff,stroke:#7c3aed,stroke-width:1px,stroke-dasharray:4 3,color:#581c87;
+  classDef coSound  fill:#f0fdf4,stroke:#16a34a,stroke-width:1px,stroke-dasharray:4 3,color:#14532d;
+  classDef coImpl   fill:#fdf2f8,stroke:#db2777,stroke-width:1px,stroke-dasharray:4 3,color:#831843;
+```
+
+The same flow, annotated with the artefact each stage commits and the tools it uses:
+
 ```
 CLI
  └─ start container

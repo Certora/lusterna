@@ -13,3 +13,6 @@ venv/
 tmp
 .log
 LOG*
+
+# Presentation/demo scratch (not part of the package)
+demo/
