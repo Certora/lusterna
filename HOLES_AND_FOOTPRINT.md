@@ -72,7 +72,7 @@ def demo.quad (x : U32) : Result U32 :=
 
 ## 2. Detecting holes
 
-Hole detection is textual and lives in `tools._detect_holes`, called by `run_aeneas`
+Hole detection is textual and lives in `lean._detect_holes`, called by `run_aeneas`
 right after Aeneas writes its files. For each generated Lean file it:
 
 - finds every top-level `def NAME` (`^def\s+([\w.]+)` — Aeneas uses fully-qualified
@@ -135,7 +135,7 @@ footprint = tools.call_closure(translation_text, roots)
 holes_in_footprint = [h for h in holes if h in footprint]
 ```
 
-This is computed in `agent._footprint` after FORMALISE and again after PROVE.
+This is computed in `lean.footprint` after FORMALISE and again after PROVE.
 
 **It is only an approximation, and only conservative in one direction:**
 
@@ -185,7 +185,7 @@ Better still, it collapses both failure modes into one criterion:
 That single check subsumes *both* "the proof is not itself `:= by sorry`" *and* "the proof
 does not lean on a translation hole," because both routes introduce `sorryAx`.
 
-Lusterna runs this in `tools.check_axioms` after PROVE. It writes a throwaway checker that
+Lusterna runs this in `lean.check_axioms` after PROVE. It writes a throwaway checker that
 imports the *already-built* `Spec.olean` and runs `#print axioms` against it, then
 elaborates just that checker with `lake env lean` and parses the messages. Crucially it
 does **not** re-elaborate the spec from source: doing so re-resolves imports outside
@@ -231,10 +231,10 @@ requires. Soundness (nothing false is claimed) is the axiom check's job; complet
 ## 6. Try it yourself
 
 The footprint idea is a runnable worked example — no test infrastructure, just a
-`__main__` block in `tools.py`:
+`__main__` block in `lean.py`:
 
 ```sh
-python -m lusterna.tools
+python -m lusterna.lean
 ```
 
 ```
