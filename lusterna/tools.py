@@ -116,6 +116,16 @@ def prune_stray_specs(deps: AgentDeps, translation: str) -> None:
     log.info("Pruned stray spec files")
 
 
+def _write(container_id: str, full: str, content: str, label: str, display: str) -> str:
+    """mkdir -p the parent and write *content* to the absolute path *full* via _tee.
+    Returns the success message or an ERROR: string; *label*/*display* shape the messages."""
+    exec_in(container_id, ["mkdir", "-p", str(Path(full).parent)])
+    if fail := _tee(container_id, full, content):
+        return f"ERROR: {label} failed for '{display}': {fail}"
+    log.info("%s: %s (%d chars)", label, display, len(content))
+    return f"Written {len(content)} chars to {display}"
+
+
 def write_out(deps: AgentDeps, path: str, content: str) -> str:
     """Write *content* to *path* in /workspace/out. For direct orchestration calls.
 
@@ -125,12 +135,7 @@ def write_out(deps: AgentDeps, path: str, content: str) -> str:
     path = _norm_out(path)
     if err := _guard_out(path):
         return err
-    full = f"{OUT_IN}/{path}"
-    exec_in(deps.container_id, ["mkdir", "-p", str(Path(full).parent)])
-    if fail := _tee(deps.container_id, full, content):
-        return f"ERROR: write_out failed for '{path}': {fail}"
-    log.info("write_out: %s (%d chars)", path, len(content))
-    return f"Written {len(content)} chars to {path}"
+    return _write(deps.container_id, f"{OUT_IN}/{path}", content, "write_out", path)
 
 
 def write_file(ctx: RunContext[AgentDeps], path: str, content: str = "") -> str:
@@ -188,13 +193,90 @@ def patch_output_lines(ctx: RunContext[AgentDeps], path: str, start: int, end: i
     return f"Patched lines {start}–{end} of {path}"
 
 
+# ── Rust source editing in REPO_IN (TRANSLATE remediation, last resort) ──────────
+# Everything else in this module writes ONLY to /workspace/out. These few helpers are
+# the sole path that mutates the Rust source under verification, and they exist only for
+# the TRANSLATE remediation loop. Each edit is committed in REPO_IN's git and captured as
+# a diff for the accountability trail.
+
+def _guard_repo(path: str) -> str | None:
+    """Return an ERROR: string if *path* is not an editable Rust source path, else None."""
+    p = Path(path)
+    if p.is_absolute() or ".." in p.parts:
+        return f"ERROR: source path must be repo-relative with no '..' (got: {path!r})"
+    if ".git" in p.parts or "target" in p.parts:
+        return f"ERROR: editing .git/ or target/ is not allowed (got: {path!r})"
+    if p.suffix != ".rs" and p.name != "Cargo.toml":
+        return f"ERROR: only *.rs and Cargo.toml may be edited (got: {path!r})"
+    return None
+
+
+def write_repo(deps: AgentDeps, path: str, content: str) -> str:
+    """Write *content* to *path* in the Rust repo (REPO_IN). Guarded to *.rs / Cargo.toml."""
+    if err := _guard_repo(path):
+        return err
+    return _write(deps.container_id, f"{REPO_IN}/{path}", content, "write_repo", path)
+
+
+def commit_repo(container_id: str, message: str) -> str:
+    """Stage all (non-excluded) changes and commit in REPO_IN. Returns the new SHA."""
+    return commit(container_id, message, glob="-A", workdir=REPO_IN)
+
+
+def carve_source(deps: AgentDeps, edits: list) -> dict:
+    """Apply a batch of behaviour-preserving SourceEdits to the Rust source, commit them,
+    and return the combined diff for the accountability trail. Each edit's `find` anchor
+    must occur EXACTLY ONCE in its file — otherwise that edit is refused (no fuzzy edits).
+
+    Returns {applied: bool, commit: sha, diff: str, edits: [{path, applied, error}]}.
+    The orchestrator (not the agent) calls this; the agent only proposes structured edits.
+    """
+    results = []
+    for e in edits:
+        path, find, replace = e.path, e.find, e.replace
+        if err := _guard_repo(path):
+            results.append({"path": path, "applied": False, "error": err})
+            continue
+        full = f"{REPO_IN}/{path}"
+        code, content, err = exec_in(deps.container_id, ["cat", full])
+        if code != 0:
+            results.append({"path": path, "applied": False, "error": f"cannot read: {err.strip()}"})
+            continue
+        n = content.count(find)
+        if n != 1:
+            results.append({"path": path, "applied": False,
+                            "error": f"anchor matched {n} times (must be exactly 1)"})
+            continue
+        if fail := _tee(deps.container_id, full, content.replace(find, replace)):
+            results.append({"path": path, "applied": False, "error": f"write failed: {fail}"})
+            continue
+        results.append({"path": path, "applied": True, "error": ""})
+
+    applied_any = any(r["applied"] for r in results)
+    diff, sha = "", ""
+    if applied_any:
+        sha = commit_repo(deps.container_id, message=f"carve: behaviour-preserving refactor "
+                          f"({sum(r['applied'] for r in results)} edit(s))")
+        _, diff, _ = exec_in(deps.container_id,
+                             ["git", "show", "--stat", "--patch", "HEAD"], workdir=REPO_IN)
+    return {"applied": applied_any, "commit": sha, "diff": diff, "edits": results}
+
+
+def restore_lean(container_id: str, sha: str) -> None:
+    """Restore the lean/ tree in OUT_IN to its state at *sha* (best-translation restore)."""
+    if not sha:
+        return
+    exec_in(container_id, ["git", "checkout", sha, "--", "lean"], workdir=OUT_IN)
+    log.info("Restored lean/ to %s", sha[:8])
+
+
 # ── git (all operations run inside the container via docker exec) ────────────────
 
-def commit(container_id: str, message: str, glob: str = ".") -> str:
-    """Stage *glob* and commit in /workspace/out. Returns the new SHA."""
-    exec_in(container_id, ["git", "add", glob], workdir=OUT_IN)
-    exec_in(container_id, ["git", "commit", "--allow-empty", "-m", message], workdir=OUT_IN)
-    _, sha, _ = exec_in(container_id, ["git", "rev-parse", "HEAD"], workdir=OUT_IN)
+def commit(container_id: str, message: str, glob: str = ".", workdir: str = OUT_IN) -> str:
+    """Stage *glob* and commit in *workdir* (default /workspace/out). Returns the new SHA."""
+    exec_in(container_id, ["git", "add", glob], workdir=workdir)
+    exec_in(container_id, ["git", "commit", "--allow-empty", "-m", message], workdir=workdir)
+    _, sha, _ = exec_in(container_id, ["git", "rev-parse", "HEAD"], workdir=workdir)
     sha = sha.strip()
     log.info("Committed %s: %s", sha[:8], message)
     return sha

@@ -91,6 +91,9 @@ def run(
         container_id = container_mod.start(image=image)
         _owned = True
         container_mod.push_repo(container_id, repo_path)
+        # Git-init the source so TRANSLATE can diff any behaviour-preserving refactor
+        # against a pristine baseline for the accountability trail.
+        container_mod.init_repo_git(container_id)
         if resuming and work_path.exists():
             # Restore partial artefacts so the agent can continue where it left off,
             # then pin the output repo to the checkpoint's commit so we resume from

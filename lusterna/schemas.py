@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 # ── shared dependency object (injected into every agent tool via RunContext) ─────
@@ -52,6 +52,11 @@ class InformalSpec(BaseModel):
     postconditions: list[str]
     invariants: list[str]
     edge_cases: list[str]
+    # Charon name-matcher patterns naming the concrete crate items that make up the
+    # verification target (e.g. "crate::fib", or "crate::MyType" for a type + all its
+    # methods). Derived by INFER from the abstract spec + the behaviour it inferred from
+    # the pristine source; TRANSLATE uses them as `--start-from` scope. Empty ⇒ whole crate.
+    target_patterns: list[str] = Field(default_factory=list)
 
 
 class TheoremStub(BaseModel):
@@ -65,6 +70,31 @@ class FormalSpec(BaseModel):
     structurally cannot write proofs (that is PROVE's job)."""
     preamble: str                # imports, opens, and any helper `def`s — no theorems
     theorems: list[TheoremStub]
+
+
+# ── TRANSLATE remediation stage ───────────────────────────────────────────────
+
+class SourceEdit(BaseModel):
+    """One behaviour-preserving edit to a Rust source file, proposed by the TRANSLATE
+    remediation agent and applied by the orchestrator (never by the agent directly)."""
+    path: str      # repo-relative, e.g. "src/lib.rs"
+    find: str      # exact anchor snippet; must occur EXACTLY ONCE in the file
+    replace: str   # replacement text ("" to delete the anchor)
+    behavior_preservation_justification: str  # why this does NOT change observable behaviour
+
+
+class RemediationAction(BaseModel):
+    """The next remediation step the TRANSLATE loop should take when Charon/Aeneas fail
+    or leave holes in the target's call-closure. Escalation order (least invasive first):
+    opaque (axiomatize an in-closure dependency) → refactor (behaviour-preserving source
+    edit) → give_up."""
+    tier: Literal["opaque", "refactor", "give_up"]
+    opaque: list[str] = Field(default_factory=list)   # tier=opaque: Charon patterns to axiomatize
+    exclude: list[str] = Field(default_factory=list)  # optional: drop strictly out-of-closure items
+    include: list[str] = Field(default_factory=list)  # optional: whitelist refinement
+    source_edits: list[SourceEdit] = Field(default_factory=list)  # tier=refactor only
+    rationale: str
+    expected_effect: str   # e.g. "removes hole crate.parse from the target closure"
 
 
 # ── SPEC-JUDGE stage ──────────────────────────────────────────────────────────

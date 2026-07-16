@@ -82,6 +82,25 @@ def init_out(container_id: str) -> None:
     log.info("Output repo initialised at %s inside %s", OUT_IN, container_id[:12])
 
 
+def init_repo_git(container_id: str) -> None:
+    """Git-init the pushed Rust source in REPO_IN and commit a pristine baseline.
+
+    TRANSLATE may (as a last resort) apply behaviour-preserving refactors to the source;
+    this baseline is what every such edit is diffed against for the accountability trail.
+    `target/` (cargo build output) and `*.llbc` (Charon output) are excluded via
+    .git/info/exclude so they never pollute the diffs.
+    """
+    exec_in(container_id, ["git", "init"], workdir=REPO_IN)
+    exec_in(container_id,
+            ["sh", "-c", "printf 'target/\\n*.llbc\\n' >> .git/info/exclude"],
+            workdir=REPO_IN)
+    exec_in(container_id, ["git", "add", "-A"], workdir=REPO_IN)
+    exec_in(container_id,
+            ["git", "commit", "--allow-empty", "-m", "chore: pristine source (pre-remediation baseline)"],
+            workdir=REPO_IN)
+    log.info("Source repo git-initialised at %s inside %s", REPO_IN, container_id[:12])
+
+
 def push_artefacts(container_id: str, src: Path) -> None:
     """Push existing artefacts from *src* on the host back into OUT_IN.
 

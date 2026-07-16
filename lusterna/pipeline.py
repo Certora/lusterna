@@ -3,6 +3,7 @@ drivers, sequenced by run_session. Companion modules: stages.py declares the sta
 runner.py has the generic stage-runner and tool wiring; lean.py the Aeneas/Lean operations;
 checkpoint.py the state snapshots. Each stage runs with no shared message history — stages
 communicate via the filesystem and deps.progress."""
+import json
 import logging
 from typing import Any
 
@@ -19,6 +20,7 @@ from .stages import (
     doc_infer as _doc_infer, doc_formalise as _doc_formalise, explore as _explore,
     infer as _infer, formalise as _formalise,
     judge as _judge, reconcile as _reconcile, prove as _prove, report as _report,
+    translate_remediate as _translate_remediate,
 )
 from .schemas import AgentDeps
 from . import config
@@ -74,14 +76,307 @@ async def _run_doc_stages(deps: AgentDeps, resume_note: str) -> str:
     return resume_note
 
 
-async def _run_translate_stages(deps: AgentDeps, resume_note: str) -> str:
-    """Run EXPLORE, TRANSLATE, and INFER (skipped if already in progress).
+class TranslatePhase:
+    """Target-scoped TRANSLATE with a soundness-graded remediation ladder.
 
-    Raises _PipelineAborted if TRANSLATE or INFER produce no output.
+    Attempt 0 scopes Charon to the INFER-chosen target (`--start-from`). If that fails or
+    leaves holes inside the target's call-closure, a bounded loop asks the remediation agent
+    for the next least-invasive action: `--opaque` an in-closure dependency (ASSUMPTION —
+    emitted as a Lean `axiom`, caught by the `#print axioms` gate) → behaviour-preserving
+    source refactor (MODIFICATION — recorded with a diff) → give up. Every action is written
+    to the accountability trail. Non-convergence aborts the pipeline (no partial salvage).
+    """
+
+    MAX_ROUNDS = 8   # bounded remediation rounds after the scoped baseline
+    MAX_EDITS  = 6   # cap on behaviour-preserving source-refactor rounds
+
+    def __init__(self, deps: AgentDeps, entry: str, resume_note: str):
+        self.deps = deps
+        self.entry = entry
+        self.resume_note = resume_note
+        self.target_patterns: list[str] = list(deps.progress.get("target_patterns", []))
+        self.trail: list[dict] = []
+        self.opaques: list[str] = []
+        self.excludes: list[str] = []
+        self.edits_used = 0
+        self.best: dict | None = None
+
+    async def run(self) -> str:
+        if "aeneas" in self.deps.progress:          # resuming past TRANSLATE
+            return self.resume_note
+        log.info("─── Stage: TRANSLATE (target-scoped: %s) ───",
+                 self.target_patterns or "whole crate")
+
+        result = lean.run_aeneas(self.deps, self.entry, start_from=self.target_patterns or None)
+        self._record("SCOPE", "SAFE", result,
+                     rationale="scope translation to the verification target",
+                     scope={"start_from": self.target_patterns})
+
+        # Scope guard: if patterns were given but matched no translated def, the target's
+        # behaviour was not translated at all — widen to the whole crate rather than accept
+        # an empty scope as "clean" (the pattern-mismatch risk).
+        if (result.get("success") and self.target_patterns and not lean.matched_target_defs(
+                lean.translation_text(self.deps, result["lean_files"]), self.target_patterns)):
+            log.warning("TRANSLATE: target patterns %s matched no translated def — widening to "
+                        "whole crate", self.target_patterns)
+            self.target_patterns = []
+            result = lean.run_aeneas(self.deps, self.entry)
+            self._record("SCOPE", "SAFE", result,
+                         rationale="target patterns matched no code; widened to whole crate",
+                         scope={"start_from": []})
+
+        # Compute blockers ONCE per result (each is a multi-second `lake` build) and thread it
+        # through best-tracking, the accept check, the stall signature, and remediation.
+        blockers = self._blockers(result)
+        self._consider_best(result, blockers)
+
+        last_sig = None
+        for _ in range(self.MAX_ROUNDS):
+            if result.get("success") and not blockers:
+                break                                # translation clean, compiles, no assumptions
+            sig = self._signature(result, blockers)
+            if sig == last_sig:
+                log.warning("TRANSLATE remediation made no change — stopping")
+                break
+            last_sig = sig
+            action = await self._remediate(result, blockers)
+            if action is None or action.tier == "give_up":
+                if action is not None:
+                    self._record("GIVE_UP", "MODIFICATION", result,
+                                 rationale=action.rationale)
+                break
+            result = self._apply(action, result)
+            blockers = self._blockers(result)
+            self._consider_best(result, blockers)
+
+        return self._finalise()
+
+    # ── helpers ──────────────────────────────────────────────────────────────
+    def _blockers(self, result: dict) -> dict:
+        """What still prevents accepting this translation of the target. Empty ⇒ accept.
+        Per the agreed success criterion: Aeneas output + no target holes + the translation
+        compiles + no non-standard external axiom in the target's closure."""
+        if not result.get("success"):
+            return {"translate_failed": result.get("stage_failed", "?"),
+                    "errors": (result.get("aeneas_errors")
+                               or [(result.get("charon_errors", "") or "")[:400]])}
+        tx = lean.translation_text(self.deps, result["lean_files"])
+        b: dict = {}
+        th = lean.target_holes(tx, result.get("holes", []), self.target_patterns)
+        if th:
+            b["target_holes"] = th
+        axm = lean.target_external_axioms(tx, self.target_patterns)
+        if axm:
+            b["external_axioms"] = axm
+        build = lean.translation_compiles(self.deps, result.get("lean_path", ""))
+        if not build.get("success"):
+            b["build_errors"] = (build.get("stderr", "") or "")[:1500]
+        return b
+
+    def _signature(self, result: dict, blockers: dict) -> tuple:
+        if result.get("success"):
+            return ("ok", tuple(sorted(blockers.get("target_holes", []))),
+                    tuple(sorted(blockers.get("external_axioms", []))),
+                    bool(blockers.get("build_errors")))
+        return (result.get("stage_failed", "?"),
+                tuple(result.get("aeneas_errors") or [result.get("charon_errors", "")[:200]]))
+
+    def _consider_best(self, result: dict, blockers: dict) -> None:
+        if not result.get("success"):
+            return
+        # Fewer blockers is better; a fully-clean translation (0 blockers) wins outright.
+        score = -(len(blockers.get("target_holes", [])) + len(blockers.get("external_axioms", []))
+                  + (1 if blockers.get("build_errors") else 0))
+        if self.best is None or score > self.best["score"]:
+            self.best = {"result": result, "blockers": blockers, "score": score}
+
+    async def _remediate(self, result: dict, blockers: dict):
+        summary = self.deps.progress.get("informal_spec", {}).get("summary", "")
+        report = {
+            "blockers": {
+                "translate_failed": blockers.get("translate_failed"),
+                "target_holes": blockers.get("target_holes", []),
+                "external_axioms_in_target": blockers.get("external_axioms", []),
+                "translation_build_errors": bool(blockers.get("build_errors")),
+            },
+            "build_error_tail": blockers.get("build_errors", "")[:1500],
+            "charon_errors": (result.get("charon_errors", "") or "")[:1000],
+            "aeneas_errors": result.get("aeneas_errors", [])[:20],
+            "holes_by_file": result.get("holes_by_file", {}),
+            "target_patterns": self.target_patterns,
+            "already_opaque": self.opaques,
+            "source_edits_used": f"{self.edits_used}/{self.MAX_EDITS}",
+            "trail_so_far": [
+                {"round": r["round"], "action": r["action"], "tier": r["tier"],
+                 "rationale": r["rationale"]}
+                for r in self.trail
+            ],
+        }
+        # Inject the CURRENT source (after any prior edits) so `find` anchors match the real
+        # file — otherwise multi-round refactors fail (anchors written against stale text).
+        current_source = tools.read_repo_sources(self.deps)
+        prompt = (
+            f"Target behaviour (INFER summary): {summary}\n\n"
+            f"Translation outcome so far (JSON):\n{json.dumps(report, indent=2)}\n\n"
+            f"### CURRENT Rust source (AFTER any edits already applied — your `find` anchors "
+            f"MUST match this text verbatim; each anchor must occur EXACTLY ONCE)\n{current_source}\n\n"
+            "Propose the single next RemediationAction.\n"
+            "`external_axioms_in_target` are auto-opaqued stdlib items the target depends on — "
+            "`--opaque` does NOT remove them (they are already axioms). Eliminate them with a "
+            "behaviour-preserving REFACTOR to what Aeneas can actually translate:\n"
+            "  • Aeneas CANNOT translate: `BTreeMap`/`HashMap`, `Option`/`Result` COMBINATORS "
+            "(`ok_or`, `copied`, `map`, `unwrap_or`, `?`), iterator-adaptor chains "
+            "(`.iter().find()`, `.map()`, `.filter()`), and closures.\n"
+            "  • Aeneas CAN translate: plain structs/enums, `Vec` (its Std model), EXPLICIT "
+            "index loops (`let mut i = 0; while i < v.len() { … i += 1 }`), primitive integer "
+            "ops and `==`/`<` on `u64`/`u128`, pattern `match`.\n"
+            "  • So model a map as `Vec<(K,V)>` and write get/insert as EXPLICIT INDEX LOOPS "
+            "(NOT `.iter().find()`/`.copied()`); compare keys by their primitive fields "
+            "(`v[i].0 == k`); rewrite every `Option`/`Result` combinator and `?` as an explicit "
+            "`match`; drop `#[derive(Debug)]` (formatting is irrelevant).\n"
+            "Use `opaque` only for a genuine `sorry` hole you accept as an assumption; `give_up` "
+            "only if no behaviour-preserving refactor exists."
+        )
+        try:
+            res = await _run_stage(_translate_remediate, prompt, self.deps, "TRANSLATE-REMEDIATE")
+        except UnexpectedModelBehavior as exc:
+            log.warning("Remediation agent errored (%s) — giving up", exc)
+            return None
+        return res.output if res else None
+
+    def _apply(self, action, current: dict) -> dict:
+        if action.tier == "opaque":
+            self.opaques = sorted(set(self.opaques) | set(action.opaque))
+            self.excludes = sorted(set(self.excludes) | set(action.exclude))
+            result = lean.run_aeneas(
+                self.deps, self.entry, start_from=self.target_patterns or None,
+                opaque=self.opaques or None, exclude=self.excludes or None,
+                include=action.include or None)
+            self._record("OPAQUE", "ASSUMPTION", result,
+                         rationale=action.rationale, expected_effect=action.expected_effect,
+                         scope={"start_from": self.target_patterns,
+                                "opaque": self.opaques, "exclude": self.excludes})
+            return result
+        if action.tier == "refactor":
+            if self.edits_used >= self.MAX_EDITS:
+                log.warning("TRANSLATE: source-edit cap (%d) reached", self.MAX_EDITS)
+                self._record("GIVE_UP", "MODIFICATION", current,
+                             rationale="behaviour-preserving-refactor cap reached")
+                return current
+            carve = tools.carve_source(self.deps, action.source_edits)
+            self.edits_used += 1
+            result = lean.run_aeneas(
+                self.deps, self.entry, start_from=self.target_patterns or None,
+                opaque=self.opaques or None, exclude=self.excludes or None)
+            src_edits = [{"path": e.path,
+                          "justification": e.behavior_preservation_justification,
+                          "applied": next((r["applied"] for r in carve["edits"]
+                                           if r["path"] == e.path), False)}
+                         for e in action.source_edits]
+            rec = self._record("REFACTOR", "MODIFICATION", result,
+                               rationale=action.rationale,
+                               expected_effect=action.expected_effect, source_edits=src_edits)
+            rec["carve"] = {"repo_commit": carve.get("commit", ""),
+                            "diff": carve.get("diff", "")[:6000]}
+            self._persist()      # re-persist trail with the carve diff attached
+            return result
+        return current
+
+    def _record(self, action: str, tier: str, result: dict, *, rationale: str = "",
+                scope: dict | None = None, source_edits: list | None = None,
+                expected_effect: str = "") -> dict:
+        rec = {
+            "round": len(self.trail),
+            "action": action, "tier": tier,
+            "scope": scope or {}, "source_edits": source_edits or [],
+            "rationale": rationale, "expected_effect": expected_effect,
+            "result": {
+                "success": bool(result.get("success")),
+                "stage_failed": result.get("stage_failed", ""),
+                "holes": result.get("holes", []),
+                "target_holes": (lean.target_holes(
+                                    lean.translation_text(self.deps, result["lean_files"]),
+                                    result.get("holes", []), self.target_patterns)
+                                 if result.get("success") else []),
+                "commit": result.get("commit", ""),
+            },
+        }
+        self.trail.append(rec)
+        self.deps.progress["translate_trail"] = self.trail
+        self._persist()
+        return rec
+
+    def _persist(self) -> None:
+        tools.write_out(self.deps, "translate/accountability.json", json.dumps(self.trail, indent=2))
+        tools.write_out(self.deps, "translate/accountability.md", self._render_md())
+        tools.commit(self.deps.container_id,
+                     f"translate: remediation trail ({len(self.trail)} action(s))",
+                     glob="translate/")
+        checkpoint.snapshot(self.deps)
+
+    def _render_md(self) -> str:
+        lines = ["# TRANSLATE accountability trail", "",
+                 f"Target patterns: `{self.target_patterns or 'whole crate'}`", ""]
+        for r in self.trail:
+            res = r["result"]
+            lines.append(f"## Round {r['round']}: {r['action']} — **{r['tier']}**")
+            if r["rationale"]:
+                lines.append(f"- Rationale: {r['rationale']}")
+            if r["expected_effect"]:
+                lines.append(f"- Expected effect: {r['expected_effect']}")
+            if r["scope"]:
+                lines.append(f"- Scope: `{r['scope']}`")
+            for se in r["source_edits"]:
+                lines.append(f"- Edit `{se['path']}` (applied={se.get('applied')}): "
+                             f"{se['justification']}")
+            if r.get("carve", {}).get("diff"):
+                lines.append(f"\n```diff\n{r['carve']['diff']}\n```")
+            lines.append(f"- Result: success={res['success']} "
+                         f"target_holes={res['target_holes']} commit={res['commit'][:8]}")
+            lines.append("")
+        return "\n".join(lines)
+
+    def _finalise(self) -> str:
+        if self.best is None:
+            raise _PipelineAborted(
+                "TRANSLATE failed — Charon/Aeneas produced no Lean output for the target even "
+                "after remediation. See translate/accountability.md for the actions attempted.")
+        best_result, blockers = self.best["result"], self.best["blockers"]
+        if blockers:
+            parts = []
+            if blockers.get("target_holes"):
+                parts.append(f"{len(blockers['target_holes'])} untranslated hole(s) in the target "
+                             f"({blockers['target_holes']})")
+            if blockers.get("external_axioms"):
+                parts.append(f"{len(blockers['external_axioms'])} auto-opaqued external axiom(s) the "
+                             f"target depends on ({blockers['external_axioms']}) — no behaviour-"
+                             f"preserving refactor removed them")
+            if blockers.get("build_errors"):
+                parts.append("the translation does not compile")
+            raise _PipelineAborted(
+                "TRANSLATE could not produce a verifiable translation of the target after "
+                "remediation: " + "; ".join(parts) + ". See translate/accountability.md.")
+        # Success: pin the on-disk lean/ to the best translation, then record it.
+        tools.restore_lean(self.deps.container_id, best_result.get("commit", ""))
+        self.deps.progress["aeneas"] = best_result
+        self.deps.progress["translate_trail"] = self.trail
+        tiers = {r["tier"] for r in self.trail}
+        log.info("TRANSLATE complete — %d action(s), tiers=%s, target fully translated & compiles",
+                 len(self.trail), sorted(tiers))
+        checkpoint.snapshot(self.deps)
+        return ""
+
+
+async def _run_translate_stages(deps: AgentDeps, resume_note: str) -> str:
+    """Run EXPLORE, INFER (on the pristine Rust), then TRANSLATE (scoped + remediation).
+
+    INFER runs BEFORE translation so the behavioural spec + target scope are pinned to the
+    original code, not to whatever the remediation loop may refactor. Raises _PipelineAborted
+    if INFER produces no spec or TRANSLATE cannot converge.
     """
     completed = set(deps.progress.keys())
 
-    if "aeneas" not in completed:
+    if "explore" not in completed:
         sources = tools.read_repo_sources(deps)
         explore_result = await _run_stage(
             _explore,
@@ -93,53 +388,45 @@ async def _run_translate_stages(deps: AgentDeps, resume_note: str) -> str:
             deps.progress["explore"] = explore_result.output.model_dump()
         checkpoint.snapshot(deps)
         resume_note = ""
-
-    if "aeneas" not in completed:
-        # TRANSLATE is mechanical and the source is IMMUTABLE: run Charon+Aeneas on the
-        # crate exactly as written. Untranslatable constructs become explicit `sorry`
-        # holes, never silent rewrites. A hard failure (no output at all) aborts — the
-        # fix is the user's, outside the trust boundary.
-        log.info("─── Stage: TRANSLATE (mechanical, source immutable) ───")
-        entry = deps.progress.get("explore", {}).get("entry_file", "src/lib.rs")
-        result = lean.run_aeneas(deps, entry)
-        if not result.get("success"):
-            raise _PipelineAborted(
-                "TRANSLATE failed — Charon/Aeneas produced no output for the untouched "
-                f"source ({result.get('charon_errors') or result.get('aeneas_errors') or 'unknown'}). "
-                "The source is not modified; expose the logic via a lib target or "
-                "simplify the untranslatable construct, then re-run."
-            )
-        deps.progress["aeneas"] = result
-        if result.get("holes"):
-            log.info("TRANSLATE: %d untranslated hole(s) left as sorry: %s",
-                     len(result["holes"]), ", ".join(result["holes"]))
-        checkpoint.snapshot(deps)
-        resume_note = ""
         completed = set(deps.progress.keys())
 
     if "informal_spec" not in completed:
-        translation = lean.translation_text(deps)
+        # INFER on the PRISTINE Rust source (before any translation/refactor). Derives the
+        # actual behaviour AND the Charon target patterns used to scope TRANSLATE.
+        sources = tools.read_repo_sources(deps)
         abstract_informal = tools.read_out(deps, "specs/abstract_informal_spec.json")
-        infer_files = f"### Aeneas-translated crate\n{translation}"
+        entry_functions = deps.progress.get("explore", {}).get("entry_functions", [])
+        infer_files = f"### Rust source (pristine, unmodified)\n{sources}"
         if not abstract_informal.startswith("ERROR:"):
-            infer_files += f"\n\n### specs/abstract_informal_spec.json\n{abstract_informal}"
+            infer_files += ("\n\n### specs/abstract_informal_spec.json (design intent)\n"
+                            f"{abstract_informal}")
+        if entry_functions:
+            infer_files += f"\n\n### Public entry functions (from EXPLORE)\n{entry_functions}"
         infer_result = await _run_stage(
             _infer,
-            f"Proceed to INFER. Derive a structured InformalSpec of the behaviour the "
-            f"design document describes, as realised by the crate, from the following:"
-            f"\n\n{infer_files}" + resume_note,
+            f"Proceed to INFER. From the following, derive (1) a structured InformalSpec of "
+            f"the behaviour of the ORIGINAL code, and (2) the Charon target_patterns scoping "
+            f"the verification target:\n\n{infer_files}" + resume_note,
             deps, "INFER",
         )
         if infer_result and infer_result.output:
             spec: InformalSpec = infer_result.output
             deps.progress["informal_spec"] = spec.model_dump()
+            deps.progress["target_patterns"] = list(spec.target_patterns)
             tools.write_out(deps, "specs/informal_spec.json", spec.model_dump_json(indent=2))
-            tools.commit(deps.container_id, "feat(spec): informal specification", glob="specs/")
+            tools.commit(deps.container_id,
+                         "feat(spec): informal specification (pre-translate)", glob="specs/")
+            log.info("INFER target patterns: %s", spec.target_patterns or "(whole crate)")
         checkpoint.snapshot(deps)
         resume_note = ""
         completed = set(deps.progress.keys())
         if "informal_spec" not in completed:
             raise _PipelineAborted("Informal spec inference failed.")
+
+    if "aeneas" not in completed:
+        entry = deps.progress.get("explore", {}).get("entry_file", "src/lib.rs")
+        resume_note = await TranslatePhase(deps, entry, resume_note).run()
+        completed = set(deps.progress.keys())
 
     return resume_note
 
@@ -566,9 +853,20 @@ class ProvePhase:
             stmt = lean.theorem_statement(spec_text, name)
             (impl_verified if stmt and lean.referenced_defs(stmt, translation)
              else abstract_only).append(name)
+        # Faithfulness tier for the ESTABLISHED (axiom-clean) theorems. Opacity cannot
+        # downgrade a clean theorem — one that depended on an `--opaque` axiom would be
+        # tainted, not clean — so the only tier the axiom gate can't see is MODIFICATION:
+        # a behaviour-preserving source refactor is invisible to `#print axioms`, so if the
+        # target was refactored, clean theorems are verified of the REFACTORED code.
+        refactored = lean.trail_refactored_paths(deps.progress.get("translate_trail", []))
+        faithfulness = "MODIFICATION" if refactored else "SAFE"
         deps.progress["axioms"] = {"clean": ax["clean"], "tainted": ax["tainted"],
-                                   "impl_verified": impl_verified, "abstract_only": abstract_only}
+                                   "impl_verified": impl_verified, "abstract_only": abstract_only,
+                                   "faithfulness": faithfulness, "refactored_paths": refactored}
         checkpoint.snapshot(deps)
+        if refactored:
+            log.warning("PROVE: established theorems are verified of a REFACTORED implementation "
+                        "(behaviour-preserving edits to %s); not verbatim the original.", refactored)
         if ax["clean"] and not impl_verified:
             log.warning("PROVE: ⚠ CRITICAL — %d theorem(s) established but NONE reference the "
                         "implementation; 0 properties of the code are verified. Established are "
@@ -605,6 +903,33 @@ async def _run_report(deps: AgentDeps, resume_note: str) -> str:
     rc_json = tools.read_out(deps, "specs/reconciliation.json")
     if not rc_json.startswith("ERROR:"):
         report_files += f"\n\n### specs/reconciliation.json\n{rc_json}"
+    trail = deps.progress.get("translate_trail", [])
+    if trail:
+        acct = tools.read_out(deps, "translate/accountability.md")
+        if not acct.startswith("ERROR:"):
+            report_files += f"\n\n### translate/accountability.md\n{acct}"
+
+    # Translation faithfulness line — conditional on the TRANSLATE accountability trail.
+    target_patterns = deps.progress.get("target_patterns", [])
+    opaque_assumptions = lean.trail_opaque_assumptions(trail)
+    refactored_paths = axioms.get("refactored_paths", [])
+    if not opaque_assumptions and not refactored_paths:
+        translation_line = (
+            f"Translation: target scoped via --start-from ({target_patterns or 'whole crate'}); "
+            f"source UNMODIFIED — Aeneas ran on the code as written, so the translation is a "
+            f"faithful image of the real code. ")
+    else:
+        _bits = [f"target scope={target_patterns or 'whole crate'}"]
+        if opaque_assumptions:
+            _bits.append(f"OPAQUE assumptions emitted as Lean axioms {opaque_assumptions} "
+                         f"(any theorem depending on them is tainted, not established)")
+        if refactored_paths:
+            _bits.append(f"SOURCE REFACTORED (behaviour-preserving) in {refactored_paths} — "
+                         f"established theorems are verified of the REFACTORED implementation "
+                         f"(equivalence asserted + cross-checked by proofs, NOT machine-certified), "
+                         f"never claim 'verified the original code'")
+        translation_line = ("Translation (SEE translate/accountability.md and report it): "
+                            + "; ".join(_bits) + ". ")
 
     report_result = await _run_stage(
         _report,
@@ -616,8 +941,8 @@ async def _run_report(deps: AgentDeps, resume_note: str) -> str:
            if not holes_in_fp else
            f"NOT fully verified: {len(holes_in_fp)} hole(s) INSIDE the footprint "
            f"({holes_in_fp}) taint the properties touching them. ")
-        + f"Translation: source UNMODIFIED (Aeneas ran on the code as written); "
-        f"untranslated holes in crate: {', '.join(holes) if holes else 'none'}. "
+        + translation_line
+        + f"Untranslated holes in crate: {', '.join(holes) if holes else 'none'}. "
         f"Spec-judge: {'approved (no defects)' if not spec_defects else str(len(spec_defects)) + ' unresolved defect(s)'}. "
         f"Proofs: {sorry_remaining} theorem(s) remain as `sorry`. AUTHORITATIVE soundness "
         f"(Lean `#print axioms`, standard axioms only): {len(ax_clean)} theorem(s) kernel-"
@@ -680,8 +1005,9 @@ def _write_abort_notes(deps: AgentDeps, reason: str) -> None:
     stages = [
         ("abstract_informal_spec", "DOC-INFER — abstract informal spec"),
         ("abstract_formal_spec",   "DOC-FORMALISE — abstract Lean stubs"),
-        ("aeneas",                 "TRANSLATE — Aeneas translation"),
-        ("informal_spec",          "INFER — implementation informal spec"),
+        ("explore",                "EXPLORE — entry points"),
+        ("informal_spec",          "INFER — behaviour spec + target scope (pristine source)"),
+        ("aeneas",                 "TRANSLATE — Aeneas translation (scoped)"),
         ("formal_spec",            "FORMALISE — implementation spec assembled"),
         ("verdict",                "SPEC-JUDGE — statements judged"),
         ("reconciliation",         "RECONCILE — abstract vs impl"),
@@ -697,6 +1023,14 @@ def _write_abort_notes(deps: AgentDeps, reason: str) -> None:
         "## Completed", *done, "",
         "## Not reached", *todo, "",
     ]
+    trail = p.get("translate_trail", [])
+    if trail:
+        lines += ["## TRANSLATE remediation attempted"]
+        for r in trail:
+            lines.append(f"- Round {r['round']}: {r['action']} ({r['tier']}) — {r['rationale']} "
+                         f"→ success={r['result']['success']} "
+                         f"target_holes={r['result']['target_holes']}")
+        lines += ["", "(full trail: translate/accountability.md)", ""]
     if "aeneas" in p:
         holes = p["aeneas"].get("holes", [])
         lines += ["## Translation",

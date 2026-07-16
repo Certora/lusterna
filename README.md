@@ -71,12 +71,12 @@ flowchart TD
   subgraph IT ["Implementation track"]
     direction TB
     EXPLORE["EXPLORE<br/>entry file + public fns"]:::impl
-    TRANSLATE["TRANSLATE ⚙<br/>Charon → Aeneas → Lean<br/>mechanical · source immutable"]:::impl
-    INFER["INFER<br/>implementation informal spec"]:::impl
+    INFER["INFER<br/>behaviour spec + target<br/>(pristine source)"]:::impl
+    TRANSLATE["TRANSLATE ⚙<br/>Charon → Aeneas → Lean<br/>target-scoped · munge as last resort"]:::impl
     FORMALISE["FORMALISE<br/>emit theorem stubs"]:::impl
     FBUILD{"lake build<br/>compiles?"}:::gate
     JUDGE["SPEC-JUDGE<br/>defect list"]:::impl
-    EXPLORE --> TRANSLATE --> INFER --> FORMALISE --> FBUILD
+    EXPLORE --> INFER --> TRANSLATE --> FORMALISE --> FBUILD
     FBUILD -- "✗ fix" --> FORMALISE
     FBUILD -- "✓" --> JUDGE
     JUDGE -- "defects — re-formalise<br/>(≤10 rounds; drop after 3 fails)" --> FORMALISE
@@ -101,7 +101,7 @@ flowchart TD
   AXIOMS --> REPORT
 
   %% ---------------- concept callouts (always visible) ----------------
-  FAITH["🔒 FAITHFULNESS<br/>source never modified;<br/>untranslatable code → explicit sorry holes"]:::coFaith
+  FAITH["🔒 FAITHFULNESS<br/>target-scoped; source refactored only as a<br/>last resort (behaviour-preserving, logged);<br/>untranslatable code → explicit sorry holes"]:::coFaith
   ORACLE["⚖ BUILD ORACLE<br/>lake build is the objective gate —<br/>the sole judge of what compiles / works"]:::coOracle
   CONV["🎯 CONVERGENCE<br/>re-formalise until the defect list is empty;<br/>the last COMPILING spec is preserved"]:::coConv
   COMPL["🧭 COMPLETENESS<br/>does the impl spec match design intent?<br/>critical = implementation_wrong / bridge_wrong"]:::coCompl
@@ -147,12 +147,14 @@ CLI
              │                structured output (abstract informal spec → Lean stubs)
              ├─ EXPLORE      structured output (ExploreResult); Rust sources injected,
              │                no tools — identifies entry file + public functions
-             ├─ TRANSLATE    Charon → Aeneas → lean/  (git commit) — MECHANICAL
-             │                source is immutable; untranslatable constructs become
-             │                explicit `sorry` holes; hard-failure aborts (no rewriting)
              ├─ INFER        → specs/informal_spec.json      (git commit)
-             │                structured output; orchestrator injects Lean translation +
-             │                abstract informal spec directly into the prompt
+             │                structured output on the PRISTINE Rust source; derives the
+             │                behaviour spec AND the Charon target_patterns (scope)
+             ├─ TRANSLATE    Charon → Aeneas → lean/  (git commit) — target-scoped loop
+             │                --start-from <target> (SAFE); on failure/holes-in-target it
+             │                escalates: --opaque dep (axiom/ASSUMPTION) → behaviour-
+             │                preserving source refactor (MODIFICATION, logged) → abort.
+             │                Every action recorded in translate/accountability.md
              ├─ FORMALISE    structured output (FormalSpec); no tools — the agent emits
              │                theorem stubs, the orchestrator assembles them into the spec
              │   + BUILD     (lake build) — the orchestrator's convergence gate
@@ -194,8 +196,8 @@ Most stages are **tool-less**: their inputs (Rust sources, the Lean translation,
 | DOC-INFER | *(structured output)* | Derive abstract informal spec from design doc — no code access |
 | DOC-FORMALISE | *(structured output)* | Derive abstract Lean stubs from the abstract informal spec |
 | EXPLORE | *(structured output)* | Rust sources injected; identify the entry file and public functions |
-| TRANSLATE | *(mechanical; no LLM)* | Charon → Aeneas on the **untouched** source; untranslatable constructs become explicit `sorry` holes; a hard failure aborts. The source is never modified, so the translation is a faithful image of the real code. |
-| INFER | *(structured output)* | Orchestrator injects Lean translation + abstract informal spec; returns structured InformalSpec |
+| INFER | *(structured output)* | Runs on the **pristine** Rust source (before translation); derives the behaviour spec of the original code **and** the Charon `target_patterns` that scope the target |
+| TRANSLATE | *(Charon/Aeneas + remediation agent)* | Scopes Charon to the target (`--start-from`) and drives a soundness-graded loop to translate the target's closure cleanly: scope (SAFE) → `--opaque` dep, emitted as a Lean `axiom`/assumption (ASSUMPTION) → behaviour-preserving source refactor (MODIFICATION, logged with a diff) → abort. Every action is recorded in `translate/accountability.md`; the report qualifies each claim by the weakest action touching it |
 | FORMALISE | *(structured output)* | Emit theorem stubs (FormalSpec); the orchestrator assembles them and uses `lake build` as the convergence gate |
 | SPEC-JUDGE | *(structured output)* | Lists concrete defects in the impl-spec statements (judged against the code + informal spec); re-formalise until the defect list is empty |
 | RECONCILE | *(structured output)* | Orchestrator injects abstract + impl specs; classifies discrepancies and flags critical ones |
@@ -214,16 +216,33 @@ The one embedded helper is a single-turn agent with no message history, invisibl
 
 PROVE uses `check_lean` (`lake build`) as its feedback mechanism — the build is the only judge of what actually works, so PROVE attempts every `sorry` theorem rather than pre-filtering by a difficulty guess. Termination is decided by the `ProvePhase` loop, not by the model: the `sorry` count is measured **only on a successful build** (a broken edit can't fake progress), and the stage ends when that count reaches 0, when no new verified minimum is reached for `ProvePhase.STALL` turns, or when no verified proof lands at all within `ProvePhase.WARMUP` turns. These caps are class constants on the phase that owns them, not module globals or env vars. This objective, Python-side metric replaces the previous model-emitted "stagnant" signal, which could not reliably compare across rounds. Proof status in the report is read straight from the spec (proved = no `sorry`). The stage agent works from its training knowledge of Lean 4 and Aeneas idioms (embedded as skill documents in `docs/`). This keeps the toolchain simple and avoids the latency and reliability problems of running a Lean language server inside a locked-down, network-isolated container.
 
-### Soundness: holes and footprint
+### Soundness: holes, footprint, and remediation faithfulness
 
-The Rust source is never modified, so anything Aeneas cannot translate is left as an
+By default the Rust source is untouched, so anything Aeneas cannot translate is left as an
 explicit `sorry` **hole** rather than a rewrite or a crash. A property is only sound if no
 hole lies underneath it. Lusterna checks this two ways: a cheap **footprint** (does a
 stated property textually reach a hole?) computed after FORMALISE and PROVE, and — the
 authoritative one — Lean's `#print axioms` after PROVE, which reports whether a *proved*
 theorem depends on `sorryAx` (introduced by both untranslated holes and unfinished
 proofs). A theorem counts as genuinely established only when its axiom set is free of
-`sorryAx`. See **[HOLES_AND_FOOTPRINT.md](HOLES_AND_FOOTPRINT.md)** for the full story with
+`sorryAx`.
+
+When TRANSLATE cannot translate the target as written, it escalates (see the TRANSLATE row
+above), and each rung has a known soundness cost that the report reflects:
+
+- **`--start-from` scoping / dropping out-of-closure code** — SAFE; the target is translated
+  unmodified, so the claim is "verified of the original code."
+- **`--opaque <dep>`** — the dependency becomes a Lean `axiom`, so `#print axioms` **already**
+  taints any theorem that depends on it; such a result is "verified conditional on the
+  assumed behaviour of `<dep>`."
+- **Behaviour-preserving source refactor** — the only rung the axiom gate cannot see (the
+  Lean has no way to know the Rust changed). Because INFER derives the behaviour spec from
+  the *pristine* source and PROVE then checks those properties against the refactored
+  translation, a behaviour-changing edit tends to surface as a failed/tainted proof; still,
+  such results are reported as "verified of a refactored implementation" and every edit is
+  recorded with a diff in `translate/accountability.md`.
+
+See **[HOLES_AND_FOOTPRINT.md](HOLES_AND_FOOTPRINT.md)** for the full story with
 runnable code (`python -m lusterna.tools`).
 
 ### Checkpoints

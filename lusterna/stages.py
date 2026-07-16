@@ -10,6 +10,7 @@ from . import docs, factory
 from .schemas import (
     AbstractInformalSpec, AbstractFormalSpec, ExploreResult,
     InformalSpec, FormalSpec, JudgeVerdict, ReconciliationReport,
+    RemediationAction,
 )
 
 
@@ -64,8 +65,9 @@ Analyse the codebase and return a structured ExploreResult:
 - entry_file: the main translation entry point ("src/lib.rs" or "src/main.rs")
 - entry_functions: public function names present in the crate
 
-The source is translated exactly as written (never modified), so you do not need to
-flag or fix incompatibilities — untranslatable constructs simply become explicit holes.
+You do not need to flag or fix incompatibilities here — untranslatable constructs are
+handled downstream by the TRANSLATE stage (left as explicit holes, scoped away, or, as a
+last resort, remediated). Just identify the entry points accurately.
 """,
     output_type=ExploreResult,
     retries=2,
@@ -73,19 +75,76 @@ flag or fix incompatibilities — untranslatable constructs simply become explic
 
 
 infer = factory.make_stage_agent("""
-You are the INFER stage of the Lusterna pipeline.
+You are the INFER stage of the Lusterna pipeline. You run on the PRISTINE Rust source,
+BEFORE translation — so the behaviour you capture is that of the ORIGINAL code, and it
+cannot be distorted by any later translation-time refactor. Do not call any tools; the
+Rust sources and the abstract informal spec are injected in your prompt.
 
-Derive an informal specification of the behaviour the design document describes, AS
-REALISED BY THE CRATE — from the Aeneas-translated Lean of the whole crate (provided in
-your prompt) and the design document. Do not call any tools.
+You have two jobs:
 
-The behaviour may be realised by a single function or by an ensemble of functions and
-types working together; capture what actually matters, not an arbitrary unit. Return a
-structured InformalSpec (preconditions, postconditions, invariants, edge cases). Be
-precise and concise; do not invent behaviour not evidenced by the code or the document.
-Where the abstract informal spec covers the same aspect, align with its structure.
+1. INFORMAL SPEC — Derive an informal specification of the behaviour the design document
+   describes, AS ACTUALLY REALISED BY THE RUST CODE. The behaviour may be realised by a
+   single function or by an ensemble of functions and types working together (a
+   relationship between functions, an invariant preserved across method calls, a
+   state change induced by a sequence of calls, …); capture what actually matters, not an
+   arbitrary unit. Return preconditions, postconditions, invariants, and edge cases. Be
+   precise and concise; do not invent behaviour not evidenced by the code or the document.
+   Where the abstract informal spec covers the same aspect, align with its structure.
+
+2. TARGET PATTERNS — Identify the concrete crate items that make up the verification
+   TARGET (the code whose behaviour the properties above are about), and return them as
+   Charon name-matcher patterns in `target_patterns`. The next stage translates ONLY the
+   target and its call-closure (via Charon `--start-from`), so pick the items the design
+   actually cares about — not the whole crate. Name-matcher syntax:
+     - `crate::my_fn`            — a top-level function (and the items it refers to)
+     - `crate::module::my_fn`    — a function inside a module
+     - `crate::MyType`           — a type AND all its methods/`impl`s (use for a
+                                   collective/stateful target: a struct + its methods)
+   Prefer the smallest set of patterns that covers the target. If you truly cannot narrow
+   it, return an empty list (the pipeline then translates the whole crate).
 """,
     output_type=InformalSpec,
+    retries=2,
+)
+
+
+translate_remediate = factory.make_stage_agent("""
+You are the TRANSLATE-REMEDIATION helper of the Lusterna pipeline. Charon+Aeneas could
+not cleanly translate the verification target (a total failure, or `sorry` "holes" left
+inside the target's call-closure). Propose the SINGLE next remediation action as a
+structured RemediationAction. Do not call any tools; the failure/hole report, the target
+patterns, the inferred behaviour, and the actions tried so far are injected in your prompt.
+
+Escalate LEAST-INVASIVE FIRST. Two levers, in order:
+
+  tier="opaque"  — PREFERRED. Name (in `opaque`) the smallest in-closure dependency whose
+      body Aeneas cannot handle. Charon then emits it as a Lean `axiom` (its signature only),
+      and the target translates around it. This is an explicit ASSUMPTION: any theorem whose
+      proof uses it is flagged by the axiom check. Opaque the untranslatable LEAF, never a
+      whole subtree. You may also set `exclude` to drop items strictly OUTSIDE the target
+      closure that drag in untranslatable code. Use the same name-matcher syntax as the
+      target patterns (`crate::mod::item`, `crate::Type`).
+
+  tier="refactor" — LAST RESORT. Only when opacity cannot remove the blocker. Propose
+      `source_edits` that rewrite the offending Rust into an Aeneas-translatable form. Every
+      edit MUST be strictly BEHAVIOUR-PRESERVING — a representation/implementation swap only
+      (e.g. `vec![…]` → a fixed array, `BTreeMap` → an association list, an iterator-adaptor
+      chain → an explicit `for`/`while` loop, `?`-desugaring). You may edit any item in the
+      target closure INCLUDING the target itself, but you may NOT change what the program
+      OBSERVABLY DOES — its inputs, outputs, and effects must be identical. Behaviour is the
+      whole thing under verification; a behaviour-changing edit is a bug, not a remediation.
+      Each SourceEdit gives an exact `find` anchor (must occur EXACTLY ONCE in the file), the
+      `replace` text, and a `behavior_preservation_justification` explaining WHY observable
+      behaviour is unchanged. Prefer the smallest edit that unblocks translation.
+
+  tier="give_up" — the blocker is intrinsic (e.g. the target function itself relies on a
+      construct with no behaviour-preserving translatable form, or every lever is exhausted).
+      Set this rather than inventing a behaviour-changing edit.
+
+Reuse the trail: do not repeat an action already tried; escalate. Set `rationale` (why this
+action, why not a lower tier) and `expected_effect` (which hole/error it removes).
+""",
+    output_type=RemediationAction,
     retries=2,
 )
 
@@ -306,13 +365,25 @@ Write exactly these files, in this order:
       discrepancies.
 
   report/02_translation.md
-      What was translated. The Rust source is NEVER modified — Aeneas runs on it as
-      written, so the translation is a faithful image of the real code. List the entry
-      file and Aeneas output files, and call out any untranslated holes (functions left
-      as `sorry`; provided in the pipeline context). Distinguish clearly: a hole matters
-      to this verification ONLY if it lies inside the footprint of a proven property
-      (given in the pipeline context) — holes elsewhere in the crate do not taint the
-      proven properties. State which holes, if any, fall inside the footprint.
+      What was translated, and HOW FAITHFUL the translation is to the original code —
+      this section governs how strongly the report may claim "verified". List the entry
+      file, the Charon scope patterns used (`--start-from`), and the Aeneas output files.
+      Then report the TRANSLATE accountability trail (given in the pipeline context),
+      classifying the translation by its weakest remediation action:
+        • SAFE — only `--start-from` scoping / dropping out-of-closure code: the target
+          was translated UNMODIFIED; the translation is a faithful image of the real code.
+        • ASSUMPTION — one or more dependencies were made `--opaque` (emitted as a Lean
+          `axiom`): name each; any property that uses it is verified only CONDITIONAL on
+          that dependency's assumed behaviour (the axiom check flags such theorems).
+        • MODIFICATION — the Rust source was refactored to translate: list every edit with
+          its file, diff, and behaviour-preservation justification. State plainly that the
+          verified object is a REFACTORED implementation whose behaviour-equivalence to the
+          original is ASSERTED (and cross-checked by the proofs against the pristine-derived
+          spec) but NOT machine-certified — never claim "verified the original code" here.
+      Also call out any untranslated holes (functions left as `sorry`; in the pipeline
+      context). A hole matters ONLY if it lies inside the footprint of a proven property —
+      holes elsewhere do not taint the proven properties. State which holes, if any, fall
+      inside the footprint.
 
   report/03_abstract_spec.md
       List the key theorems and definitions from the abstract spec with a one-line

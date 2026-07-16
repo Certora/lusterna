@@ -103,6 +103,26 @@ def _pipeline_briefing(deps: AgentDeps) -> str:
         lines.append(f"Aeneas holes (untranslated defs) in the crate: {holes}")
     if fp_line:
         lines.append(fp_line)
+
+    # TRANSLATE accountability trail: scope, opaque assumptions, source modifications.
+    trail = p.get("translate_trail")
+    if trail:
+        tp = p.get("target_patterns") or "whole crate"
+        lines.append(f"Translation target scope (Charon --start-from): {tp}")
+        opaque = lean.trail_opaque_assumptions(trail)
+        if opaque:
+            lines.append(
+                f"TRANSLATE opaque ASSUMPTIONS (emitted as Lean axioms — the `#print axioms` "
+                f"check flags any theorem that depends on them): {opaque}")
+        edited = lean.trail_refactored_paths(trail)
+        if edited:
+            lines.append(
+                f"⚠ SOURCE MODIFIED during TRANSLATE — behaviour-preserving refactor(s) to "
+                f"{edited}. The translation is NOT a verbatim image of the original for those "
+                f"items; properties touching them are verified of the REFACTORED code "
+                f"(behaviour-equivalence asserted + cross-checked by proofs, not machine-certified). "
+                f"See translate/accountability.md.")
+
     ax = p.get("axioms")
     if ax is not None:
         tainted = ax.get("tainted", [])

@@ -23,9 +23,20 @@ The trust chain is:
 original Rust  ──[Charon + Aeneas: trusted]──▶  Lean 4  ──[proofs]──▶  verified property
 ```
 
-The Rust source is **immutable** — Lusterna never rewrites it, because a "helpful" edit
-could silently make the model diverge from the real implementation. Aeneas runs on the
-code exactly as written.
+By default the Rust source is **immutable** — Lusterna does not rewrite it, because a
+"helpful" edit could silently make the model diverge from the real implementation. Aeneas
+runs on the code exactly as written, and holes (below) absorb what it cannot translate.
+
+When Aeneas cannot translate the verification *target* at all, TRANSLATE escalates along a
+soundness-graded ladder before giving up: scope Charon to the target (`--start-from`, no
+semantic change), then `--opaque` a stubborn dependency (emitted as a Lean `axiom` — an
+explicit assumption that `#print axioms` then flags on any dependent theorem), and only as
+a **last resort** a *behaviour-preserving* source refactor (a representation swap such as
+`BTreeMap` → association list). A refactor is the one move the axiom check cannot see, so
+every edit is recorded with a diff in `translate/accountability.md` and the report states
+plainly that such results are "verified of a refactored implementation" — never of the
+verbatim original. Because the behaviour spec is inferred from the *pristine* source before
+any refactor, a behaviour-changing edit tends to surface as a failed/tainted proof.
 
 But not every Rust construct has a Lean model (I/O, some iterator-adaptor chains, inline
 assembly, …). When Aeneas meets one, it does **not** crash and does **not** invent a body.

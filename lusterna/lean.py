@@ -14,48 +14,84 @@ from .schemas import AgentDeps, FormalSpec
 log = logging.getLogger(__name__)
 
 
-def run_aeneas(deps: AgentDeps, entry_file: str) -> dict:
+def run_aeneas(deps: AgentDeps, entry_file: str, *,
+               start_from: list[str] | None = None,
+               opaque: list[str] | None = None,
+               exclude: list[str] | None = None,
+               include: list[str] | None = None) -> dict:
     """Translate *entry_file* (repo-relative) to Lean 4 via Charon + Aeneas.
 
-    The source is NEVER modified — Aeneas runs on the crate exactly as written, so the
-    translation is a faithful image of the real code. Constructs Aeneas can't handle
-    become explicit `sorry` holes (see `holes`), not failures and not silent rewrites.
+    Called with no scoping options this is byte-identical to the historical whole-crate
+    translation. The optional Charon name-matcher scoping (used by the TRANSLATE
+    remediation loop) narrows/adjusts what enters the `.llbc`:
+      start_from — translate only these items and their call-closure (default: whole crate)
+      opaque     — keep these items opaque; Aeneas emits them as a Lean `axiom` (an explicit
+                   assumption the `#print axioms` gate then flags on any dependent theorem)
+      exclude    — do not translate these items at all
+      include    — whitelist refinement (name-matcher; most-precise pattern wins)
+
+    run_aeneas itself never edits the Rust source — it only translates whatever is present.
+    Constructs Aeneas can't handle become explicit `sorry` holes (see `holes`).
 
     Returns a dict with:
-      success      — True if Charon+Aeneas produced Lean output (holes are fine)
-      lean_files   — list of generated Lean files (relative to /workspace/out)
-      lean_path    — primary Lean file (the crate module) for downstream tools
-      holes        — names of functions left untranslated (bare `sorry` body)
+      success       — True if Charon+Aeneas produced Lean output (holes are fine)
+      stage_failed  — ""|"charon"|"aeneas": which stage hard-failed (for the remediation loop)
+      lean_files    — list of generated Lean files (relative to /workspace/out)
+      lean_path     — primary Lean file (the crate module) for downstream tools
+      holes         — flat list of untranslated function names (bare `sorry` body)
+      holes_by_file — {lean_file: [hole names]} — per-file attribution
       charon_errors — Charon stderr (non-empty only on hard failure)
       aeneas_errors — parsed Aeneas error/warn lines
-      commit       — git SHA if files were committed (empty string otherwise)
+      scope         — {start_from, opaque, exclude, include}: the options used
+      commit        — git SHA if files were committed (empty string otherwise)
 
     success is False only on a HARD failure — Charon produced no `.llbc`, or Aeneas
-    produced no `.lean` at all. There is no retry/rewrite path: if the crate can't be
-    translated as written, that is reported, not worked around.
+    produced no `.lean` at all.
     """
     from . import config
 
+    scope = {
+        "start_from": list(start_from or []),
+        "opaque": list(opaque or []),
+        "exclude": list(exclude or []),
+        "include": list(include or []),
+    }
+
+    def _fail(stage: str, charon_errors: str = "", aeneas_errors: list | None = None) -> dict:
+        return {
+            "success": False, "stage_failed": stage,
+            "lean_files": [], "lean_path": "", "holes": [], "holes_by_file": {},
+            "charon_errors": charon_errors, "aeneas_errors": aeneas_errors or [],
+            "commit": "",
+        }
+
     lean_out_dir = f"{OUT_IN}/lean"
+    # Start each attempt from a clean slate so stale Lean/.llbc from a previous
+    # remediation attempt cannot pollute lean_files / hole detection.
+    exec_in(deps.container_id, ["rm", "-rf", lean_out_dir])
     exec_in(deps.container_id, ["mkdir", "-p", lean_out_dir])
+    exec_in(deps.container_id,
+            ["find", REPO_IN, "-maxdepth", "2", "-name", "*.llbc", "-delete"],
+            workdir=REPO_IN)
 
     # ── Step 1: Charon ────────────────────────────────────────────────────────
-    log.info("Running Charon in %s", REPO_IN)
+    # Direct argv (NOT a shell): scoping flags are appended, one repetition per pattern.
+    charon_cmd = [config.CHARON_BIN, "cargo", "--preset=aeneas"]
+    for flag, key in (("--start-from", "start_from"), ("--opaque", "opaque"),
+                      ("--exclude", "exclude"), ("--include", "include")):
+        for pat in scope[key]:
+            charon_cmd += [flag, pat]
+    log.info("Running Charon in %s (scope=%s)", REPO_IN,
+             {k: v for k, v in scope.items() if v} or "whole-crate")
     charon_code, charon_out, charon_err = exec_in(
         deps.container_id,
-        [config.CHARON_BIN, "cargo", "--preset=aeneas"],
+        charon_cmd,
         workdir=REPO_IN,
         timeout=600,
     )
     if charon_code != 0:
         log.warning("Charon exited %d", charon_code)
-        return {
-            "success": False,
-            "lean_files": [], "lean_path": "", "holes": [],
-            "charon_errors": charon_err,
-            "aeneas_errors": [],
-            "commit": "",
-        }
+        return _fail("charon", charon_errors=charon_err)
 
     # Charon names the output after the crate; find the .llbc file it produced.
     _, llbc_list, _ = exec_in(
@@ -66,13 +102,7 @@ def run_aeneas(deps: AgentDeps, entry_file: str) -> dict:
     llbc_files = [l.strip() for l in llbc_list.splitlines() if l.strip()]
     if not llbc_files:
         log.warning("No .llbc file found after Charon run")
-        return {
-            "success": False,
-            "lean_files": [], "lean_path": "", "holes": [],
-            "charon_errors": "no .llbc file produced",
-            "aeneas_errors": [],
-            "commit": "",
-        }
+        return _fail("charon", charon_errors="no .llbc file produced")
     llbc_path = llbc_files[0]
     log.info("Charon produced: %s", llbc_path)
 
@@ -107,41 +137,46 @@ def run_aeneas(deps: AgentDeps, entry_file: str) -> dict:
     log.info("Aeneas wrote %d Lean file(s): %s", len(lean_files), lean_files)
 
     if not lean_files:
-        return {
-            "success": False,
-            "lean_files": [], "lean_path": "", "holes": [],
-            "charon_errors": "",
-            "aeneas_errors": aeneas_errors or [aeneas_err[:400]],
-            "commit": "",
-        }
+        return _fail("aeneas", aeneas_errors=aeneas_errors or [aeneas_err[:400]])
+
+    # The crate module is the top-level `lean/<Module>.lean` Aeneas emits (submodules live
+    # under `lean/<Module>/`). Derive the lib name from that ACTUAL file — Aeneas CamelCases
+    # multi-word crates (`erc20_rs` → `Erc20Rs`), which `str.capitalize()` gets wrong
+    # (`Erc20_rs`), breaking `lake build`'s `andSubmodules` glob.
+    top_level = [f for f in lean_files
+                 if f.startswith("lean/") and "/" not in f[len("lean/"):]]
+    crate_module = top_level[0] if top_level else lean_files[0]
+    lib_name = Path(crate_module).stem
 
     # Write a lakefile.lean so `lake build` works.  The generated Lean files
     # use `import Aeneas`, so we declare a path dependency on the bundled
-    # Aeneas Lean library.  The package/lib name is derived from the crate name.
-    _write_lakefile(deps, lean_out_dir, llbc_path)
+    # Aeneas Lean library.  The lean_lib name MUST match the generated module.
+    _write_lakefile(deps, lean_out_dir, llbc_path, lib_name)
 
     # Aeneas leaves functions it cannot translate as an explicit `sorry` body (a
     # "hole") rather than failing — e.g. iterator-adaptor chains, or a `main` doing
     # I/O.  Holes are NOT failures; the surrounding functions are translated faithfully.
     # Success = Lean output was produced (checked above); the source is never modified.
-    holes = _detect_holes(deps, lean_files)
+    holes_by_file = _detect_holes(deps, lean_files)
+    holes = sorted({h for hs in holes_by_file.values() for h in hs})
+    bits = [f"{k}={','.join(v)}" for k, v in scope.items() if v]
+    scope_suffix = f" [{'; '.join(bits)}]" if bits else ""
     sha = tools.commit(
         deps.container_id,
         f"feat(aeneas): translate {entry_file} → Lean"
+        + scope_suffix
         + (f" ({len(holes)} hole(s))" if holes else ""),
         glob="lean/",
     )
     log.info("Aeneas done — %d file(s), %d hole(s) — commit %s",
              len(lean_files), len(holes), sha[:8])
-    # Primary module is the crate module (lean/<Crate>.lean), matching the lakefile's
-    # lean_lib root — chosen deterministically rather than by find order.
-    crate_module = f"lean/{Path(llbc_path).stem.capitalize()}.lean"
-    lean_path = crate_module if crate_module in lean_files else lean_files[0]
     return {
         "success": True,
+        "stage_failed": "",
         "lean_files": lean_files,
-        "lean_path": lean_path,
+        "lean_path": crate_module,
         "holes": holes,
+        "holes_by_file": holes_by_file,
         "charon_errors": "",
         "aeneas_errors": aeneas_errors,
         "commit": sha,
@@ -169,18 +204,22 @@ def _strip_lean_comments(s: str) -> str:
     return re.sub(r"(?m)--.*$", " ", s)
 
 
+def _mentions(name: str, text: str) -> bool:
+    """True if *name* occurs in *text* as a whole token (Lean identifier boundary)."""
+    return bool(re.search(r"(?<![\w])" + re.escape(name) + r"(?![\w])", text))
+
+
 def call_closure(text: str, roots: list[str]) -> list[str]:
     """Textual transitive closure: def names reachable from *roots* by reference in
     Lean *text* (comments stripped). Approximate (token-boundary match); over-
     approximation is the safe direction for the hole check. Precise LLBC-graph closure
     is a later refinement."""
-    import re
     blocks = {n: _strip_lean_comments(b) for n, b in _def_blocks(text).items()}
     seen, stack = set(roots), list(roots)
     while stack:
         body = blocks.get(stack.pop(), "")
         for other in blocks:
-            if other not in seen and re.search(r"(?<![\w])" + re.escape(other) + r"(?![\w])", body):
+            if other not in seen and _mentions(other, body):
                 seen.add(other)
                 stack.append(other)
     return sorted(seen)
@@ -191,12 +230,91 @@ def referenced_defs(spec_text: str, translation_text: str) -> list[str]:
     seeds of a stated property's footprint. `call_closure` then expands them transitively.
     Approximate (token-boundary match); over-approximation is the safe direction for the
     hole check."""
-    import re
     body = _strip_lean_comments(spec_text)
-    return [
+    return [name for name in _def_blocks(translation_text) if _mentions(name, body)]
+
+
+def _pattern_leaf(pattern: str) -> str:
+    """Final identifier of a Charon name-matcher pattern, e.g. `crate::m::fib` → `fib`,
+    `crate::Foo::_` → `Foo`. Drops trailing wildcards and any `{impl …}` decoration."""
+    p = pattern.strip().split("{")[0]            # drop `{impl …}` blocks
+    segs = [s for s in re.split(r"::", p) if s and s != "_"]
+    return segs[-1] if segs else ""
+
+
+def matched_target_defs(translation_text: str, target_patterns: list[str]) -> list[str]:
+    """Translation def names that a target pattern names, matched by final identifier
+    (Aeneas mangles `crate::fib` → `crate.fib`). Fuzzy/over-approximate: every def whose
+    final `.`-component equals a pattern leaf is a seed. Empty ⇒ no pattern matched."""
+    leaves = {_pattern_leaf(p) for p in target_patterns if _pattern_leaf(p)}
+    if not leaves:
+        return []
+    return sorted(
         name for name in _def_blocks(translation_text)
-        if re.search(r"(?<![\w])" + re.escape(name) + r"(?![\w])", body)
-    ]
+        if name.split(".")[-1] in leaves
+    )
+
+
+def target_closure(translation_text: str, target_patterns: list[str]) -> list[str]:
+    """Call-closure of the target seeds within the translation. Empty if no seed matched
+    (the caller treats a matched-but-empty closure as a scoping mismatch, not 'all clear')."""
+    seeds = matched_target_defs(translation_text, target_patterns)
+    return call_closure(translation_text, seeds) if seeds else []
+
+
+def target_holes(translation_text: str, holes: list[str], target_patterns: list[str]) -> list[str]:
+    """Which untranslated holes fall inside the target's call-closure — the holes that
+    actually block verification of the target. Conservative when scope is unknown: with no
+    patterns (whole-crate) or no seed match, EVERY hole counts as target-relevant."""
+    if not target_patterns:
+        return sorted(holes)
+    closure = set(target_closure(translation_text, target_patterns))
+    if not closure:
+        return sorted(holes)          # patterns didn't match — be conservative
+    return sorted(h for h in holes if h in closure)
+
+
+def external_axioms(translation_text: str) -> list[str]:
+    """Top-level `axiom` names in the translation. Aeneas emits `axiom` ONLY for opaque
+    external items (auto-opaqued stdlib like `BTreeMap`, `Option::ok_or`, trait impls); the
+    crate's own items are `def`/`structure`/`inductive`. Any such axiom a property depends on
+    would taint it under `#print axioms`, so for verification purposes it blocks like a hole."""
+    return sorted({m.group(1) for m in re.finditer(r"(?m)^axiom\s+([\w.]+)", translation_text)})
+
+
+# Formatting-only externals never affect observable behaviour, so a property can never
+# meaningfully depend on them — exclude them from the blocker set. Anchored to Aeneas's actual
+# naming: the `CoreFmtDebug`/`CoreFmtDisplay` trait-impl instances and any `.fmt` method — NOT
+# an unanchored substring (which would wrongly catch e.g. `crate.DisplayConfig`).
+_BENIGN_AXIOM = re.compile(r"CoreFmt(?:Debug|Display)|\.fmt$")
+
+
+def target_external_axioms(translation_text: str, target_patterns: list[str]) -> list[str]:
+    """Behaviour-relevant external axioms the target's call-closure depends on. Formatting-only
+    externals (Debug/Display) are excluded — they can never be in a property's footprint. If the
+    target seeds match no def (unscoped / whole-crate), every external axiom is in scope."""
+    axioms = [a for a in external_axioms(translation_text) if not _BENIGN_AXIOM.search(a)]
+    if not axioms:
+        return []
+    closure = set(target_closure(translation_text, target_patterns))
+    if not closure:
+        return sorted(axioms)
+    bodies = [_strip_lean_comments(b) for n, b in _def_blocks(translation_text).items()
+              if n in closure]
+    return sorted(ax for ax in axioms if any(_mentions(ax, b) for b in bodies))
+
+
+def trail_opaque_assumptions(trail: list[dict]) -> list[str]:
+    """Charon patterns made `--opaque` across the TRANSLATE trail — emitted as Lean axioms,
+    so the `#print axioms` gate flags any theorem depending on them."""
+    return sorted({pat for r in trail if r.get("action") == "OPAQUE"
+                   for pat in r.get("scope", {}).get("opaque", [])})
+
+
+def trail_refactored_paths(trail: list[dict]) -> list[str]:
+    """Source files a behaviour-preserving refactor actually edited across the TRANSLATE trail."""
+    return sorted({se["path"] for r in trail if r.get("action") == "REFACTOR"
+                   for se in r.get("source_edits", []) if se.get("applied")})
 
 
 def _theorem_names(spec_text: str) -> list[str]:
@@ -308,37 +426,38 @@ def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
     return {"clean": clean, "tainted": tainted, "raw": text[-3000:]}
 
 
-def _detect_holes(deps: AgentDeps, lean_files: list[str]) -> list[str]:
-    """Names of functions Aeneas left untranslated (a bare `sorry` body)."""
-    import re
-    holes: list[str] = []
+def _detect_holes(deps: AgentDeps, lean_files: list[str]) -> dict[str, list[str]]:
+    """Map each Lean file to the names of functions Aeneas left untranslated (a bare
+    `sorry` body). A file with no holes is omitted from the map."""
+    holes_by_file: dict[str, list[str]] = {}
     for rel in lean_files:
         code, text, _ = exec_in(deps.container_id, ["cat", f"{OUT_IN}/{rel}"])
         if code != 0:
             continue
-        for m in re.finditer(r"(?m)^def\s+([\w.]+)", text):
-            start = m.end()
-            nxt = re.search(r"(?m)^(def|end)\b", text[start:])
-            block = text[start: start + (nxt.start() if nxt else len(text))]
-            if re.search(r"(?m)^\s*sorry\s*$", block):
-                holes.append(m.group(1))
-    return holes
+        file_holes = [name for name, block in _def_blocks(text).items()
+                      if re.search(r"(?m)^\s*sorry\s*$", block)]
+        if file_holes:
+            holes_by_file[rel] = file_holes
+    return holes_by_file
 
 
 AENEAS_LEAN = "/opt/aeneas/backends/lean"
 LEAN_TEMPLATE = "/opt/lean-template"
 
 
-def _write_lakefile(deps: AgentDeps, lean_out_dir: str, llbc_path: str) -> None:
+def _write_lakefile(deps: AgentDeps, lean_out_dir: str, llbc_path: str, lib_name: str) -> None:
     """Generate a lakefile.lean and wire up the pre-resolved package manifest.
 
     The Docker image contains /opt/lean-template — a minimal lake project that
     already ran `lake update` against the bundled Aeneas runtime.  We copy its
     lake-manifest.json and symlink its .lake/packages so `lake build` works
     fully offline (--network none).
+
+    *lib_name* is the ACTUAL generated module name (Aeneas CamelCases multi-word crates,
+    e.g. `erc20_rs` → `Erc20Rs`); the lean_lib name/glob must match it exactly or
+    `lake build`'s `andSubmodules` glob fails to find the module.
     """
-    crate = Path(llbc_path).stem      # "fibonacci"
-    lib_name = crate.capitalize()     # "Fibonacci"
+    crate = Path(llbc_path).stem      # package name, e.g. "erc20_rs" / "fibonacci"
 
     # `@[default_target]` is essential: without it, a bare `lake build` (what check_lean
     # runs) builds NOTHING ("0 jobs") and returns success — silently disconnecting the
@@ -386,43 +505,52 @@ _BUILD_TAIL = 200  # lines of stderr to keep on failure — errors appear at the
 _BUILD_TIMEOUT = int(os.environ.get("LUSTERNA_BUILD_TIMEOUT", "180"))
 
 
-def check_lean(deps: AgentDeps, lean_file: str) -> dict:  # noqa: ARG001
-    """Run `lake build` on the Lean project.
-
-    Returns {"success": bool, "stderr": str}, where on failure "stderr" holds the actionable
-    build DIAGNOSTICS. Note: `lake build` prints the per-declaration errors
-    (`error: <file>:<line>:<col>: ...`) to STDOUT and only a terse `error: build failed` to
-    real stderr — so we combine stdout+stderr and strip the `trace:`/`✖`-prefixed build-log
-    decoration, keeping the last 200 lines (errors are at the end). On success "stderr" is empty.
-    """
+def _run_lake(deps: AgentDeps, args: list[str], timeout_msg: str) -> dict:
+    """Run `lake <args>` in the Lean project under a container-side timeout and return
+    {"success": bool, "stderr": str}. The `-k 10` timeout KILLS a runaway build inside the
+    container (a host-side kill would leave it burning a core). On non-zero exit, "stderr"
+    holds the actionable diagnostics: `lake` prints per-declaration errors to STDOUT (only a
+    terse `error: build failed` to real stderr), so we combine both streams, strip the
+    `trace:`/`✖` build-log decoration, and keep the last _BUILD_TAIL lines (errors are at the
+    end). On success "stderr" is empty; on timeout it holds *timeout_msg*."""
     from . import config
-    lean_out_dir = f"{OUT_IN}/lean"
-    # Wrap in a container-side `timeout` so a runaway tactic (e.g. `native_decide` evaluating
-    # naive recursion) is KILLED inside the container — killing only the host-side docker-exec
-    # client would leave the build burning a core. `-k 10` escalates to SIGKILL if needed. The
-    # host-side timeout is a slightly-larger backstop.
     code, out, err = exec_in(
         deps.container_id,
-        ["timeout", "-k", "10", str(_BUILD_TIMEOUT), config.LAKE_BIN, "build"],
-        workdir=lean_out_dir, timeout=_BUILD_TIMEOUT + 30)
+        ["timeout", "-k", "10", str(_BUILD_TIMEOUT), config.LAKE_BIN, *args],
+        workdir=f"{OUT_IN}/lean", timeout=_BUILD_TIMEOUT + 30)
     if code in (124, 137):
-        log.warning("lake build exceeded %ds and was terminated", _BUILD_TIMEOUT)
-        return {"success": False, "stderr": (
-            f"lake build exceeded the {_BUILD_TIMEOUT}s limit and was terminated — most "
-            "likely a tactic that evaluates a recursive definition (e.g. `native_decide`/"
-            "`decide` on a naive `fib`). Treat this as a failed attempt: prove by reasoning "
-            "(induction / equation lemmas) or leave the theorem as `sorry`.")}
+        log.warning("lake %s exceeded %ds and was terminated", args[0], _BUILD_TIMEOUT)
+        return {"success": False, "stderr": timeout_msg}
     if code != 0:
-        log.warning("lake build failed (exit %d)", code)
-        # Diagnostics are on STDOUT; strip the noisy build-log lines (`trace: .> …` command
-        # echoes and `✖ [k/n] Building …` headers) and keep stdout+stderr.
+        log.warning("lake %s failed (exit %d)", args[0], code)
         diag = [ln for ln in (out + "\n" + err).splitlines()
                 if not ln.startswith("trace:") and not ln.lstrip().startswith("✖")]
-        log.debug("lake build diagnostics:\n%s", "\n".join(diag))
-        trimmed = "\n".join(diag[-_BUILD_TAIL:])
-        return {"success": False, "stderr": trimmed}
-    log.info("check_lean: lake build succeeded")
+        return {"success": False, "stderr": "\n".join(diag[-_BUILD_TAIL:])}
     return {"success": True, "stderr": ""}
+
+
+def check_lean(deps: AgentDeps, lean_file: str) -> dict:  # noqa: ARG001
+    """Run `lake build` on the Lean project (the build oracle). Returns {"success", "stderr"};
+    on failure "stderr" holds the build diagnostics."""
+    r = _run_lake(deps, ["build"], timeout_msg=(
+        f"lake build exceeded the {_BUILD_TIMEOUT}s limit and was terminated — most likely a "
+        "tactic that evaluates a recursive definition (e.g. `native_decide`/`decide` on a naive "
+        "`fib`). Treat this as a failed attempt: prove by reasoning (induction / equation "
+        "lemmas) or leave the theorem as `sorry`."))
+    if r["success"]:
+        log.info("check_lean: lake build succeeded")
+    return r
+
+
+def translation_compiles(deps: AgentDeps, lean_path: str) -> dict:
+    """Typecheck a single translation file via `lake env lean <file>` — NOT `lake build`.
+
+    At TRANSLATE time the lakefile's `globs := .andSubmodules` target needs the `<Crate>/`
+    submodule directory (created later by FORMALISE's Spec.lean); it does not exist yet, so
+    `lake build` would fail on the glob, not on the code. `lake env lean` compiles just this
+    file in the project environment (imports resolve against the prebuilt Aeneas packages)."""
+    return _run_lake(deps, ["env", "lean", f"{OUT_IN}/{lean_path}"],
+                     timeout_msg=f"lake env lean exceeded {_BUILD_TIMEOUT}s")
 
 
 def attribute_errors(spec_text: str, stderr: str, basename: str = "Spec.lean") -> dict:
@@ -564,15 +692,15 @@ def record_prove_best(deps: AgentDeps) -> None:
         log.info("PROVE: new best compiling spec — %d sorry remaining", n)
 
 
-def translation_text(deps: AgentDeps) -> str:
-    """Concatenated Lean source of the whole Aeneas translation — the material the spec
-    stages reason over. The source is immutable, so this is a faithful image of the crate.
-    The tool chooses which properties to state; it is not scoped to a pre-picked unit."""
-    parts = []
-    for rel in deps.progress.get("aeneas", {}).get("lean_files", []):
-        text = tools.read_out(deps, rel)
-        if not text.startswith("ERROR:"):
-            parts.append(text)
+def translation_text(deps: AgentDeps, lean_files: list[str] | None = None) -> str:
+    """Concatenated Lean source of the Aeneas translation — the material the spec stages
+    reason over. Defaults to the committed translation in progress['aeneas']['lean_files'];
+    pass *lean_files* to read an in-flight result (e.g. a TRANSLATE remediation attempt not
+    yet stored in progress)."""
+    if lean_files is None:
+        lean_files = deps.progress.get("aeneas", {}).get("lean_files", [])
+    parts = [t for rel in lean_files
+             for t in [tools.read_out(deps, rel)] if not t.startswith("ERROR:")]
     return "\n\n".join(parts)
 
 
