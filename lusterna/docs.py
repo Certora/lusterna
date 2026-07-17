@@ -28,6 +28,13 @@ def _section(title: str, content: str) -> str:
 
 # ── curated subsets ───────────────────────────────────────────────────────────
 
+# TRANSLATE drives Charon+Aeneas at the shell; it gets the translatability playbook — the measured
+# verdict table (what translates / opaques / holes / rejects), the modelable-stdlib line, the
+# behaviour-preserving recipes, and the charon/aeneas mechanics — so it recognises-and-applies
+# instead of re-discovering Aeneas's fragment every run.
+FOR_TRANSLATE: str = _section("Aeneas Translatability Playbook",
+                              _read("skills", "aeneas-translate.md"))
+
 # FORMALISE writes theorem STATEMENTS only (structured output — it cannot emit proofs), so
 # it gets JUST the Aeneas translation semantics it needs to reference the Result monad,
 # machine ints, casts, etc. correctly. No tactic/proof docs: they are irrelevant to

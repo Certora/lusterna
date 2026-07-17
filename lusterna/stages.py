@@ -148,7 +148,7 @@ loop over ad-hoc patches.
 
 Return a TranslateOutcome: `summary` (the narrative), the `opaque_patterns` / `excluded_patterns`
 you settled on, `source_files_edited`, `lean_files_patched`, and `gave_up`.
-""",
+""" + docs.FOR_TRANSLATE,
     output_type=TranslateOutcome,
     retries=2,
 )
