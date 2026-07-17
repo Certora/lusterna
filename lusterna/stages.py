@@ -132,6 +132,13 @@ translates cleanly and compiles:
      behaviour the properties do not reason about: curve/crypto/hashing, transcripts, RNG,
      formatting (`--exclude core::fmt::Debug::*`, `--opaque core::fmt::Formatter`), pure ordering.
      NEVER opaque a target.
+     ⚠ When a TRUSTED primitive RESISTS translation — Aeneas errors or crashes on its signature or
+     body (arrow-typed globals/`LazyLock`, `&[u8]`/erased-region crashes, Strobe/transcript
+     internals, …) — the answer is to `--opaque` it (or its whole module/trait), NOT to edit its
+     signature, stub its body, or `cfg`-gate an alternative to force it through. It is a leaf you are
+     ASSUMING, so assume it: opacity is the handling. Trying to make a trusted primitive translate is
+     wasted effort and risks a stub that silently differs from the real behaviour. (Reserve source
+     edits — rung 3 — for a structure the PROPERTIES depend on, never for a primitive you'll assume.)
      ⚠ CRITICAL — do NOT opaque a data structure that the target's own logic READS or WRITES and
      whose CONTENTS the properties constrain. Opaquing it emits its accessors/mutators as bare
      axioms with no relating equations, so the very properties about that state become UNVERIFIABLE

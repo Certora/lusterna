@@ -95,6 +95,11 @@ re-translate. You cannot add Aeneas builtins — the source is the only lever.
   module/crate, not function-by-function). You verify the algebraic relation the target computes, not
   the primitives; a working example is roughly `--opaque <crate>::transcript --opaque
   <crate>::encryption::pedersen::pedersen_h --opaque core::fmt::Formatter --exclude core::fmt::Debug::*`.
+  **If a trusted primitive resists translation** — Aeneas errors or crashes on its signature or body
+  (arrow-typed globals/`LazyLock`, `&[u8]`/erased-region crashes, Strobe internals) — **`--opaque` it
+  (its whole module); do NOT edit its signature, stub its body, or `cfg`-gate an alternative to force
+  it through.** You are assuming the leaf, so assume it; a forced stub silently diverges from the real
+  behaviour. Source edits (rung 3) are only for a structure the PROPERTIES depend on.
 
 ## Workflow
 
