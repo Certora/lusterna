@@ -16,6 +16,11 @@ def setup_logging(verbose: bool = False) -> None:
     root.setLevel(level)
     root.handlers = [handler]
 
+    # Third-party HTTP/client chatter (one "HTTP Request: POST …" line per model call, etc.) is
+    # noise — the user wants to see what the AGENT is doing, not the transport. Silence to WARNING.
+    for noisy in ("httpx", "httpcore", "anthropic", "openai", "urllib3"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
 
 MODEL = os.environ.get("LUSTERNA_MODEL", "anthropic:claude-sonnet-4-6")
 JUDGE_MODEL = os.environ.get("LUSTERNA_JUDGE_MODEL", "anthropic:claude-sonnet-4-6")

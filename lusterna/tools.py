@@ -62,8 +62,13 @@ def bash(ctx: RunContext[AgentDeps], command: str, workdir: str = "/workspace",
     body = out + (("\n──stderr──\n" + err) if err.strip() else "")
     if len(body) > _BASH_MAX:
         body = "…[output truncated — showing the last ~30k chars]…\n" + body[-_BASH_MAX:]
-    log.info("bash: %r… (workdir=%s) → exit=%d, %d chars",
-             command[:100].replace("\n", "⏎"), workdir, code, len(body))
+    # The command itself is shown by the per-turn heartbeat (factory._log_turn), which fires
+    # before the tool runs. Here we only surface the RESULT when it fails; success stays at DEBUG.
+    if code != 0:
+        tail = " ".join((err or out or "").split())
+        log.info("  ↳ exit=%d: %s", code, tail[-200:] if tail else "(no output)")
+    else:
+        log.debug("bash ok (exit=0, %d chars)", len(body))
     return f"exit={code}\n{body}"
 
 
