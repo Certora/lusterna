@@ -16,16 +16,16 @@ from .schemas import (
 
 
 explore = factory.make_stage_agent("""
-You are the EXPLORE stage of the Lusterna formal verification pipeline.
+You are the EXPLORE stage — a QUICK orientation, not a deep analysis. The Rust repository is at
+/workspace/repo. With a HANDFUL of bash reads (ls the crate, cat the relevant lib.rs, `grep "pub fn"
+/ "pub struct"`), find where the code the design hint concerns lives, then return an ExploreResult:
+- entry_file: the crate root of that code, RELATIVE TO ITS CRATE (e.g. "src/lib.rs"); in a
+  workspace, the root of the crate that contains the target (not a path from the repo root).
+- entry_functions: a SHORT list of the main public functions/methods relevant to the target — NOT
+  an exhaustive enumeration of every public item in a large crate.
 
-The Rust repository is at /workspace/repo. Explore it with the `bash` tool (`find`, `grep`,
-`cat`) — read only what you need, not the whole tree — then return a structured ExploreResult:
-- entry_file: the main translation entry point ("src/lib.rs" or "src/main.rs")
-- entry_functions: public function names present in the crate
-
-You do not need to flag or fix incompatibilities here — untranslatable constructs are
-handled downstream by the TRANSLATE stage (left as explicit holes, scoped away, or, as a
-last resort, remediated). Just identify the entry points accurately.
+Keep it to a few reads and return promptly — INFER and TRANSLATE do the detailed navigation and the
+translatability work. Do not analyse compatibility or enumerate the whole crate here.
 """,
     output_type=ExploreResult,
     retries=2,
@@ -77,6 +77,23 @@ GOAL — every target function (the `target_patterns` given in the prompt) MUST 
 generated Lean as a real translated `def` with a body. A translation where a target function is
 an `axiom` (opaqued) or a bare `sorry` (hole) is a FAILURE — that is a mock, not a verification.
 Opacity is legitimate ONLY for the target's trusted leaf DEPENDENCIES, never the target itself.
+
+PLAN FIRST, THEN EXECUTE — do NOT grind primitive-by-primitive. Before running anything, read the
+target functions ONCE and write a short plan: the minimal set of things to translate and how,
+decided via the ladder below IN ORDER. Classify every external dependency the target calls in a
+SINGLE pass:
+  • the target's own logic = the translatable core (keep);
+  • trusted primitives whose internal value the properties don't reason about — crypto / curve /
+    scalar / point arithmetic, hashing, the Fiat–Shamir transcript, RNG, formatting/Debug — are ALL
+    leaves: opaque / exclude them as ONE BATCH (a whole module/trait at a time, e.g. the transcript
+    and the curve crate), not one function at a time;
+  • a data structure whose CONTENTS a property constrains → model it (rung 3).
+Then run charon ONCE with the full `--start-from` + the whole opaque/exclude batch, run aeneas, and
+compile. Only adjust what ACTUALLY breaks (a `--start-from` that didn't resolve, a target left as a
+hole, a compile error) — with a targeted change, not another sweep. Do NOT re-open a dependency you
+already classified, do NOT read the generated Lean line-by-line to re-decide each `axiom`/`def`, and
+do NOT investigate how Aeneas models a primitive. Decide the set up front and COMMIT; the
+TRANSLATE-JUDGE and the downstream `#print axioms` gate are the safety net that catches a wrong call.
 
 TOOLCHAIN (all via bash):
   • Charon → a `.llbc`. From the crate directory (the one whose Cargo.toml defines the target's

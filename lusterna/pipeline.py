@@ -301,10 +301,13 @@ async def _run_translate_stages(deps: AgentDeps, resume_note: str) -> str:
     completed = set(deps.progress.keys())
 
     if "explore" not in completed:
+        hint = (f"\n\nDesign focus hint (which code matters — orient toward it):\n"
+                f"{deps.design_doc[:1500].rstrip()}" if deps.design_doc.strip() else "")
         explore_result = await _run_stage(
             _explore,
-            f"The Rust repository is at /workspace/repo. Explore it with bash (find / grep / cat) "
-            f"and return the entry file and public functions." + resume_note,
+            f"The Rust repository is at /workspace/repo. Do a QUICK orientation with bash (a handful "
+            f"of reads) and return the entry file + the main public functions relevant to the "
+            f"target.{hint}" + resume_note,
             deps, "EXPLORE",
         )
         if explore_result and explore_result.output:

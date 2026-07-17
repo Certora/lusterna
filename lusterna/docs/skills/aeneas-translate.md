@@ -89,16 +89,29 @@ re-translate. You cannot add Aeneas builtins — the source is the only lever.
   adds an entry but leaves the submodules flat; `-subdir` nests them but drops the entry — neither
   gives the expected shape, so just don't split).
 - **Trusted primitives to opaque/exclude** (irrelevant to properties): `--exclude core::fmt::Debug::*`,
-  `--opaque core::fmt::Formatter`, and crypto/curve/hash/transcript/RNG leaves.
+  `--opaque core::fmt::Formatter`, and crypto/curve/hash/transcript/RNG leaves. For a **crypto/proof
+  target**, the ENTIRE external crypto surface — the curve/scalar/point crates and their trait impls,
+  hashing, the Fiat–Shamir transcript, the RNG — is one trusted batch: opaque/exclude it wholesale (by
+  module/crate, not function-by-function). You verify the algebraic relation the target computes, not
+  the primitives; a working example is roughly `--opaque <crate>::transcript --opaque
+  <crate>::encryption::pedersen::pedersen_h --opaque core::fmt::Formatter --exclude core::fmt::Debug::*`.
 
 ## Workflow
 
-1. Scope with `--start-from` to the target; run charon → aeneas (one clean run, no `-split-files`).
-2. Read the result: which target defs exist, which items became `axiom`s or `sorry` holes.
-3. For each opaqued/holed item the target's own logic touches: apply the ONE rule — irrelevant → leave
-   opaque (an assumption); property-relevant → apply the matching recipe in the source.
-4. `cargo test` to confirm behaviour is preserved; re-translate; repeat until the target functions are
-   real `def`s and it compiles.
+Plan first, then execute — do NOT grind primitive-by-primitive (that is the failure mode: an agent
+that re-examines every dependency in the generated Lean instead of committing).
+
+1. **Plan** (read the target once): the target's own logic is the translatable core; classify every
+   external dependency in ONE pass — trusted-and-irrelevant → opaque/exclude as a batch (whole
+   modules/crates); a data structure whose contents a property constrains → model (recipe below).
+2. **Execute once**: charon with `--start-from` + the whole opaque/exclude batch → aeneas (no
+   `-split-files`) → `lake env lean`.
+3. **Fix only what actually broke** with a targeted change (a `--start-from` that didn't resolve, a
+   target left as a hole/axiom, a compile error) — not another sweep. For a property-relevant
+   structure, model it in the source and confirm with `cargo test`. Do not re-open dependencies you
+   already classified or study how Aeneas models a primitive.
+4. Stop as soon as the target functions are real `def`s and it compiles — the judge + `#print axioms`
+   catch a wrong opaque/model call; you don't need to pre-verify every one.
 
 ## Provenance
 
