@@ -1,6 +1,5 @@
-"""Aeneas/Lean operations and analysis: translation, build, axiom check, call-closures,
-footprint, and spec assembly helpers. The heavy Lean logic, kept out of the trivial file
-tools in tools.py."""
+"""Aeneas/Lean operations and analysis: translation, build, the `#print axioms` gate, and
+spec assembly helpers. The heavy Lean logic, kept out of the trivial file tools in tools.py."""
 import logging
 import os
 import re
@@ -12,18 +11,6 @@ from .container import exec_in, OUT_IN, REPO_IN
 from .schemas import AgentDeps, FormalSpec
 
 log = logging.getLogger(__name__)
-
-
-def _crate_dir(deps: AgentDeps, entry_file: str) -> str:
-    """Absolute container dir of the crate owning *entry_file* — the nearest ancestor with a
-    Cargo.toml. Lets Charon build the target sub-crate of a workspace, not the whole tree.
-    Falls back to REPO_IN (single-crate repo)."""
-    d = str(Path(entry_file).parent)
-    while d not in (".", "", "/"):
-        if exec_in(deps.container_id, ["test", "-f", f"{REPO_IN}/{d}/Cargo.toml"])[0] == 0:
-            return f"{REPO_IN}/{d}"
-        d = str(Path(d).parent)
-    return REPO_IN
 
 
 def analyze_translation(deps: AgentDeps, *, do_commit: bool = True) -> dict:
@@ -125,27 +112,11 @@ def _mentions(name: str, text: str) -> bool:
     return bool(re.search(r"(?<![\w])" + re.escape(name) + r"(?![\w])", text))
 
 
-def call_closure(text: str, roots: list[str]) -> list[str]:
-    """Textual transitive closure: def names reachable from *roots* by reference in
-    Lean *text* (comments stripped). Approximate (token-boundary match); over-
-    approximation is the safe direction for the hole check. Precise LLBC-graph closure
-    is a later refinement."""
-    blocks = {n: _strip_lean_comments(b) for n, b in _def_blocks(text).items()}
-    seen, stack = set(roots), list(roots)
-    while stack:
-        body = blocks.get(stack.pop(), "")
-        for other in blocks:
-            if other not in seen and _mentions(other, body):
-                seen.add(other)
-                stack.append(other)
-    return sorted(seen)
-
-
 def referenced_defs(spec_text: str, translation_text: str) -> list[str]:
-    """Translation def names that *spec_text* mentions by name (comments stripped) — the
-    seeds of a stated property's footprint. `call_closure` then expands them transitively.
-    Approximate (token-boundary match); over-approximation is the safe direction for the
-    hole check."""
+    """Translation def names that *spec_text* mentions by name (comments stripped). Used to
+    decide whether a theorem statement references the implementation at all (so `_record_axioms`
+    can split established theorems into implementation-verified vs abstract-only lemmas).
+    Approximate (token-boundary match)."""
     body = _strip_lean_comments(spec_text)
     return [name for name in _def_blocks(translation_text) if _mentions(name, body)]
 
@@ -268,15 +239,14 @@ _STD_AXIOMS = {"propext", "Classical.choice", "Quot.sound"}  # the standard, tru
 
 
 def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
-    """Authoritative hole-impact oracle. Ask Lean which impl-spec theorems are GENUINELY
+    """Authoritative established-theorem oracle. Ask Lean which impl-spec theorems are GENUINELY
     established — i.e. whose proof term depends on NOTHING beyond the standard trusted axioms
-    (propext, Classical.choice, Quot.sound). This subsumes the textual footprint check and the
-    sorry-count: an untranslated Aeneas hole and an unfinished proof BOTH introduce `sorryAx`,
-    and `#print axioms` follows the real proof term through simp sets, instances and every
-    definition — closing the blind spot of the name-based footprint approximation. Crucially it
-    also rejects any OTHER non-standard axiom: `sorryAx`, `Lean.ofReduceBool`/`Lean.trustCompiler`
-    (native_decide's compiler trust), and any `axiom` the model might smuggle in all taint a
-    theorem — "established" means kernel-checked with only the standard axioms.
+    (propext, Classical.choice, Quot.sound). An untranslated Aeneas hole and an unfinished proof
+    BOTH introduce `sorryAx`, and `#print axioms` follows the real proof term through simp sets,
+    instances and every definition. It also rejects any OTHER non-standard axiom: `sorryAx`,
+    `Lean.ofReduceBool`/`Lean.trustCompiler` (native_decide's compiler trust), and any `axiom` the
+    model might smuggle in all taint a theorem — "established" means kernel-checked with only the
+    standard axioms.
 
     Returns {"clean": [names], "tainted": [names], "raw": <trimmed lean output>}, where
     tainted = depends on a non-standard axiom OR could not be resolved (the conservative direction).
@@ -602,58 +572,3 @@ def translation_text(deps: AgentDeps, lean_files: list[str] | None = None) -> st
     parts = [t for rel in lean_files
              for t in [tools.read_out(deps, rel)] if not t.startswith("ERROR:")]
     return "\n\n".join(parts)
-
-
-def footprint(deps: AgentDeps) -> dict:
-    """Compute the footprint of the current implementation spec: the translation defs its
-    theorems (statements + proofs) reference transitively, and which Aeneas holes fall
-    inside it.
-
-    This is the SOLE role of the 'unit' concept — a stated property is soundly grounded
-    iff no hole lies in its footprint. Holes elsewhere in the crate are irrelevant to it.
-    Recomputed after FORMALISE and after PROVE (proofs may pull in more defs). Stored in
-    progress['footprint'] = {defs, holes_in_footprint}."""
-    translation = translation_text(deps)
-    spec = tools.read_out(deps, impl_spec(deps))
-    holes = deps.progress.get("aeneas", {}).get("holes", [])
-    if translation.startswith("ERROR:") or spec.startswith("ERROR:"):
-        # Can't compute — take the conservative (never-claim-sound) direction.
-        fp = {"defs": [], "holes_in_footprint": list(holes)}
-    else:
-        roots = referenced_defs(spec, translation)
-        defs = call_closure(translation, roots)
-        fp = {"defs": defs, "holes_in_footprint": [h for h in holes if h in defs]}
-    deps.progress["footprint"] = fp
-    hif = fp["holes_in_footprint"]
-    if hif:
-        log.warning("Footprint reaches %d untranslated hole(s) %s — properties touching "
-                    "them are NOT soundly grounded", len(hif), hif)
-    else:
-        log.info("Footprint: %d translation def(s), no Aeneas holes inside — "
-                 "properties soundly grounded", len(fp["defs"]))
-    checkpoint.snapshot(deps)
-    return fp
-
-
-if __name__ == "__main__":
-    # Worked example of the footprint idea: a hole taints a property ONLY when it lies in
-    # the closure of the defs that property references. Run: `python -m lusterna.tools`.
-    _TRANSLATION = """
-def foo.helper (x : Nat) : Nat := x + 1
-def foo.compute (x : Nat) : Nat := foo.helper x
-def foo.untranslatable (x : Nat) : Nat :=
-  sorry
-def foo.other (x : Nat) : Nat := foo.untranslatable x
-"""
-    _HOLES = ["foo.untranslatable"]  # what Aeneas left as a bare `sorry`
-    for label, spec in [
-        ("clean   (property touches compute → helper)", "theorem t : foo.compute 0 = 1 := by sorry"),
-        ("tainted (property reaches other → untranslatable)", "theorem t : foo.other 0 = 0 := by sorry"),
-    ]:
-        roots = referenced_defs(spec, _TRANSLATION)
-        footprint = call_closure(_TRANSLATION, roots)
-        holes_in_footprint = [h for h in _HOLES if h in footprint]
-        verdict = "SOUND" if not holes_in_footprint else f"NOT SOUND — holes {holes_in_footprint}"
-        print(f"{label}\n  roots={roots} footprint={footprint} → {verdict}\n")
-
-

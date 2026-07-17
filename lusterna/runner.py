@@ -44,17 +44,6 @@ def _pipeline_briefing(deps: AgentDeps) -> str:
     ]
     done = [label for key, label in stage_flags if key in p]
 
-    fp = p.get("footprint")
-    fp_line = ""
-    if fp is not None:
-        hif = fp.get("holes_in_footprint", [])
-        fp_line = (
-            f"Property footprint: {len(fp.get('defs', []))} translation def(s); "
-            + ("no Aeneas holes inside — proven properties are soundly grounded"
-               if not hif else
-               f"⚠ {len(hif)} untranslated hole(s) INSIDE the footprint ({hif}) — "
-               f"properties touching them are NOT soundly grounded")
-        )
     holes = (p.get("aeneas") or {}).get("holes", [])
 
     lines = [
@@ -69,8 +58,6 @@ def _pipeline_briefing(deps: AgentDeps) -> str:
         lines.insert(2, f"Design document (focus hint, excerpt):\n{deps.design_doc[:400].rstrip()}")
     if holes:
         lines.append(f"Aeneas holes (untranslated defs) in the crate: {holes}")
-    if fp_line:
-        lines.append(fp_line)
 
     # TRANSLATE accountability trail: scope, opaque assumptions, source modifications.
     trail = p.get("translate_trail")

@@ -105,7 +105,7 @@ def init_repo_git(container_id: str) -> None:
             workdir=REPO_IN)
     exec_in(container_id, ["git", "add", "-A"], workdir=REPO_IN)
     exec_in(container_id,
-            ["git", "commit", "--allow-empty", "-m", "chore: pristine source (pre-remediation baseline)"],
+            ["git", "commit", "--allow-empty", "-m", "chore: pristine source (baseline for edit diffs)"],
             workdir=REPO_IN)
     log.info("Source repo git-initialised at %s inside %s", REPO_IN, container_id[:12])
 

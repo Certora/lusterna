@@ -316,7 +316,7 @@ async def _run_translate_stages(deps: AgentDeps, resume_note: str) -> str:
     if "informal_spec" not in completed:
         # INFER on the PRISTINE Rust source (before any translation/refactor) — the CODE is the
         # source of truth for behaviour. The design doc is only a FOCUS HINT (which functions/
-        # guarantees matter), never a spec to reconcile against. Derives the InformalSpec AND
+        # guarantees matter), never a spec to conform to. Derives the InformalSpec AND
         # the Charon target patterns (the set of functions the properties concern).
         sources = tools.read_repo_sources(deps)
         entry_functions = deps.progress.get("explore", {}).get("entry_functions", [])
@@ -408,10 +408,8 @@ class SpecPhase:
 
     async def run(self) -> str:
         """Run the loop and return the (possibly cleared) resume_note. Fail-fasts if the spec
-        never compiled — RECONCILE and PROVE must not run on an unverifiable spec."""
+        never compiled — PROVE must not run on an unverifiable spec."""
         if "verdict" in self.deps.progress:                 # resuming past this phase
-            if "footprint" not in self.deps.progress:
-                lean.footprint(self.deps)
             return self.resume_note
 
         while self.attempt < self.MAX_ROUNDS:
@@ -453,7 +451,6 @@ class SpecPhase:
             raise _PipelineAborted(
                 f"FORMALISE could not produce a spec whose statements compile "
                 f"(after up to {self.MAX_ROUNDS} rounds) — cannot verify")
-        lean.footprint(self.deps)   # which Aeneas holes (if any) actually touch the stated properties
         return self.resume_note
 
     async def _formalise(self) -> "FormalSpec | None":
@@ -643,7 +640,6 @@ class ProvePhase:
         if not lean.build(deps).get("success"):
             raise _PipelineAborted("PROVE left the spec in a non-compiling state")
         deps.progress["proofs_done"] = True
-        lean.footprint(deps)   # proofs may reference defs the stubs did not
         self._record_axioms()
 
     def _prompt(self) -> str:
@@ -702,8 +698,6 @@ async def _run_report(deps: AgentDeps, resume_note: str) -> str:
     spec_defects     = deps.progress.get("verdict", {}).get("defects", [])
     sorry_remaining  = max(lean.sorry_count(deps), 0)
     holes            = deps.progress.get("aeneas", {}).get("holes", [])
-    fp               = deps.progress.get("footprint", {})
-    holes_in_fp      = fp.get("holes_in_footprint", [])
     axioms           = deps.progress.get("axioms", {})
     ax_clean         = axioms.get("clean", [])
     ax_tainted       = axioms.get("tainted", [])
@@ -747,13 +741,10 @@ async def _run_report(deps: AgentDeps, resume_note: str) -> str:
     report_result = await _run_stage(
         _report,
         f"Proceed to REPORT. "
-        f"Verification approach: the tool chose which properties to specify over the whole "
-        f"translated crate; a property is soundly grounded only if no Aeneas hole lies in "
-        f"its footprint. Footprint: {len(fp.get('defs', []))} translation def(s) — "
-        + ("no holes inside, properties soundly grounded. "
-           if not holes_in_fp else
-           f"NOT fully verified: {len(holes_in_fp)} hole(s) INSIDE the footprint "
-           f"({holes_in_fp}) taint the properties touching them. ")
+        f"Verification approach: the tool derives the properties the target functions satisfy and "
+        f"proves them against the Aeneas translation; the authoritative verdict is Lean's `#print "
+        f"axioms` (below) — a theorem that depends on an untranslated hole or an assumed axiom is "
+        f"reported as tainted, not established. "
         + translation_line
         + f"Untranslated holes in crate: {', '.join(holes) if holes else 'none'}. "
         f"Spec-judge: {'approved (no defects)' if not spec_defects else str(len(spec_defects)) + ' unresolved defect(s)'}. "

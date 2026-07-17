@@ -5,9 +5,8 @@ Tools are registered onto them in runner.py (the tool wrappers depend on orchest
 helpers, so registration there avoids a circular import). Orchestration — sequencing,
 loops, context briefing — lives in pipeline.py.
 
-The CODE is the source of truth: the pipeline infers what the code does and proves it;
-there is no abstract-spec-from-the-doc track and no reconciliation. A design document, if
-provided, is only a focus hint to INFER.
+The CODE is the source of truth: the pipeline infers what the code does and proves it. A
+design document, if provided, is only a focus hint to INFER.
 """
 from . import docs, factory
 from .schemas import (
@@ -355,7 +354,7 @@ Write exactly these files, in this order:
       implementation) SEPARATELY and never as the verification result. If theorems were proved
       but NONE reference the implementation, say plainly that 0 properties of the code were
       verified. Also: translation result (incl. any assumed/opaqued primitives), spec-judge
-      result, footprint holes.
+      result, and any untranslated holes.
 
   report/02_translation.md
       What was translated, and HOW FAITHFUL the translation is to the original code —
@@ -374,9 +373,9 @@ Write exactly these files, in this order:
           original is ASSERTED (and cross-checked by the proofs against the pristine-derived
           spec) but NOT machine-certified — never claim "verified the original code" here.
       Also call out any untranslated holes (functions left as `sorry`; in the pipeline
-      context). A hole matters ONLY if it lies inside the footprint of a proven property —
-      holes elsewhere do not taint the proven properties. State which holes, if any, fall
-      inside the footprint.
+      context). A hole only matters if a proven theorem depends on it — and that is caught
+      authoritatively by the `#print axioms` gate (such a theorem is reported tainted, not
+      established), so tie hole-impact to that verdict rather than guessing.
 
   report/03_implementation_spec.md
       List every theorem stub from the implementation spec with its statement and a

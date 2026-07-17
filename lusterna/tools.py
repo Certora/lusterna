@@ -1,13 +1,12 @@
 """Agent tools + harness IO helpers.
 
 The agents drive the container through ONE tool — `bash` — plus `setup_lake_project`
-(build-environment provisioning that is not a plain shell one-liner). Everything a stage
-used to do through a dozen bespoke tools (list/read/search/patch/write files, git, build)
-is now just a shell command.
+(build-environment provisioning that is not a plain shell one-liner). Reading, writing,
+searching, git, and running the toolchain are all just shell commands.
 
 The remaining functions take plain values (not RunContext) and are HARNESS helpers: the
-orchestrator's own file IO and git, used to inject inputs, assemble artefacts, run gates,
-and checkpoint. They are not exposed to agents.
+orchestrator's own file IO and git, for injecting inputs, assembling artefacts, running
+gates, and checkpointing. They are not exposed to agents.
 """
 import logging
 import subprocess

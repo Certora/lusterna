@@ -4,266 +4,155 @@ An AI agent that translates Rust programs into formally verified Lean 4 specific
 
 Given a Rust repository and a design document, Lusterna:
 
-1. Derives an **abstract specification** from the design document alone — before looking at any code
-2. Explores the source code
-3. Translates the Rust code to Lean 4 via [Aeneas](https://github.com/AeneasVerif/aeneas)
-4. Infers an informal specification from the translated code and the design document
-5. Derives a formal Lean 4 specification (theorem stubs with `sorry`)
-6. Verifies the spec compiles with `lake build`; iterates until it does (max 3 attempts)
-7. Has a spec-judge list concrete defects in the theorem statements (checked against the code and the informal spec); revises until the defect list is empty
-8. **Reconciles** the abstract spec against the implementation spec — classifies discrepancies and flags critical ones (implementation bugs, mis-stated theorems)
-9. Attempts to fill in proofs using Lean 4 tactics; the orchestrator ends the stage when no `sorry` remain, the remaining-`sorry` count stops improving, or a round cap is hit
-10. Writes a final verification report
+1. Explores the source and identifies the entry file and public functions
+2. Infers, from the code, the behavioural properties the target functions satisfy — and which functions the verification targets (the design document is only a focus hint; the code is the source of truth)
+3. Translates the target to Lean 4 via [Charon](https://github.com/AeneasVerif/charon) + [Aeneas](https://github.com/AeneasVerif/aeneas), driving the toolchain to translate the target's own logic (never mocking it away)
+4. States the properties as Lean 4 theorem stubs and builds them with `lake build`, iterating until they compile
+5. Has a spec-judge list concrete defects in the theorem statements (checked against the translation and the inferred properties); revises until the list is empty
+6. Fills in proofs with Lean 4 tactics against the `lake build` oracle
+7. Runs `#print axioms` — the authoritative gate: a theorem is *established* only if its proof depends on nothing beyond the standard axioms (so an untranslated hole, a leftover `sorry`, `native_decide`'s compiler trust, or an assumed axiom all leave it reported as *tainted*, not verified)
+8. Writes a verification report
 
-All generated artefacts are git-committed incrementally inside the toolchain container and pulled to the host on exit.
+Every stage that touches the container drives it through a single `bash` tool — running Charon, Aeneas, Cargo, Lake, and all file/git work itself. All artefacts are git-committed incrementally inside the toolchain container and pulled to the host on exit.
 
 ## Architecture
-
-The package is organised by responsibility — orchestration, stage-running machinery,
-domain operations, and the agent I/O surface are separate modules:
 
 ```
 lusterna/
 ├── cli.py          — Click entry point; manages the container lifecycle
-├── pipeline.py     — The pipeline itself: the stage phases (SpecPhase, ProvePhase),
-│                     the linear stage drivers, and run_session sequencing them
+├── pipeline.py     — The pipeline: the stage phases (TranslatePhase, SpecPhase,
+│                     ProvePhase) and run_session sequencing the stages
 ├── runner.py       — Generic stage-running machinery: per-stage prompt briefing,
-│                     running a stage agent with history/limits, and tool wiring
+│                     running a stage agent under history/limits, and tool wiring
 ├── stages.py       — Stage-agent definitions (prompt + output type per stage)
 ├── factory.py      — Agent factory: stage-agent construction + shared hooks
-│                     (token tracking, compaction summariser, budget, history)
-├── lean.py         — All Aeneas/Lean domain logic: run_aeneas, check_lean,
-│                     #print axioms partition, call-closure/footprint analysis,
-│                     and the implementation-spec operations
-├── tools.py        — Agent-callable file & git tools (the plain I/O surface)
-├── schemas.py      — AgentDeps (the injected dependency bundle) + all Pydantic
+│                     (token tracking, budget enforcement, history snapshot)
+├── lean.py         — Aeneas/Lean domain logic: translation analysis, lake build,
+│                     the #print axioms gate, and implementation-spec operations
+├── tools.py        — The agent's `bash` + setup_lake_project tools, and the
+│                     harness's own file/git IO helpers
+├── schemas.py      — AgentDeps (the injected dependency bundle) + the Pydantic
 │                     structured-output schemas
 ├── docs.py         — Aeneas/Lean skill documents embedded as agent instructions
-├── container.py    — Docker lifecycle: start, push repo, exec, reset/pull artefacts, stop
+├── container.py    — Docker lifecycle: start, push repo, exec, reset/pull artefacts
 ├── checkpoint.py   — Per-session numbered checkpoints + snapshot(deps) serialisation
 ├── telemetry.py    — Session-wide token-usage tracking
-└── config.py       — All env-driven knobs, plus logging setup
+└── config.py       — Env-driven knobs, plus logging setup
+
+tools/aeneas-characterize/   — build-time harness that measures Aeneas's translatable
+                               fragment (see below); seeds the TRANSLATE skill.
 ```
 
 ### Pipeline
 
-> **The core invariant:** the pipeline never claims a property is _verified_ unless
-> Lean's kernel agrees. "Verified" means **kernel-established on the standard axioms only**
-> _and_ the theorem statement references the real, mechanically-translated code.
-> Everything else is reported honestly as unproven or as an abstract helper.
-
 ```mermaid
 flowchart TD
+  DESIGN["📄 DESIGN.md<br/>focus hint"]:::src
+  RUST["🦀 Rust crate<br/>source of truth"]:::src
 
-  %% ---------------- inputs ----------------
-  DESIGN["📄 DESIGN.md<br/>intended behaviour"]:::src
-  RUST["🦀 Rust crate<br/>the real code"]:::src
+  EXPLORE["EXPLORE<br/>entry file + public fns"]:::impl
+  INFER["INFER<br/>behaviour spec + target_patterns<br/>(pristine source)"]:::impl
+  TRANSLATE["TRANSLATE<br/>agent drives Charon → Aeneas → Lean"]:::impl
+  TJUDGE{"TRANSLATE-JUDGE<br/>target translated & faithful?"}:::gate
+  FORMALISE["FORMALISE<br/>theorem stubs"]:::impl
+  FBUILD{"lake build<br/>compiles?"}:::gate
+  SJUDGE{"SPEC-JUDGE<br/>defects?"}:::gate
+  PROVE["PROVE<br/>discharge sorry vs lake build"]:::impl
+  AXIOMS["#print axioms<br/>established-theorem gate"]:::verify
+  REPORT["REPORT"]:::report
 
-  %% ---------------- design / spec track ----------------
-  subgraph DT ["Design–intent track"]
-    direction TB
-    DOCINFER["DOC-INFER<br/>abstract informal spec"]:::doc
-    DOCFORM["DOC-FORMALISE<br/>abstract Lean stubs"]:::doc
-    DOCINFER --> DOCFORM
-  end
+  RUST --> EXPLORE --> INFER --> TRANSLATE --> TJUDGE
+  TJUDGE -- "defects (mock / hole / unfaithful)" --> TRANSLATE
+  TJUDGE -- "approved" --> FORMALISE --> FBUILD
+  FBUILD -- "✗ fix" --> FORMALISE
+  FBUILD -- "✓" --> SJUDGE
+  SJUDGE -- "defects" --> FORMALISE
+  SJUDGE -- "clean" --> PROVE --> AXIOMS --> REPORT
+  DESIGN -. "hint" .-> INFER
 
-  %% ---------------- implementation track ----------------
-  subgraph IT ["Implementation track"]
-    direction TB
-    EXPLORE["EXPLORE<br/>entry file + public fns"]:::impl
-    INFER["INFER<br/>behaviour spec + target<br/>(pristine source)"]:::impl
-    TRANSLATE["TRANSLATE ⚙<br/>Charon → Aeneas → Lean<br/>target-scoped · munge as last resort"]:::impl
-    FORMALISE["FORMALISE<br/>emit theorem stubs"]:::impl
-    FBUILD{"lake build<br/>compiles?"}:::gate
-    JUDGE["SPEC-JUDGE<br/>defect list"]:::impl
-    EXPLORE --> INFER --> TRANSLATE --> FORMALISE --> FBUILD
-    FBUILD -- "✗ fix" --> FORMALISE
-    FBUILD -- "✓" --> JUDGE
-    JUDGE -- "defects — re-formalise<br/>(≤10 rounds; drop after 3 fails)" --> FORMALISE
-  end
-
-  DESIGN --> DOCINFER
-  RUST --> EXPLORE
-
-  %% ---------------- reconcile + prove + verify ----------------
-  RECONCILE["RECONCILE<br/>abstract ⟷ implementation spec"]:::recon
-  PROVE["PROVE<br/>discharge every sorry"]:::impl
-  PBUILD{"lake build ✓<br/>and sorry-count ↓?"}:::gate
-  AXIOMS["#print axioms<br/>kernel soundness check"]:::verify
-  REPORT["REPORT<br/>VERIFICATION_REPORT.md"]:::report
-
-  JUDGE -- "clean · best compiling spec" --> RECONCILE
-  DOCFORM --> RECONCILE
-  RECONCILE -- "only on a compiling spec" --> PROVE
-  PROVE --> PBUILD
-  PBUILD -- "✗ / no new min<br/>(stall 15, warmup 25) · restore best" --> PROVE
-  PBUILD -- "✓ 0 sorry / stop" --> AXIOMS
-  AXIOMS --> REPORT
-
-  %% ---------------- concept callouts (always visible) ----------------
-  FAITH["🔒 FAITHFULNESS<br/>target-scoped; source refactored only as a<br/>last resort (behaviour-preserving, logged);<br/>untranslatable code → explicit sorry holes"]:::coFaith
-  ORACLE["⚖ BUILD ORACLE<br/>lake build is the objective gate —<br/>the sole judge of what compiles / works"]:::coOracle
-  CONV["🎯 CONVERGENCE<br/>re-formalise until the defect list is empty;<br/>the last COMPILING spec is preserved"]:::coConv
-  COMPL["🧭 COMPLETENESS<br/>does the impl spec match design intent?<br/>critical = implementation_wrong / bridge_wrong"]:::coCompl
-  SOUND["🛡 SOUNDNESS<br/>verified = kernel-established on the 3 standard<br/>axioms only — rejects sorryAx, native_decide,<br/>and any smuggled axiom"]:::coSound
-  IMPL["🏅 IMPL-VERIFIED (headline)<br/>counts only if the statement references an<br/>Aeneas-translated def; else it is a helper lemma"]:::coImpl
-
-  TRANSLATE -.- FAITH
-  FBUILD -.- ORACLE
-  PBUILD -.- ORACLE
-  JUDGE -.- CONV
-  RECONCILE -.- COMPL
-  AXIOMS -.- SOUND
-  AXIOMS -.- IMPL
-
-  %% ---------------- styling ----------------
   classDef src    fill:#e2e8f0,stroke:#475569,stroke-width:1.5px,color:#0f172a;
-  classDef doc    fill:#e0e7ff,stroke:#4f46e5,stroke-width:1.5px,color:#1e1b4b;
   classDef impl   fill:#cffafe,stroke:#0891b2,stroke-width:1.5px,color:#083344;
   classDef gate   fill:#fef3c7,stroke:#d97706,stroke-width:1.5px,color:#451a03;
-  classDef recon  fill:#f3e8ff,stroke:#7c3aed,stroke-width:1.5px,color:#3b0764;
   classDef verify fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#052e16;
   classDef report fill:#e2e8f0,stroke:#334155,stroke-width:1.5px,color:#0f172a;
-
-  classDef coFaith  fill:#eff6ff,stroke:#2563eb,stroke-width:1px,stroke-dasharray:4 3,color:#1e3a8a;
-  classDef coOracle fill:#fffbeb,stroke:#d97706,stroke-width:1px,stroke-dasharray:4 3,color:#78350f;
-  classDef coConv   fill:#ecfeff,stroke:#0891b2,stroke-width:1px,stroke-dasharray:4 3,color:#164e63;
-  classDef coCompl  fill:#faf5ff,stroke:#7c3aed,stroke-width:1px,stroke-dasharray:4 3,color:#581c87;
-  classDef coSound  fill:#f0fdf4,stroke:#16a34a,stroke-width:1px,stroke-dasharray:4 3,color:#14532d;
-  classDef coImpl   fill:#fdf2f8,stroke:#db2777,stroke-width:1px,stroke-dasharray:4 3,color:#831843;
 ```
 
-The same flow, annotated with the artefact each stage commits and the tools it uses:
+### TRANSLATE
 
-```
-CLI
- └─ start container
-     └─ tar-pipe repo → /workspace/repo
-     └─ git init /workspace/out
-         └─ Python pipeline (pipeline.py) driving per-stage agents (pydantic-ai)
-             ├─ DOC-INFER    → specs/abstract_informal_spec.json  (git commit)
-             │                structured output (design doc only, no code)
-             ├─ DOC-FORMALISE → specs/abstract_formal_spec.lean  (git commit)
-             │                structured output (abstract informal spec → Lean stubs)
-             ├─ EXPLORE      structured output (ExploreResult); Rust sources injected,
-             │                no tools — identifies entry file + public functions
-             ├─ INFER        → specs/informal_spec.json      (git commit)
-             │                structured output on the PRISTINE Rust source; derives the
-             │                behaviour spec AND the Charon target_patterns (scope)
-             ├─ TRANSLATE    Charon → Aeneas → lean/  (git commit) — target-scoped loop
-             │                --start-from <target> (SAFE); on failure/holes-in-target it
-             │                escalates: --opaque dep (axiom/ASSUMPTION) → behaviour-
-             │                preserving source refactor (MODIFICATION, logged) → abort.
-             │                Every action recorded in translate/accountability.md
-             ├─ FORMALISE    structured output (FormalSpec); no tools — the agent emits
-             │                theorem stubs, the orchestrator assembles them into the spec
-             │   + BUILD     (lake build) — the orchestrator's convergence gate
-             ├─ SPEC-JUDGE   (re-formalise until no defects remain, up to 10 rounds)
-             │                structured output; lists defects in the impl spec, judged
-             │                against the code + informal spec (approval = empty list)
-             ├─ RECONCILE    → specs/reconciliation.json  (git commit)
-             │                structured output; orchestrator injects abstract + impl specs
-             │                classifies discrepancies:
-             │                  implementation_wrong / bridge_wrong (CRITICAL)
-             │                  abstract_wrong (minor) / design_doc_silent (gap)
-             ├─ PROVE        patch_output_lines, write_file, check_lean, git (tools)
-             │                attempts every sorry theorem; orchestrator ends the stage
-             │                on build-verified sorry count (0 / no improvement / round cap)
-             └─ REPORT       write_file, git_log → VERIFICATION_REPORT.md
-                              orchestrator injects all spec and reconciliation files
- └─ tar-pipe /workspace/out → host out_dir
- └─ stop container
-```
+TRANSLATE is where the target Rust becomes Lean. The agent drives Charon and Aeneas at the shell,
+scoping to the target's functions (`--start-from`) and getting the target's own logic translated as
+real Lean `def`s. Aeneas has a limited Rust fragment, so on larger targets some dependencies do not
+translate. The agent handles each by the least-degrading option that works:
+
+- **scope** — `--start-from` the target's call-closure and drop out-of-closure noise;
+- **assume** — `--opaque` a trusted leaf dependency the properties do not reason about (crypto,
+  hashing, transcripts, formatting); Aeneas emits it as a Lean `axiom`, which the `#print axioms`
+  gate then flags on any theorem that depends on it;
+- **model** — a behaviour-preserving source refactor when a data structure the properties *do*
+  depend on has no Lean model (e.g. a `BTreeMap` ledger → an association list); confirmed against the
+  crate's own `cargo test` and recorded, with the diff, in `translate/accountability.md`.
+
+A **TRANSLATE-JUDGE** gates the result: it rejects a translation that mocks the target (opaques a
+target function, or opaques a data structure whose contents a property constrains) or that changes
+observable behaviour. Every alteration is disclosed for human review; if the target cannot be
+translated without mocking it, the run aborts rather than emitting a hollow translation.
+
+To make the agent recognise-and-apply rather than rediscover Aeneas's fragment every run, the
+translatability playbook (`docs/skills/aeneas-translate.md`) is injected as a skill. It is **measured**,
+not folklore: `tools/aeneas-characterize/` runs one probe per construct through this exact toolchain
+and records the verdict (translates / opaques / holes / rejects), and extracts Aeneas's builtin
+registry (the authoritative "what stdlib has a Lean model" set). Re-run it on a toolchain bump.
 
 ### Docker interaction
 
-The toolchain (Rust/Cargo, Charon, Aeneas, Lean/Lake) lives entirely inside a Docker container. There are no bind-mounts: the source repo is pushed in via a tar pipe at session start and artefacts are pulled back out at the end. This means:
+The toolchain (Rust/Cargo, Charon, Aeneas, Lean/Lake) lives entirely inside a Docker container.
+There are no bind-mounts: the source repo is pushed in via a tar pipe at session start and artefacts
+are pulled back out at the end.
 
-- The container has its own isolated filesystem — no host paths are exposed
-- The agent cannot reach anything outside `/workspace/repo` (read-only by convention) or `/workspace/out` (writable)
-- The container runs with `--network none`, `--cap-drop all`, and `--security-opt no-new-privileges`
+- The container has its own isolated filesystem — no host paths are exposed.
+- The source is at `/workspace/repo` (git-initialised at a pristine baseline so any behaviour-
+  preserving edit is captured as a diff), and generated artefacts go to `/workspace/out`.
+- The container runs with `--cap-drop all` and `--security-opt no-new-privileges`. Network is enabled
+  so Charon can `cargo build` targets whose dependencies are fetched on demand.
 
-All toolchain invocations go through `docker exec`. Git also runs inside the container so the commit history is part of the pulled artefacts.
+### Pipeline stages
 
-### Pipeline stages (`stages.py` + `pipeline.py` + `runner.py`)
+Each stage agent is declared in `stages.py` (prompt + output type), constructed by `factory.py`, and
+driven by `pipeline.py`. Each stage starts with a fresh context — stages communicate via the
+filesystem (git-committed artefacts) and `deps.progress`, not via message history. Context-window
+management is delegated to the model's native server-side context management, so a long shell-driven
+stage stays bounded without a client-side rewrite that would bust the prompt cache.
 
-Each stage agent is declared in `stages.py` (prompt + output type), constructed by `factory.py`, and driven by the pipeline in `pipeline.py` (`run_session()` and the two stateful phases). The generic per-stage machinery — briefing, running the agent under history/limits, and attaching the tools that the PROVE/REPORT agents use — lives in `runner.py`. Each stage starts with a fresh context — stages communicate via the filesystem (git-committed artefacts) and `deps.progress`, not via message history. Within each stage, a manual compaction step triggers when accumulated input tokens exceed `LUSTERNA_COMPACTION_THRESHOLD`: all messages up to the start of the last complete turn are summarised by a lightweight summariser (in `factory.py`) and replaced with a single summary message.
-
-Most stages are **tool-less**: their inputs (Rust sources, the Lean translation, prior specs) are injected directly into the prompt and they return structured output. Only PROVE and REPORT are given tools, because they must iterate against the build and write the final report.
-
-| Stage | Key tools | Purpose |
+| Stage | Interface | Purpose |
 |---|---|---|
-| DOC-INFER | *(structured output)* | Derive abstract informal spec from design doc — no code access |
-| DOC-FORMALISE | *(structured output)* | Derive abstract Lean stubs from the abstract informal spec |
-| EXPLORE | *(structured output)* | Rust sources injected; identify the entry file and public functions |
-| INFER | *(structured output)* | Runs on the **pristine** Rust source (before translation); derives the behaviour spec of the original code **and** the Charon `target_patterns` that scope the target |
-| TRANSLATE | *(Charon/Aeneas + remediation agent)* | Scopes Charon to the target (`--start-from`) and drives a soundness-graded loop to translate the target's closure cleanly: scope (SAFE) → `--opaque` dep, emitted as a Lean `axiom`/assumption (ASSUMPTION) → behaviour-preserving source refactor (MODIFICATION, logged with a diff) → abort. Every action is recorded in `translate/accountability.md`; the report qualifies each claim by the weakest action touching it |
-| FORMALISE | *(structured output)* | Emit theorem stubs (FormalSpec); the orchestrator assembles them and uses `lake build` as the convergence gate |
-| SPEC-JUDGE | *(structured output)* | Lists concrete defects in the impl-spec statements (judged against the code + informal spec); re-formalise until the defect list is empty |
-| RECONCILE | *(structured output)* | Orchestrator injects abstract + impl specs; classifies discrepancies and flags critical ones |
-| PROVE | `patch_output_lines`, `write_file`, `check_lean`, git | Attempt a proof for every `sorry` theorem; orchestrator ends the stage on the build-verified `sorry` count (0 / no improvement / round cap) |
-| REPORT | `write_file`, `git_log` | Orchestrator injects all spec and reconciliation files; produces `VERIFICATION_REPORT.md` |
+| EXPLORE | `bash`, structured output | Identify the entry file and public functions |
+| INFER | structured output | On the pristine Rust source, derive the behavioural properties **and** the Charon `target_patterns` that scope the target |
+| TRANSLATE | `bash`, structured output | Drive Charon+Aeneas to translate the target (scope → assume → model → abort); log every alteration to `translate/accountability.md` |
+| TRANSLATE-JUDGE | structured output | Reject a mocked / unfaithful / behaviour-changing translation; approval = empty defect list |
+| FORMALISE | structured output | Emit theorem stubs (statements only); the orchestrator assembles them and `lake build` is the convergence gate |
+| SPEC-JUDGE | structured output | List concrete defects in the theorem statements; re-formalise until the list is empty |
+| PROVE | `bash` | Attempt a proof for every `sorry` theorem against `lake build`; leaving hard theorems as `sorry` is honest |
+| REPORT | `bash` | Produce `VERIFICATION_REPORT.md` from the injected artefacts |
 
-### Embedded specialists (`factory.py`)
-
-The one embedded helper is a single-turn agent with no message history, invisible to the pipeline loop.
-
-| Specialist | Output type | Purpose |
-|---|---|---|
-| compaction-summariser | `str` | Summarises a stage's older messages into one message to keep context size manageable |
-
-### Proof search approach
-
-PROVE uses `check_lean` (`lake build`) as its feedback mechanism — the build is the only judge of what actually works, so PROVE attempts every `sorry` theorem rather than pre-filtering by a difficulty guess. Termination is decided by the `ProvePhase` loop, not by the model: the `sorry` count is measured **only on a successful build** (a broken edit can't fake progress), and the stage ends when that count reaches 0, when no new verified minimum is reached for `ProvePhase.STALL` turns, or when no verified proof lands at all within `ProvePhase.WARMUP` turns. These caps are class constants on the phase that owns them, not module globals or env vars. This objective, Python-side metric replaces the previous model-emitted "stagnant" signal, which could not reliably compare across rounds. Proof status in the report is read straight from the spec (proved = no `sorry`). The stage agent works from its training knowledge of Lean 4 and Aeneas idioms (embedded as skill documents in `docs/`). This keeps the toolchain simple and avoids the latency and reliability problems of running a Lean language server inside a locked-down, network-isolated container.
-
-### Soundness: holes, footprint, and remediation faithfulness
-
-By default the Rust source is untouched, so anything Aeneas cannot translate is left as an
-explicit `sorry` **hole** rather than a rewrite or a crash. A property is only sound if no
-hole lies underneath it. Lusterna checks this two ways: a cheap **footprint** (does a
-stated property textually reach a hole?) computed after FORMALISE and PROVE, and — the
-authoritative one — Lean's `#print axioms` after PROVE, which reports whether a *proved*
-theorem depends on `sorryAx` (introduced by both untranslated holes and unfinished
-proofs). A theorem counts as genuinely established only when its axiom set is free of
-`sorryAx`.
-
-When TRANSLATE cannot translate the target as written, it escalates (see the TRANSLATE row
-above), and each rung has a known soundness cost that the report reflects:
-
-- **`--start-from` scoping / dropping out-of-closure code** — SAFE; the target is translated
-  unmodified, so the claim is "verified of the original code."
-- **`--opaque <dep>`** — the dependency becomes a Lean `axiom`, so `#print axioms` **already**
-  taints any theorem that depends on it; such a result is "verified conditional on the
-  assumed behaviour of `<dep>`."
-- **Behaviour-preserving source refactor** — the only rung the axiom gate cannot see (the
-  Lean has no way to know the Rust changed). Because INFER derives the behaviour spec from
-  the *pristine* source and PROVE then checks those properties against the refactored
-  translation, a behaviour-changing edit tends to surface as a failed/tainted proof; still,
-  such results are reported as "verified of a refactored implementation" and every edit is
-  recorded with a diff in `translate/accountability.md`.
-
-See **[HOLES_AND_FOOTPRINT.md](HOLES_AND_FOOTPRINT.md)** for the full story with
-runnable code (`python -m lusterna.tools`).
+The structured stages (EXPLORE / INFER / FORMALISE / SPEC-JUDGE / TRANSLATE-JUDGE) receive their
+inputs injected and return structured output — so FORMALISE cannot smuggle in a proof (theorem
+bodies are assembled as `sorry` and only PROVE fills them). The `#print axioms` gate after PROVE is
+the authoritative verdict; the report's headline metric is the theorems it establishes that also
+reference an Aeneas-translated def.
 
 ### Checkpoints
 
-After every pipeline stage that mutates state the agent saves a checkpoint. Checkpoints are stored as numbered JSON files inside a per-session directory:
+After each stage the agent saves a numbered checkpoint under a per-session directory:
 
 ```
-~/.local/share/lusterna/sessions/
-  <session-id>/
-    checkpoint-001.json   — after TRANSLATE
-    checkpoint-002.json   — after INFER
-    checkpoint-003.json   — after FORMALISE
-    ...
+~/.local/share/lusterna/sessions/<session-id>/checkpoint-001.json …
 ```
 
-Each file records:
-
-- `state` — progress dict, container ID, repo/work paths, design doc
-- `git_head` — SHA of `/workspace/out` HEAD at save time
-
-On resume, the pipeline restores the artefacts from `--out` into a fresh container and then hard-resets the output repo to the resumed checkpoint's `git_head`, so you always continue from exactly that checkpoint's state — never from whatever happens to be left in the work directory. If those artefacts don't contain the checkpoint's commit, resume refuses rather than continuing from a mismatch. Since each stage starts with fresh context, resuming simply skips completed stages (tracked via the progress dict) and re-runs from the first incomplete one.
+Each records the progress dict, container ID, repo/work paths, design doc, and the `git_head` SHA of
+`/workspace/out` at save time. On resume, the pipeline restores the artefacts from `--out` into a
+fresh container and hard-resets the output repo to the resumed checkpoint's `git_head`, so you
+continue from exactly that state — never from whatever drifted onto disk. If the artefacts don't
+contain that commit, resume refuses rather than continuing from a mismatch.
 
 ## Requirements
 
@@ -282,31 +171,23 @@ pip install -e .
 ## Quickstart
 
 ```sh
-# 1. Build the toolchain image (one-time, ~30 min for the real image)
+# 1. Build the toolchain image (one-time)
 lusterna build-image
 
 # 2. Run the pipeline
 export ANTHROPIC_API_KEY=sk-...
 lusterna run /path/to/rust-repo /path/to/design.md
 
-# Artefacts land in /path/to/rust-repo-lusterna/ by default.
-# Override with --out:
-lusterna run /path/to/rust-repo /path/to/design.md --out /tmp/results
+# Artefacts land in /path/to/rust-repo-lusterna/ by default; override with --out.
 ```
 
 ## Commands
-
-```
-lusterna [--verbose] COMMAND
-```
 
 ### `run`
 
 ```
 lusterna run REPO DESIGN_DOC [OPTIONS]
 ```
-
-Run the full verification pipeline on `REPO` using `DESIGN_DOC`.
 
 | Option | Default | Description |
 |---|---|---|
@@ -315,127 +196,62 @@ Run the full verification pipeline on `REPO` using `DESIGN_DOC`.
 | `--checkpoint-number N` | (latest) | Checkpoint to resume from within a session |
 | `--container NAME` | (auto-start) | Attach to a pre-running toolchain container |
 | `--image TAG` | `lusterna-toolchain:latest` | Image to start when `--container` is not given |
-| `--token-budget N` | (unlimited) | Maximum total tokens across all agents for this session; overrides `LUSTERNA_TOKEN_BUDGET`; 0 = unlimited |
+| `--token-budget N` | (unlimited) | Maximum total tokens across all agents; 0 = unlimited |
 
-Output (stdout, JSON):
+Output is JSON on stdout (`session_id`, `out_dir`, `container_id`, `summary`, `progress_keys`);
+progress and errors go to stderr as structured log lines.
 
-```json
-{
-  "session_id": "...",
-  "out_dir": "/path/to/rust-repo-lusterna",
-  "container_id": "...",
-  "summary": "...",
-  "progress_keys": ["aeneas", "informal_spec", "formal_spec", "lean_build", "verdict", "reconciliation", "proofs_done"]
-}
-```
-
-Progress and errors go to stderr via structured log lines.
-
-### `build-image`
+### Other commands
 
 ```
-lusterna build-image [--tag TAG]
+lusterna build-image [--tag TAG]      # build the toolchain image (required before the first run)
+lusterna list-sessions                # sessions that have at least one checkpoint
+lusterna list-checkpoints SESSION_ID  # checkpoints for a session (JSON)
+lusterna show-checkpoint SESSION_ID [--number N]   # a checkpoint's state (JSON)
 ```
-
-Build the `lusterna-toolchain` Docker image from the project `Dockerfile`. Required before the first `run`.
-
-### `list-sessions`
-
-```
-lusterna list-sessions
-```
-
-Print all session IDs that have at least one checkpoint, with a summary of their latest state.
-
-### `list-checkpoints`
-
-```
-lusterna list-checkpoints SESSION_ID
-```
-
-Print all checkpoints for `SESSION_ID` as JSON, including their number, timestamp, `git_head` SHA, progress keys, and message count.
-
-### `show-checkpoint`
-
-```
-lusterna show-checkpoint SESSION_ID [--number N]
-```
-
-Print the state JSON for a specific checkpoint (default: latest).
 
 ## Environment variables
 
 | Variable | Default | Description |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | — | **Required.** Anthropic API key |
-| `LUSTERNA_MODEL` | `anthropic:claude-sonnet-4-6` | Model for most stage agents |
-| `LUSTERNA_JUDGE_MODEL` | `anthropic:claude-sonnet-4-6` | Model for the SPEC-JUDGE stage agent |
-| `LUSTERNA_SESSIONS_DIR` | `~/.local/share/lusterna/sessions` | Root directory for per-session checkpoint directories |
-| `LUSTERNA_AENEAS_BIN` | `aeneas` | Aeneas binary name inside the container |
-| `LUSTERNA_LAKE_BIN` | `lake` | Lake binary name inside the container |
+| `LUSTERNA_MODEL` | `anthropic:claude-sonnet-4-6` | Model for the stage agents |
+| `LUSTERNA_SESSIONS_DIR` | `~/.local/share/lusterna/sessions` | Root for per-session checkpoints |
+| `LUSTERNA_CHARON_BIN` / `LUSTERNA_AENEAS_BIN` / `LUSTERNA_LAKE_BIN` | `charon` / `aeneas` / `lake` | Toolchain binary names inside the container |
 | `LUSTERNA_IMAGE` | `lusterna-toolchain:latest` | Default Docker image |
 | `LUSTERNA_CONTAINER` | — | Pre-existing container to attach to (skips auto-start) |
-| `LUSTERNA_TOKEN_BUDGET` | (unlimited) | Maximum total tokens across all agents for a session; 0 or unset = unlimited |
-| `LUSTERNA_REQUEST_LIMIT` | (unlimited) | Maximum model requests per pipeline stage; 0 or unset = unlimited |
-| `LUSTERNA_COMPACTION_THRESHOLD` | `500000` | Compact within-stage context when accumulated input tokens reach this value |
-| `LUSTERNA_LOG_LEVEL` | `INFO` | Log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `LUSTERNA_TOKEN_BUDGET` | (unlimited) | Max total tokens across all agents; 0/unset = unlimited |
+| `LUSTERNA_REQUEST_LIMIT` | (unlimited) | Max model requests per stage; 0/unset = unlimited |
+| `LUSTERNA_PROVE_REQUEST_LIMIT` | `150` | Backstop on PROVE model requests |
+| `LUSTERNA_BUILD_TIMEOUT` | `180` | Per-`lake` timeout (seconds) |
+| `LUSTERNA_STOP_AFTER_TRANSLATE` | (off) | Stop after TRANSLATE so the translation can be inspected |
+| `LUSTERNA_LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
 
 ## Resuming a session
 
-Each pipeline stage saves a numbered checkpoint. Use `list-checkpoints` to inspect them, then resume from any point.
-
 ```sh
-# See all sessions
 lusterna list-sessions
-
-# Inspect checkpoints for a session
 lusterna list-checkpoints <session-id>
-# [
-#   {"number": 1, "git_head": "d469df7e...", "progress_keys": ["aeneas"]},
-#   {"number": 2, "git_head": "d463a94c...", "progress_keys": ["aeneas", "informal_spec"]},
-#   ...
-# ]
 
-# Resume from the latest checkpoint (default)
+# Resume from the latest checkpoint (or a specific one with --checkpoint-number N).
+# No manual git reset: the output repo is pinned to that checkpoint's git_head automatically.
 lusterna run /path/to/repo design.md --session-id <uuid> --out /path/to/out
-
-# Resume from a specific checkpoint — no manual git reset needed;
-# the output repo is pinned to that checkpoint's git_head automatically.
-lusterna run /path/to/repo design.md --session-id <uuid> --checkpoint-number N --out /path/to/out
 ```
-
-When resuming, if the recorded container is no longer running a fresh one is started automatically, the artefacts in `--out` are pushed back into it, and the output repo is hard-reset to the resumed checkpoint's `git_head` before the agent continues — so you resume from exactly that checkpoint's state. If the artefacts don't contain that commit, resume aborts rather than continuing from a mismatched tree.
 
 ## Output artefacts
 
-After a run, `<out_dir>/` contains a git repository with one commit per pipeline stage:
+After a run, `<out_dir>/` is a git repository with one commit per stage:
 
 ```
 <out_dir>/
 ├── lean/
-│   ├── Foo.lean              — Aeneas translation
-│   ├── Foo/Spec.lean         — Implementation formal spec (stubs from FORMALISE, proofs from PROVE)
-│   ├── lakefile.lean         — Lake project file
-│   └── lake-manifest.json    — Pre-resolved package manifest (offline)
+│   ├── <Crate>.lean          — Aeneas translation (root module)
+│   ├── <Crate>/…             — translation submodules + <Crate>/Spec.lean (the theorem spec)
+│   └── lakefile.lean         — Lake project file
 ├── specs/
-│   ├── abstract_informal_spec.json   — Abstract spec from design doc (no code)
-│   ├── abstract_formal_spec.lean     — Abstract Lean stubs (design intent)
-│   ├── informal_spec.json            — Implementation informal spec
-│   └── reconciliation.json           — Discrepancies between abstract and impl spec
-├── report/
-│   ├── 01_overview.md                — General overview
-│   ├── 02_translation.md             — Aeneas/Charon translation report
-│   └── ...                           — all individual sections composing VERIFICATION_REPORT.md
-└── VERIFICATION_REPORT.md    — Final report: theorem status, discrepancies, proof sketches
-```
-
-```sh
-git -C <out_dir> log --oneline
-# 0da6a37 stage/report: final pipeline report
-# 9f1c2a0 stage/prove: proof attempts
-# ad4435c stage/formalise: Fibonacci/Spec.lean with theorem stubs
-# ae3521a stage/infer: informal specification
-# d463a94 feat(spec): informal specification
-# d469df7 feat(aeneas): translate src/main.rs → Lean
-# ...      chore: init lusterna session
+│   └── informal_spec.json    — the inferred behavioural properties
+├── translate/
+│   └── accountability.md     — every scope/opaque/edit and why it is behaviour-preserving
+├── report/                   — the individual sections composing the report
+└── VERIFICATION_REPORT.md    — theorem status, assumptions, proof sketches
 ```
