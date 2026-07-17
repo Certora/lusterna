@@ -160,9 +160,9 @@ class TranslatePhase:
             "repo_diff": tools.repo_diff(self.deps.container_id),
             "repo_files": tools.repo_changed_files(self.deps.container_id),
         }
-        # Hygiene: a clean single `-split-files` run leaves exactly ONE top-level module
-        # (lean/<Crate>.lean; submodules live under lean/<Crate>/). More than one means the
-        # agent ran aeneas twice / in different layouts and left orphans that muddy the analysis.
+        # Hygiene: a clean run (no -split-files) leaves exactly ONE top-level module
+        # (lean/<Crate>.lean; the impl spec later lives under lean/<Crate>/). More than one means
+        # -split-files dropped modules flat, or two runs left orphans — either muddies the analysis.
         top_level = [f for f in info["lean_files"]
                      if f.startswith("lean/") and "/" not in f[len("lean/"):]]
         facts["polluted"] = sorted(top_level) if len(top_level) > 1 else []
@@ -185,10 +185,10 @@ class TranslatePhase:
                     "101, your --start-from pattern did not resolve — fix it from the error "
                     "(use the `crate::` keyword for the package selected by `-p`).")
         if facts["polluted"]:
-            parts.append(f"POLLUTED output: multiple top-level Lean modules {facts['polluted']} — you "
-                         f"ran aeneas more than once / in different layouts and left orphan files. "
-                         f"`rm -rf /workspace/out/lean/*`, then run aeneas ONCE with -split-files so "
-                         f"lean/ holds a single crate module (lean/<Crate>.lean + lean/<Crate>/).")
+            parts.append(f"POLLUTED output: multiple top-level Lean modules {facts['polluted']}. "
+                         f"`rm -rf /workspace/out/lean/*`, then run aeneas ONCE WITHOUT -split-files "
+                         f"so it emits a single top-level module (lean/<Crate>.lean). Do not use "
+                         f"-split-files — it drops modules flat at the top level.")
         if facts["target_opaqued"]:
             parts.append(f"MOCK: target function(s) {facts['target_opaqued']} were emitted as "
                          f"`axiom` (opaqued). Translate their BODIES; opaque only their dependencies.")

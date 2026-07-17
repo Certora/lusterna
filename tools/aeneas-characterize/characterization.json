@@ -1,219 +1,130 @@
 {
-  "S_total": 37,
-  "S_probeable": 20,
-  "triggered_ids": [
-    "arrow-types",
-    "break-outer-loop",
-    "continue-outer-loop",
-    "fn-pointers",
-    "raw-ptr-deref",
-    "return-in-nested-loop",
-    "unimplemented",
-    "unions"
-  ],
-  "coverage_probeable": "7/20",
-  "gap_probeable_not_triggered": [
-    "byte-string-lit",
-    "dyn-trait-cast",
-    "dyn-trait-concretize",
-    "dyn-trait-type",
-    "dyn-trait-use",
-    "early-return-in-loop",
-    "float",
-    "gat",
-    "mut-rec-globals",
-    "nested-borrows",
-    "raw-ptr-aggregate",
-    "transmute",
-    "unwinding"
-  ],
   "probes": [
     {
       "id": "vec_index",
       "expect": "def",
-      "outcome": "def",
-      "matched_S": [],
-      "msg_sample": ""
+      "verdict": "def",
+      "message": ""
     },
     {
       "id": "vec_push",
       "expect": "def",
-      "outcome": "def",
-      "matched_S": [],
-      "msg_sample": ""
+      "verdict": "def",
+      "message": ""
     },
     {
       "id": "btreemap_get",
       "expect": "axiom",
-      "outcome": "axiom",
-      "matched_S": [],
-      "msg_sample": ""
+      "verdict": "axiom",
+      "message": ""
     },
     {
       "id": "hashmap_get",
       "expect": "axiom",
-      "outcome": "axiom",
-      "matched_S": [],
-      "msg_sample": ""
+      "verdict": "axiom",
+      "message": ""
     },
     {
       "id": "option_ok_or",
       "expect": "axiom",
-      "outcome": "axiom",
-      "matched_S": [],
-      "msg_sample": ""
+      "verdict": "axiom",
+      "message": ""
     },
     {
       "id": "option_map",
       "expect": "axiom",
-      "outcome": "axiom",
-      "matched_S": [],
-      "msg_sample": ""
+      "verdict": "axiom",
+      "message": ""
     },
     {
       "id": "option_unwrap_or",
       "expect": "def",
-      "outcome": "def",
-      "matched_S": [],
-      "msg_sample": ""
+      "verdict": "def",
+      "message": ""
     },
     {
       "id": "iterator_chain",
       "expect": "axiom",
-      "outcome": "axiom",
-      "matched_S": [],
-      "msg_sample": ""
+      "verdict": "axiom",
+      "message": ""
     },
     {
       "id": "closure_fnmut",
       "expect": "def",
-      "outcome": "def",
-      "matched_S": [],
-      "msg_sample": ""
+      "verdict": "def",
+      "message": ""
     },
     {
       "id": "fn_pointer_param",
       "expect": "error",
-      "outcome": "no-def",
-      "matched_S": [
-        "arrow-types",
-        "fn-pointers"
-      ],
-      "msg_sample": ""
+      "verdict": "error",
+      "message": ""
     },
     {
       "id": "arrow_global",
       "expect": "error",
-      "outcome": "no-def",
-      "matched_S": [
-        "arrow-types"
-      ],
-      "msg_sample": ""
+      "verdict": "error",
+      "message": ""
     },
     {
       "id": "float",
-      "expect": "error",
-      "outcome": "hole",
-      "matched_S": [],
-      "msg_sample": ""
+      "expect": "hole",
+      "verdict": "hole",
+      "message": ""
     },
     {
       "id": "union",
       "expect": "error",
-      "outcome": "aeneas-error",
-      "matched_S": [
-        "unions"
-      ],
-      "msg_sample": ""
+      "verdict": "error",
+      "message": ""
     },
     {
       "id": "dyn_trait",
-      "expect": "error",
-      "outcome": "hole",
-      "matched_S": [
-        "fn-pointers"
-      ],
-      "msg_sample": ""
+      "expect": "hole",
+      "verdict": "hole",
+      "message": ""
     },
     {
       "id": "gat",
       "expect": "error",
-      "outcome": "aeneas-error",
-      "matched_S": [
-        "unimplemented"
-      ],
-      "msg_sample": ""
+      "verdict": "error",
+      "message": ""
     },
     {
       "id": "nested_borrows",
-      "expect": "error",
-      "outcome": "def",
-      "matched_S": [],
-      "msg_sample": ""
+      "expect": "def",
+      "verdict": "def",
+      "message": ""
     },
     {
       "id": "byte_string_lit",
-      "expect": "error",
-      "outcome": "hole",
-      "matched_S": [],
-      "msg_sample": ""
+      "expect": "hole",
+      "verdict": "hole",
+      "message": ""
     },
     {
       "id": "raw_ptr_deref",
-      "expect": "error",
-      "outcome": "hole",
-      "matched_S": [
-        "raw-ptr-deref"
-      ],
-      "msg_sample": ""
-    },
-    {
-      "id": "raw_ptr_aggregate",
-      "expect": "error",
-      "outcome": "hole",
-      "matched_S": [],
-      "msg_sample": ""
+      "expect": "hole",
+      "verdict": "hole",
+      "message": ""
     },
     {
       "id": "transmute",
-      "expect": "error",
-      "outcome": "axiom",
-      "matched_S": [],
-      "msg_sample": ""
+      "expect": "axiom",
+      "verdict": "axiom",
+      "message": ""
     },
     {
       "id": "early_return_loop",
       "expect": "error",
-      "outcome": "no-def",
-      "matched_S": [],
-      "msg_sample": ""
-    },
-    {
-      "id": "break_outer_loop",
-      "expect": "error",
-      "outcome": "no-def",
-      "matched_S": [
-        "break-outer-loop"
-      ],
-      "msg_sample": ""
-    },
-    {
-      "id": "continue_outer",
-      "expect": "error",
-      "outcome": "no-def",
-      "matched_S": [
-        "continue-outer-loop"
-      ],
-      "msg_sample": ""
+      "verdict": "error",
+      "message": ""
     },
     {
       "id": "nested_loop_ret",
       "expect": "error",
-      "outcome": "no-def",
-      "matched_S": [
-        "return-in-nested-loop"
-      ],
-      "msg_sample": ""
+      "verdict": "error",
+      "message": ""
     }
   ],
   "registry": {

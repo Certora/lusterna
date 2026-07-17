@@ -98,10 +98,29 @@ observable behaviour. Every alteration is disclosed for human review; if the tar
 translated without mocking it, the run aborts rather than emitting a hollow translation.
 
 To make the agent recognise-and-apply rather than rediscover Aeneas's fragment every run, the
-translatability playbook (`docs/skills/aeneas-translate.md`) is injected as a skill. It is **measured**,
-not folklore: `tools/aeneas-characterize/` runs one probe per construct through this exact toolchain
-and records the verdict (translates / opaques / holes / rejects), and extracts Aeneas's builtin
-registry (the authoritative "what stdlib has a Lean model" set). Re-run it on a toolchain bump.
+translatability playbook (`docs/skills/aeneas-translate.md`) is injected as a skill — a verdict table
+(what translates / opaques / holes / rejects), the modelable-stdlib line, behaviour-preserving
+recipes, and the charon/aeneas mechanics.
+
+### The translatability inventory
+
+The playbook is **measured**, not folklore. Aeneas's translatable fragment is defined by the
+toolchain, so `tools/aeneas-characterize/` measures it directly rather than relying on anecdote:
+
+- **What it does.** `characterize.py` runs a corpus of tiny single-construct probe crates (a `BTreeMap`,
+  an iterator chain, an `Option` combinator, a closure, a trait object, …) through charon+aeneas once,
+  in the toolchain image, and records the verdict for each — `def` (translates) / `axiom` (opaqued, no
+  Lean model) / `hole` (`sorry`) / `error` (rejected). It also extracts Aeneas's builtin registry
+  (`extract/ExtractBuiltin*.ml`) — the authoritative "what stdlib has a Lean model" set that decides
+  def-vs-axiom. Output: `characterization.json`.
+- **How to run it.** `python tools/aeneas-characterize/characterize.py` (needs the toolchain image and
+  the editable-installed package). It prints a table and writes the JSON.
+- **When.** On a toolchain-image bump — the fragment is version-specific. Then reconcile the playbook's
+  verdict table and recipes with the fresh `characterization.json`.
+- **What it is (and isn't).** It is an *inventory* — the constructs the playbook needs to speak to and
+  what the toolchain does with each — not an exhaustiveness proof. Constructs a real target hits that
+  the corpus missed surface in that run's `translate/accountability.md`, which is the intended feed for
+  extending the corpus and the playbook over time.
 
 ### Docker interaction
 

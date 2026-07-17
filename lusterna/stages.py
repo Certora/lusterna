@@ -84,9 +84,10 @@ TOOLCHAIN (all via bash):
     package) run, e.g.:
         charon cargo --preset=aeneas --start-from crate::module::_::method -- -p <package>
     `-- -p <package>` selects the workspace member; the `.llbc` lands under that crate dir.
-  • Aeneas → Lean. Clear the dest first, then run ONCE with -split-files, so lean/ never mixes
-    layouts (a second run in a different layout leaves orphan files that get rejected):
-        rm -rf /workspace/out/lean/* && aeneas -backend lean -split-files -dest /workspace/out/lean <path/to.llbc>
+  • Aeneas → Lean. Clear the dest first, then run ONCE WITHOUT -split-files, so Aeneas emits a
+    single top-level module lean/<Crate>.lean (the layout the pipeline expects):
+        rm -rf /workspace/out/lean/* && aeneas -backend lean -dest /workspace/out/lean <path/to.llbc>
+    Do NOT use -split-files (it drops modules flat at the top level → rejected as a polluted tree).
     Aeneas leaves code it cannot translate as a `sorry` hole, and emits `--opaque` items as a Lean
     `axiom`. If you re-translate (after an edit or flag change), clear the dest again first.
   • Then call setup_lake_project(), and `cd /workspace/out/lean && lake env lean <Module>.lean`
