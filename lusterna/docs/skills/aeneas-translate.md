@@ -101,9 +101,11 @@ re-translate. You cannot add Aeneas builtins — the source is the only lever.
 Plan first, then execute — do NOT grind primitive-by-primitive (that is the failure mode: an agent
 that re-examines every dependency in the generated Lean instead of committing).
 
-1. **Plan** (read the target once): the target's own logic is the translatable core; classify every
-   external dependency in ONE pass — trusted-and-irrelevant → opaque/exclude as a batch (whole
-   modules/crates); a data structure whose contents a property constrains → model (recipe below).
+1. **Plan** (read the target once) and write it to `translate/plan.md` — your anchor: the target's
+   own logic is the translatable core; classify every external dependency in ONE pass —
+   trusted-and-irrelevant → opaque/exclude as a batch (whole modules/crates); a data structure whose
+   contents a property constrains → model (recipe below). Re-read plan.md if you lose the thread; do
+   not re-derive it from the generated Lean.
 2. **Execute once**: charon with `--start-from` + the whole opaque/exclude batch → aeneas (no
    `-split-files`) → `lake env lean`.
 3. **Fix only what actually broke** with a targeted change (a `--start-from` that didn't resolve, a

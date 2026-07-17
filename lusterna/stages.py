@@ -47,6 +47,10 @@ Two jobs:
    several functions and types working together (a relationship between functions, an
    invariant preserved across method calls, a state change induced by a sequence of calls).
    Be precise and concise; state only what the code evidences — do not invent guarantees.
+   Stay bounded: read the target functions and what they directly call — a handful of reads,
+   guided by the design hint — and capture the CORE guarantees. Do NOT exhaustively trace every
+   low-level edge case or the internals of trusted primitives (crypto/curve/hash/transcript/RNG);
+   over-analysing here just burns effort, and the CODE remains the source of truth downstream.
 
 2. TARGET PATTERNS — the `target_patterns`: Charon name-matcher patterns naming the specific
    FUNCTIONS/METHODS whose behaviour the properties above concern. These functions will be
@@ -78,22 +82,23 @@ generated Lean as a real translated `def` with a body. A translation where a tar
 an `axiom` (opaqued) or a bare `sorry` (hole) is a FAILURE — that is a mock, not a verification.
 Opacity is legitimate ONLY for the target's trusted leaf DEPENDENCIES, never the target itself.
 
-PLAN FIRST, THEN EXECUTE — do NOT grind primitive-by-primitive. Before running anything, read the
-target functions ONCE and write a short plan: the minimal set of things to translate and how,
-decided via the ladder below IN ORDER. Classify every external dependency the target calls in a
-SINGLE pass:
+PLAN FIRST, THEN EXECUTE — do NOT grind primitive-by-primitive. Your FIRST action (before any charon
+run) is to read the target functions ONCE and write a short PLAN to /workspace/out/translate/plan.md:
+the minimal set of things to translate and how, decided via the ladder below IN ORDER. Classify every
+external dependency the target calls in a SINGLE pass:
   • the target's own logic = the translatable core (keep);
   • trusted primitives whose internal value the properties don't reason about — crypto / curve /
     scalar / point arithmetic, hashing, the Fiat–Shamir transcript, RNG, formatting/Debug — are ALL
     leaves: opaque / exclude them as ONE BATCH (a whole module/trait at a time, e.g. the transcript
     and the curve crate), not one function at a time;
   • a data structure whose CONTENTS a property constrains → model it (rung 3).
-Then run charon ONCE with the full `--start-from` + the whole opaque/exclude batch, run aeneas, and
-compile. Only adjust what ACTUALLY breaks (a `--start-from` that didn't resolve, a target left as a
-hole, a compile error) — with a targeted change, not another sweep. Do NOT re-open a dependency you
-already classified, do NOT read the generated Lean line-by-line to re-decide each `axiom`/`def`, and
-do NOT investigate how Aeneas models a primitive. Decide the set up front and COMMIT; the
-TRANSLATE-JUDGE and the downstream `#print axioms` gate are the safety net that catches a wrong call.
+plan.md is your ANCHOR. Then EXECUTE it: run charon ONCE with the full `--start-from` + the whole
+opaque/exclude batch, run aeneas, and compile. Only adjust what ACTUALLY breaks (a `--start-from` that
+didn't resolve, a target left as a hole, a compile error) — with a targeted change, and record it in
+plan.md. Do NOT re-open a dependency you already classified, do NOT read the generated Lean
+line-by-line to re-decide each `axiom`/`def`, and do NOT investigate how Aeneas models a primitive; if
+you lose the thread, RE-READ plan.md rather than re-deriving it. Decide the set up front and COMMIT —
+the TRANSLATE-JUDGE and the downstream `#print axioms` gate are the safety net that catches a wrong call.
 
 TOOLCHAIN (all via bash):
   • Charon → a `.llbc`. From the crate directory (the one whose Cargo.toml defines the target's
