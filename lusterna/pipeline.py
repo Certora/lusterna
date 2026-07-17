@@ -5,22 +5,16 @@ checkpoint.py the state snapshots. Each stage runs with no shared message histor
 communicate via the filesystem and deps.progress."""
 import json
 import logging
-from typing import Any
 
-from pydantic_ai import Agent
 from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
 
 from . import checkpoint, lean, telemetry, tools
-from .schemas import (
-    AbstractInformalSpec, AbstractFormalSpec,
-    InformalSpec, FormalSpec, JudgeVerdict, ReconciliationReport,
-)
+from .schemas import InformalSpec, FormalSpec, JudgeVerdict
 from .runner import _run_stage
 from .stages import (
-    doc_infer as _doc_infer, doc_formalise as _doc_formalise, explore as _explore,
-    infer as _infer, formalise as _formalise,
-    judge as _judge, reconcile as _reconcile, prove as _prove, report as _report,
-    translate_remediate as _translate_remediate,
+    explore as _explore, infer as _infer, formalise as _formalise,
+    judge as _judge, prove as _prove, report as _report,
+    translate as _translate, translate_judge as _translate_judge,
 )
 from .schemas import AgentDeps
 from . import config
@@ -32,339 +26,234 @@ class _PipelineAborted(Exception):
     pass
 
 
-async def _run_doc_stages(deps: AgentDeps, resume_note: str) -> str:
-    """Run DOC-INFER then DOC-FORMALISE (once each) from the design document alone."""
-    completed = set(deps.progress.keys())
-
-    if "abstract_informal_spec" not in completed:
-        result = await _run_stage(
-            _doc_infer,
-            f"Begin DOC-INFER. Derive the abstract informal specification from this "
-            f"design document:\n\n{deps.design_doc}" + resume_note,
-            deps, "DOC-INFER",
-        )
-        resume_note = ""
-        if not (result and result.output):
-            log.warning("DOC-INFER produced no output — proceeding without abstract spec")
-            return resume_note
-        spec: AbstractInformalSpec = result.output
-        deps.progress["abstract_informal_spec"] = spec.model_dump()
-        tools.write_out(deps, "specs/abstract_informal_spec.json", spec.model_dump_json(indent=2))
-        checkpoint.snapshot(deps)
-
-    if "abstract_formal_spec" not in completed and "abstract_informal_spec" in deps.progress:
-        inf_json = AbstractInformalSpec(**deps.progress["abstract_informal_spec"]).model_dump_json(indent=2)
-        result = await _run_stage(
-            _doc_formalise,
-            f"Proceed to DOC-FORMALISE. Produce Lean 4 abstract theorem stubs from this "
-            f"abstract informal spec:\n\n{inf_json}" + resume_note,
-            deps, "DOC-FORMALISE",
-        )
-        resume_note = ""
-        if result and result.output:
-            formal: AbstractFormalSpec = result.output
-            deps.progress["abstract_formal_spec"] = formal.model_dump()
-            tools.write_out(
-                deps, "specs/abstract_formal_spec.lean",
-                formal.lean_definitions + "\n\n" + formal.lean_theorem_stubs,
-            )
-            tools.commit(deps.container_id, "feat(spec): abstract formal specification", glob="specs/")
-            checkpoint.snapshot(deps)
-        else:
-            log.warning("DOC-FORMALISE produced no output")
-
-    return resume_note
-
-
 class TranslatePhase:
-    """Target-scoped TRANSLATE with a soundness-graded remediation ladder.
+    """Shell-driven TRANSLATE with a TRANSLATE-JUDGE gate (mirrors SpecPhase's agent↔judge loop).
 
-    Attempt 0 scopes Charon to the INFER-chosen target (`--start-from`). If that fails or
-    leaves holes inside the target's call-closure, a bounded loop asks the remediation agent
-    for the next least-invasive action: `--opaque` an in-closure dependency (ASSUMPTION —
-    emitted as a Lean `axiom`, caught by the `#print axioms` gate) → behaviour-preserving
-    source refactor (MODIFICATION — recorded with a diff) → give up. Every action is written
-    to the accountability trail. Non-convergence aborts the pipeline (no partial salvage).
+    The agent drives Charon+Aeneas itself via `bash`, using the least-degrading option that works
+    (scope → opaque a leaf → behaviour-preserving edit → give up), and logs every alteration. The
+    harness owns only *facts about the artefact* — never *how* to translate:
+      • HARD gates (mechanical, agent-inaccessible): the target functions are real `def`s (not
+        opaqued to `axiom`, not left as `sorry` holes) AND the translation compiles.
+      • SOFT gate: the TRANSLATE-JUDGE screens faithfulness / behaviour-preservation of edits.
+    Proof-soundness is NOT decided here — a hole/opaque becomes `sorryAx`/a non-standard axiom and
+    is caught downstream by `#print axioms`. Non-convergence aborts (no partial salvage). Every
+    source edit is captured as a git diff (accountability trail) for the human reviewer.
     """
 
-    MAX_ROUNDS = 8   # bounded remediation rounds after the scoped baseline
-    MAX_EDITS  = 6   # cap on behaviour-preserving source-refactor rounds
+    MAX_ROUNDS = 3   # agent+judge rounds before aborting
 
     def __init__(self, deps: AgentDeps, entry: str, resume_note: str):
         self.deps = deps
         self.entry = entry
         self.resume_note = resume_note
         self.target_patterns: list[str] = list(deps.progress.get("target_patterns", []))
-        self.trail: list[dict] = []
-        self.opaques: list[str] = []
-        self.excludes: list[str] = []
-        self.edits_used = 0
-        self.best: dict | None = None
 
     async def run(self) -> str:
         if "aeneas" in self.deps.progress:          # resuming past TRANSLATE
             return self.resume_note
-        log.info("─── Stage: TRANSLATE (target-scoped: %s) ───",
-                 self.target_patterns or "whole crate")
+        log.info("─── Stage: TRANSLATE (target: %s) ───", self.target_patterns or "whole crate")
 
-        result = lean.run_aeneas(self.deps, self.entry, start_from=self.target_patterns or None)
-        self._record("SCOPE", "SAFE", result,
-                     rationale="scope translation to the verification target",
-                     scope={"start_from": self.target_patterns})
+        feedback = ""
+        for rnd in range(self.MAX_ROUNDS):
+            outcome = await self._translate(feedback)
+            if outcome is not None and outcome.gave_up:
+                self._abort(self._facts(), "the TRANSLATE agent gave up — "
+                            + (outcome.summary or "no translatable form found"))
+            facts = self._facts()
+            hard_ok = (facts["success"] and facts["compiles"]
+                       and not facts["target_opaqued"] and not facts["target_holes"])
+            if not hard_ok:
+                feedback = self._feedback(facts, None)
+                log.info("TRANSLATE round %d: hard gate not met", rnd)
+                continue
+            verdict = await self._judge(facts, outcome)
+            defects = list(verdict.defects) if verdict else []
+            if not defects:
+                return self._accept(facts, outcome)
+            feedback = self._feedback(facts, defects)
+            log.info("TRANSLATE round %d: judge found %d defect(s)", rnd, len(defects))
 
-        # Scope guard: if patterns were given but matched no translated def, the target's
-        # behaviour was not translated at all — widen to the whole crate rather than accept
-        # an empty scope as "clean" (the pattern-mismatch risk).
-        if (result.get("success") and self.target_patterns and not lean.matched_target_defs(
-                lean.translation_text(self.deps, result["lean_files"]), self.target_patterns)):
-            log.warning("TRANSLATE: target patterns %s matched no translated def — widening to "
-                        "whole crate", self.target_patterns)
-            self.target_patterns = []
-            result = lean.run_aeneas(self.deps, self.entry)
-            self._record("SCOPE", "SAFE", result,
-                         rationale="target patterns matched no code; widened to whole crate",
-                         scope={"start_from": []})
+        self._abort(self._facts(), f"did not converge on a clean, judge-approved translation in "
+                    f"{self.MAX_ROUNDS} rounds")
 
-        # Compute blockers ONCE per result (each is a multi-second `lake` build) and thread it
-        # through best-tracking, the accept check, the stall signature, and remediation.
-        blockers = self._blockers(result)
-        self._consider_best(result, blockers)
-
-        last_sig = None
-        for _ in range(self.MAX_ROUNDS):
-            if result.get("success") and not blockers:
-                break                                # translation clean, compiles, no assumptions
-            sig = self._signature(result, blockers)
-            if sig == last_sig:
-                log.warning("TRANSLATE remediation made no change — stopping")
-                break
-            last_sig = sig
-            action = await self._remediate(result, blockers)
-            if action is None or action.tier == "give_up":
-                if action is not None:
-                    self._record("GIVE_UP", "MODIFICATION", result,
-                                 rationale=action.rationale)
-                break
-            result = self._apply(action, result)
-            blockers = self._blockers(result)
-            self._consider_best(result, blockers)
-
-        return self._finalise()
-
-    # ── helpers ──────────────────────────────────────────────────────────────
-    def _blockers(self, result: dict) -> dict:
-        """What still prevents accepting this translation of the target. Empty ⇒ accept.
-        Per the agreed success criterion: Aeneas output + no target holes + the translation
-        compiles + no non-standard external axiom in the target's closure."""
-        if not result.get("success"):
-            return {"translate_failed": result.get("stage_failed", "?"),
-                    "errors": (result.get("aeneas_errors")
-                               or [(result.get("charon_errors", "") or "")[:400]])}
-        tx = lean.translation_text(self.deps, result["lean_files"])
-        b: dict = {}
-        th = lean.target_holes(tx, result.get("holes", []), self.target_patterns)
-        if th:
-            b["target_holes"] = th
-        axm = lean.target_external_axioms(tx, self.target_patterns)
-        if axm:
-            b["external_axioms"] = axm
-        build = lean.translation_compiles(self.deps, result.get("lean_path", ""))
-        if not build.get("success"):
-            b["build_errors"] = (build.get("stderr", "") or "")[:1500]
-        return b
-
-    def _signature(self, result: dict, blockers: dict) -> tuple:
-        if result.get("success"):
-            return ("ok", tuple(sorted(blockers.get("target_holes", []))),
-                    tuple(sorted(blockers.get("external_axioms", []))),
-                    bool(blockers.get("build_errors")))
-        return (result.get("stage_failed", "?"),
-                tuple(result.get("aeneas_errors") or [result.get("charon_errors", "")[:200]]))
-
-    def _consider_best(self, result: dict, blockers: dict) -> None:
-        if not result.get("success"):
-            return
-        # Fewer blockers is better; a fully-clean translation (0 blockers) wins outright.
-        score = -(len(blockers.get("target_holes", [])) + len(blockers.get("external_axioms", []))
-                  + (1 if blockers.get("build_errors") else 0))
-        if self.best is None or score > self.best["score"]:
-            self.best = {"result": result, "blockers": blockers, "score": score}
-
-    async def _remediate(self, result: dict, blockers: dict):
-        summary = self.deps.progress.get("informal_spec", {}).get("summary", "")
-        report = {
-            "blockers": {
-                "translate_failed": blockers.get("translate_failed"),
-                "target_holes": blockers.get("target_holes", []),
-                "external_axioms_in_target": blockers.get("external_axioms", []),
-                "translation_build_errors": bool(blockers.get("build_errors")),
-            },
-            "build_error_tail": blockers.get("build_errors", "")[:1500],
-            "charon_errors": (result.get("charon_errors", "") or "")[:1000],
-            "aeneas_errors": result.get("aeneas_errors", [])[:20],
-            "holes_by_file": result.get("holes_by_file", {}),
-            "target_patterns": self.target_patterns,
-            "already_opaque": self.opaques,
-            "source_edits_used": f"{self.edits_used}/{self.MAX_EDITS}",
-            "trail_so_far": [
-                {"round": r["round"], "action": r["action"], "tier": r["tier"],
-                 "rationale": r["rationale"]}
-                for r in self.trail
-            ],
-        }
-        # Inject the CURRENT source (after any prior edits) so `find` anchors match the real
-        # file — otherwise multi-round refactors fail (anchors written against stale text).
-        current_source = tools.read_repo_sources(self.deps)
+    # ── agent + judge ─────────────────────────────────────────────────────────
+    async def _translate(self, feedback: str):
         prompt = (
-            f"Target behaviour (INFER summary): {summary}\n\n"
-            f"Translation outcome so far (JSON):\n{json.dumps(report, indent=2)}\n\n"
-            f"### CURRENT Rust source (AFTER any edits already applied — your `find` anchors "
-            f"MUST match this text verbatim; each anchor must occur EXACTLY ONCE)\n{current_source}\n\n"
-            "Propose the single next RemediationAction.\n"
-            "`external_axioms_in_target` are auto-opaqued stdlib items the target depends on — "
-            "`--opaque` does NOT remove them (they are already axioms). Eliminate them with a "
-            "behaviour-preserving REFACTOR to what Aeneas can actually translate:\n"
-            "  • Aeneas CANNOT translate: `BTreeMap`/`HashMap`, `Option`/`Result` COMBINATORS "
-            "(`ok_or`, `copied`, `map`, `unwrap_or`, `?`), iterator-adaptor chains "
-            "(`.iter().find()`, `.map()`, `.filter()`), and closures.\n"
-            "  • Aeneas CAN translate: plain structs/enums, `Vec` (its Std model), EXPLICIT "
-            "index loops (`let mut i = 0; while i < v.len() { … i += 1 }`), primitive integer "
-            "ops and `==`/`<` on `u64`/`u128`, pattern `match`.\n"
-            "  • So model a map as `Vec<(K,V)>` and write get/insert as EXPLICIT INDEX LOOPS "
-            "(NOT `.iter().find()`/`.copied()`); compare keys by their primitive fields "
-            "(`v[i].0 == k`); rewrite every `Option`/`Result` combinator and `?` as an explicit "
-            "`match`; drop `#[derive(Debug)]` (formatting is irrelevant).\n"
-            "Use `opaque` only for a genuine `sorry` hole you accept as an assumption; `give_up` "
-            "only if no behaviour-preserving refactor exists."
+            f"Target patterns (translate each to a real `def` — NEVER opaque them): "
+            f"{self.target_patterns or '(none — translate the whole crate)'}\n"
+            f"Suggested entry file: {self.entry}\n\n"
+            "Drive Charon + Aeneas via bash to translate the target into /workspace/out/lean, "
+            "least-degrading option first. After Aeneas, call setup_lake_project() and check it "
+            "compiles with `lake env lean`. Log every alteration to translate/accountability.md. "
+            "Return a TranslateOutcome."
+            + (f"\n\n### Problems to FIX from the previous attempt\n{feedback}" if feedback else "")
         )
         try:
-            res = await _run_stage(_translate_remediate, prompt, self.deps, "TRANSLATE-REMEDIATE")
+            res = await _run_stage(_translate, prompt, self.deps, "TRANSLATE")
         except UnexpectedModelBehavior as exc:
-            log.warning("Remediation agent errored (%s) — giving up", exc)
+            log.warning("TRANSLATE agent errored (%s)", exc)
             return None
         return res.output if res else None
 
-    def _apply(self, action, current: dict) -> dict:
-        if action.tier == "opaque":
-            self.opaques = sorted(set(self.opaques) | set(action.opaque))
-            self.excludes = sorted(set(self.excludes) | set(action.exclude))
-            result = lean.run_aeneas(
-                self.deps, self.entry, start_from=self.target_patterns or None,
-                opaque=self.opaques or None, exclude=self.excludes or None,
-                include=action.include or None)
-            self._record("OPAQUE", "ASSUMPTION", result,
-                         rationale=action.rationale, expected_effect=action.expected_effect,
-                         scope={"start_from": self.target_patterns,
-                                "opaque": self.opaques, "exclude": self.excludes})
-            return result
-        if action.tier == "refactor":
-            if self.edits_used >= self.MAX_EDITS:
-                log.warning("TRANSLATE: source-edit cap (%d) reached", self.MAX_EDITS)
-                self._record("GIVE_UP", "MODIFICATION", current,
-                             rationale="behaviour-preserving-refactor cap reached")
-                return current
-            carve = tools.carve_source(self.deps, action.source_edits)
-            self.edits_used += 1
-            result = lean.run_aeneas(
-                self.deps, self.entry, start_from=self.target_patterns or None,
-                opaque=self.opaques or None, exclude=self.excludes or None)
-            src_edits = [{"path": e.path,
-                          "justification": e.behavior_preservation_justification,
-                          "applied": next((r["applied"] for r in carve["edits"]
-                                           if r["path"] == e.path), False)}
-                         for e in action.source_edits]
-            rec = self._record("REFACTOR", "MODIFICATION", result,
-                               rationale=action.rationale,
-                               expected_effect=action.expected_effect, source_edits=src_edits)
-            rec["carve"] = {"repo_commit": carve.get("commit", ""),
-                            "diff": carve.get("diff", "")[:6000]}
-            self._persist()      # re-persist trail with the carve diff attached
-            return result
-        return current
-
-    def _record(self, action: str, tier: str, result: dict, *, rationale: str = "",
-                scope: dict | None = None, source_edits: list | None = None,
-                expected_effect: str = "") -> dict:
-        rec = {
-            "round": len(self.trail),
-            "action": action, "tier": tier,
-            "scope": scope or {}, "source_edits": source_edits or [],
-            "rationale": rationale, "expected_effect": expected_effect,
-            "result": {
-                "success": bool(result.get("success")),
-                "stage_failed": result.get("stage_failed", ""),
-                "holes": result.get("holes", []),
-                "target_holes": (lean.target_holes(
-                                    lean.translation_text(self.deps, result["lean_files"]),
-                                    result.get("holes", []), self.target_patterns)
-                                 if result.get("success") else []),
-                "commit": result.get("commit", ""),
-            },
+    async def _judge(self, facts: dict, outcome):
+        tx = lean.translation_text(self.deps, facts["lean_files"])
+        source = tools.read_repo_sources(self.deps)
+        acct = tools.read_out(self.deps, "translate/accountability.md")
+        mech = {
+            "compiles": facts["compiles"],
+            "target_translated_as_def": lean.matched_target_defs(tx, self.target_patterns),
+            "target_OPAQUED_defect_if_nonempty": facts["target_opaqued"],
+            "target_HOLE_defect_if_nonempty": facts["target_holes"],
+            "emitted_axioms_opaqued_assumptions": facts["axioms"],
+            "source_files_changed": facts["repo_files"],
         }
-        self.trail.append(rec)
-        self.deps.progress["translate_trail"] = self.trail
-        self._persist()
-        return rec
+        prompt = (
+            f"Target patterns: {self.target_patterns or 'whole crate'}\n\n"
+            f"### Mechanical facts\n{json.dumps(mech, indent=2)}\n\n"
+            f"### Source git diff (judge behaviour-preservation against the original)\n"
+            f"{facts['repo_diff'] or '(no source edits)'}\n\n"
+            f"### translate/accountability.md\n"
+            f"{acct if not acct.startswith('ERROR:') else '(none written)'}\n\n"
+            f"### Generated Lean translation\n{tx}\n\n"
+            f"### Original Rust source\n{source}\n\n"
+            "List every defect as a TranslateVerdict; an empty list approves."
+        )
+        try:
+            res = await _run_stage(_translate_judge, prompt, self.deps, "TRANSLATE-JUDGE")
+        except UnexpectedModelBehavior as exc:
+            # Judge is the SOFT gate; the hard mechanical gates already passed. On a judge
+            # blow-up, accept (do not block on the semantic screen) rather than loop forever.
+            log.warning("TRANSLATE-JUDGE errored (%s) — accepting on the hard gates alone", exc)
+            return None
+        return res.output if res else None
 
-    def _persist(self) -> None:
-        tools.write_out(self.deps, "translate/accountability.json", json.dumps(self.trail, indent=2))
-        tools.write_out(self.deps, "translate/accountability.md", self._render_md())
-        tools.commit(self.deps.container_id,
-                     f"translate: remediation trail ({len(self.trail)} action(s))",
-                     glob="translate/")
-        checkpoint.snapshot(self.deps)
+    # ── mechanical facts (agent-inaccessible) ──────────────────────────────────
+    def _facts(self) -> dict:
+        """Facts about whatever is in /workspace/out/lean — the only thing the harness decides on."""
+        lean.setup_lake(self.deps)      # ensure the lake project is wired for the compile check
+        info = lean.analyze_translation(self.deps, do_commit=False)
+        facts = {
+            "success": info["success"], "info": info,
+            "lean_files": info["lean_files"], "lean_path": info["lean_path"],
+            "holes": info["holes"], "holes_by_file": info["holes_by_file"],
+            "compiles": False, "build_errors": "",
+            "target_opaqued": [], "target_holes": [], "axioms": [],
+            "repo_diff": tools.repo_diff(self.deps.container_id),
+            "repo_files": tools.repo_changed_files(self.deps.container_id),
+        }
+        if not info["success"]:
+            return facts
+        tx = lean.translation_text(self.deps, info["lean_files"])
+        facts["axioms"] = lean.external_axioms(tx)
+        facts["target_opaqued"] = lean.opaqued_targets(tx, self.target_patterns)
+        facts["target_holes"] = lean.target_holes(tx, info["holes"], self.target_patterns)
+        build = lean.translation_compiles(self.deps, info["lean_path"])
+        facts["compiles"] = bool(build.get("success"))
+        facts["build_errors"] = (build.get("stderr", "") or "")[:2000]
+        return facts
 
-    def _render_md(self) -> str:
-        lines = ["# TRANSLATE accountability trail", "",
-                 f"Target patterns: `{self.target_patterns or 'whole crate'}`", ""]
-        for r in self.trail:
-            res = r["result"]
-            lines.append(f"## Round {r['round']}: {r['action']} — **{r['tier']}**")
-            if r["rationale"]:
-                lines.append(f"- Rationale: {r['rationale']}")
-            if r["expected_effect"]:
-                lines.append(f"- Expected effect: {r['expected_effect']}")
-            if r["scope"]:
-                lines.append(f"- Scope: `{r['scope']}`")
-            for se in r["source_edits"]:
-                lines.append(f"- Edit `{se['path']}` (applied={se.get('applied')}): "
-                             f"{se['justification']}")
-            if r.get("carve", {}).get("diff"):
-                lines.append(f"\n```diff\n{r['carve']['diff']}\n```")
-            lines.append(f"- Result: success={res['success']} "
-                         f"target_holes={res['target_holes']} commit={res['commit'][:8]}")
-            lines.append("")
-        return "\n".join(lines)
+    def _feedback(self, facts: dict, defects) -> str:
+        parts: list[str] = []
+        if not facts["success"]:
+            return ("No Lean was produced in /workspace/out/lean. Re-run Charon then Aeneas "
+                    "(`aeneas -backend lean -dest /workspace/out/lean <llbc>`). If Charon exited "
+                    "101, your --start-from pattern did not resolve — fix it from the error "
+                    "(use the `crate::` keyword for the package selected by `-p`).")
+        if facts["target_opaqued"]:
+            parts.append(f"MOCK: target function(s) {facts['target_opaqued']} were emitted as "
+                         f"`axiom` (opaqued). Translate their BODIES; opaque only their dependencies.")
+        if facts["target_holes"]:
+            parts.append(f"HOLES: target function(s) {facts['target_holes']} are a bare `sorry`. "
+                         f"Opaque a callee or apply a behaviour-preserving refactor so the body "
+                         f"translates.")
+        if not facts["compiles"]:
+            parts.append("The translation does not compile. `lake` errors:\n" + facts["build_errors"])
+        for d in (defects or []):
+            parts.append(f"JUDGE [{d.kind}]: {d.detail} → fix: {d.fix}")
+        return "\n\n".join(parts)
 
-    def _finalise(self) -> str:
-        if self.best is None:
-            raise _PipelineAborted(
-                "TRANSLATE failed — Charon/Aeneas produced no Lean output for the target even "
-                "after remediation. See translate/accountability.md for the actions attempted.")
-        best_result, blockers = self.best["result"], self.best["blockers"]
-        if blockers:
-            parts = []
-            if blockers.get("target_holes"):
-                parts.append(f"{len(blockers['target_holes'])} untranslated hole(s) in the target "
-                             f"({blockers['target_holes']})")
-            if blockers.get("external_axioms"):
-                parts.append(f"{len(blockers['external_axioms'])} auto-opaqued external axiom(s) the "
-                             f"target depends on ({blockers['external_axioms']}) — no behaviour-"
-                             f"preserving refactor removed them")
-            if blockers.get("build_errors"):
-                parts.append("the translation does not compile")
-            raise _PipelineAborted(
-                "TRANSLATE could not produce a verifiable translation of the target after "
-                "remediation: " + "; ".join(parts) + ". See translate/accountability.md.")
-        # Success: pin the on-disk lean/ to the best translation, then record it.
-        tools.restore_lean(self.deps.container_id, best_result.get("commit", ""))
-        self.deps.progress["aeneas"] = best_result
-        self.deps.progress["translate_trail"] = self.trail
-        tiers = {r["tier"] for r in self.trail}
-        log.info("TRANSLATE complete — %d action(s), tiers=%s, target fully translated & compiles",
-                 len(self.trail), sorted(tiers))
+    # ── accept / abort + accountability trail ───────────────────────────────────
+    def _accept(self, facts: dict, outcome) -> str:
+        info = facts["info"]
+        sha = tools.commit(self.deps.container_id, "feat(aeneas): accepted translation", glob="lean/")
+        self.deps.progress["aeneas"] = {
+            "success": True, "lean_files": info["lean_files"], "lean_path": info["lean_path"],
+            "holes": info["holes"], "holes_by_file": info["holes_by_file"], "commit": sha,
+        }
+        tier = self._record_trail(facts, outcome)
+        log.info("TRANSLATE accepted (%s) — %d file(s), %d hole(s), %d assumed axiom(s)",
+                 tier, len(info["lean_files"]), len(info["holes"]), len(facts["axioms"]))
         checkpoint.snapshot(self.deps)
         return ""
+
+    def _record_trail(self, facts: dict, outcome) -> str:
+        """Build the accountability trail (list of records, compatible with the briefing/report/
+        abort-note consumers and the `trail_*` helpers) from the mechanical facts + the agent's
+        narrative, and persist it. Returns the weakest tier reached."""
+        lean_patched = list(outcome.lean_files_patched) if outcome else []
+        edited = facts["repo_files"] + lean_patched
+        tier = "MODIFICATION" if edited else ("ASSUMPTION" if facts["axioms"] else "SAFE")
+        summary = (outcome.summary if outcome else "").strip()
+
+        trail = [{
+            "round": 0, "action": "SCOPE", "tier": "SAFE",
+            "scope": {"start_from": self.target_patterns}, "source_edits": [],
+            "rationale": summary[:800], "expected_effect": "",
+            "result": {"success": True, "target_holes": facts["target_holes"],
+                       "holes": facts["holes"], "commit": self.deps.progress["aeneas"]["commit"]},
+        }]
+        if facts["axioms"]:
+            trail.append({
+                "round": len(trail), "action": "OPAQUE", "tier": "ASSUMPTION",
+                "scope": {"opaque": facts["axioms"],
+                          "exclude": list(outcome.excluded_patterns) if outcome else []},
+                "source_edits": [],
+                "rationale": "trusted leaf dependencies emitted as Lean axioms (assumptions the "
+                             "`#print axioms` gate flags on any dependent theorem)",
+                "expected_effect": "", "result": {"success": True, "target_holes": [],
+                                                   "holes": [], "commit": ""},
+            })
+        if edited:
+            trail.append({
+                "round": len(trail), "action": "REFACTOR", "tier": "MODIFICATION", "scope": {},
+                "source_edits": [{"path": p, "applied": True,
+                                  "justification": "behaviour-preserving (see accountability.md + "
+                                                   "translate/source.diff)"} for p in edited],
+                "rationale": "behaviour-preserving edit(s); see accountability.md and the git diff",
+                "expected_effect": "", "result": {"success": True, "target_holes": [],
+                                                   "holes": [], "commit": ""},
+            })
+
+        self.deps.progress["translate_trail"] = trail
+        tools.write_out(self.deps, "translate/accountability.json", json.dumps(trail, indent=2))
+        if facts["repo_diff"]:
+            tools.write_out(self.deps, "translate/source.diff", facts["repo_diff"])
+        tools.commit(self.deps.container_id, f"translate: accountability trail ({tier})",
+                     glob="translate/")
+        return tier
+
+    def _abort(self, facts: dict, reason: str) -> None:
+        self.deps.progress.setdefault("translate_trail", [{
+            "round": 0, "action": "SCOPE", "tier": "SAFE",
+            "scope": {"start_from": self.target_patterns}, "source_edits": [],
+            "rationale": reason, "expected_effect": "",
+            "result": {"success": facts["success"], "target_holes": facts.get("target_holes", []),
+                       "holes": facts.get("holes", []), "commit": ""}}])
+        detail = []
+        if not facts["success"]:
+            detail.append("no Lean translation was produced")
+        else:
+            if facts["target_opaqued"]:
+                detail.append(f"target function(s) {facts['target_opaqued']} were opaqued (mocked), "
+                              f"not translated")
+            if facts["target_holes"]:
+                detail.append(f"target function(s) left as holes: {facts['target_holes']}")
+            if not facts["compiles"]:
+                detail.append("the translation does not compile")
+        raise _PipelineAborted(
+            "TRANSLATE could not converge: " + reason
+            + ((". " + "; ".join(detail)) if detail else "")
+            + ". See translate/accountability.md.")
 
 
 async def _run_translate_stages(deps: AgentDeps, resume_note: str) -> str:
@@ -391,15 +280,16 @@ async def _run_translate_stages(deps: AgentDeps, resume_note: str) -> str:
         completed = set(deps.progress.keys())
 
     if "informal_spec" not in completed:
-        # INFER on the PRISTINE Rust source (before any translation/refactor). Derives the
-        # actual behaviour AND the Charon target patterns used to scope TRANSLATE.
+        # INFER on the PRISTINE Rust source (before any translation/refactor) — the CODE is the
+        # source of truth for behaviour. The design doc is only a FOCUS HINT (which functions/
+        # guarantees matter), never a spec to reconcile against. Derives the InformalSpec AND
+        # the Charon target patterns (the set of functions the properties concern).
         sources = tools.read_repo_sources(deps)
-        abstract_informal = tools.read_out(deps, "specs/abstract_informal_spec.json")
         entry_functions = deps.progress.get("explore", {}).get("entry_functions", [])
         infer_files = f"### Rust source (pristine, unmodified)\n{sources}"
-        if not abstract_informal.startswith("ERROR:"):
-            infer_files += ("\n\n### specs/abstract_informal_spec.json (design intent)\n"
-                            f"{abstract_informal}")
+        if deps.design_doc.strip():
+            infer_files += ("\n\n### Design document (FOCUS HINT only — the code, not this doc, "
+                            f"is the source of truth)\n{deps.design_doc}")
         if entry_functions:
             infer_files += f"\n\n### Public entry functions (from EXPLORE)\n{entry_functions}"
         infer_result = await _run_stage(
@@ -432,12 +322,8 @@ async def _run_translate_stages(deps: AgentDeps, resume_note: str) -> str:
 
 
 def _read_spec_files(deps: AgentDeps) -> str:
-    """Read all spec files needed by judge and reconcile stages and return as a formatted block."""
-    paths = [
-        "specs/abstract_formal_spec.lean",
-        "specs/abstract_informal_spec.json",
-        "specs/informal_spec.json",
-    ]
+    """Read the spec files needed downstream (informal spec + impl spec) as a formatted block."""
+    paths = ["specs/informal_spec.json"]
     if impl := lean.impl_spec(deps):
         paths.append(impl)
     parts = []
@@ -449,13 +335,12 @@ def _read_spec_files(deps: AgentDeps) -> str:
 
 
 def _formalise_inputs(deps: AgentDeps) -> str:
-    """Static inputs injected into every FORMALISE round: the translated crate, the
-    informal spec, and the abstract formal spec (if present)."""
+    """Static inputs injected into every FORMALISE round: the translated crate + the informal
+    spec (the properties, inferred from the code)."""
     block = f"### Aeneas-translated crate\n{lean.translation_text(deps)}\n\n"
-    for path in ("specs/informal_spec.json", "specs/abstract_formal_spec.lean"):
-        content = tools.read_out(deps, path)
-        if not content.startswith("ERROR:"):
-            block += f"### {path}\n{content}\n\n"
+    content = tools.read_out(deps, "specs/informal_spec.json")
+    if not content.startswith("ERROR:"):
+        block += f"### specs/informal_spec.json\n{content}\n\n"
     return block
 
 
@@ -681,163 +566,63 @@ class SpecPhase:
         return True
 
 
-async def _run_reconcile_phase(deps: AgentDeps) -> None:
-    """Run RECONCILE (skipped if already done or no abstract spec)."""
-    completed = set(deps.progress.keys())
-
-    if "abstract_formal_spec" not in completed or "reconciliation" in completed:
-        return
-
-    rc_result = await _run_stage(
-        _reconcile,
-        "RECONCILE: compare abstract spec vs implementation spec. "
-        "Classify every discrepancy and produce refinement obligations for critical ones."
-        + f"\n\n{_read_spec_files(deps)}",
-        deps,
-        "RECONCILE",
-    )
-    if rc_result and rc_result.output:
-        rc: ReconciliationReport = rc_result.output
-        deps.progress["reconciliation"] = rc.model_dump()
-        tools.write_out(deps, "specs/reconciliation.json", rc.model_dump_json(indent=2))
-        tools.commit(
-            deps.container_id,
-            "feat(spec): reconciliation — abstract vs impl spec",
-            glob="specs/",
-        )
-        critical = [d for d in rc.discrepancies if d.severity == "critical"]
-        log.info(
-            "Reconcile: aligned=%d discrepancies=%d critical=%d refinement_obligations=%d",
-            len(rc.aligned), len(rc.discrepancies),
-            len(critical), len(rc.refinement_obligations),
-        )
-        if critical:
-            log.warning(
-                "RECONCILE found %d CRITICAL discrepancy/ies: %s",
-                len(critical),
-                [d.kind + ": " + d.description[:60] for d in critical],
-            )
-    checkpoint.snapshot(deps)
-
-
 class ProvePhase:
-    """PROVE against the real build oracle: the agent edits proof bodies and calls check_lean
-    (whose output carries the actual Lean diagnostics — `unsolved goals` with the remaining goal
-    state, type errors) to prove goal-directed, with no lean-lsp tooling. The orchestrator owns
-    the objective guards: a compile gate before any effort; a genuine-progress stop keyed on the
-    BUILD-VERIFIED sorry minimum (a failing tactic drops the raw count but breaks the build, so
-    only a successful build counts); best-state RESTORE (finalize on the best compiling spec
-    seen, never a later broken edit); one authoritative final build; and the `#print axioms`
-    gate + implementation-vs-abstract partition of the established theorems. The stop's tracking
-    (best verified minimum, stall/warm-up turns) lives in fields."""
-
-    STALL = 15    # stop after this many turns with no new verified minimum (after the first proof)
-    WARMUP = 25   # stop if no verified proof lands within this many turns
+    """PROVE against the real build oracle: the agent (via bash) edits proof bodies and runs
+    `lake build`, reading the real Lean diagnostics (`unsolved goals` + goal state, type errors)
+    to prove goal-directed. The harness owns only the objective guards: a compile gate before any
+    effort; a request-limit backstop; restore of the compiling baseline if the agent leaves the
+    spec broken; one authoritative final build; and the `#print axioms` gate + implementation-vs-
+    abstract partition of the established theorems."""
 
     def __init__(self, deps: AgentDeps):
         self.deps = deps
         self.impl_spec = lean.impl_spec(deps)
-        self.best: int | None = None   # best build-verified sorry count seen
-        self.stall = 0                 # turns since a new verified minimum
-        self.improved = False          # has any verified proof landed (below the baseline)?
-        self.turns = 0
 
     async def run(self) -> None:
         deps = self.deps
         if "proofs_done" in deps.progress:
             log.info("PROVE already complete — skipping proof stage")
             return
-        # Airtight compile gate: NEVER spend proof effort on a spec that does not build. The spec
-        # phase fail-fasts on a fresh run, but a RESUMED session can re-enter with a spec that
-        # only ever built in a previous container — so re-verify with a real build now.
+        # Airtight compile gate: NEVER spend proof effort on a spec that does not build (a resumed
+        # session may re-enter with a spec that only built in a previous container).
         if not lean.build(deps).get("success"):
             raise _PipelineAborted(
                 "PROVE not started — the implementation spec does not compile "
                 "(FORMALISE did not produce a spec whose statements build)")
-        # Baseline best-state = the entry (all-sorry) spec, which just built — the floor PROVE
-        # restores to if no proof survives, so it can never abort away a compiling spec.
-        deps.progress.pop("prove_best", None)
-        lean.record_prove_best(deps)
+        baseline = tools.read_out(deps, self.impl_spec)   # the compiling (all-sorry) floor
 
         try:
             await _run_stage(_prove, self._prompt(), deps, "PROVE",
-                             request_limit=config.PROVE_REQUEST_LIMIT, stop_check=self._stop)
+                             request_limit=config.PROVE_REQUEST_LIMIT)
         except UnexpectedModelBehavior as e:
             log.warning("PROVE stage failed after retries: %s", e)
         except UsageLimitExceeded as e:
-            # Hit the request-count backstop — finalize with whatever it proved (the final build
-            # + axiom gate below still run).
             log.warning("PROVE hit the request-limit backstop (%s) — finalizing", e)
         checkpoint.snapshot(deps)
-        self._restore_best()
-        # The agent may stop before committing — commit here so the proven state lands in git.
+        # If the agent left the spec non-compiling, restore the compiling baseline — never finalize
+        # on a broken edit; the axiom gate must run on a build that succeeds.
+        if not lean.build(deps).get("success"):
+            log.warning("PROVE left a non-compiling spec — restoring the compiling baseline")
+            tools.write_out(deps, self.impl_spec, baseline)
+            lean.build(deps)
         tools.commit(deps.container_id, "stage/prove: proof attempts", glob="lean/")
-        # Authoritative final build. With the restore above this is the best verified state, so it
-        # builds — the abort is a last-resort invariant check.
         if not lean.build(deps).get("success"):
             raise _PipelineAborted("PROVE left the spec in a non-compiling state")
         deps.progress["proofs_done"] = True
-        lean.footprint(deps)   # cheap pre-oracle estimate — proofs may reference defs the stubs did not
+        lean.footprint(deps)   # proofs may reference defs the stubs did not
         self._record_axioms()
 
     def _prompt(self) -> str:
-        rc = self.deps.progress.get("reconciliation", {})
-        critical = [d for d in rc.get("discrepancies", []) if d.get("severity") == "critical"]
-        rc_obligations = rc.get("refinement_obligations", [])
-        note = ""
-        if rc_obligations:
-            note = (f"\n\nRECONCILIATION NOTE: {len(rc_obligations)} refinement obligation(s) were "
-                    "generated to bridge the impl spec to the abstract spec. Their sorry stubs are "
-                    "in specs/reconciliation.json. You may add them to the spec file and attempt "
-                    "to prove them.")
-        if critical:
-            lines = "\n".join(f"  [{d['kind']}] {d['description'][:100]}" for d in critical)
-            note += (f"\n\nCRITICAL ({len(critical)} — do NOT paper over):\n{lines}\n"
-                     "These indicate a potential bug in the implementation or a mis-stated "
-                     "theorem. Leave the corresponding obligations unproved and note them clearly.")
         return (
-            f"Proceed to PROVE. Fill in proofs for as many `sorry` theorems in `{self.impl_spec}` "
-            f"as you can, WITHOUT changing any statement. Work ONE theorem at a time, easiest "
-            f"first (base cases, concrete values, simple bounds). For each: search_output_file to "
-            f"locate it, read_output_lines to read its block, patch_output_lines to replace ONLY "
-            f"the proof body, then check_lean to build. The build output shows the REAL errors — "
-            f"an incomplete proof reports `unsolved goals` with the remaining goal state, so read "
-            f"it to choose the next tactic. If a proof fails, revert that theorem to `:= by sorry` "
-            f"and move on — leaving hard theorems as `sorry` is expected and honest. Make sure the "
-            f"file still compiles when you finish, then git_commit." + note)
-
-    def _stop(self, deps: AgentDeps, node: Any) -> bool:
-        """Polled once per LLM turn (model-request node). Metric is the BUILD-VERIFIED sorry
-        minimum (progress['prove_best'], updated only on a successful build), NOT the raw file
-        count. Stop at 0, after STALL turns with no new verified minimum, or WARMUP turns with no
-        verified proof at all (bounds an agent that edits blindly / never builds cleanly)."""
-        if not Agent.is_model_request_node(node):
-            return False
-        self.turns += 1
-        best = (deps.progress.get("prove_best") or {}).get("sorry")
-        if best is None:
-            return False
-        if self.best is None or best < self.best:
-            if self.best is not None:      # a verified decrease below the entry baseline
-                self.improved = True
-            self.best, self.stall = best, 0
-        elif self.improved:
-            self.stall += 1
-        if self.improved:
-            stalled, cap, phase = self.stall, self.STALL, "no-improvement"
-        else:
-            stalled, cap, phase = self.turns, self.WARMUP, "no verified proof"
-        log.info("PROVE progress: best verified sorry=%d (%s %d/%d turns)", best, phase, stalled, cap)
-        return best == 0 or stalled >= cap
-
-    def _restore_best(self) -> None:
-        """Restore the best VERIFIED spec over any later broken/blind edit (worst case: the entry
-        all-sorry baseline)."""
-        best = self.deps.progress.get("prove_best")
-        if best is not None and tools.read_out(self.deps, self.impl_spec) != best["spec"]:
-            tools.write_out(self.deps, self.impl_spec, best["spec"])
-            log.info("PROVE: restored best verified spec (%d sorry) over the final edit state",
-                     best["sorry"])
+            f"Proceed to PROVE. Fill in proofs for as many `sorry` theorems in "
+            f"`/workspace/out/{self.impl_spec}` as you can, WITHOUT changing any statement. Work ONE "
+            f"theorem at a time, easiest first (base cases, concrete values, simple bounds), using "
+            f"bash: `grep -n` to locate a theorem, `sed -n` to read its block, an in-place edit to "
+            f"replace ONLY its proof body, then `lake build` (from /workspace/out/lean) to check. "
+            f"The build shows the REAL errors — an incomplete proof reports `unsolved goals` with "
+            f"the remaining goal state. If a proof fails, revert that theorem to `:= by sorry` and "
+            f"move on — leaving hard theorems as `sorry` is expected and honest. Keep the file "
+            f"compiling; when done, commit with git.")
 
     def _record_axioms(self) -> None:
         """`#print axioms` (standard-axioms-only) + partition the established theorems: a theorem
@@ -890,9 +675,6 @@ async def _run_report(deps: AgentDeps, resume_note: str) -> str:
     ax_tainted       = axioms.get("tainted", [])
     ax_impl          = axioms.get("impl_verified", [])
     ax_abstract      = axioms.get("abstract_only", [])
-    rc               = deps.progress.get("reconciliation", {})
-    rc_critical     = sum(1 for d in rc.get("discrepancies", []) if d.get("severity") == "critical")
-    rc_obligations_n = len(rc.get("refinement_obligations", []))
 
     report_files = _read_spec_files(deps)
     lean_path = deps.progress.get("aeneas", {}).get("lean_path", "")
@@ -900,9 +682,6 @@ async def _run_report(deps: AgentDeps, resume_note: str) -> str:
         lean_content = tools.read_out(deps, lean_path)
         if not lean_content.startswith("ERROR:"):
             report_files = f"### {lean_path}\n{lean_content}\n\n{report_files}"
-    rc_json = tools.read_out(deps, "specs/reconciliation.json")
-    if not rc_json.startswith("ERROR:"):
-        report_files += f"\n\n### specs/reconciliation.json\n{rc_json}"
     trail = deps.progress.get("translate_trail", [])
     if trail:
         acct = tools.read_out(deps, "translate/accountability.md")
@@ -956,17 +735,15 @@ async def _run_report(deps: AgentDeps, resume_note: str) -> str:
             f"({ax_abstract}) — report them separately, not as code verification. " if ax_abstract
             else ". "))
         + f"{len(ax_tainted)} theorem(s) are NOT established ({ax_tainted}) — still `sorry` or "
-        f"dependent on a non-standard axiom. Reconciliation: critical_discrepancies={rc_critical}, "
-        f"total_refinement_obligations={rc_obligations_n}."
+        f"dependent on a non-standard axiom (e.g. an assumed/opaqued primitive)."
         f"\n\n{report_files}" + resume_note,
         deps, "REPORT",
     )
 
     _REPORT_SECTIONS = [
         "report/01_overview.md", "report/02_translation.md",
-        "report/03_abstract_spec.md", "report/04_implementation_spec.md",
-        "report/05_spec_judge.md", "report/06_reconciliation.md",
-        "report/07_proofs.md", "report/08_summary.md",
+        "report/03_implementation_spec.md", "report/04_spec_judge.md",
+        "report/05_proofs.md", "report/06_summary.md",
     ]
     parts = [
         content for sf in _REPORT_SECTIONS
@@ -1003,15 +780,12 @@ def _write_abort_notes(deps: AgentDeps, reason: str) -> None:
     not be — so an aborted run leaves something actionable rather than empty output."""
     p = deps.progress
     stages = [
-        ("abstract_informal_spec", "DOC-INFER — abstract informal spec"),
-        ("abstract_formal_spec",   "DOC-FORMALISE — abstract Lean stubs"),
-        ("explore",                "EXPLORE — entry points"),
-        ("informal_spec",          "INFER — behaviour spec + target scope (pristine source)"),
-        ("aeneas",                 "TRANSLATE — Aeneas translation (scoped)"),
-        ("formal_spec",            "FORMALISE — implementation spec assembled"),
-        ("verdict",                "SPEC-JUDGE — statements judged"),
-        ("reconciliation",         "RECONCILE — abstract vs impl"),
-        ("proofs_done",            "PROVE — proofs attempted"),
+        ("explore",       "EXPLORE — entry points"),
+        ("informal_spec", "INFER — behaviour spec + target scope (pristine source)"),
+        ("aeneas",        "TRANSLATE — Aeneas translation (scoped)"),
+        ("formal_spec",   "FORMALISE — implementation spec assembled"),
+        ("verdict",       "SPEC-JUDGE — statements judged"),
+        ("proofs_done",   "PROVE — proofs attempted"),
     ]
     done = [f"- {label}" for key, label in stages if key in p] or ["- (nothing yet)"]
     todo = [f"- {label}" for key, label in stages if key not in p] or ["- (all reached)"]
@@ -1070,11 +844,14 @@ async def run_session(deps: AgentDeps) -> str:
     )
 
     try:
-        resume_note = await _run_doc_stages(deps, resume_note)
         resume_note = await _run_translate_stages(deps, resume_note)
 
+        if config.STOP_AFTER_TRANSLATE:
+            log.info("LUSTERNA_STOP_AFTER_TRANSLATE set — stopping after TRANSLATE so the "
+                     "translation artefacts can be inspected (no spec/prove/report).")
+            return "Stopped after TRANSLATE (LUSTERNA_STOP_AFTER_TRANSLATE)."
+
         resume_note = await SpecPhase(deps, resume_note).run()
-        await _run_reconcile_phase(deps)
         await ProvePhase(deps).run()
 
         result = await _run_report(deps, resume_note)

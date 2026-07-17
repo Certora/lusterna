@@ -30,14 +30,15 @@ def _docker(*args: str, check: bool = True) -> subprocess.CompletedProcess:
 def start(image: str = DEFAULT_IMAGE, name: str | None = None) -> str:
     """Start a detached container and return its ID.
 
-    No mounts — the container gets its own isolated filesystem.
-    Registered with atexit so it is always stopped on clean exit.
+    No mounts — the container gets its own isolated filesystem. Network is left enabled so
+    Charon can `cargo build` targets whose dependencies (and toolchain) are fetched on demand;
+    the translation's soundness does not rest on network isolation (Aeneas opaques externals
+    regardless). Registered with atexit so it is always stopped on clean exit.
     """
     extra_name = ["--name", name] if name else []
     result = _docker(
         "run", "--rm", "--detach",
         *extra_name,
-        "--network", "none",
         "--cap-drop", "all",
         "--security-opt", "no-new-privileges",
         image,
@@ -89,7 +90,15 @@ def init_repo_git(container_id: str) -> None:
     this baseline is what every such edit is diffed against for the accountability trail.
     `target/` (cargo build output) and `*.llbc` (Charon output) are excluded via
     .git/info/exclude so they never pollute the diffs.
+
+    A pinned `rust-toolchain.toml` would force a stable channel Charon cannot drive (it needs
+    its own bundled nightly for MIR extraction), so any such pin is neutralised BEFORE the
+    baseline commit — it is build configuration, irrelevant to program behaviour, and baking it
+    into pristine keeps it out of the accountability diff.
     """
+    exec_in(container_id,
+            ["find", REPO_IN, "-maxdepth", "4", "-name", "rust-toolchain*", "-delete"],
+            workdir=REPO_IN)
     exec_in(container_id, ["git", "init"], workdir=REPO_IN)
     exec_in(container_id,
             ["sh", "-c", "printf 'target/\\n*.llbc\\n' >> .git/info/exclude"],

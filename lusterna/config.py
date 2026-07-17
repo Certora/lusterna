@@ -73,3 +73,7 @@ PROVE_REQUEST_LIMIT: int | None = int(_prove_req) if _prove_req.strip() not in (
 # Manual compaction: compact when a stage accumulates this many input tokens.
 COMPACTION_THRESHOLD = int(os.environ.get("LUSTERNA_COMPACTION_THRESHOLD", "500000"))
 COMPACTION_KEEP = int(os.environ.get("LUSTERNA_COMPACTION_KEEP", "4"))
+
+# Debug/inspection: stop the pipeline right after TRANSLATE (skip spec/prove/report) so the
+# translation artefacts can be examined. Used to iterate on the TRANSLATE stage in isolation.
+STOP_AFTER_TRANSLATE = os.environ.get("LUSTERNA_STOP_AFTER_TRANSLATE", "") not in ("", "0")

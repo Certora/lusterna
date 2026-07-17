@@ -27,23 +27,6 @@ class ExploreResult(BaseModel):
     entry_functions: list[str]
 
 
-# ── DOC stages ────────────────────────────────────────────────────────────────
-
-class AbstractInformalSpec(BaseModel):
-    summary: str
-    preconditions: list[str]
-    postconditions: list[str]
-    invariants: list[str]
-    edge_cases: list[str]
-    open_questions: list[str]
-
-
-class AbstractFormalSpec(BaseModel):
-    lean_definitions: str
-    lean_theorem_stubs: str
-    rationale: str
-
-
 # ── INFER / FORMALISE stages ──────────────────────────────────────────────────
 
 class InformalSpec(BaseModel):
@@ -52,10 +35,10 @@ class InformalSpec(BaseModel):
     postconditions: list[str]
     invariants: list[str]
     edge_cases: list[str]
-    # Charon name-matcher patterns naming the concrete crate items that make up the
-    # verification target (e.g. "crate::fib", or "crate::MyType" for a type + all its
-    # methods). Derived by INFER from the abstract spec + the behaviour it inferred from
-    # the pristine source; TRANSLATE uses them as `--start-from` scope. Empty ⇒ whole crate.
+    # Charon name-matcher patterns naming the FUNCTIONS/METHODS under verification (the set
+    # the properties concern), e.g. "crate::m::my_fn" or "crate::m::_::method". Derived by
+    # INFER from the pristine code (doc as focus hint); TRANSLATE scopes to them via
+    # `--start-from` and guarantees they are translated, never opaqued. Empty ⇒ whole crate.
     target_patterns: list[str] = Field(default_factory=list)
 
 
@@ -72,29 +55,33 @@ class FormalSpec(BaseModel):
     theorems: list[TheoremStub]
 
 
-# ── TRANSLATE remediation stage ───────────────────────────────────────────────
+# ── TRANSLATE stage ───────────────────────────────────────────────────────────
 
-class SourceEdit(BaseModel):
-    """One behaviour-preserving edit to a Rust source file, proposed by the TRANSLATE
-    remediation agent and applied by the orchestrator (never by the agent directly)."""
-    path: str      # repo-relative, e.g. "src/lib.rs"
-    find: str      # exact anchor snippet; must occur EXACTLY ONCE in the file
-    replace: str   # replacement text ("" to delete the anchor)
-    behavior_preservation_justification: str  # why this does NOT change observable behaviour
+class TranslateOutcome(BaseModel):
+    """The TRANSLATE agent's self-report of what it did, returned after it has driven
+    Charon/Aeneas at the shell. The facts (source diff, emitted axioms, compilation) are
+    re-derived mechanically by the harness; this narrative is for the accountability trail,
+    the human reviewer, and the TRANSLATE-JUDGE."""
+    gave_up: bool = False               # the target is intrinsically untranslatable
+    summary: str                        # what was done and WHY (the human-review narrative)
+    opaque_patterns: list[str] = Field(default_factory=list)   # Charon --opaque patterns settled on
+    excluded_patterns: list[str] = Field(default_factory=list)  # Charon --exclude patterns settled on
+    source_files_edited: list[str] = Field(default_factory=list)   # Rust files edited (repo-relative)
+    lean_files_patched: list[str] = Field(default_factory=list)    # post-extraction Lean files edited
 
 
-class RemediationAction(BaseModel):
-    """The next remediation step the TRANSLATE loop should take when Charon/Aeneas fail
-    or leave holes in the target's call-closure. Escalation order (least invasive first):
-    opaque (axiomatize an in-closure dependency) → refactor (behaviour-preserving source
-    edit) → give_up."""
-    tier: Literal["opaque", "refactor", "give_up"]
-    opaque: list[str] = Field(default_factory=list)   # tier=opaque: Charon patterns to axiomatize
-    exclude: list[str] = Field(default_factory=list)  # optional: drop strictly out-of-closure items
-    include: list[str] = Field(default_factory=list)  # optional: whitelist refinement
-    source_edits: list[SourceEdit] = Field(default_factory=list)  # tier=refactor only
-    rationale: str
-    expected_effect: str   # e.g. "removes hole crate.parse from the target closure"
+class TranslateDefect(BaseModel):
+    kind: Literal["target_mocked", "holes_in_target", "semantics_changed",
+                  "not_faithful", "non_compiling", "other"]
+    detail: str   # the specific problem
+    fix: str      # concrete change the TRANSLATE agent should make
+
+
+class TranslateVerdict(BaseModel):
+    """SPEC-JUDGE analogue for TRANSLATE: the semantic gate. An empty defect list approves
+    the translation (it faithfully mirrors the original, any edits are behaviour-preserving,
+    and the target is genuinely translated — not mocked)."""
+    defects: list[TranslateDefect]   # empty == accept
 
 
 # ── SPEC-JUDGE stage ──────────────────────────────────────────────────────────
@@ -109,31 +96,3 @@ class SpecDefect(BaseModel):
 
 class JudgeVerdict(BaseModel):
     defects: list[SpecDefect]   # empty == sound spec; approval is derived in Python
-
-
-# ── RECONCILE stage ───────────────────────────────────────────────────────────
-
-class Discrepancy(BaseModel):
-    abstract_component: str
-    impl_component: str
-    kind: Literal[
-        "implementation_wrong",
-        "bridge_wrong",
-        "abstract_wrong",
-        "design_doc_silent",
-    ]
-    severity: Literal["critical", "minor", "gap"]
-    description: str
-
-
-class RefinementObligation(BaseModel):
-    name: str
-    statement: str
-    rationale: str
-
-
-class ReconciliationReport(BaseModel):
-    aligned: list[str]
-    discrepancies: list[Discrepancy]
-    refinement_obligations: list[RefinementObligation]
-    summary: str
