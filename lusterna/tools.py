@@ -63,7 +63,7 @@ def bash(ctx: RunContext[AgentDeps], command: str, workdir: str = "/workspace",
     body = out + (("\n──stderr──\n" + err) if err.strip() else "")
     if len(body) > _BASH_MAX:
         body = "…[output truncated — showing the last ~30k chars]…\n" + body[-_BASH_MAX:]
-    log.info("bash: %r (workdir=%s) → exit=%d, %d chars",
+    log.info("bash: %r… (workdir=%s) → exit=%d, %d chars",
              command[:100].replace("\n", "⏎"), workdir, code, len(body))
     return f"exit={code}\n{body}"
 

@@ -63,8 +63,20 @@ class TranslatePhase:
             hard_ok = (facts["success"] and facts["compiles"] and not facts["polluted"]
                        and not facts["target_opaqued"] and not facts["target_holes"])
             if not hard_ok:
+                reasons = []
+                if not facts["success"]:
+                    reasons.append("no-translation-produced")
+                else:
+                    if facts["polluted"]:
+                        reasons.append(f"polluted-tree={facts['polluted']}")
+                    if facts["target_opaqued"]:
+                        reasons.append(f"target-opaqued={facts['target_opaqued']}")
+                    if facts["target_holes"]:
+                        reasons.append(f"target-holes={facts['target_holes']}")
+                    if not facts["compiles"]:
+                        reasons.append("does-not-compile")
                 feedback = self._feedback(facts, None)
-                log.info("TRANSLATE round %d: hard gate not met", rnd)
+                log.info("TRANSLATE round %d: hard gate not met — %s", rnd, "; ".join(reasons) or "?")
                 continue
             verdict = await self._judge(facts, outcome)
             defects = list(verdict.defects) if verdict else []

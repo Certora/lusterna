@@ -124,6 +124,12 @@ translates cleanly and compiles:
      same get/last-write-wins-insert semantics, an iterator-adaptor chain→an explicit loop, filling
      an inert Aeneas-emitted instance with the library defaults. FORBIDDEN: changing what the
      program computes or its effects — behaviour is the thing under verification.
+     HOW to model a structure: edit the RUST SOURCE in /workspace/repo/src/*.rs — change the field's
+     type and rewrite its operations into the translatable equivalent — then confirm behaviour is
+     preserved with `cargo test` (from /workspace/repo) and re-run charon+aeneas. The source is the
+     ONLY lever. You CANNOT add or change a Charon/Aeneas builtin: they are compiled into the
+     binaries, so do NOT go spelunking the toolchain internals (/opt/aeneas, /opt/charon) for a
+     builtin to make an untranslatable type work — that is a dead end. Model it in the source.
   4. Give up (gave_up=true) only if a target function's OWN body relies on a construct with no
      behaviour-preserving translatable form.
 
@@ -160,15 +166,19 @@ Judge exactly these, one entry per problem (kind, detail, concrete fix):
   • target_mocked — a target function was emitted as an `axiom` (opaqued) instead of translated.
     The target must be a real `def`. (Opaquing a target's trusted DEPENDENCY is fine — do NOT flag.)
   • holes_in_target — a target function's own body is a bare `sorry` (untranslated).
-  • over_opaqued — a data structure or dependency that the target's own logic READS/WRITES and whose
-    CONTENTS THE PROPERTIES CONSTRAIN was opaqued (emitted as a bare `axiom` with no relating
-    equations) instead of MODELLED, so its accessors/mutators are uninterpreted and the properties
-    about that state become unverifiable (assumed, not proven) — a hollow translation. The facts
-    list the opaqued items the target calls directly; cross-check them against the INFERRED
-    PROPERTIES: if a property depends on that state, flag it and require the structure be refactored
-    to a modelable form (e.g. an association list) so its operations are real `def`s. A genuinely
-    external primitive the properties don't reason about (crypto/curve/transcript/fmt/RNG/ordering)
-    being opaque is FINE — do NOT flag that.
+  • over_opaqued — the guiding rule for the whole translation: NO mocks/stubs unless they are
+    IRRELEVANT to the target. An `--opaque` dependency is a mock (a bare `axiom` with no relating
+    equations). It is acceptable ONLY when its behaviour is irrelevant to every inferred property —
+    its result/effect never flows into anything a property constrains (pure formatting/logging, or a
+    token whose internal value the properties treat as abstract: a curve point, hash, transcript, RNG
+    draw). RELEVANCE, NOT stdlib-ness, is the test: a stdlib collection (`Vec`/`BTreeMap`/`HashMap`)
+    whose `get`/`insert` DETERMINE the target's results is relevant and must be MODELLED, never opaqued.
+    The facts field `opaqued_items_the_target_calls_directly` lists every opaqued item a target's own
+    body calls. For EACH one the DEFAULT is over_opaqued — flag it UNLESS you can positively state that
+    no inferred property depends on its behaviour. Do NOT wave an item through just because it is
+    stdlib. When you flag, require the structure be MODELLED (e.g. `BTreeMap`→an association list) so
+    its operations become real `def`s. Keep the point in view: if the accepted translation leaves the
+    properties unprovable, TRANSLATE has achieved nothing.
   • semantics_changed — a source or Lean edit changes OBSERVABLE behaviour (inputs→outputs/effects),
     not just representation. Representation/implementation swaps (vec→array, map→assoc list,
     iterator chain→loop, filling an inert instance with library defaults) are behaviour-preserving
