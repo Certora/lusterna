@@ -53,18 +53,26 @@ Two jobs:
    over-analysing here just burns effort, and the CODE remains the source of truth downstream.
 
 2. TARGET PATTERNS — the `target_patterns`: Charon name-matcher patterns naming the specific
-   FUNCTIONS/METHODS whose behaviour the properties above concern. These functions will be
-   TRANSLATED and are what downstream stages reason about; everything they call may be
-   assumed. Rules:
+   FUNCTIONS/METHODS whose behaviour the CORE properties concern. These get TRANSLATED; everything
+   else may be assumed. The set must be MINIMAL and GENUINELY TRANSLATABLE — this choice makes or
+   breaks the translation, so be selective:
      • Name FUNCTIONS/METHODS, never a bare type or module. A type/module pattern lets the
        translator dissolve the logic into an opaque blob — the exact failure to avoid.
-     • Include EVERY function the properties span. For a single algorithm that's one method
-       (e.g. `verify`); for a stateful type whose properties relate its operations, that's
-       ALL the relevant methods (e.g. every public method of the struct).
-     • Syntax: free function → `crate::module::my_fn`; inherent/trait method → use the impl
-       wildcard, `crate::module::_::method` (e.g. `crate::sigma_proofs::zero_ciphertext::_::verify`).
-   Pick the minimal set that captures the properties. Do not return an empty list unless the
-   crate has no identifiable target.
+     • Include the functions that carry the SEMANTIC guarantees — the algorithm / verifier /
+       state operations the properties are actually about (e.g. `verify`; or, for a stateful type,
+       the methods whose relationship the properties assert).
+     • EXCLUDE peripheral plumbing unless a property genuinely constrains it: byte
+       serialization/encoding (`to_bytes`/`from_bytes`/`serialize`/`try_from`), formatting,
+       logging, getters. It is aeneas-hard (slices, `[u8; N]`, byte-shuffling) and almost never
+       where the value is; leaving it out of the target lets it be assumed and keeps the
+       translation focused on the property-bearing core. (A crypto proof's soundness lives in
+       `verify`, not in its `to_bytes` round-trip.)
+     • Syntax: ALWAYS use the `crate::` keyword (never the crate's real name) — `--start-from`
+       resolves inside the crate being built. Free function → `crate::module::my_fn`;
+       inherent/trait method → `crate::module::_::method` (e.g.
+       `crate::sigma_proofs::zero_ciphertext::_::verify`).
+   Pick the SMALLEST set that captures the core properties and can plausibly translate. Do not
+   return an empty list unless the crate has no identifiable target.
 """,
     output_type=InformalSpec,
     retries=2,
