@@ -200,6 +200,25 @@ def opaqued_targets(translation_text: str, target_patterns: list[str]) -> list[s
                    if ax.split(".")[-1] in leaves})
 
 
+def opaque_deps_in_targets(translation_text: str, target_patterns: list[str]) -> list[str]:
+    """Opaqued axioms referenced DIRECTLY in the target functions' own bodies — a local,
+    one-level signal (NO call-closure) that a target is a thin wrapper over assumed behaviour.
+    If the verified properties concern that behaviour, the translation is hollow — the
+    `over_opaqued` case. Feeds the TRANSLATE-JUDGE a pointed fact so it need not infer the
+    linkage itself; it is a pre-proof QUALITY signal, not a soundness gate (an opaque dependency
+    the properties truly need is caught downstream by `#print axioms` tainting the theorem)."""
+    axioms = external_axioms(translation_text)
+    seeds = set(matched_target_defs(translation_text, target_patterns))
+    if not axioms or not seeds:
+        return []
+    blocks = _def_blocks(translation_text)
+    hits = set()
+    for name in seeds:
+        body = _strip_lean_comments(blocks.get(name, ""))
+        hits.update(ax for ax in axioms if _mentions(ax, body))
+    return sorted(hits)
+
+
 def trail_opaque_assumptions(trail: list[dict]) -> list[str]:
     """Charon patterns made `--opaque` across the TRANSLATE trail — emitted as Lean axioms,
     so the `#print axioms` gate flags any theorem depending on them."""

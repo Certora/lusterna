@@ -71,8 +71,8 @@ class TranslateOutcome(BaseModel):
 
 
 class TranslateDefect(BaseModel):
-    kind: Literal["target_mocked", "holes_in_target", "semantics_changed",
-                  "not_faithful", "non_compiling", "other"]
+    kind: Literal["target_mocked", "holes_in_target", "over_opaqued",
+                  "semantics_changed", "not_faithful", "non_compiling", "other"]
     detail: str   # the specific problem
     fix: str      # concrete change the TRANSLATE agent should make
 

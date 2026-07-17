@@ -60,7 +60,7 @@ class TranslatePhase:
                 self._abort(self._facts(), "the TRANSLATE agent gave up — "
                             + (outcome.summary or "no translatable form found"))
             facts = self._facts()
-            hard_ok = (facts["success"] and facts["compiles"]
+            hard_ok = (facts["success"] and facts["compiles"] and not facts["polluted"]
                        and not facts["target_opaqued"] and not facts["target_holes"])
             if not hard_ok:
                 feedback = self._feedback(facts, None)
@@ -99,12 +99,17 @@ class TranslatePhase:
         tx = lean.translation_text(self.deps, facts["lean_files"])
         source = tools.read_repo_sources(self.deps)
         acct = tools.read_out(self.deps, "translate/accountability.md")
+        spec = self.deps.progress.get("informal_spec", {})
+        props = (json.dumps({k: spec[k] for k in ("summary", "postconditions", "invariants")
+                             if spec.get(k)}, indent=2) if spec else "(none inferred)")
         mech = {
             "compiles": facts["compiles"],
             "target_translated_as_def": lean.matched_target_defs(tx, self.target_patterns),
             "target_OPAQUED_defect_if_nonempty": facts["target_opaqued"],
             "target_HOLE_defect_if_nonempty": facts["target_holes"],
             "emitted_axioms_opaqued_assumptions": facts["axioms"],
+            "opaqued_items_the_target_calls_directly": lean.opaque_deps_in_targets(
+                tx, self.target_patterns),
             "source_files_changed": facts["repo_files"],
         }
         prompt = (
@@ -112,6 +117,8 @@ class TranslatePhase:
             f"### Mechanical facts\n{json.dumps(mech, indent=2)}\n\n"
             f"### Source git diff (judge behaviour-preservation against the original)\n"
             f"{facts['repo_diff'] or '(no source edits)'}\n\n"
+            f"### Inferred properties (what will be verified — decide if they depend on any "
+            f"opaqued structure)\n{props}\n\n"
             f"### translate/accountability.md\n"
             f"{acct if not acct.startswith('ERROR:') else '(none written)'}\n\n"
             f"### Generated Lean translation\n{tx}\n\n"
@@ -137,10 +144,16 @@ class TranslatePhase:
             "lean_files": info["lean_files"], "lean_path": info["lean_path"],
             "holes": info["holes"], "holes_by_file": info["holes_by_file"],
             "compiles": False, "build_errors": "",
-            "target_opaqued": [], "target_holes": [], "axioms": [],
+            "target_opaqued": [], "target_holes": [], "axioms": [], "polluted": [],
             "repo_diff": tools.repo_diff(self.deps.container_id),
             "repo_files": tools.repo_changed_files(self.deps.container_id),
         }
+        # Hygiene: a clean single `-split-files` run leaves exactly ONE top-level module
+        # (lean/<Crate>.lean; submodules live under lean/<Crate>/). More than one means the
+        # agent ran aeneas twice / in different layouts and left orphans that muddy the analysis.
+        top_level = [f for f in info["lean_files"]
+                     if f.startswith("lean/") and "/" not in f[len("lean/"):]]
+        facts["polluted"] = sorted(top_level) if len(top_level) > 1 else []
         if not info["success"]:
             return facts
         tx = lean.translation_text(self.deps, info["lean_files"])
@@ -159,6 +172,11 @@ class TranslatePhase:
                     "(`aeneas -backend lean -dest /workspace/out/lean <llbc>`). If Charon exited "
                     "101, your --start-from pattern did not resolve — fix it from the error "
                     "(use the `crate::` keyword for the package selected by `-p`).")
+        if facts["polluted"]:
+            parts.append(f"POLLUTED output: multiple top-level Lean modules {facts['polluted']} — you "
+                         f"ran aeneas more than once / in different layouts and left orphan files. "
+                         f"`rm -rf /workspace/out/lean/*`, then run aeneas ONCE with -split-files so "
+                         f"lean/ holds a single crate module (lean/<Crate>.lean + lean/<Crate>/).")
         if facts["target_opaqued"]:
             parts.append(f"MOCK: target function(s) {facts['target_opaqued']} were emitted as "
                          f"`axiom` (opaqued). Translate their BODIES; opaque only their dependencies.")
@@ -190,7 +208,11 @@ class TranslatePhase:
         """Build the accountability trail (list of records, compatible with the briefing/report/
         abort-note consumers and the `trail_*` helpers) from the mechanical facts + the agent's
         narrative, and persist it. Returns the weakest tier reached."""
-        lean_patched = list(outcome.lean_files_patched) if outcome else []
+        # Build-config files (managed by setup_lake) are NOT translation modifications — exclude
+        # them so patching the lakefile does not falsely downgrade faithfulness to MODIFICATION.
+        _BUILD_CFG = {"lakefile.lean", "lean-toolchain", "lake-manifest.json"}
+        lean_patched = [f for f in (outcome.lean_files_patched if outcome else [])
+                        if f.rsplit("/", 1)[-1] not in _BUILD_CFG]
         edited = facts["repo_files"] + lean_patched
         tier = "MODIFICATION" if edited else ("ASSUMPTION" if facts["axioms"] else "SAFE")
         summary = (outcome.summary if outcome else "").strip()

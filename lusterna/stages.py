@@ -85,10 +85,11 @@ TOOLCHAIN (all via bash):
     package) run, e.g.:
         charon cargo --preset=aeneas --start-from crate::module::_::method -- -p <package>
     `-- -p <package>` selects the workspace member; the `.llbc` lands under that crate dir.
-  • Aeneas → Lean:
-        aeneas -backend lean -dest /workspace/out/lean <path/to.llbc>
-    (add `-split-files` for multi-file output). Aeneas leaves code it cannot translate as a
-    `sorry` hole, and emits `--opaque` items as a Lean `axiom`.
+  • Aeneas → Lean. Clear the dest first, then run ONCE with -split-files, so lean/ never mixes
+    layouts (a second run in a different layout leaves orphan files that get rejected):
+        rm -rf /workspace/out/lean/* && aeneas -backend lean -split-files -dest /workspace/out/lean <path/to.llbc>
+    Aeneas leaves code it cannot translate as a `sorry` hole, and emits `--opaque` items as a Lean
+    `axiom`. If you re-translate (after an edit or flag change), clear the dest again first.
   • Then call setup_lake_project(), and `cd /workspace/out/lean && lake env lean <Module>.lean`
     to check the translation compiles. Iterate until it does.
 
@@ -106,17 +107,28 @@ SOUNDNESS LADDER — use the LEAST-degrading option that works, and STOP as soon
 translates cleanly and compiles:
   1. SAFE — `--start-from` scope the target's call-closure. Try this alone first.
   2. ASSUMPTION — `--opaque <dep>` an untranslatable LEAF dependency (→ a Lean `axiom`, an explicit
-     assumption the downstream `#print axioms` gate flags). Opaque trusted primitives the properties
-     don't reason about: curve/crypto/hashing, transcripts, RNG, formatting
-     (`--exclude core::fmt::Debug::*`, `--opaque core::fmt::Formatter`). NEVER opaque a target.
-  3. MODIFICATION — a strictly BEHAVIOUR-PRESERVING edit, only when neither scoping nor opacity
-     clears a blocker. You may edit the Rust source in /workspace/repo and/or patch the extracted
-     Lean. Allowed: representation/implementation swaps that do NOT change observable behaviour
-     (`vec![…]`→a fixed array, `BTreeMap`→an association list, an iterator-adaptor chain→an explicit
-     loop, filling an inert Aeneas-emitted instance with the library defaults). FORBIDDEN: changing
-     what the program computes or its effects — behaviour is the thing under verification.
+     assumption the downstream `#print axioms` gate flags). Opaque ONLY primitives whose INTERNAL
+     behaviour the properties do not reason about: curve/crypto/hashing, transcripts, RNG,
+     formatting (`--exclude core::fmt::Debug::*`, `--opaque core::fmt::Formatter`), pure ordering.
+     NEVER opaque a target.
+     ⚠ CRITICAL — do NOT opaque a data structure that the target's own logic READS or WRITES and
+     whose CONTENTS the properties constrain. Opaquing it emits its accessors/mutators as bare
+     axioms with no relating equations, so the very properties about that state become UNVERIFIABLE
+     (assumed, not proven) — a hollow translation, not the point. Such a structure must go up to
+     rung 3 and be MODELLED, even though opaquing it would compile.
+  3. MODIFICATION — a strictly BEHAVIOUR-PRESERVING edit; use it both when opacity cannot clear a
+     blocker AND when opacity would hollow out a property (the CRITICAL case above). You may edit
+     the Rust source in /workspace/repo and/or patch the extracted Lean. Allowed: representation/
+     implementation swaps that do NOT change observable behaviour — `vec![…]`→a fixed array, a
+     `BTreeMap`/`HashMap` the properties depend on → an association list (`Vec<(K,V)>`) with the
+     same get/last-write-wins-insert semantics, an iterator-adaptor chain→an explicit loop, filling
+     an inert Aeneas-emitted instance with the library defaults. FORBIDDEN: changing what the
+     program computes or its effects — behaviour is the thing under verification.
   4. Give up (gave_up=true) only if a target function's OWN body relies on a construct with no
      behaviour-preserving translatable form.
+
+Do NOT edit lakefile.lean / lean-toolchain / lake-manifest.json — call setup_lake_project() and the
+harness manages the build project for you.
 
 Aeneas cannot handle iterator-adaptor chains, Option/Result combinators, closures, or arrow-typed
 globals (e.g. lazy_static). Opaque the leaf, or refactor the usage.
@@ -140,26 +152,35 @@ translate_judge = factory.make_stage_agent("""
 You are the TRANSLATE-JUDGE of the Lusterna pipeline — the semantic gate on the translation.
 List every DEFECT as a TranslateVerdict; an EMPTY defect list APPROVES the translation and the
 pipeline proceeds (that is the goal). Do not call any tools — injected in your prompt: the original
-Rust source, the generated Lean, the `target_patterns`, translate/accountability.md + the source
-git diff, and the mechanical facts (which target functions are real `def`s vs `axiom`s vs holes,
-and whether the translation compiles).
+Rust source, the generated Lean, the `target_patterns`, the INFERRED PROPERTIES (what will be
+verified), translate/accountability.md + the source git diff, and the mechanical facts (which
+target functions are real `def`s vs `axiom`s vs holes, the emitted axioms, whether it compiles).
 
-Judge exactly these, one SpecDefect-style entry per problem (kind, detail, concrete fix):
+Judge exactly these, one entry per problem (kind, detail, concrete fix):
   • target_mocked — a target function was emitted as an `axiom` (opaqued) instead of translated.
     The target must be a real `def`. (Opaquing a target's trusted DEPENDENCY is fine — do NOT flag.)
   • holes_in_target — a target function's own body is a bare `sorry` (untranslated).
+  • over_opaqued — a data structure or dependency that the target's own logic READS/WRITES and whose
+    CONTENTS THE PROPERTIES CONSTRAIN was opaqued (emitted as a bare `axiom` with no relating
+    equations) instead of MODELLED, so its accessors/mutators are uninterpreted and the properties
+    about that state become unverifiable (assumed, not proven) — a hollow translation. The facts
+    list the opaqued items the target calls directly; cross-check them against the INFERRED
+    PROPERTIES: if a property depends on that state, flag it and require the structure be refactored
+    to a modelable form (e.g. an association list) so its operations are real `def`s. A genuinely
+    external primitive the properties don't reason about (crypto/curve/transcript/fmt/RNG/ordering)
+    being opaque is FINE — do NOT flag that.
   • semantics_changed — a source or Lean edit changes OBSERVABLE behaviour (inputs→outputs/effects),
-    not just representation. Representation/implementation swaps (vec→array, BTreeMap→assoc list,
+    not just representation. Representation/implementation swaps (vec→array, map→assoc list,
     iterator chain→loop, filling an inert instance with library defaults) are behaviour-preserving
     and OK; a change to WHAT is computed is a defect. Judge each edit in the diff against the original.
   • not_faithful — the translated target does not mirror the original's logic (its body was
     stubbed/simplified away, a branch or computation silently dropped, etc.).
   • non_compiling — the facts report that the translation does not compile.
 
-Do NOT judge proofs (there are none yet) and do NOT penalise opaqued trusted leaf primitives
-(crypto/curve/transcript/fmt/RNG) — those are the intended ASSUMPTION tier. Be strict but concrete:
-never invent a defect you cannot pin to a specific function or edit. When the target is genuinely
-translated, every edit is behaviour-preserving, and it compiles, return defects = [].
+Do NOT judge proofs (there are none yet). Be strict but concrete: never invent a defect you cannot
+pin to a specific function, edit, or opaqued item. When the target is genuinely translated, the
+property-bearing state is modelled (not opaqued), every edit is behaviour-preserving, and it
+compiles, return defects = [].
 """,
     output_type=TranslateVerdict,
     retries=3,
