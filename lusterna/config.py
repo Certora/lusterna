@@ -38,22 +38,29 @@ MAX_TOKENS = int(os.environ.get("LUSTERNA_MAX_TOKENS", "16000"))
 
 
 def cache_settings(model: str) -> dict:
-    """Return AnthropicModelSettings with prompt caching and raised max_tokens.
+    """Return AnthropicModelSettings with prompt caching, native context management, and raised
+    max_tokens. Empty dict for non-Anthropic providers.
 
-    Caches system prompt blocks and the last tool-definition block so re-sent
-    instructions and tool schemas are billed at the cache-hit rate (~10× cheaper).
-    Raises max_tokens from the pydantic-ai default of 4096 so the model can write
-    complete Lean proofs without hitting the output limit mid-response.
-    Returns an empty dict for non-Anthropic providers.
+    Caching (1h TTL) covers the system prompt, the tool definitions, AND the message prefix
+    (`anthropic_cache`), so an agent's growing history is re-sent at the cache-hit rate. The 1h
+    TTL survives slow charon/aeneas/lake turns between requests.
+
+    Context management (`clear_tool_uses_20250919`) lets the SERVER drop the oldest tool results
+    when the window fills, keeping the recent working set — a cache-friendly, model-native
+    replacement for a client-side compaction loop (a client-side rewrite would instead invalidate
+    the prompt cache on every trigger and evict context the agent then re-reads).
+
+    max_tokens is raised from pydantic-ai's 4096 default so a full Lean proof fits in one response.
     """
     if not model.startswith("anthropic:"):
         return {}
     try:
         from pydantic_ai.models.anthropic import AnthropicModelSettings
         return AnthropicModelSettings(
-            anthropic_cache=True,
-            anthropic_cache_instructions=True,
-            anthropic_cache_tool_definitions=True,
+            anthropic_cache="1h",
+            anthropic_cache_instructions="1h",
+            anthropic_cache_tool_definitions="1h",
+            anthropic_context_management={"edits": [{"type": "clear_tool_uses_20250919"}]},
             max_tokens=MAX_TOKENS,
         )
     except ImportError:
@@ -69,10 +76,6 @@ REQUEST_LIMIT: int | None = int(_req_limit_env) if _req_limit_env.strip() not in
 # this only guards against a runaway). 0/unset = unlimited.
 _prove_req = os.environ.get("LUSTERNA_PROVE_REQUEST_LIMIT", "150")
 PROVE_REQUEST_LIMIT: int | None = int(_prove_req) if _prove_req.strip() not in ("", "0") else None
-
-# Manual compaction: compact when a stage accumulates this many input tokens.
-COMPACTION_THRESHOLD = int(os.environ.get("LUSTERNA_COMPACTION_THRESHOLD", "500000"))
-COMPACTION_KEEP = int(os.environ.get("LUSTERNA_COMPACTION_KEEP", "4"))
 
 # Debug/inspection: stop the pipeline right after TRANSLATE (skip spec/prove/report) so the
 # translation artefacts can be examined. Used to iterate on the TRANSLATE stage in isolation.
