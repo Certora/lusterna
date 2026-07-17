@@ -882,6 +882,12 @@ async def run_session(deps: AgentDeps) -> str:
             return "Stopped after TRANSLATE (LUSTERNA_STOP_AFTER_TRANSLATE)."
 
         resume_note = await SpecPhase(deps, resume_note).run()
+
+        if config.STOP_BEFORE_PROVE:
+            log.info("LUSTERNA_STOP_BEFORE_PROVE set — stopping after SPEC-JUDGE so the inferred "
+                     "implementation spec can be inspected (no prove/report).")
+            return "Stopped before PROVE (LUSTERNA_STOP_BEFORE_PROVE)."
+
         await ProvePhase(deps).run()
 
         result = await _run_report(deps, resume_note)

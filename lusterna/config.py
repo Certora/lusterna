@@ -22,8 +22,12 @@ def setup_logging(verbose: bool = False) -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
-MODEL = os.environ.get("LUSTERNA_MODEL", "anthropic:claude-sonnet-4-6")
-JUDGE_MODEL = os.environ.get("LUSTERNA_JUDGE_MODEL", "anthropic:claude-sonnet-4-6")
+MODEL = os.environ.get("LUSTERNA_MODEL", "anthropic:claude-opus-4-8")
+JUDGE_MODEL = os.environ.get("LUSTERNA_JUDGE_MODEL", "anthropic:claude-opus-4-8")
+# Reasoning effort for effort-capable Anthropic models (Opus 4.x): "", low, medium, high.
+# Default "high": agents run with adaptive extended thinking at high effort (see cache_settings).
+# Set to "" to disable thinking (e.g. when overriding MODEL to a non-thinking model like Sonnet).
+EFFORT = os.environ.get("LUSTERNA_EFFORT", "high").strip().lower()
 # Root directory that holds per-session checkpoint directories
 SESSIONS_DIR = Path(os.environ.get("LUSTERNA_SESSIONS_DIR", "~/.local/share/lusterna/sessions")).expanduser()
 CHARON_BIN = os.environ.get("LUSTERNA_CHARON_BIN", "charon")
@@ -39,7 +43,9 @@ _budget_env = os.environ.get("LUSTERNA_TOKEN_BUDGET", "0")
 TOKEN_BUDGET: int | None = int(_budget_env) if _budget_env.strip() not in ("", "0") else None
 
 
-MAX_TOKENS = int(os.environ.get("LUSTERNA_MAX_TOKENS", "16000"))
+# Raised to 32000 to leave headroom for adaptive extended thinking (which shares the response
+# token budget with the output) plus a full Lean proof / spec in one response.
+MAX_TOKENS = int(os.environ.get("LUSTERNA_MAX_TOKENS", "32000"))
 
 
 def cache_settings(model: str) -> dict:
@@ -61,13 +67,19 @@ def cache_settings(model: str) -> dict:
         return {}
     try:
         from pydantic_ai.models.anthropic import AnthropicModelSettings
-        return AnthropicModelSettings(
+        settings = AnthropicModelSettings(
             anthropic_cache="1h",
             anthropic_cache_instructions="1h",
             anthropic_cache_tool_definitions="1h",
             anthropic_context_management={"edits": [{"type": "clear_tool_uses_20250919"}]},
             max_tokens=MAX_TOKENS,
         )
+        # Effort-capable models (Opus 4.x) reason harder with adaptive extended thinking at the
+        # configured effort. Sonnet leaves EFFORT empty, so this is a no-op there.
+        if EFFORT in ("low", "medium", "high"):
+            settings["anthropic_thinking"] = {"type": "adaptive"}
+            settings["anthropic_effort"] = EFFORT
+        return settings
     except ImportError:
         return {}
 
@@ -85,3 +97,8 @@ PROVE_REQUEST_LIMIT: int | None = int(_prove_req) if _prove_req.strip() not in (
 # Debug/inspection: stop the pipeline right after TRANSLATE (skip spec/prove/report) so the
 # translation artefacts can be examined. Used to iterate on the TRANSLATE stage in isolation.
 STOP_AFTER_TRANSLATE = os.environ.get("LUSTERNA_STOP_AFTER_TRANSLATE", "") not in ("", "0")
+
+# Debug/inspection: run through FORMALISE + SPEC-JUDGE but stop just before PROVE, so the
+# inferred implementation spec (the judged theorem statements) can be examined without spending
+# a prove pass. Used to iterate on the spec stages in isolation.
+STOP_BEFORE_PROVE = os.environ.get("LUSTERNA_STOP_BEFORE_PROVE", "") not in ("", "0")
