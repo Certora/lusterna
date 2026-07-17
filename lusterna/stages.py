@@ -18,10 +18,8 @@ from .schemas import (
 explore = factory.make_stage_agent("""
 You are the EXPLORE stage of the Lusterna formal verification pipeline.
 
-All Rust source files (*.rs), Cargo.toml, and build.rs are injected directly into
-your prompt — do not call any tools.
-
-Analyse the codebase and return a structured ExploreResult:
+The Rust repository is at /workspace/repo. Explore it with the `bash` tool (`find`, `grep`,
+`cat`) — read only what you need, not the whole tree — then return a structured ExploreResult:
 - entry_file: the main translation entry point ("src/lib.rs" or "src/main.rs")
 - entry_functions: public function names present in the crate
 
@@ -38,8 +36,9 @@ infer = factory.make_stage_agent("""
 You are the INFER stage of the Lusterna pipeline. You run on the PRISTINE Rust source,
 BEFORE translation. The CODE is the source of truth for behaviour; a design document, if
 present, is only a FOCUS HINT (which functions and guarantees matter) — never a spec to
-match. Do not call any tools; the sources, the doc hint, and the public entry functions
-are injected in your prompt.
+match. Read the code you need with the `bash` tool (the repo is at /workspace/repo; start
+from the files the design hint points at — read only what's relevant, not the whole tree).
+The doc hint and EXPLORE's entry functions are in your prompt.
 
 Two jobs:
 
@@ -157,10 +156,12 @@ you settled on, `source_files_edited`, `lean_files_patched`, and `gave_up`.
 translate_judge = factory.make_stage_agent("""
 You are the TRANSLATE-JUDGE of the Lusterna pipeline — the semantic gate on the translation.
 List every DEFECT as a TranslateVerdict; an EMPTY defect list APPROVES the translation and the
-pipeline proceeds (that is the goal). Do not call any tools — injected in your prompt: the original
-Rust source, the generated Lean, the `target_patterns`, the INFERRED PROPERTIES (what will be
-verified), translate/accountability.md + the source git diff, and the mechanical facts (which
-target functions are real `def`s vs `axiom`s vs holes, the emitted axioms, whether it compiles).
+pipeline proceeds (that is the goal). Read what you need with the `bash` tool: the ORIGINAL Rust
+source is at /workspace/repo (the target functions are `target_patterns`) and the GENERATED Lean is
+at /workspace/out/lean (the file list is in the facts) — read the target's source and its translation
+and compare them. Your prompt carries the small stuff: the `target_patterns`, the INFERRED PROPERTIES
+(what will be verified), translate/accountability.md, the source git diff, and the mechanical facts
+(which target functions are real `def`s vs `axiom`s vs holes, the emitted axioms, whether it compiles).
 
 Judge exactly these, one entry per problem (kind, detail, concrete fix):
   • target_mocked — a target function was emitted as an `axiom` (opaqued) instead of translated.
@@ -191,6 +192,15 @@ Do NOT judge proofs (there are none yet). Be strict but concrete: never invent a
 pin to a specific function, edit, or opaqued item. When the target is genuinely translated, the
 property-bearing state is modelled (not opaqued), every edit is behaviour-preserving, and it
 compiles, return defects = [].
+
+STAY IN SCOPE — a few bash reads, then decide. The mechanical facts already give you the
+def-vs-axiom-vs-hole verdicts, the emitted axioms, and the compile result: TRUST them, do not
+re-derive them. Your only reads are: the target functions in the Rust source, their translated
+`def`s in the generated Lean, and (if the diff is non-empty) the edited lines. That is enough to
+judge mocking, faithfulness, and behaviour-preservation. Do NOT investigate the Aeneas standard
+library or toolchain internals (/opt/aeneas, scalar/Result/monad definitions, how `U32` or `HAdd`
+work): how the translation rests on Aeneas's trusted primitives is the backend's business, not a
+faithfulness question, and spelunking it is wasted effort.
 """,
     output_type=TranslateVerdict,
     retries=3,

@@ -109,7 +109,6 @@ class TranslatePhase:
 
     async def _judge(self, facts: dict, outcome):
         tx = lean.translation_text(self.deps, facts["lean_files"])
-        source = tools.read_repo_sources(self.deps)
         acct = tools.read_out(self.deps, "translate/accountability.md")
         spec = self.deps.progress.get("informal_spec", {})
         props = (json.dumps({k: spec[k] for k in ("summary", "postconditions", "invariants")
@@ -123,6 +122,7 @@ class TranslatePhase:
             "opaqued_items_the_target_calls_directly": lean.opaque_deps_in_targets(
                 tx, self.target_patterns),
             "source_files_changed": facts["repo_files"],
+            "generated_lean_files": facts["lean_files"],
         }
         prompt = (
             f"Target patterns: {self.target_patterns or 'whole crate'}\n\n"
@@ -133,9 +133,10 @@ class TranslatePhase:
             f"opaqued structure)\n{props}\n\n"
             f"### translate/accountability.md\n"
             f"{acct if not acct.startswith('ERROR:') else '(none written)'}\n\n"
-            f"### Generated Lean translation\n{tx}\n\n"
-            f"### Original Rust source\n{source}\n\n"
-            "List every defect as a TranslateVerdict; an empty list approves."
+            "Read what you need with bash: the ORIGINAL Rust source is at /workspace/repo (the target "
+            "functions are `target_patterns`), and the GENERATED Lean is at /workspace/out/lean "
+            "(files above). Compare the target's translation against its source, then list every "
+            "defect as a TranslateVerdict; an empty list approves."
         )
         try:
             res = await _run_stage(_translate_judge, prompt, self.deps, "TRANSLATE-JUDGE")
@@ -300,11 +301,10 @@ async def _run_translate_stages(deps: AgentDeps, resume_note: str) -> str:
     completed = set(deps.progress.keys())
 
     if "explore" not in completed:
-        sources = tools.read_repo_sources(deps)
         explore_result = await _run_stage(
             _explore,
-            f"Rust repository at {deps.repo_path}. Analyse the following sources:\n\n"
-            f"{sources}" + resume_note,
+            f"The Rust repository is at /workspace/repo. Explore it with bash (find / grep / cat) "
+            f"and return the entry file and public functions." + resume_note,
             deps, "EXPLORE",
         )
         if explore_result and explore_result.output:
@@ -317,20 +317,22 @@ async def _run_translate_stages(deps: AgentDeps, resume_note: str) -> str:
         # INFER on the PRISTINE Rust source (before any translation/refactor) — the CODE is the
         # source of truth for behaviour. The design doc is only a FOCUS HINT (which functions/
         # guarantees matter), never a spec to conform to. Derives the InformalSpec AND
-        # the Charon target patterns (the set of functions the properties concern).
-        sources = tools.read_repo_sources(deps)
+        # the Charon target patterns (the set of functions the properties concern). The agent
+        # reads the code it needs with bash (repo at /workspace/repo) — nothing is injected but the
+        # small hints (the design doc + EXPLORE's entry functions).
         entry_functions = deps.progress.get("explore", {}).get("entry_functions", [])
-        infer_files = f"### Rust source (pristine, unmodified)\n{sources}"
+        hints = ""
         if deps.design_doc.strip():
-            infer_files += ("\n\n### Design document (FOCUS HINT only — the code, not this doc, "
-                            f"is the source of truth)\n{deps.design_doc}")
+            hints += ("\n\n### Design document (FOCUS HINT only — the code, not this doc, is the "
+                      f"source of truth)\n{deps.design_doc}")
         if entry_functions:
-            infer_files += f"\n\n### Public entry functions (from EXPLORE)\n{entry_functions}"
+            hints += f"\n\n### Public entry functions (from EXPLORE)\n{entry_functions}"
         infer_result = await _run_stage(
             _infer,
-            f"Proceed to INFER. From the following, derive (1) a structured InformalSpec of "
-            f"the behaviour of the ORIGINAL code, and (2) the Charon target_patterns scoping "
-            f"the verification target:\n\n{infer_files}" + resume_note,
+            f"Proceed to INFER. The Rust repository is at /workspace/repo — read the relevant code "
+            f"with bash (start from the files the design hint points at). Derive (1) a structured "
+            f"InformalSpec of the behaviour of the ORIGINAL code, and (2) the Charon target_patterns "
+            f"scoping the verification target.{hints}" + resume_note,
             deps, "INFER",
         )
         if infer_result and infer_result.output:

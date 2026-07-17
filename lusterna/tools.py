@@ -91,25 +91,6 @@ def read_out(deps: AgentDeps, path: str) -> str:
     return out
 
 
-def read_repo_sources(deps: AgentDeps) -> str:
-    """Read all .rs files plus Cargo.toml and build.rs from the repo as one formatted block,
-    suitable for injecting into a stage prompt. Files under target/ are excluded."""
-    _, out, _ = exec_in(deps.container_id, [
-        "find", REPO_IN, "-type", "f",
-        "(", "-name", "*.rs", "-o", "-name", "Cargo.toml", "-o", "-name", "build.rs", ")",
-        "!", "-path", "*/target/*",
-    ])
-    paths = sorted(line for line in out.splitlines() if line.strip())
-    parts = []
-    for abs_path in paths:
-        rel = abs_path.removeprefix(REPO_IN + "/")
-        code, content, _ = exec_in(deps.container_id, ["cat", abs_path])
-        if code == 0:
-            parts.append(f"### {rel}\n{content}")
-    log.info("read_repo_sources: %d files", len(parts))
-    return "\n\n".join(parts)
-
-
 def prune_stray_specs(deps: AgentDeps, translation: str) -> None:
     """Remove stray files a stage may create outside the canonical layout: the retired
     specs/formal_spec.lean and any top-level lean/*Spec.lean orphan. The real spec is nested
