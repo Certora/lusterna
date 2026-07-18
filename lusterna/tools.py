@@ -62,13 +62,14 @@ def bash(ctx: RunContext[AgentDeps], command: str, workdir: str = "/workspace",
     body = out + (("\n──stderr──\n" + err) if err.strip() else "")
     if len(body) > _BASH_MAX:
         body = "…[output truncated — showing the last ~30k chars]…\n" + body[-_BASH_MAX:]
-    # The command itself is shown by the per-turn heartbeat (factory._log_turn), which fires
-    # before the tool runs. Here we only surface the RESULT when it fails; success stays at DEBUG.
-    if code != 0:
-        tail = " ".join((err or out or "").split())
-        log.info("  ↳ exit=%d: %s", code, tail[-200:] if tail else "(no output)")
+    # One INFO line per command — the agent's actual activity (Opus keeps its reasoning server-side,
+    # so the command trail is the visible signal of what it is doing / whether it is stuck).
+    cmd1 = " ".join(command.split())
+    if code == 0:
+        log.info("$ %s", cmd1[:200])
     else:
-        log.debug("bash ok (exit=0, %d chars)", len(body))
+        tail = " ".join((err or out or "").split())
+        log.info("$ %s → exit=%d: %s", cmd1[:160], code, tail[-160:] if tail else "(no output)")
     return f"exit={code}\n{body}"
 
 
