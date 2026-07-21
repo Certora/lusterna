@@ -94,6 +94,12 @@ REQUEST_LIMIT: int | None = int(_req_limit_env) if _req_limit_env.strip() not in
 _prove_req = os.environ.get("LUSTERNA_PROVE_REQUEST_LIMIT", "150")
 PROVE_REQUEST_LIMIT: int | None = int(_prove_req) if _prove_req.strip() not in ("", "0") else None
 
+# TRANSLATE agent+judge loop: MAX_ROUNDS is the hard backstop; STALL_ROUNDS is the stagnation
+# limit — if a round fails to beat the best progress score for this many consecutive rounds, the
+# phase aborts early (so it stops on lack of progress, not only on the hard ceiling).
+TRANSLATE_MAX_ROUNDS = int(os.environ.get("LUSTERNA_TRANSLATE_MAX_ROUNDS", "5"))
+TRANSLATE_STALL_ROUNDS = int(os.environ.get("LUSTERNA_TRANSLATE_STALL_ROUNDS", "2"))
+
 # Debug/inspection: stop the pipeline right after TRANSLATE (skip spec/prove/report) so the
 # translation artefacts can be examined. Used to iterate on the TRANSLATE stage in isolation.
 STOP_AFTER_TRANSLATE = os.environ.get("LUSTERNA_STOP_AFTER_TRANSLATE", "") not in ("", "0")

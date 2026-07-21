@@ -69,7 +69,8 @@ class TranslatePhase:
     source edit is captured as a git diff (accountability trail) for the human reviewer.
     """
 
-    MAX_ROUNDS = 3   # agent+judge rounds before aborting
+    MAX_ROUNDS = config.TRANSLATE_MAX_ROUNDS      # hard backstop on agent+judge rounds
+    STALL_ROUNDS = config.TRANSLATE_STALL_ROUNDS  # abort early after this many no-progress rounds
 
     def __init__(self, deps: AgentDeps, entry: str, resume_note: str):
         self.deps = deps
@@ -77,12 +78,31 @@ class TranslatePhase:
         self.resume_note = resume_note
         self.target_patterns: list[str] = list(deps.progress.get("target_patterns", []))
 
+    @staticmethod
+    def _progress_score(facts: dict, defects: list | None) -> float:
+        """How close this round got to a done translation (higher = better). The five hard-gate
+        conditions each score 1; once the hard gate is met and the judge runs, fewer defects scores
+        higher. Used only to detect stagnation — a round that fails to beat the best score so far
+        made no progress."""
+        s = float(sum((
+            bool(facts.get("success")),
+            not facts.get("polluted"),
+            not facts.get("target_opaqued"),
+            not facts.get("target_holes"),
+            bool(facts.get("compiles")),
+        )))
+        if defects is not None:          # judged this round (hard gate was met)
+            s += 1.0 / (1 + len(defects))
+        return s
+
     async def run(self) -> str:
         if "aeneas" in self.deps.progress:          # resuming past TRANSLATE
             return self.resume_note
         log.info("─── Stage: TRANSLATE (target: %s) ───", self.target_patterns or "whole crate")
 
         feedback = ""
+        best_score = -1.0
+        stale = 0
         for rnd in range(self.MAX_ROUNDS):
             outcome = await self._translate(feedback)
             if outcome is not None and outcome.gave_up:
@@ -91,7 +111,23 @@ class TranslatePhase:
             facts = self._facts()
             hard_ok = (facts["success"] and facts["compiles"] and not facts["polluted"]
                        and not facts["target_opaqued"] and not facts["target_holes"])
-            if not hard_ok:
+            defects: list | None = None
+            if hard_ok:
+                verdict = await self._judge(facts, outcome)
+                defects = list(verdict.defects) if verdict else []
+                if not defects:
+                    return self._accept(facts, outcome)
+
+            # Progress / stagnation: a round must beat the best score seen; otherwise it made no
+            # measurable progress. STALL_ROUNDS such rounds in a row ⇒ abort early (don't burn the
+            # remaining hard-limit rounds re-producing the same failure).
+            score = self._progress_score(facts, defects)
+            stale = 0 if score > best_score + 1e-9 else stale + 1
+            best_score = max(best_score, score)
+
+            if hard_ok:
+                summary = f"judge found {len(defects)} defect(s)"
+            else:
                 reasons = []
                 if not facts["success"]:
                     reasons.append("no-translation-produced")
@@ -104,15 +140,14 @@ class TranslatePhase:
                         reasons.append(f"target-holes={facts['target_holes']}")
                     if not facts["compiles"]:
                         reasons.append("does-not-compile")
-                feedback = self._feedback(facts, None)
-                log.info("TRANSLATE round %d: hard gate not met — %s", rnd, "; ".join(reasons) or "?")
-                continue
-            verdict = await self._judge(facts, outcome)
-            defects = list(verdict.defects) if verdict else []
-            if not defects:
-                return self._accept(facts, outcome)
+                summary = "hard gate not met — " + ("; ".join(reasons) or "?")
+            log.info("TRANSLATE round %d/%d: %s (score=%.3f, stale=%d/%d)",
+                     rnd + 1, self.MAX_ROUNDS, summary, score, stale, self.STALL_ROUNDS)
+
+            if stale >= self.STALL_ROUNDS:
+                self._abort(facts, f"stagnated — no measurable progress across {self.STALL_ROUNDS} "
+                            f"consecutive rounds (stopped at round {rnd + 1}/{self.MAX_ROUNDS})")
             feedback = self._feedback(facts, defects)
-            log.info("TRANSLATE round %d: judge found %d defect(s)", rnd, len(defects))
 
         self._abort(self._facts(), f"did not converge on a clean, judge-approved translation in "
                     f"{self.MAX_ROUNDS} rounds")
