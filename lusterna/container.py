@@ -57,10 +57,15 @@ def push_repo(container_id: str, repo_path: Path) -> None:
     `docker cp` so that extracted files are owned by root (the container
     user).  `docker cp` preserves the host UID/GID, and with --cap-drop all
     the containerised root loses CAP_DAC_OVERRIDE and cannot write those files.
+
+    `target/` (cargo build output, regenerated in-container by charon's own
+    nightly) and the host `.git` are never pipeline inputs and can be huge for a
+    vendored target, so they are excluded from the push.
     """
     exec_in(container_id, ["mkdir", "-p", REPO_IN])
     tar = subprocess.Popen(
-        ["tar", "c", "-C", str(repo_path.resolve()), "."],
+        ["tar", "c", "--exclude=./target", "--exclude=./.git",
+         "-C", str(repo_path.resolve()), "."],
         stdout=subprocess.PIPE,
     )
     subprocess.run(
