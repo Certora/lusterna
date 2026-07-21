@@ -15,6 +15,7 @@ from typing import Any
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.capabilities.hooks import Hooks
 from pydantic_ai.models import ModelRequestContext
+from pydantic_ai.models.anthropic import AnthropicCompaction
 
 from . import config, telemetry
 from .schemas import AgentDeps
@@ -67,10 +68,16 @@ def make_stage_agent(
     model: str | None = None,
 ) -> Agent:
     m = model or config.MODEL
+    # AnthropicCompaction APPENDS a `compact_20260112` edit to the context_management edits in
+    # cache_settings (which already carries clear_tool_uses), so the two layer rather than clash:
+    # tool results are cleared cheaply per turn, and the server compacts older messages — including
+    # the agent's own large notes, which clear_tool_uses cannot evict — once input tokens cross the
+    # threshold. This guards long campaigns from context-window overflow; the agent's journaled
+    # files survive compaction, so the summarised turns are recoverable by re-reading them.
     kwargs: dict[str, Any] = dict(
         deps_type=AgentDeps,
         model_settings=config.cache_settings(m),
-        capabilities=[_hooks],
+        capabilities=[_hooks, AnthropicCompaction(token_threshold=config.COMPACTION_THRESHOLD)],
         instructions=instructions,
     )
     if output_type is not None:

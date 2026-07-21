@@ -982,3 +982,12 @@ async def run_session(deps: AgentDeps) -> str:
         log.error("Pipeline aborted: %s", e)
         _write_abort_notes(deps, str(e))
         return f"Pipeline aborted: {e}"
+
+    except UsageLimitExceeded as e:
+        # Token budget hit mid-stage. Stop cleanly rather than crash with a traceback: the
+        # completed stages are already checkpointed (resume re-enters at the first incomplete
+        # stage), and cli.py's finally still pulls artefacts + stops the container.
+        log.error("Session token budget exhausted: %s", e)
+        checkpoint.snapshot(deps)
+        _write_abort_notes(deps, f"token budget exhausted before completion: {e}")
+        return f"Stopped — token budget exhausted: {e}"

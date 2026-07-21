@@ -94,6 +94,15 @@ REQUEST_LIMIT: int | None = int(_req_limit_env) if _req_limit_env.strip() not in
 _prove_req = os.environ.get("LUSTERNA_PROVE_REQUEST_LIMIT", "150")
 PROVE_REQUEST_LIMIT: int | None = int(_prove_req) if _prove_req.strip() not in ("", "0") else None
 
+# Server-side context compaction threshold (Anthropic `compact_20260112` edit, via
+# AnthropicCompaction). When a request's input tokens exceed this, the server summarises older
+# messages. It LAYERS on top of clear_tool_uses (both are context-management edits): tool results
+# are cleared cheaply in the common case, and compaction is the fallback that also compresses the
+# non-clearable assistant turns (e.g. the agent's own large notes) before the context window fills.
+# Min 50_000. Kept well above the observed common-case (~80-100k) so it rarely fires — preserving
+# prompt-cache warmth — but far below the 1M window so long stages can't overflow.
+COMPACTION_THRESHOLD = int(os.environ.get("LUSTERNA_COMPACTION_THRESHOLD", "200000"))
+
 # TRANSLATE agent+judge loop: MAX_ROUNDS is the hard backstop; STALL_ROUNDS is the stagnation
 # limit — if a round fails to beat the best progress score for this many consecutive rounds, the
 # phase aborts early (so it stops on lack of progress, not only on the hard ceiling).
