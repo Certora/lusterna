@@ -10,7 +10,8 @@ from . import config, lean, telemetry, tools
 from .schemas import AgentDeps
 from .stages import (
     explore as _explore, infer as _infer, translate as _translate,
-    translate_judge as _translate_judge, prove as _prove, report as _report,
+    translate_judge as _translate_judge, formalise as _formalise,
+    prove as _prove, report as _report,
 )
 
 log = logging.getLogger(__name__)
@@ -20,11 +21,13 @@ log = logging.getLogger(__name__)
 # Every stage gets ONE tool — `bash` — and reads/writes/searches and drives charon/aeneas/cargo/
 # lake itself, so nothing is injected but small hints and computed facts (no dumping repo sources
 # or whole translations into the prompt). TRANSLATE also gets setup_lake_project (build-env
-# provisioning that isn't a plain one-liner). FORMALISE and SPEC-JUDGE stay injected (they reason
-# over the scoped translation, which is small) — FORMALISE tool-less so it cannot smuggle a proof
-# (bodies are assembled as `sorry`); the structured stages still return structured output.
+# provisioning that isn't a plain one-liner). FORMALISE gets bash too — it must navigate a large
+# translation to reference exact mangled names/signatures, so it READS the crate selectively
+# (grep/sed on /workspace/out/lean) rather than having ~9k lines injected; it still cannot smuggle
+# a proof because its FormalSpec output has no proof field (bodies are assembled as `sorry`).
+# SPEC-JUDGE stays injected (it reasons over the small assembled spec).
 
-for _agent in (_explore, _infer, _translate, _translate_judge, _prove, _report):
+for _agent in (_explore, _infer, _translate, _translate_judge, _formalise, _prove, _report):
     _agent.tool(tools.bash)
 _translate.tool(tools.setup_lake_project)
 

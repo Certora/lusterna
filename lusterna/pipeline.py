@@ -446,10 +446,28 @@ def _read_spec_files(deps: AgentDeps) -> str:
     return "\n\n".join(parts)
 
 
+def _translation_index(deps: AgentDeps) -> str:
+    """A compact index of the translated crate: the kind + exact (mangled) NAME of every
+    definition, without bodies. FORMALISE uses this to know what exists, then reads the exact
+    signature of the few it references with bash — so the large translation is never injected."""
+    import re
+    tx = lean.translation_text(deps)
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in re.finditer(r"(?m)^(def|abbrev|structure|inductive|axiom|theorem)\s+([\w.]+)", tx):
+        entry = f"{m.group(1)} {m.group(2)}"
+        if entry not in seen:
+            seen.add(entry)
+            out.append(entry)
+    return "\n".join(out)
+
+
 def _formalise_inputs(deps: AgentDeps) -> str:
-    """Static inputs injected into every FORMALISE round: the translated crate + the informal
-    spec (the properties, inferred from the code)."""
-    block = f"### Aeneas-translated crate\n{lean.translation_text(deps)}\n\n"
+    """Static inputs injected into every FORMALISE round: a NAME INDEX of the translated crate
+    (not its bodies — FORMALISE reads those selectively with bash) + the informal spec."""
+    block = ("### Translated-crate definition index (names only — READ the exact signature with "
+             "bash from /workspace/out/lean before referencing any of these)\n"
+             f"{_translation_index(deps)}\n\n")
     content = tools.read_out(deps, "specs/informal_spec.json")
     if not content.startswith("ERROR:"):
         block += f"### specs/informal_spec.json\n{content}\n\n"
@@ -532,8 +550,9 @@ class SpecPhase:
         return self.resume_note
 
     async def _formalise(self) -> "FormalSpec | None":
-        """One FORMALISE emit (ONE-SHOT, no tools — the whole translation is injected, the build
-        is the gate). Returns the FormalSpec, or None to stop the loop."""
+        """One FORMALISE emit. The agent has `bash` and a name index; it reads the translation
+        selectively for exact signatures (the harness build remains the authoritative gate).
+        Returns the FormalSpec, or None to stop the loop."""
         if self.attempt == 0:
             instruction = (
                 "FORMALISE: return a FormalSpec (preamble + statement-only theorems) "
