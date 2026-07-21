@@ -519,6 +519,24 @@ def impl_spec(deps: AgentDeps) -> str:
     return f"lean/{stem}/Spec.lean"
 
 
+def _proposition_only(signature: str) -> str:
+    """The proposition part of a theorem signature, dropping only an accidental trailing proof.
+
+    Splits at the first `:=` that is NOT nested inside (), [], or {} — so Lean statement syntax
+    that legitimately contains `:=` (a record update `{ x with f := v }`, a `let … := …`) is
+    PRESERVED (depth > 0), while a stray top-level `:= <proof>` the model shouldn't have included
+    is stripped. A naive `split(':=')[0]` truncated record-update statements mid-expression."""
+    depth = 0
+    for i, c in enumerate(signature):
+        if c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+        elif depth == 0 and c == ":" and signature[i + 1:i + 2] == "=":
+            return signature[:i].rstrip()
+    return signature.rstrip()
+
+
 def assemble_impl_spec(deps: AgentDeps, fs: FormalSpec,
                         drop: frozenset[str] = frozenset()) -> list[str]:
     """Write the implementation spec from a structured FormalSpec: the preamble followed by
@@ -537,7 +555,7 @@ def assemble_impl_spec(deps: AgentDeps, fs: FormalSpec,
     )
     kept = [t for t in fs.theorems if t.name not in drop]
     body = "\n\n".join(
-        f"theorem {t.name} {t.signature.split(':=')[0].strip()} := by sorry"
+        f"theorem {t.name} {_proposition_only(t.signature)} := by sorry"
         for t in kept
     )
     tools.write_out(deps, path, f"{header}{preamble}\n\n{body}\n")
