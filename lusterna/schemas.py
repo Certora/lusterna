@@ -22,9 +22,31 @@ class AgentDeps:
 
 # ── EXPLORE stage ────────────────────────────────────────────────────────────
 
+class ToolchainAssessment(BaseModel):
+    """What EXPLORE discovered EMPIRICALLY by running Charon/Aeneas on the target — an ADVISORY
+    input to INFER and TRANSLATE, never authoritative: TRANSLATE, the TRANSLATE-JUDGE, and the
+    `#print axioms` gate still decide correctness. Everything here is a discovered fact or a
+    proposed strategy, not a constraint the downstream stages must obey."""
+    buildable: bool = False
+    # build-environment fixes found (and applied) to get an llbc — NOT modifications to the
+    # program under analysis (e.g. "drop cdylib from solana-program [lib]", "neutralise ahash
+    # feature(stdsimd)", "update vendored .cargo-checksum after edit").
+    build_prereqs: list[str] = Field(default_factory=list)
+    # external crates/modules the target only USES and need not be verified → opaque (the trust
+    # boundary): frameworks, oracles, external-protocol account/amount types.
+    opaque_boundary: list[str] = Field(default_factory=list)
+    # types/values whose exact semantics a property needs but which Aeneas cannot translate, so
+    # they must be MODELLED (e.g. "Fraction (fixed::U68F60) → scaled-int rational", "U256 → Nat").
+    must_model: list[str] = Field(default_factory=list)
+    # constructs/types the coarse Aeneas pass errored or holed on.
+    translatability_walls: list[str] = Field(default_factory=list)
+    notes: str = ""   # short narrative of what the probe found
+
+
 class ExploreResult(BaseModel):
     entry_file: str
     entry_functions: list[str]
+    assessment: ToolchainAssessment = Field(default_factory=ToolchainAssessment)
 
 
 # ── INFER / FORMALISE stages ──────────────────────────────────────────────────

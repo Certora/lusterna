@@ -16,17 +16,47 @@ from .schemas import (
 
 
 explore = factory.make_stage_agent("""
-You are the EXPLORE stage — a QUICK orientation, not a deep analysis. The Rust repository is at
-/workspace/repo. With a HANDFUL of bash reads (ls the crate, cat the relevant lib.rs, `grep "pub fn"
-/ "pub struct"`), find where the code the design hint concerns lives, then return an ExploreResult:
+You are the EXPLORE stage — orientation of BOTH the code and the toolchain reality. The Rust
+repository is at /workspace/repo. You have the `bash` tool. Return an ExploreResult.
+
+PART A — CODE ORIENTATION (a handful of reads). `ls` the crate, `cat` the relevant lib.rs, `grep`
+"pub fn"/"pub struct" to find where the code the design hint concerns lives. Fill:
 - entry_file: the crate root of that code, RELATIVE TO ITS CRATE (e.g. "src/lib.rs"); in a
   workspace, the root of the crate that contains the target (not a path from the repo root).
 - entry_functions: a SHORT list of the main public functions/methods relevant to the target — NOT
-  an exhaustive enumeration of every public item in a large crate.
+  an exhaustive enumeration of every public item.
 
-Keep it to a few reads and return promptly — INFER and TRANSLATE do the detailed navigation and the
-translatability work. Do not analyse compatibility or enumerate the whole crate here.
-""",
+PART B — TOOLCHAIN REALITY-CHECK (the `assessment`). Discover EMPIRICALLY — by RUNNING the tools,
+not guessing from the code — whether and how this target can be translated. This is ADVISORY input
+that saves TRANSLATE from rediscovering the toolchain's walls; TRANSLATE, the judge, and the
+`#print axioms` gate still decide correctness. Steps (see the playbook below for what Aeneas
+handles):
+  1. BUILD: from the target crate dir, run `charon cargo --preset=aeneas -- -p <package>`
+     (whole-crate; no --start-from needed yet). Read the REAL errors.
+  2. BUILD-ENV FIXES ONLY: if the build fails on environment/toolchain issues — NOT the program's
+     own logic — apply the minimal fix and retry, recording each in `build_prereqs`. Legitimate
+     examples: a crate-type `cdylib` host-link abort (drop cdylib), a removed nightly feature in an
+     old dep, a vendored-crate `.cargo-checksum.json` that must be updated after an edit. These are
+     build configuration, NOT changes to the program under analysis, so they are allowed here and
+     are folded into the pristine baseline. Do NOT edit the TARGET program's source in EXPLORE, and
+     do NOT grind a large dependency tree into compiling: if whole external crates fail on systemic
+     issues (e.g. struct-layout asserts across a protocol/account crate) and those crates are the
+     trust boundary, put them in `opaque_boundary` and STOP — they need not compile if kept out of
+     the verification scope.
+  3. COARSE TRANSLATE: if you get an llbc, run one coarse Aeneas pass (fine to `--start-from` a
+     couple of entry functions to keep it small: `charon cargo --preset=aeneas --start-from
+     crate::… -- -p <package>` then `aeneas -backend lean -dest /tmp/ax <llbc>`) and read what it
+     CANNOT translate. Record choke-points in `translatability_walls`, and any type/value whose
+     exact semantics a property needs but which is untranslatable (a fixed-point/bignum library, a
+     collection whose contents matter) in `must_model`.
+  4. BOUNDARY: external crates/modules the target only USES and need not be verified (frameworks,
+     oracles, external-protocol accounts) → `opaque_boundary`.
+  Set `buildable` (did charon emit an llbc?) and put a short narrative in `notes`.
+
+BUDGET — the FLOOR is one charon run + one coarse aeneas run, reading the errors. Only if that is
+inconclusive, build a tiny isolated probe crate. Do NOT attempt the full translation here (that is
+TRANSLATE's job), do NOT enumerate the whole crate, and do NOT over-analyse.
+""" + docs.FOR_TRANSLATE,
     output_type=ExploreResult,
     retries=2,
 )

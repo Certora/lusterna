@@ -110,6 +110,22 @@ def init_repo_git(container_id: str) -> None:
     log.info("Source repo git-initialised at %s inside %s", REPO_IN, container_id[:12])
 
 
+def refold_baseline(container_id: str) -> None:
+    """Fold any working-tree changes into the pristine baseline commit (amend).
+
+    EXPLORE may apply BUILD-ENVIRONMENT prep (dropping a `cdylib` crate-type, neutralising a
+    removed nightly feature, fixing a vendored `.cargo-checksum`) to make the target buildable.
+    Like the `rust-toolchain` pin neutralised in init_repo_git, this is build configuration —
+    irrelevant to program behaviour — so it belongs IN the baseline, not in the TRANSLATE
+    accountability diff. Amending the single root commit keeps `repo_diff` (root..worktree)
+    showing only TRANSLATE's genuine source edits. Safe because REPO_IN holds exactly one commit.
+    """
+    exec_in(container_id, ["git", "add", "-A"], workdir=REPO_IN)
+    exec_in(container_id, ["git", "commit", "--amend", "--no-edit", "--allow-empty"],
+            workdir=REPO_IN)
+    log.info("Refolded EXPLORE build-env prep into the pristine baseline in %s", container_id[:12])
+
+
 def push_artefacts(container_id: str, src: Path) -> None:
     """Push existing artefacts from *src* on the host back into OUT_IN.
 

@@ -8,7 +8,7 @@ import logging
 
 from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
 
-from . import checkpoint, lean, telemetry, tools
+from . import checkpoint, container, lean, telemetry, tools
 from .schemas import InformalSpec, FormalSpec, JudgeVerdict
 from .runner import _run_stage
 from .stages import (
@@ -20,6 +20,35 @@ from .schemas import AgentDeps
 from . import config
 
 log = logging.getLogger(__name__)
+
+
+def _assessment_hint(deps: AgentDeps) -> str:
+    """Format EXPLORE's ToolchainAssessment as an ADVISORY prompt block for INFER/TRANSLATE.
+
+    Empirically discovered facts + proposed strategy — never authoritative: the agent decides,
+    and the TRANSLATE-JUDGE + `#print axioms` gate still govern correctness. Empty when EXPLORE
+    recorded nothing useful.
+    """
+    a = (deps.progress.get("explore") or {}).get("assessment") or {}
+    parts = []
+    if a.get("build_prereqs"):
+        parts.append(f"- build-env prep already applied (folded into the baseline, NOT a program "
+                     f"edit): {a['build_prereqs']}")
+    if a.get("opaque_boundary"):
+        parts.append(f"- trust boundary to OPAQUE (external, need not be verified): "
+                     f"{a['opaque_boundary']}")
+    if a.get("must_model"):
+        parts.append(f"- must be MODELLED (untranslatable, but a property depends on its exact "
+                     f"semantics): {a['must_model']}")
+    if a.get("translatability_walls"):
+        parts.append(f"- Aeneas walls hit in the coarse pass: {a['translatability_walls']}")
+    if a.get("notes"):
+        parts.append(f"- notes: {a['notes']}")
+    if not parts:
+        return ""
+    return (f"\n\n### EXPLORE toolchain assessment (ADVISORY — empirically discovered; you decide, "
+            f"the judge + `#print axioms` still gate). buildable={a.get('buildable')}\n"
+            + "\n".join(parts))
 
 
 class _PipelineAborted(Exception):
@@ -98,6 +127,7 @@ class TranslatePhase:
             "least-degrading option first. After Aeneas, call setup_lake_project() and check it "
             "compiles with `lake env lean`. Log every alteration to translate/accountability.md. "
             "Return a TranslateOutcome."
+            + _assessment_hint(self.deps)
             + (f"\n\n### Problems to FIX from the previous attempt\n{feedback}" if feedback else "")
         )
         try:
@@ -301,17 +331,24 @@ async def _run_translate_stages(deps: AgentDeps, resume_note: str) -> str:
     completed = set(deps.progress.keys())
 
     if "explore" not in completed:
-        hint = (f"\n\nDesign focus hint (which code matters — orient toward it):\n"
-                f"{deps.design_doc[:1500].rstrip()}" if deps.design_doc.strip() else "")
+        # The design doc is an optional, non-authoritative FOCUS HINT — given in full here (this
+        # is the orientation stage), never as a spec to conform to.
+        hint = (f"\n\nDesign focus hint (optional, non-authoritative — which code matters):\n"
+                f"{deps.design_doc.rstrip()}" if deps.design_doc.strip() else "")
         explore_result = await _run_stage(
             _explore,
-            f"The Rust repository is at /workspace/repo. Do a QUICK orientation with bash (a handful "
-            f"of reads) and return the entry file + the main public functions relevant to the "
-            f"target.{hint}" + resume_note,
+            f"The Rust repository is at /workspace/repo. Orient to the code (entry file + the main "
+            f"public functions relevant to the target) AND run the toolchain reality-check: build "
+            f"with charon, apply build-env prereqs if needed, run a coarse aeneas pass, and record "
+            f"the ToolchainAssessment (buildable, build_prereqs, opaque_boundary, must_model, "
+            f"translatability_walls). Return an ExploreResult.{hint}" + resume_note,
             deps, "EXPLORE",
         )
         if explore_result and explore_result.output:
             deps.progress["explore"] = explore_result.output.model_dump()
+        # Fold any build-env prep EXPLORE applied into the pristine baseline so it is not later
+        # mistaken for a TRANSLATE source modification in the accountability diff.
+        container.refold_baseline(deps.container_id)
         checkpoint.snapshot(deps)
         resume_note = ""
         completed = set(deps.progress.keys())
@@ -330,6 +367,7 @@ async def _run_translate_stages(deps: AgentDeps, resume_note: str) -> str:
                       f"source of truth)\n{deps.design_doc}")
         if entry_functions:
             hints += f"\n\n### Public entry functions (from EXPLORE)\n{entry_functions}"
+        hints += _assessment_hint(deps)
         infer_result = await _run_stage(
             _infer,
             f"Proceed to INFER. The Rust repository is at /workspace/repo — read the relevant code "
