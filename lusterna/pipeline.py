@@ -6,7 +6,7 @@ communicate via the filesystem and deps.progress."""
 import json
 import logging
 
-from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
+from pydantic_ai.exceptions import ModelAPIError, UnexpectedModelBehavior, UsageLimitExceeded
 
 from . import checkpoint, container, lean, telemetry, tools
 from .schemas import InformalSpec, FormalSpec, JudgeVerdict
@@ -1011,3 +1011,12 @@ async def run_session(deps: AgentDeps) -> str:
         checkpoint.snapshot(deps)
         _write_abort_notes(deps, f"token budget exhausted before completion: {e}")
         return f"Stopped — token budget exhausted: {e}"
+
+    except ModelAPIError as e:
+        # The model provider stayed unavailable past the transient-retry budget (e.g. a sustained
+        # overload). Stop cleanly rather than crash with a traceback — cli.py's finally keeps the
+        # container alive, so a later resume (once the provider recovers) continues with full state.
+        log.error("Model provider error, retries exhausted: %s", e)
+        checkpoint.snapshot(deps)
+        _write_abort_notes(deps, f"model provider unavailable after retries: {e}")
+        return f"Stopped — model provider unavailable after retries: {e}"
