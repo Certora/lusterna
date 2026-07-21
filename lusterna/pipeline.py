@@ -976,6 +976,7 @@ async def run_session(deps: AgentDeps) -> str:
             u["cache_read_tokens"], u["cache_write_tokens"],
             u["total_tokens"], telemetry.budget or "∞",
         )
+        deps.completed = True   # full run — cli.py may free the container
         return result
 
     except _PipelineAborted as e:

@@ -195,6 +195,17 @@ def stop(container_id: str) -> None:
     log.info("Container stopped: %s", container_id[:12])
 
 
+def keep_alive(container_id: str) -> None:
+    """Leave the container running so a later resume can re-attach to it with FULL state — repo
+    edits/shims, out/ artefacts, and the accountability baseline all intact — instead of restarting
+    the interrupted stage from a pristine tree. Used when a run does not complete (budget hit,
+    interrupt, crash). Cancels the atexit auto-stop; the `sleep infinity` entrypoint keeps it alive
+    until the session is resumed (which re-attaches) or it is freed with `docker kill`."""
+    atexit.unregister(_stop_on_exit)
+    log.info("Container %s kept ALIVE for resume (full state preserved). Resume the session to "
+             "re-attach; free it with: docker kill %s", container_id[:12], container_id)
+
+
 def is_running(container_id: str) -> bool:
     r = _docker("inspect", "--format={{.State.Running}}", container_id, check=False)
     return r.returncode == 0 and r.stdout.strip() == "true"

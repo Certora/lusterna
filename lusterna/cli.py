@@ -67,6 +67,9 @@ def run(
     doc_text = Path(design_doc).read_text()
 
     sid = session_id or str(uuid.uuid4())
+    # A container the USER passed (--container / env) is external — we never stop it. One that only
+    # comes from the checkpoint is ours (a prior run kept it alive), and we manage its lifecycle.
+    _user_container = container
     saved = checkpoint.load(sid, number=ckpt_number)
     if saved:
         log.info(
@@ -78,6 +81,8 @@ def run(
     else:
         log.info("Starting new session %s", sid)
         progress = {}
+
+    _external = bool(_user_container) and container_mod.is_running(_user_container)
 
     _owned = False
     resuming = bool(saved)
@@ -121,8 +126,14 @@ def run(
     finally:
         container_mod.pull_artefacts(container_id, work_path)
         log.info("Artefacts written to %s", work_path)
-        if _owned:
-            container_mod.stop(container_id)
+        if _external:
+            log.info("Leaving user-provided container %s as-is", container_id[:12])
+        elif deps.completed:
+            container_mod.stop(container_id)          # run finished — free it
+        else:
+            # Incomplete (budget/interrupt/crash): keep it alive so `--session-id %s` re-attaches
+            # with full state instead of restarting the stage from a pristine tree.
+            container_mod.keep_alive(container_id)
 
     output = {
         "session_id": sid,
