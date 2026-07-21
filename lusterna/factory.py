@@ -9,11 +9,15 @@ evicting context the agent then re-reads.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import random
 from typing import Any
 
 from pydantic_ai import Agent, RunContext
+from pydantic_ai.capabilities.abstract import AbstractCapability, WrapModelRequestHandler
 from pydantic_ai.capabilities.hooks import Hooks
+from pydantic_ai.exceptions import ModelAPIError
 from pydantic_ai.models import ModelRequestContext
 from pydantic_ai.models.anthropic import AnthropicCompaction
 
@@ -23,6 +27,50 @@ from .schemas import AgentDeps
 log = logging.getLogger(__name__)
 
 _hooks = Hooks()
+
+# ── transient model-error retry ──────────────────────────────────────────────
+
+_TRANSIENT_STATUS = {408, 409, 429, 500, 502, 503, 504, 529}
+_TRANSIENT_MARKERS = ("overloaded", "rate_limit", "timeout", "timed out", "temporarily",
+                      "502", "503", "504", "529", "service unavailable")
+
+
+def _is_transient(exc: ModelAPIError) -> bool:
+    """A provider error worth retrying: an overloaded/5xx/rate-limit/timeout blip, not a
+    deterministic failure (bad request, auth, unsupported feature)."""
+    cause = getattr(exc, "__cause__", None)
+    if getattr(cause, "status_code", None) in _TRANSIENT_STATUS:
+        return True
+    return any(m in str(exc).lower() for m in _TRANSIENT_MARKERS)
+
+
+class _TransientRetry(AbstractCapability[AgentDeps]):
+    """Retry transient model-provider errors with exponential backoff + jitter.
+
+    Retrying the whole (streaming) request is correct: a mid-stream overload discards the partial
+    stream. ONLY `ModelAPIError`s judged transient are retried — `UsageLimitExceeded` (budget) and
+    every other exception propagate unchanged, so a cap-hit still stops cleanly and a deterministic
+    error still surfaces. A transient failure produces little/no output, so a retry mostly re-sends
+    cached input."""
+
+    def __init__(self, max_attempts: int, base_delay: float):
+        self.max_attempts = max_attempts
+        self.base_delay = base_delay
+
+    async def wrap_model_request(
+        self, ctx: RunContext[AgentDeps], *,
+        request_context: ModelRequestContext, handler: WrapModelRequestHandler,
+    ) -> Any:
+        for attempt in range(1, self.max_attempts + 1):
+            try:
+                return await handler(request_context)
+            except ModelAPIError as exc:
+                if attempt >= self.max_attempts or not _is_transient(exc):
+                    raise
+                delay = min(self.base_delay * 2 ** (attempt - 1), 60.0) + random.uniform(0, 1.0)
+                log.warning("Transient model error (attempt %d/%d): %s — retrying in %.1fs",
+                            attempt, self.max_attempts, str(exc)[:140], delay)
+                await asyncio.sleep(delay)
 
 
 @_hooks.on.after_model_request
@@ -77,7 +125,11 @@ def make_stage_agent(
     kwargs: dict[str, Any] = dict(
         deps_type=AgentDeps,
         model_settings=config.cache_settings(m),
-        capabilities=[_hooks, AnthropicCompaction(token_threshold=config.COMPACTION_THRESHOLD)],
+        capabilities=[
+            _TransientRetry(config.MODEL_RETRY_ATTEMPTS, config.MODEL_RETRY_BASE_DELAY),
+            _hooks,
+            AnthropicCompaction(token_threshold=config.COMPACTION_THRESHOLD),
+        ],
         instructions=instructions,
     )
     if output_type is not None:
