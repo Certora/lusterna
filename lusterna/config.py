@@ -96,7 +96,7 @@ PROVE_REQUEST_LIMIT: int | None = int(_prove_req) if _prove_req.strip() not in (
 
 # Transient model-error retry: a single provider blip (overloaded 529 / 5xx / rate-limit /
 # timeout) should not abort a long campaign. Number of attempts and the exponential-backoff base.
-MODEL_RETRY_ATTEMPTS = int(os.environ.get("LUSTERNA_MODEL_RETRY_ATTEMPTS", "6"))
+MODEL_RETRY_ATTEMPTS = int(os.environ.get("LUSTERNA_MODEL_RETRY_ATTEMPTS", "10"))
 MODEL_RETRY_BASE_DELAY = float(os.environ.get("LUSTERNA_MODEL_RETRY_BASE_DELAY", "2.0"))
 
 # Server-side context compaction threshold (Anthropic `compact_20260112` edit, via
