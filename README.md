@@ -4,7 +4,7 @@ An AI agent that translates Rust programs into formally verified Lean 4 specific
 
 Given a Rust repository and a design document, Lusterna:
 
-1. Explores the source and identifies the entry file and public functions
+1. Explores the source (entry file + public functions) and empirically reality-checks the toolchain — building with Charon and a coarse Aeneas pass to record what is buildable, the external trust boundary, and which types must be modelled — as an advisory assessment for the later stages
 2. Infers, from the code, the behavioural properties the target functions satisfy — and which functions the verification targets (the design document is only a focus hint; the code is the source of truth)
 3. Translates the target to Lean 4 via [Charon](https://github.com/AeneasVerif/charon) + [Aeneas](https://github.com/AeneasVerif/aeneas), driving the toolchain to translate the target's own logic (never mocking it away)
 4. States the properties as Lean 4 theorem stubs and builds them with `lake build`, iterating until they compile
@@ -26,7 +26,8 @@ lusterna/
 │                     running a stage agent under history/limits, and tool wiring
 ├── stages.py       — Stage-agent definitions (prompt + output type per stage)
 ├── factory.py      — Agent factory: stage-agent construction + shared hooks
-│                     (token tracking, budget enforcement, history snapshot)
+│                     (token tracking, budget enforcement, history snapshot,
+│                     transient-error retry, server-side context compaction)
 ├── lean.py         — Aeneas/Lean domain logic: translation analysis, lake build,
 │                     the #print axioms gate, and implementation-spec operations
 ├── tools.py        — The agent's `bash` + setup_lake_project tools, and the
@@ -50,7 +51,7 @@ flowchart TD
   DESIGN["📄 DESIGN.md<br/>focus hint"]:::src
   RUST["🦀 Rust crate<br/>source of truth"]:::src
 
-  EXPLORE["EXPLORE<br/>entry file + public fns"]:::impl
+  EXPLORE["EXPLORE<br/>entry file + fns + toolchain assessment"]:::impl
   INFER["INFER<br/>behaviour spec + target_patterns<br/>(pristine source)"]:::impl
   TRANSLATE["TRANSLATE<br/>agent drives Charon → Aeneas → Lean"]:::impl
   TJUDGE{"TRANSLATE-JUDGE<br/>target translated & faithful?"}:::gate
@@ -139,25 +140,26 @@ are pulled back out at the end.
 Each stage agent is declared in `stages.py` (prompt + output type), constructed by `factory.py`, and
 driven by `pipeline.py`. Each stage starts with a fresh context — stages communicate via the
 filesystem (git-committed artefacts) and `deps.progress`, not via message history. Context-window
-management is delegated to the model's native server-side context management, so a long shell-driven
-stage stays bounded without a client-side rewrite that would bust the prompt cache.
+management is delegated to the model's native server-side context management — tool-result clearing
+plus compaction of older messages once input tokens cross a threshold — so a long shell-driven stage
+stays bounded without a client-side rewrite that would bust the prompt cache.
 
 | Stage | Interface | Purpose |
 |---|---|---|
-| EXPLORE | `bash`, structured output | Identify the entry file and public functions |
+| EXPLORE | `bash`, structured output | Identify the entry file and public functions, and reality-check the toolchain (build + coarse translate) into an advisory `ToolchainAssessment` |
 | INFER | structured output | On the pristine Rust source, derive the behavioural properties **and** the Charon `target_patterns` that scope the target |
 | TRANSLATE | `bash`, structured output | Drive Charon+Aeneas to translate the target (scope → assume → model → abort); log every alteration to `translate/accountability.md` |
 | TRANSLATE-JUDGE | structured output | Reject a mocked / unfaithful / behaviour-changing translation; approval = empty defect list |
-| FORMALISE | structured output | Emit theorem stubs (statements only); the orchestrator assembles them and `lake build` is the convergence gate |
+| FORMALISE | `bash`, structured output | Read the translation selectively (a name index + `bash`, not injected whole) and emit theorem stubs (statements only); the orchestrator assembles them and `lake build` is the convergence gate |
 | SPEC-JUDGE | structured output | List concrete defects in the theorem statements; re-formalise until the list is empty |
 | PROVE | `bash` | Attempt a proof for every `sorry` theorem against `lake build`; leaving hard theorems as `sorry` is honest |
 | REPORT | `bash` | Produce `VERIFICATION_REPORT.md` from the injected artefacts |
 
-The structured stages (EXPLORE / INFER / FORMALISE / SPEC-JUDGE / TRANSLATE-JUDGE) receive their
-inputs injected and return structured output — so FORMALISE cannot smuggle in a proof (theorem
-bodies are assembled as `sorry` and only PROVE fills them). The `#print axioms` gate after PROVE is
-the authoritative verdict; the report's headline metric is the theorems it establishes that also
-reference an Aeneas-translated def.
+The structured stages return structured output; FORMALISE cannot smuggle in a proof because its
+output carries only statements (theorem bodies are assembled as `sorry` and only PROVE fills them).
+The read-heavy stages navigate the translation via `bash` rather than having it injected whole. The
+`#print axioms` gate after PROVE is the authoritative verdict; the report's headline metric is the
+theorems it establishes that also reference an Aeneas-translated def.
 
 ### Checkpoints
 
@@ -168,10 +170,14 @@ After each stage the agent saves a numbered checkpoint under a per-session direc
 ```
 
 Each records the progress dict, container ID, repo/work paths, design doc, and the `git_head` SHA of
-`/workspace/out` at save time. On resume, the pipeline restores the artefacts from `--out` into a
-fresh container and hard-resets the output repo to the resumed checkpoint's `git_head`, so you
-continue from exactly that state — never from whatever drifted onto disk. If the artefacts don't
-contain that commit, resume refuses rather than continuing from a mismatch.
+`/workspace/out` at save time.
+
+An interrupted run (token budget hit, provider outage past the retry budget, or a crash) is stopped
+gracefully — never a traceback — and its container is **kept alive**, so a resume re-attaches to it
+with full in-stage state (repo edits, artefacts, the accountability baseline) and continues rather
+than restarting the stage. Only if that container is gone does resume rebuild a fresh one: it
+restores the artefacts from `--out` and hard-resets the output repo to the checkpoint's `git_head`,
+continuing from exactly that state — never from whatever drifted onto disk.
 
 ## Requirements
 
@@ -234,7 +240,9 @@ lusterna show-checkpoint SESSION_ID [--number N]   # a checkpoint's state (JSON)
 | Variable | Default | Description |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | — | **Required.** Anthropic API key |
-| `LUSTERNA_MODEL` | `anthropic:claude-sonnet-4-6` | Model for the stage agents |
+| `LUSTERNA_MODEL` / `LUSTERNA_JUDGE_MODEL` | `anthropic:claude-opus-4-8` | Model for the stage / judge agents |
+| `LUSTERNA_EFFORT` | `high` | Extended-thinking effort (low/medium/high) for the stage agents |
+| `LUSTERNA_MAX_TOKENS` | `32000` | Max output tokens per model request |
 | `LUSTERNA_SESSIONS_DIR` | `~/.local/share/lusterna/sessions` | Root for per-session checkpoints |
 | `LUSTERNA_CHARON_BIN` / `LUSTERNA_AENEAS_BIN` / `LUSTERNA_LAKE_BIN` | `charon` / `aeneas` / `lake` | Toolchain binary names inside the container |
 | `LUSTERNA_IMAGE` | `lusterna-toolchain:latest` | Default Docker image |
@@ -243,7 +251,11 @@ lusterna show-checkpoint SESSION_ID [--number N]   # a checkpoint's state (JSON)
 | `LUSTERNA_REQUEST_LIMIT` | (unlimited) | Max model requests per stage; 0/unset = unlimited |
 | `LUSTERNA_PROVE_REQUEST_LIMIT` | `150` | Backstop on PROVE model requests |
 | `LUSTERNA_BUILD_TIMEOUT` | `180` | Per-`lake` timeout (seconds) |
+| `LUSTERNA_MODEL_RETRY_ATTEMPTS` / `LUSTERNA_MODEL_RETRY_BASE_DELAY` | `10` / `2.0` | Transient-error (overload/5xx) retry attempts and backoff base (seconds) |
+| `LUSTERNA_COMPACTION_THRESHOLD` | `200000` | Input-token threshold for server-side context compaction |
+| `LUSTERNA_TRANSLATE_MAX_ROUNDS` / `LUSTERNA_TRANSLATE_STALL_ROUNDS` | `5` / `2` | TRANSLATE agent+judge round cap and no-progress (stagnation) abort limit |
 | `LUSTERNA_STOP_AFTER_TRANSLATE` | (off) | Stop after TRANSLATE so the translation can be inspected |
+| `LUSTERNA_STOP_BEFORE_PROVE` | (off) | Stop after SPEC-JUDGE so the inferred spec can be inspected (no prove/report) |
 | `LUSTERNA_LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
 
 ## Resuming a session
