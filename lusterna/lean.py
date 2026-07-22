@@ -205,8 +205,30 @@ def trail_refactored_paths(trail: list[dict]) -> list[str]:
 
 def _theorem_names(spec_text: str) -> list[str]:
     """Names as written after `theorem`/`lemma` in the implementation spec."""
-    import re
     return [m.group(2) for m in re.finditer(r"(?m)^\s*(theorem|lemma)\s+([\w.]+)", spec_text)]
+
+
+def _theorem_qualified_names(spec_text: str) -> list[str]:
+    """Theorem/lemma names PREFIXED with any enclosing `namespace` — parallel to _theorem_names
+    (same theorems, same order). `#print axioms` needs the fully-qualified name: a theorem inside
+    `namespace Foo` is `Foo.bar`, not `bar`, so querying the bare name fails with 'unknown constant'
+    and taints everything. `section` scopes are tracked (they don't contribute to the name but their
+    `end` must not pop a namespace)."""
+    scopes: list[tuple[bool, str]] = []   # (is_namespace, name), innermost last
+    out: list[str] = []
+    for raw in spec_text.splitlines():
+        s = raw.strip()
+        if m := re.match(r"(namespace|section)\s+(\S+)", s):
+            scopes.append((m.group(1) == "namespace", m.group(2)))
+        elif re.match(r"section\b\s*$", s):        # anonymous section
+            scopes.append((False, ""))
+        elif re.match(r"end\b", s):
+            if scopes:
+                scopes.pop()
+        elif m := re.match(r"(theorem|lemma)\s+([\w.]+)", s):
+            prefix = ".".join(n for is_ns, n in scopes if is_ns)
+            out.append(f"{prefix}.{m.group(2)}" if prefix else m.group(2))
+    return out
 
 
 def stub_proofs(text: str) -> str:
@@ -258,7 +280,6 @@ def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
     afterwards. (Re-elaborating the spec from source instead is fragile: one import or
     proof failure auto-`sorry`s every declaration and taints the whole batch.)
     """
-    import re
     from . import config
     original = tools.read_out(deps, spec_rel)
     if original.startswith("ERROR:"):
@@ -266,6 +287,10 @@ def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
     names = _theorem_names(original)
     if not names:
         return {"clean": [], "tainted": [], "raw": ""}
+    # Query `#print axioms` by the NAMESPACE-QUALIFIED name (parallel to `names`) — a bare name
+    # inside `namespace Foo` is `Unknown constant` and would taint every theorem. Matching the
+    # output back to `names` is still by short name, so the returned lists stay short.
+    qnames = _theorem_qualified_names(original)
 
     # spec_rel = lean/<Lib>/Spec.lean  →  spec module <Lib>.Spec (matches the lean_lib root)
     parts = tools._norm_out(spec_rel).split("/")
@@ -274,7 +299,7 @@ def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
     spec_module = ".".join(parts[1:]).removesuffix(".lean")
 
     checker_rel = "_axiom_check.lean"          # at out root — outside the lean_lib srcDir
-    body = f"import {spec_module}\n\n" + "\n".join(f"#print axioms {n}" for n in names) + "\n"
+    body = f"import {spec_module}\n\n" + "\n".join(f"#print axioms {n}" for n in qnames) + "\n"
     if (w := tools.write_out(deps, checker_rel, body)).startswith("ERROR:"):
         return {"clean": [], "tainted": [], "raw": w}
     _, out, err = exec_in(deps.container_id,
