@@ -83,8 +83,6 @@ def run(
         progress = {}
 
     _external = bool(_user_container) and container_mod.is_running(_user_container)
-
-    _owned = False
     resuming = bool(saved)
 
     if container and container_mod.is_running(container):
@@ -94,7 +92,6 @@ def run(
         if container:
             log.info("Container %s is not running — starting a fresh one", container[:12])
         container_id = container_mod.start(image=image)
-        _owned = True
         container_mod.push_repo(container_id, repo_path)
         # Git-init the source so TRANSLATE can diff any behaviour-preserving refactor
         # against a pristine baseline for the accountability trail.

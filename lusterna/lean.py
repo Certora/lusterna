@@ -494,16 +494,18 @@ def attribute_errors(spec_text: str, stderr: str, basename: str = "Spec.lean") -
 
 
 def theorem_statement(spec_text: str, name: str) -> str:
-    """The statement text of theorem *name* — binders + proposition, up to (not including) `:=`.
-    Used to decide whether a theorem references the implementation (referenced_defs on it).
-    Returns '' if not found."""
-    import re
+    """The statement text of theorem *name* — binders + proposition, up to (not including) the
+    proof `:=`. Used to decide whether a theorem references the implementation (referenced_defs on
+    it). Returns '' if not found."""
     m = re.search(rf"(?m)^theorem\s+{re.escape(name)}\b", spec_text)
     if not m:
         return ""
     tail = spec_text[m.start():]
-    cut = tail.find(":=")
-    return tail[:cut] if cut != -1 else tail.split("\n\n", 1)[0]
+    # Cut at this theorem's proof `:=` via the bracket-aware splitter, so a nested record-update
+    # `:=` survives (a naive find(':=') would truncate the statement mid-expression). If there is
+    # no top-level `:=` at all, stop at the blank line so we don't run into the next theorem.
+    stmt = _proposition_only(tail)
+    return stmt if stmt != tail.rstrip() else tail.split("\n\n", 1)[0]
 
 
 # ── implementation-spec operations ─────────────────────────────────────────────
@@ -590,3 +592,19 @@ def translation_text(deps: AgentDeps, lean_files: list[str] | None = None) -> st
     parts = [t for rel in lean_files
              for t in [tools.read_out(deps, rel)] if not t.startswith("ERROR:")]
     return "\n\n".join(parts)
+
+
+def translation_index(deps: AgentDeps) -> str:
+    """A compact index of the translated crate: the kind + exact (mangled) NAME of every
+    definition, without bodies. FORMALISE uses it to know what exists, then reads the exact
+    signature of the few it references with bash — so the large translation is never injected.
+    Lives here beside the other translation scanners (`_def_blocks`, `external_axioms`)."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in re.finditer(r"(?m)^(def|abbrev|structure|inductive|axiom|theorem)\s+([\w.]+)",
+                         translation_text(deps)):
+        entry = f"{m.group(1)} {m.group(2)}"
+        if entry not in seen:
+            seen.add(entry)
+            out.append(entry)
+    return "\n".join(out)

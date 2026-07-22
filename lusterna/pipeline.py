@@ -446,28 +446,12 @@ def _read_spec_files(deps: AgentDeps) -> str:
     return "\n\n".join(parts)
 
 
-def _translation_index(deps: AgentDeps) -> str:
-    """A compact index of the translated crate: the kind + exact (mangled) NAME of every
-    definition, without bodies. FORMALISE uses this to know what exists, then reads the exact
-    signature of the few it references with bash — so the large translation is never injected."""
-    import re
-    tx = lean.translation_text(deps)
-    seen: set[str] = set()
-    out: list[str] = []
-    for m in re.finditer(r"(?m)^(def|abbrev|structure|inductive|axiom|theorem)\s+([\w.]+)", tx):
-        entry = f"{m.group(1)} {m.group(2)}"
-        if entry not in seen:
-            seen.add(entry)
-            out.append(entry)
-    return "\n".join(out)
-
-
 def _formalise_inputs(deps: AgentDeps) -> str:
     """Static inputs injected into every FORMALISE round: a NAME INDEX of the translated crate
     (not its bodies — FORMALISE reads those selectively with bash) + the informal spec."""
     block = ("### Translated-crate definition index (names only — READ the exact signature with "
              "bash from /workspace/out/lean before referencing any of these)\n"
-             f"{_translation_index(deps)}\n\n")
+             f"{lean.translation_index(deps)}\n\n")
     content = tools.read_out(deps, "specs/informal_spec.json")
     if not content.startswith("ERROR:"):
         block += f"### specs/informal_spec.json\n{content}\n\n"
@@ -998,25 +982,14 @@ async def run_session(deps: AgentDeps) -> str:
         deps.completed = True   # full run — cli.py may free the container
         return result
 
-    except _PipelineAborted as e:
-        log.error("Pipeline aborted: %s", e)
-        _write_abort_notes(deps, str(e))
-        return f"Pipeline aborted: {e}"
-
-    except UsageLimitExceeded as e:
-        # Token budget hit mid-stage. Stop cleanly rather than crash with a traceback: the
-        # completed stages are already checkpointed (resume re-enters at the first incomplete
-        # stage), and cli.py's finally still pulls artefacts + stops the container.
-        log.error("Session token budget exhausted: %s", e)
+    # All three are "graceful stop, leave completed=False": snapshot the progress so a resume
+    # re-enters at the first incomplete stage, write the accountability note, and return a reason
+    # (never crash with a traceback). cli.py's finally then keeps the container alive for resume.
+    except (_PipelineAborted, UsageLimitExceeded, ModelAPIError) as e:
+        reason = ("token budget exhausted before completion" if isinstance(e, UsageLimitExceeded)
+                  else "model provider unavailable after retries" if isinstance(e, ModelAPIError)
+                  else "pipeline aborted")
+        log.error("Pipeline stopped — %s: %s", reason, e)
         checkpoint.snapshot(deps)
-        _write_abort_notes(deps, f"token budget exhausted before completion: {e}")
-        return f"Stopped — token budget exhausted: {e}"
-
-    except ModelAPIError as e:
-        # The model provider stayed unavailable past the transient-retry budget (e.g. a sustained
-        # overload). Stop cleanly rather than crash with a traceback — cli.py's finally keeps the
-        # container alive, so a later resume (once the provider recovers) continues with full state.
-        log.error("Model provider error, retries exhausted: %s", e)
-        checkpoint.snapshot(deps)
-        _write_abort_notes(deps, f"model provider unavailable after retries: {e}")
-        return f"Stopped — model provider unavailable after retries: {e}"
+        _write_abort_notes(deps, f"{reason}: {e}")
+        return f"Stopped — {reason}: {e}"

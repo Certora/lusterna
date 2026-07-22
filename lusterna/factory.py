@@ -1,11 +1,11 @@
 """Agent factory: stage agent construction with shared hooks.
 
-Cross-cutting concerns (token tracking, budget enforcement, message-history snapshotting)
-are wired once here and apply to every stage agent. Context-window management is NOT done
-here: it is delegated to the model's native server-side context management (configured in
-config.cache_settings), which keeps the prompt cache warm — a client-side compaction loop
-would instead rewrite the message prefix on every trigger, invalidating the cache and
-evicting context the agent then re-reads.
+Cross-cutting concerns (token tracking, budget enforcement, message-history snapshotting, the
+transient-error retry, and server-side context compaction) are wired once here and apply to every
+stage agent. Context-window management stays server-side (clear_tool_uses from config.cache_settings
++ the AnthropicCompaction edit added below) to keep the prompt cache warm — a client-side compaction
+loop would instead rewrite the message prefix on every trigger, invalidating the cache and evicting
+context the agent then re-reads.
 """
 from __future__ import annotations
 
@@ -116,12 +116,8 @@ def make_stage_agent(
     model: str | None = None,
 ) -> Agent:
     m = model or config.MODEL
-    # AnthropicCompaction APPENDS a `compact_20260112` edit to the context_management edits in
-    # cache_settings (which already carries clear_tool_uses), so the two layer rather than clash:
-    # tool results are cleared cheaply per turn, and the server compacts older messages — including
-    # the agent's own large notes, which clear_tool_uses cannot evict — once input tokens cross the
-    # threshold. This guards long campaigns from context-window overflow; the agent's journaled
-    # files survive compaction, so the summarised turns are recoverable by re-reading them.
+    # AnthropicCompaction appends its `compact_20260112` edit to the clear_tool_uses edit from
+    # cache_settings so the two layer (see config.COMPACTION_THRESHOLD for the rationale).
     kwargs: dict[str, Any] = dict(
         deps_type=AgentDeps,
         model_settings=config.cache_settings(m),
