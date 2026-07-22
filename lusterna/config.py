@@ -95,12 +95,12 @@ MODEL_RETRY_BASE_DELAY = float(os.environ.get("LUSTERNA_MODEL_RETRY_BASE_DELAY",
 # prompt-cache warmth — but far below the 1M window so long stages can't overflow.
 COMPACTION_THRESHOLD = int(os.environ.get("LUSTERNA_COMPACTION_THRESHOLD", "200000"))
 
-# The ONE knob governing both iterative agent+judge loops (TRANSLATE and FORMALISE): a loop gives
-# up after this many consecutive rounds that fail to beat the best progress seen (and, in FORMALISE,
-# a theorem is quarantined after this many failed-to-compile rounds). There is deliberately NO hard
-# round ceiling — the token budget is the precise resource guard, and this progress-based stall
-# (best-tracked, so it catches plateaus and oscillation, not just an identical repeat) is the
-# smart backstop that stops a genuinely non-converging loop.
+# The ONE knob governing all three iterative agent loops (TRANSLATE, FORMALISE, PROVE): a loop gives
+# up after this many consecutive rounds that fail to beat the best progress seen (in FORMALISE, a
+# theorem is quarantined after this many failed-to-compile rounds; in PROVE, best = the axiom-clean
+# established-theorem count). There is deliberately NO hard round ceiling — the token budget is the
+# precise resource guard, and this progress-based stall (best-tracked, so it catches plateaus and
+# oscillation, not just an identical repeat) is the smart backstop that stops a non-converging loop.
 STALL_ROUNDS = int(os.environ.get("LUSTERNA_STALL_ROUNDS", "3"))
 
 # Debug/inspection: stop the pipeline right after TRANSLATE (skip spec/prove/report) so the

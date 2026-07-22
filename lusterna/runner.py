@@ -5,6 +5,7 @@ import logging
 from typing import Any, Callable
 
 from pydantic_ai import Agent
+from pydantic_ai.usage import UsageLimits
 
 from . import lean, telemetry, tools
 from .schemas import AgentDeps
@@ -137,14 +138,17 @@ async def _run_stage(agent: Agent, prompt: str, deps: AgentDeps, label: str,
     context — so no history is passed in or accumulated across stages. When stop_check
     is given it is polled on each graph node (deps, node); returning True ends the run early.
     There is no per-stage request cap — the session token budget (enforced in factory's
-    before_model_request hook) is the resource guard. Re-raises UnexpectedModelBehavior;
-    judge stages catch it locally.
+    before_model_request hook) is the resource guard. This must be set EXPLICITLY: pydantic-ai
+    otherwise imposes a default request_limit of 50, which silently truncates a stage mid-work
+    (e.g. PROVE while it is still discovering the Aeneas lemmas it needs). Re-raises
+    UnexpectedModelBehavior; judge stages catch it locally.
     """
     log.info("─── Stage: %s ───", label)
     telemetry.stage.reset()
     deps.message_history = []
     full_prompt = _pipeline_briefing(deps) + prompt
-    async with agent.iter(full_prompt, deps=deps) as run:
+    async with agent.iter(full_prompt, deps=deps,
+                          usage_limits=UsageLimits(request_limit=None)) as run:
         async for node in run:
             if stop_check and stop_check(deps, node):
                 break

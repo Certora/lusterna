@@ -231,6 +231,21 @@ def _theorem_qualified_names(spec_text: str) -> list[str]:
     return out
 
 
+def sorry_bodied_theorems(spec_text: str) -> set[str]:
+    """Short names of theorems/lemmas whose proof BODY still contains a literal `sorry` — i.e.
+    genuinely-open obligations, as opposed to theorems that compile but are tainted by a
+    non-standard axiom (native_decide etc.). Used to split the tainted set for PROVE feedback.
+    Each declaration spans from its `theorem`/`lemma` keyword to the next declaration or EOF."""
+    decls = list(re.finditer(r"(?m)^\s*(?:theorem|lemma)\s+([\w.]+)", spec_text))
+    out: set[str] = set()
+    for i, m in enumerate(decls):
+        end = decls[i + 1].start() if i + 1 < len(decls) else len(spec_text)
+        body = spec_text[m.end():end]
+        if re.search(r"\bsorry\b", body):
+            out.add(m.group(1).split(".")[-1])
+    return out
+
+
 def stub_proofs(text: str) -> str:
     """Force every `theorem`/`lemma` proof body to `:= by sorry`, preserving statements,
     definitions, imports and docstrings. FORMALISE emits statement-only structured output,

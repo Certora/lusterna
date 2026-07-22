@@ -674,12 +674,21 @@ class SpecPhase:
 
 
 class ProvePhase:
-    """PROVE against the real build oracle: the agent (via bash) edits proof bodies and runs
-    `lake build`, reading the real Lean diagnostics (`unsolved goals` + goal state, type errors)
-    to prove goal-directed. The harness owns only the objective guards: a compile gate before any
-    effort; a request-limit backstop; restore of the compiling baseline if the agent leaves the
-    spec broken; one authoritative final build; and the `#print axioms` gate + implementation-vs-
-    abstract partition of the established theorems."""
+    """PROVE against the real build oracle, as a best-tracked stall loop mirroring TRANSLATE and
+    FORMALISE (one shot was too noisy — proof search is stochastic, so a single pass sampled the
+    established-count distribution once, e.g. 5/9 on a bad draw vs 9/9 on a good one). Each round
+    the agent (via bash) edits proof bodies and runs `lake build`, reading the real diagnostics to
+    prove goal-directed; the harness then scores the round by the number of AXIOM-CLEAN established
+    theorems (`#print axioms`, the authoritative oracle — a de-sorried proof can still be tainted
+    by `native_decide`) and keeps the best spec seen. A round that fails to improve the best is
+    DISCARDED (restored to best), so established-count is monotone non-decreasing and one unlucky
+    round can't lose accumulated proofs; the frontier (proved / still-sorry / tainted) is fed back
+    each round. Stops when nothing is left to establish, or after STALL_ROUNDS with no gain — no
+    hard ceiling, the token budget is the resource guard. The harness owns only the objective
+    guards: a compile gate before any effort, best-restore, one authoritative final build, and the
+    `#print axioms` gate + implementation-vs-abstract partition of the established theorems."""
+
+    STALL_ROUNDS = config.STALL_ROUNDS
 
     def __init__(self, deps: AgentDeps):
         self.deps = deps
@@ -696,29 +705,68 @@ class ProvePhase:
             raise _PipelineAborted(
                 "PROVE not started — the implementation spec does not compile "
                 "(FORMALISE did not produce a spec whose statements build)")
-        baseline = tools.read_out(deps, self.impl_spec)   # the compiling (all-sorry) floor
 
-        try:
-            await _run_stage(_prove, self._prompt(), deps, "PROVE")
-        except UnexpectedModelBehavior as e:
-            log.warning("PROVE stage failed after retries: %s", e)
-        except UsageLimitExceeded as e:
-            log.warning("PROVE hit the request-limit backstop (%s) — finalizing", e)
-        checkpoint.snapshot(deps)
-        # If the agent left the spec non-compiling, restore the compiling baseline — never finalize
-        # on a broken edit; the axiom gate must run on a build that succeeds.
-        if not lean.build(deps).get("success"):
-            log.warning("PROVE left a non-compiling spec — restoring the compiling baseline")
-            tools.write_out(deps, self.impl_spec, baseline)
-            lean.build(deps)
-        tools.commit(deps.container_id, "stage/prove: proof attempts", glob="lean/")
+        best_spec = tools.read_out(deps, self.impl_spec)   # the compiling (all-sorry) floor
+        best_established = -1
+        stale = 0
+        rnd = 0
+        feedback = ""
+        while True:
+            rnd += 1
+            stop = False
+            try:
+                await _run_stage(_prove, self._prompt(feedback), deps, f"PROVE (round {rnd})")
+            except UnexpectedModelBehavior as e:
+                log.warning("PROVE round %d failed after retries: %s", rnd, e)
+            except (UsageLimitExceeded, ModelAPIError) as e:
+                # Budget/availability stop: do NOT drop this round on the floor — the agent may
+                # have committed real proofs before it hit. Score the on-disk spec, then finalize.
+                log.warning("PROVE hit the budget/availability backstop (%s) — "
+                            "scoring this round, then finalizing", e)
+                stop = True
+            checkpoint.snapshot(deps)
+
+            # A round that broke the build must not be scored on its rubble — fall back to best.
+            if not lean.build(deps).get("success"):
+                log.warning("PROVE round %d left a non-compiling spec — restoring best-so-far", rnd)
+                tools.write_out(deps, self.impl_spec, best_spec)
+                lean.build(deps)
+
+            ax = lean.check_axioms(deps, self.impl_spec)
+            established = len(ax["clean"])
+            total = established + len(ax["tainted"])
+            if established > best_established:
+                best_established, best_spec, stale = established, tools.read_out(deps, self.impl_spec), 0
+            else:
+                # No improvement: DISCARD this round (keep the best on disk so the next round builds
+                # on it, never on a regression), and refresh the olean so the next round's oracle and
+                # feedback reflect the best — not the discarded attempt.
+                stale += 1
+                tools.write_out(deps, self.impl_spec, best_spec)
+                lean.build(deps)
+                ax = lean.check_axioms(deps, self.impl_spec)
+            log.info("PROVE round %d: %d/%d established (best=%d, stale=%d/%d)",
+                     rnd, established, total, best_established, stale, self.STALL_ROUNDS)
+
+            if stop or not ax["tainted"]:       # out of budget, or everything provable is proved
+                break
+            if stale >= self.STALL_ROUNDS:
+                log.info("PROVE: no gain in established count across %d consecutive round(s) — "
+                         "stopping (established %d/%d)", self.STALL_ROUNDS, best_established, total)
+                break
+            feedback = self._feedback(ax)
+
+        # Finalize on the best spec seen (already on disk after the loop's discard/adopt step);
+        # it is by construction a spec that compiled, so this build is the authoritative confirmation.
+        tools.write_out(deps, self.impl_spec, best_spec)
         if not lean.build(deps).get("success"):
             raise _PipelineAborted("PROVE left the spec in a non-compiling state")
+        tools.commit(deps.container_id, "stage/prove: proof attempts", glob="lean/")
         deps.progress["proofs_done"] = True
         self._record_axioms()
 
-    def _prompt(self) -> str:
-        return (
+    def _prompt(self, feedback: str = "") -> str:
+        base = (
             f"Proceed to PROVE. Fill in proofs for as many `sorry` theorems in "
             f"`/workspace/out/{self.impl_spec}` as you can, WITHOUT changing any statement. Work ONE "
             f"theorem at a time, easiest first (base cases, concrete values, simple bounds), using "
@@ -728,6 +776,32 @@ class ProvePhase:
             f"the remaining goal state. If a proof fails, revert that theorem to `:= by sorry` and "
             f"move on — leaving hard theorems as `sorry` is expected and honest. Keep the file "
             f"compiling; when done, commit with git.")
+        return base + feedback
+
+    def _feedback(self, ax: dict) -> str:
+        """Name the frontier for the next round: what is already established (leave it verbatim),
+        what is still an open `sorry`, and what compiles but is TAINTED by a non-standard axiom
+        (almost always `native_decide`/`decide` on a recursive evaluation — the exact mistake that
+        silently loses established theorems). General method guidance only — no target specifics."""
+        spec = tools.read_out(self.deps, self.impl_spec)
+        sorry_names = lean.sorry_bodied_theorems(spec)
+        open_sorry = [n for n in ax["tainted"] if n in sorry_names]
+        tainted_non_sorry = [n for n in ax["tainted"] if n not in sorry_names]
+        parts = [
+            "\n\n### Progress so far (fresh attempt — try tactics/lemmas you have NOT tried yet)",
+            f"Already ESTABLISHED — keep these proofs EXACTLY as they are, do not touch them: "
+            f"{ax['clean'] or '(none yet)'}.",
+        ]
+        if open_sorry:
+            parts.append(f"Still OPEN (`:= by sorry`) — focus your effort here: {open_sorry}.")
+        if tainted_non_sorry:
+            parts.append(
+                f"These COMPILE but are NOT established — their proof rests on a non-standard axiom "
+                f"(almost always `native_decide`/`decide` evaluating a recursive definition, which "
+                f"the soundness gate rejects): {tainted_non_sorry}. Replace each with a REASONING "
+                f"proof (induction, the function's equation lemmas, library lemmas) or revert it to "
+                f"`:= by sorry` — a tainted proof counts as unproven.")
+        return "\n".join(parts)
 
     def _record_axioms(self) -> None:
         """`#print axioms` (standard-axioms-only) + partition the established theorems: a theorem
