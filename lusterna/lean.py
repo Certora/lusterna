@@ -309,18 +309,19 @@ def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
     exec_in(deps.container_id, ["rm", "-f", f"{OUT_IN}/{checker_rel}"])
 
     text = f"{out}\n{err}"
-    # Each verdict line is either "'name' does not depend on any axioms" (clean) or
-    # "'name' depends on axioms: [a, b, ...]" — clean iff every listed axiom is standard.
+    # Each verdict is "'name' does not depend on any axioms" (clean) or "'name' depends on axioms:
+    # [a, b, ...]" — clean iff every listed axiom is standard. Lean pretty-prints a long axiom list
+    # ACROSS MULTIPLE LINES (one per line), so parse over the whole text with DOTALL rather than
+    # line-by-line (a per-line regex misses the closing `]` and mis-taints such theorems).
     verdict: dict[str, bool] = {}
-    for line in text.splitlines():
-        m = re.search(r"'([\w.]+)' (?:does not depend|depends on axioms: \[([^\]]*)\])", line)
-        if not m:
-            continue
+    for m in re.finditer(
+            r"'([\w.]+)' (?:(does not depend on any axioms)|depends on axioms: \[(.*?)\])",
+            text, re.DOTALL):
         short = m.group(1).split(".")[-1]
-        if m.group(2) is None:          # "does not depend on any axioms"
+        if m.group(2):                  # "does not depend on any axioms"
             verdict[short] = True
         else:
-            axes = [a.strip() for a in m.group(2).split(",") if a.strip()]
+            axes = [a.strip() for a in m.group(3).replace("\n", " ").split(",") if a.strip()]
             verdict[short] = all(a in _STD_AXIOMS for a in axes)
     clean = [n for n in names if verdict.get(n.split(".")[-1]) is True]
     tainted = [n for n in names if verdict.get(n.split(".")[-1]) is not True]  # False or unresolved
