@@ -244,16 +244,13 @@ lusterna show-checkpoint SESSION_ID [--number N]   # a checkpoint's state (JSON)
 | `LUSTERNA_EFFORT` | `high` | Extended-thinking effort (low/medium/high) for the stage agents |
 | `LUSTERNA_MAX_TOKENS` | `32000` | Max output tokens per model request |
 | `LUSTERNA_SESSIONS_DIR` | `~/.local/share/lusterna/sessions` | Root for per-session checkpoints |
-| `LUSTERNA_CHARON_BIN` / `LUSTERNA_AENEAS_BIN` / `LUSTERNA_LAKE_BIN` | `charon` / `aeneas` / `lake` | Toolchain binary names inside the container |
 | `LUSTERNA_IMAGE` | `lusterna-toolchain:latest` | Default Docker image |
 | `LUSTERNA_CONTAINER` | — | Pre-existing container to attach to (skips auto-start) |
 | `LUSTERNA_TOKEN_BUDGET` | (unlimited) | Max total tokens across all agents; 0/unset = unlimited |
-| `LUSTERNA_REQUEST_LIMIT` | (unlimited) | Max model requests per stage; 0/unset = unlimited |
-| `LUSTERNA_PROVE_REQUEST_LIMIT` | `150` | Backstop on PROVE model requests |
 | `LUSTERNA_BUILD_TIMEOUT` | `180` | Per-`lake` timeout (seconds) |
 | `LUSTERNA_MODEL_RETRY_ATTEMPTS` / `LUSTERNA_MODEL_RETRY_BASE_DELAY` | `10` / `2.0` | Transient-error (overload/5xx) retry attempts and backoff base (seconds) |
 | `LUSTERNA_COMPACTION_THRESHOLD` | `200000` | Input-token threshold for server-side context compaction |
-| `LUSTERNA_TRANSLATE_MAX_ROUNDS` / `LUSTERNA_TRANSLATE_STALL_ROUNDS` | `5` / `2` | TRANSLATE agent+judge round cap and no-progress (stagnation) abort limit |
+| `LUSTERNA_STALL_ROUNDS` | `3` | Consecutive no-progress rounds before an agent+judge loop (TRANSLATE / FORMALISE) gives up; also FORMALISE's per-theorem quarantine threshold. No hard round cap — the token budget is the resource guard |
 | `LUSTERNA_STOP_AFTER_TRANSLATE` | (off) | Stop after TRANSLATE so the translation can be inspected |
 | `LUSTERNA_STOP_BEFORE_PROVE` | (off) | Stop after SPEC-JUDGE so the inferred spec can be inspected (no prove/report) |
 | `LUSTERNA_LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |

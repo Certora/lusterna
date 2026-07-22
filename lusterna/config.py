@@ -30,9 +30,6 @@ JUDGE_MODEL = os.environ.get("LUSTERNA_JUDGE_MODEL", "anthropic:claude-opus-4-8"
 EFFORT = os.environ.get("LUSTERNA_EFFORT", "high").strip().lower()
 # Root directory that holds per-session checkpoint directories
 SESSIONS_DIR = Path(os.environ.get("LUSTERNA_SESSIONS_DIR", "~/.local/share/lusterna/sessions")).expanduser()
-CHARON_BIN = os.environ.get("LUSTERNA_CHARON_BIN", "charon")
-AENEAS_BIN = os.environ.get("LUSTERNA_AENEAS_BIN", "aeneas")
-LAKE_BIN = os.environ.get("LUSTERNA_LAKE_BIN", "lake")
 # Docker integration
 CONTAINER_IMAGE = os.environ.get("LUSTERNA_IMAGE", "lusterna-toolchain:latest")
 # Pre-existing container name/ID to attach to (skips auto-start when set)
@@ -84,16 +81,6 @@ def cache_settings(model: str) -> dict:
         return {}
 
 
-# Maximum model requests per stage (pydantic-ai UsageLimits.request_limit).
-# 0 or unset means unlimited.
-_req_limit_env = os.environ.get("LUSTERNA_REQUEST_LIMIT", "0")
-REQUEST_LIMIT: int | None = int(_req_limit_env) if _req_limit_env.strip() not in ("", "0") else None
-
-# Backstop on PROVE model requests (the genuine-progress stop ends PROVE in the normal case;
-# this only guards against a runaway). 0/unset = unlimited.
-_prove_req = os.environ.get("LUSTERNA_PROVE_REQUEST_LIMIT", "150")
-PROVE_REQUEST_LIMIT: int | None = int(_prove_req) if _prove_req.strip() not in ("", "0") else None
-
 # Transient model-error retry: a single provider blip (overloaded 529 / 5xx / rate-limit /
 # timeout) should not abort a long campaign. Number of attempts and the exponential-backoff base.
 MODEL_RETRY_ATTEMPTS = int(os.environ.get("LUSTERNA_MODEL_RETRY_ATTEMPTS", "10"))
@@ -108,11 +95,13 @@ MODEL_RETRY_BASE_DELAY = float(os.environ.get("LUSTERNA_MODEL_RETRY_BASE_DELAY",
 # prompt-cache warmth — but far below the 1M window so long stages can't overflow.
 COMPACTION_THRESHOLD = int(os.environ.get("LUSTERNA_COMPACTION_THRESHOLD", "200000"))
 
-# TRANSLATE agent+judge loop: MAX_ROUNDS is the hard backstop; STALL_ROUNDS is the stagnation
-# limit — if a round fails to beat the best progress score for this many consecutive rounds, the
-# phase aborts early (so it stops on lack of progress, not only on the hard ceiling).
-TRANSLATE_MAX_ROUNDS = int(os.environ.get("LUSTERNA_TRANSLATE_MAX_ROUNDS", "5"))
-TRANSLATE_STALL_ROUNDS = int(os.environ.get("LUSTERNA_TRANSLATE_STALL_ROUNDS", "2"))
+# The ONE knob governing both iterative agent+judge loops (TRANSLATE and FORMALISE): a loop gives
+# up after this many consecutive rounds that fail to beat the best progress seen (and, in FORMALISE,
+# a theorem is quarantined after this many failed-to-compile rounds). There is deliberately NO hard
+# round ceiling — the token budget is the precise resource guard, and this progress-based stall
+# (best-tracked, so it catches plateaus and oscillation, not just an identical repeat) is the
+# smart backstop that stops a genuinely non-converging loop.
+STALL_ROUNDS = int(os.environ.get("LUSTERNA_STALL_ROUNDS", "3"))
 
 # Debug/inspection: stop the pipeline right after TRANSLATE (skip spec/prove/report) so the
 # translation artefacts can be examined. Used to iterate on the TRANSLATE stage in isolation.

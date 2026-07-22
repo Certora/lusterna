@@ -304,7 +304,7 @@ def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
         return {"clean": [], "tainted": [], "raw": w}
     _, out, err = exec_in(deps.container_id,
                           ["timeout", "-k", "10", str(_BUILD_TIMEOUT),
-                           config.LAKE_BIN, "env", "lean", f"{OUT_IN}/{checker_rel}"],
+                           "lake", "env", "lean", f"{OUT_IN}/{checker_rel}"],
                           workdir=f"{OUT_IN}/lean", timeout=_BUILD_TIMEOUT + 30)
     exec_in(deps.container_id, ["rm", "-f", f"{OUT_IN}/{checker_rel}"])
 
@@ -428,7 +428,7 @@ def _run_lake(deps: AgentDeps, args: list[str], timeout_msg: str) -> dict:
     from . import config
     code, out, err = exec_in(
         deps.container_id,
-        ["timeout", "-k", "10", str(_BUILD_TIMEOUT), config.LAKE_BIN, *args],
+        ["timeout", "-k", "10", str(_BUILD_TIMEOUT), "lake", *args],
         workdir=f"{OUT_IN}/lean", timeout=_BUILD_TIMEOUT + 30)
     if code in (124, 137):
         log.warning("lake %s exceeded %ds and was terminated", args[0], _BUILD_TIMEOUT)

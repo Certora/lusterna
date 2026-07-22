@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 from pydantic_ai import Agent
 
-from . import config, lean, telemetry, tools
+from . import lean, telemetry, tools
 from .schemas import AgentDeps
 from .stages import (
     explore as _explore, infer as _infer, translate as _translate,
@@ -130,26 +130,21 @@ def _pipeline_briefing(deps: AgentDeps) -> str:
 
 
 async def _run_stage(agent: Agent, prompt: str, deps: AgentDeps, label: str,
-                     stop_check: Callable[[AgentDeps, Any], bool] | None = None,
-                     request_limit: Any = "default") -> Any:
+                     stop_check: Callable[[AgentDeps, Any], bool] | None = None) -> Any:
     """Run one stage agent. Each stage starts with no prior history.
 
     Stages communicate via the filesystem and deps.progress, not via conversation
     context — so no history is passed in or accumulated across stages. When stop_check
     is given it is polled on each graph node (deps, node); returning True ends the run early.
-    `request_limit` overrides config.REQUEST_LIMIT when not "default".
-    Re-raises UnexpectedModelBehavior; judge stages catch it locally.
+    There is no per-stage request cap — the session token budget (enforced in factory's
+    before_model_request hook) is the resource guard. Re-raises UnexpectedModelBehavior;
+    judge stages catch it locally.
     """
     log.info("─── Stage: %s ───", label)
     telemetry.stage.reset()
     deps.message_history = []
     full_prompt = _pipeline_briefing(deps) + prompt
-    from pydantic_ai.usage import UsageLimits
-    rl = config.REQUEST_LIMIT if request_limit == "default" else request_limit
-    async with agent.iter(
-        full_prompt, deps=deps,
-        usage_limits=UsageLimits(request_limit=rl),
-    ) as run:
+    async with agent.iter(full_prompt, deps=deps) as run:
         async for node in run:
             if stop_check and stop_check(deps, node):
                 break

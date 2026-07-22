@@ -69,8 +69,7 @@ class TranslatePhase:
     source edit is captured as a git diff (accountability trail) for the human reviewer.
     """
 
-    MAX_ROUNDS = config.TRANSLATE_MAX_ROUNDS      # hard backstop on agent+judge rounds
-    STALL_ROUNDS = config.TRANSLATE_STALL_ROUNDS  # abort early after this many no-progress rounds
+    STALL_ROUNDS = config.STALL_ROUNDS   # abort after this many rounds without measurable progress
 
     def __init__(self, deps: AgentDeps, entry: str, resume_note: str):
         self.deps = deps
@@ -103,7 +102,9 @@ class TranslatePhase:
         feedback = ""
         best_score = -1.0
         stale = 0
-        for rnd in range(self.MAX_ROUNDS):
+        rnd = 0
+        while True:
+            rnd += 1
             outcome = await self._translate(feedback)
             if outcome is not None and outcome.gave_up:
                 self._abort(self._facts(), "the TRANSLATE agent gave up — "
@@ -119,8 +120,8 @@ class TranslatePhase:
                     return self._accept(facts, outcome)
 
             # Progress / stagnation: a round must beat the best score seen; otherwise it made no
-            # measurable progress. STALL_ROUNDS such rounds in a row ⇒ abort early (don't burn the
-            # remaining hard-limit rounds re-producing the same failure).
+            # measurable progress. STALL_ROUNDS such rounds in a row ⇒ abort. There is no hard
+            # round ceiling — the token budget is the resource guard; this is the progress guard.
             score = self._progress_score(facts, defects)
             stale = 0 if score > best_score + 1e-9 else stale + 1
             best_score = max(best_score, score)
@@ -141,16 +142,13 @@ class TranslatePhase:
                     if not facts["compiles"]:
                         reasons.append("does-not-compile")
                 summary = "hard gate not met — " + ("; ".join(reasons) or "?")
-            log.info("TRANSLATE round %d/%d: %s (score=%.3f, stale=%d/%d)",
-                     rnd + 1, self.MAX_ROUNDS, summary, score, stale, self.STALL_ROUNDS)
+            log.info("TRANSLATE round %d: %s (score=%.3f, stale=%d/%d)",
+                     rnd, summary, score, stale, self.STALL_ROUNDS)
 
             if stale >= self.STALL_ROUNDS:
                 self._abort(facts, f"stagnated — no measurable progress across {self.STALL_ROUNDS} "
-                            f"consecutive rounds (stopped at round {rnd + 1}/{self.MAX_ROUNDS})")
+                            f"consecutive rounds (stopped at round {rnd})")
             feedback = self._feedback(facts, defects)
-
-        self._abort(self._facts(), f"did not converge on a clean, judge-approved translation in "
-                    f"{self.MAX_ROUNDS} rounds")
 
     # ── agent + judge ─────────────────────────────────────────────────────────
     async def _translate(self, feedback: str):
@@ -465,12 +463,12 @@ class SpecPhase:
     them as `:= by sorry` stubs (so no proof can be smuggled in) and builds, validating only
     that the STATEMENTS typecheck. Build errors are attributed per-theorem and repeat offenders
     are quarantined; spec-judge defects are fed back. Ends when the spec builds AND has no
-    defects, progress stalls, or the round cap is hit. The loop state (quarantine set,
+    defects, or progress stalls (identical build errors / unchanged defects) — there is no hard
+    round ceiling, the token budget is the resource guard. The loop state (quarantine set,
     per-theorem fail streaks, last compiling signatures, previous defects/build errors, carried
     feedback) lives in fields rather than threaded locals."""
 
-    MAX_ROUNDS = 10        # hard cap on FORMALISE+judge rounds
-    QUARANTINE_AFTER = 3   # drop a theorem after this many rounds failing to compile
+    STALL_ROUNDS = config.STALL_ROUNDS   # quarantine a theorem after this many failed-to-compile rounds
 
     def __init__(self, deps: AgentDeps, resume_note: str):
         self.deps = deps
@@ -492,7 +490,7 @@ class SpecPhase:
         if "verdict" in self.deps.progress:                 # resuming past this phase
             return self.resume_note
 
-        while self.attempt < self.MAX_ROUNDS:
+        while True:
             fs = await self._formalise()
             if fs is None:
                 break
@@ -515,8 +513,6 @@ class SpecPhase:
             if not await self._judge():
                 break
             self.attempt += 1
-        else:
-            log.warning("Spec loop hit hard cap of %d rounds", self.MAX_ROUNDS)
 
         # If the loop ended on a NON-compiling spec but an earlier revision DID compile, restore
         # that last compiling spec rather than aborting: spec-judge defects don't gate the
@@ -529,8 +525,7 @@ class SpecPhase:
 
         if not self.deps.progress.get("lean_build", {}).get("success"):
             raise _PipelineAborted(
-                f"FORMALISE could not produce a spec whose statements compile "
-                f"(after up to {self.MAX_ROUNDS} rounds) — cannot verify")
+                "FORMALISE could not produce a spec whose statements compile — cannot verify")
         return self.resume_note
 
     async def _formalise(self) -> "FormalSpec | None":
@@ -578,7 +573,7 @@ class SpecPhase:
         newly_dropped = []
         for name in culprits:
             self.fail_streak[name] = self.fail_streak.get(name, 0) + 1
-            if self.fail_streak[name] >= self.QUARANTINE_AFTER:
+            if self.fail_streak[name] >= self.STALL_ROUNDS:
                 self.dropped.add(name); newly_dropped.append(name)
         # Only call a theorem "compiling" if it is unchanged from a spec that DID compile and is
         # not a culprit — never infer compilation from an absent error.
@@ -589,7 +584,7 @@ class SpecPhase:
         if newly_dropped:
             self.deps.progress["dropped_theorems"] = sorted(self.dropped)
             log.warning("FORMALISE: quarantined %d theorem(s) after %d failed rounds: %s",
-                        len(newly_dropped), self.QUARANTINE_AFTER, newly_dropped)
+                        len(newly_dropped), self.STALL_ROUNDS, newly_dropped)
 
         if err == self.prev_build_err and not newly_dropped:
             log.warning("FORMALISE: identical build errors and nothing to quarantine — no "
@@ -704,8 +699,7 @@ class ProvePhase:
         baseline = tools.read_out(deps, self.impl_spec)   # the compiling (all-sorry) floor
 
         try:
-            await _run_stage(_prove, self._prompt(), deps, "PROVE",
-                             request_limit=config.PROVE_REQUEST_LIMIT)
+            await _run_stage(_prove, self._prompt(), deps, "PROVE")
         except UnexpectedModelBehavior as e:
             log.warning("PROVE stage failed after retries: %s", e)
         except UsageLimitExceeded as e:
