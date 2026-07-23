@@ -27,8 +27,14 @@ def analyze_translation(deps: AgentDeps, *, do_commit: bool = True) -> dict:
       commit        — git SHA of the committed lean/ (empty if do_commit=False or empty tree)
     """
     lean_out_dir = f"{OUT_IN}/lean"
-    _, lean_list, _ = exec_in(deps.container_id,
-                              ["find", lean_out_dir, "-name", "*.lean"], workdir=OUT_IN)
+    # EXCLUDE `.lake/` — it holds the built lake project's DEPENDENCY source (Aeneas runtime, and,
+    # once a stage runs `lake build`/`lake exe cache get`, the entire Mathlib+Qq source tree — 9000+
+    # files). Those are not the translation; enumerating and reading them would be pathologically
+    # slow (one `cat` per file) AND pollute translation_text/external_axioms/referenced_defs with all
+    # of Mathlib. The translation is only lean/<Crate>.lean + lean/<Crate>/**.
+    _, lean_list, _ = exec_in(
+        deps.container_id,
+        ["find", lean_out_dir, "-name", "*.lean", "-not", "-path", "*/.lake/*"], workdir=OUT_IN)
     lean_files = [
         l.strip().removeprefix(OUT_IN + "/")
         for l in lean_list.splitlines()
