@@ -10,8 +10,11 @@ Fixed paths inside every container:
 """
 import atexit
 import logging
+import select
 import subprocess
+import time
 from pathlib import Path
+from typing import Callable
 
 log = logging.getLogger(__name__)
 
@@ -211,17 +214,36 @@ def is_running(container_id: str) -> bool:
     return r.returncode == 0 and r.stdout.strip() == "true"
 
 
+def write_file(container_id: str, abs_path: str, content: str) -> None:
+    """Write *content* to an absolute path inside the container, mkdir-ing the parent.
+
+    Used for harness scaffolding that lives outside /workspace/out (e.g. a stage's task
+    briefing at /workspace/.lusterna/…), where the tools.write_out OUT_IN helpers don't apply.
+    """
+    exec_in(container_id, ["mkdir", "-p", str(Path(abs_path).parent)])
+    subprocess.run(["docker", "exec", "--interactive", container_id, "tee", abs_path],
+                   input=content, capture_output=True, text=True, check=True)
+
+
 def exec_in(
     container_id: str,
     cmd: list[str],
     workdir: str = REPO_IN,
     timeout: int = 300,
     env: dict[str, str] | None = None,
+    passthrough_env: list[str] | None = None,
 ) -> tuple[int, str, str]:
-    """Run *cmd* inside the container and return (returncode, stdout, stderr)."""
+    """Run *cmd* inside the container and return (returncode, stdout, stderr).
+
+    *env* sets literal KEY=VALUE pairs (value visible in the exec argv). *passthrough_env* names
+    variables whose VALUE is taken from the host process env and forwarded WITHOUT appearing in the
+    argv (`docker exec --env KEY`) — use it for secrets like ANTHROPIC_API_KEY.
+    """
     env_flags: list[str] = []
     for k, v in (env or {}).items():
         env_flags += ["--env", f"{k}={v}"]
+    for k in (passthrough_env or []):
+        env_flags += ["--env", k]
 
     full_cmd = ["docker", "exec", "--workdir", workdir, *env_flags, container_id, *cmd]
     log.debug("exec: %s", " ".join(full_cmd))
@@ -241,6 +263,63 @@ def exec_in(
     if r.returncode != 0:
         log.debug("exec exit %d stderr: %s", r.returncode, stderr[:300])
     return r.returncode, stdout, stderr
+
+
+def exec_stream(
+    container_id: str,
+    cmd: list[str],
+    workdir: str,
+    on_line: Callable[[str], None],
+    passthrough_env: list[str] | None = None,
+    timeout: int = 3600,
+) -> tuple[int, str, str]:
+    """Run *cmd* in the container, invoking *on_line* for each stdout line AS IT ARRIVES.
+
+    Unlike exec_in (which buffers), this streams stdout live so a long in-container process —
+    chiefly a headless Claude Code session emitting stream-json events — can be surfaced to the
+    host log in real time (the user watches the harness's stderr, outside the container). Returns
+    (returncode, full_stdout, stderr). Enforces *timeout* as a wall-clock deadline even across
+    output stalls (model-thinking gaps) via select; on breach the process is killed and 124 is
+    returned. stderr is read at the end.
+    """
+    env_flags: list[str] = []
+    for k in (passthrough_env or []):
+        env_flags += ["--env", k]
+    full_cmd = ["docker", "exec", "--workdir", workdir, *env_flags, container_id, *cmd]
+    log.debug("exec-stream: %s", " ".join(full_cmd[:8]) + " …")
+    proc = subprocess.Popen(full_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, bufsize=1)
+    out_chunks: list[str] = []
+    deadline = time.monotonic() + timeout
+    timed_out = False
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            proc.kill(); timed_out = True; break
+        ready, _, _ = select.select([proc.stdout], [], [], min(remaining, 5.0))
+        if ready:
+            line = proc.stdout.readline()
+            if line == "":            # EOF
+                break
+            out_chunks.append(line)
+            try:
+                on_line(line.rstrip("\n"))
+            except Exception as exc:   # a logging/parse slip must never kill the stage
+                log.debug("exec_stream on_line error: %s", exc)
+        elif proc.poll() is not None:  # no data pending and process exited — drain remainder
+            for line in proc.stdout:
+                out_chunks.append(line)
+                try:
+                    on_line(line.rstrip("\n"))
+                except Exception:
+                    pass
+            break
+    err = proc.stderr.read() if proc.stderr else ""
+    if timed_out:
+        log.warning("exec_stream timed out after %ss: %s", timeout, " ".join(cmd[:3]))
+        return 124, "".join(out_chunks), (err + f"\n[timed out after {timeout}s]").strip()
+    proc.wait()
+    return proc.returncode, "".join(out_chunks), err
 
 
 def build_image(dockerfile_dir: Path, tag: str = DEFAULT_IMAGE) -> None:

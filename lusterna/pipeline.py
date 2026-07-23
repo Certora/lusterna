@@ -8,11 +8,11 @@ import logging
 
 from pydantic_ai.exceptions import ModelAPIError, UnexpectedModelBehavior, UsageLimitExceeded
 
-from . import checkpoint, container, lean, telemetry, tools
+from . import briefings, checkpoint, container, lean, telemetry, tools
 from .schemas import InformalSpec, FormalSpec, JudgeVerdict
-from .runner import _run_stage
+from .runner import _run_stage, run_cc_stage
 from .stages import (
-    explore as _explore, infer as _infer, formalise as _formalise,
+    infer as _infer, formalise as _formalise,
     judge as _judge, prove as _prove, report as _report,
     translate as _translate, translate_judge as _translate_judge,
 )
@@ -364,27 +364,36 @@ async def _run_translate_stages(deps: AgentDeps, resume_note: str) -> str:
     completed = set(deps.progress.keys())
 
     if "explore" not in completed:
-        # The design doc is an optional, non-authoritative FOCUS HINT — given in full here (this
-        # is the orientation stage), never as a spec to conform to.
+        # EXPLORE is a Claude Code session (spawn model): it orients to the code, runs the toolchain
+        # reality-check, and writes explore/{assessment.md,handoff.json}; the harness reads the
+        # handoff into progress. The design doc is an optional, non-authoritative FOCUS HINT.
         hint = (f"\n\nDesign focus hint (optional, non-authoritative — which code matters):\n"
                 f"{deps.design_doc.rstrip()}" if deps.design_doc.strip() else "")
-        explore_result = await _run_stage(
-            _explore,
-            f"The Rust repository is at /workspace/repo. Orient to the code (entry file + the main "
-            f"public functions relevant to the target) AND run the toolchain reality-check: build "
-            f"with charon, apply build-env prereqs if needed, run a coarse aeneas pass, and record "
-            f"the ToolchainAssessment (buildable, build_prereqs, opaque_boundary, must_model, "
-            f"translatability_walls). Return an ExploreResult.{hint}" + resume_note,
-            deps, "EXPLORE",
+        run_cc_stage(
+            deps, stage="EXPLORE", briefing=briefings.EXPLORE,
+            prompt=(
+                "Orient to the code at /workspace/repo and run the toolchain reality-check, then "
+                "write /workspace/out/explore/assessment.md and the machine-readable "
+                "/workspace/out/explore/handoff.json per your briefing. Stop once handoff.json "
+                "exists and is valid." + hint),
+            model=config.CC_MODEL, effort=config.EFFORT or None,
+            max_budget_usd=config.CC_STAGE_BUDGET_USD,
         )
-        if explore_result and explore_result.output:
-            deps.progress["explore"] = explore_result.output.model_dump()
+        handoff = tools.read_out(deps, "explore/handoff.json")
+        if handoff.startswith("ERROR:"):
+            raise _PipelineAborted("EXPLORE produced no /workspace/out/explore/handoff.json")
+        try:
+            deps.progress["explore"] = json.loads(handoff)
+        except json.JSONDecodeError as e:
+            raise _PipelineAborted(f"EXPLORE handoff.json is not valid JSON: {e}")
         # Fold any build-env prep EXPLORE applied into the pristine baseline so it is not later
         # mistaken for a TRANSLATE source modification in the accountability diff.
         container.refold_baseline(deps.container_id)
         checkpoint.snapshot(deps)
         resume_note = ""
         completed = set(deps.progress.keys())
+        if config.STOP_AFTER_EXPLORE:
+            raise _PipelineAborted("Stopped after EXPLORE (LUSTERNA_STOP_AFTER_EXPLORE)")
 
     if "informal_spec" not in completed:
         # INFER on the PRISTINE Rust source (before any translation/refactor) — the CODE is the

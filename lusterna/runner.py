@@ -1,13 +1,16 @@
 """Generic stage-running machinery: the per-stage prompt briefing, running a stage agent
 with history/limits, and the shared tool wiring (the single `bash` tool on the stages that
 touch the container). Stage sequencing and the phase logic live in pipeline.py."""
+import json
 import logging
+import uuid
 from typing import Any, Callable
 
 from pydantic_ai import Agent
+from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.usage import UsageLimits
 
-from . import lean, telemetry, tools
+from . import config, container, lean, telemetry, tools
 from .schemas import AgentDeps
 from .stages import (
     explore as _explore, infer as _infer, translate as _translate,
@@ -158,3 +161,104 @@ async def _run_stage(agent: Agent, prompt: str, deps: AgentDeps, label: str,
         label, telemetry.session.total(), telemetry.budget or "∞",
     )
     return result
+
+
+def _log_cc_tool(stage: str, name: str, inp: dict) -> None:
+    """Render one CC tool_use as a concise trail line in the HOST log — the user's live window
+    into what the in-container session is doing (mirrors the old bash-tool trail)."""
+    if name == "Bash":
+        log.info("[%s] $ %s", stage, " ".join((inp.get("command") or "").split())[:200])
+    elif name in ("Write", "Edit", "Read", "NotebookEdit"):
+        log.info("[%s] %s %s", stage, name, inp.get("file_path", ""))
+    elif name in ("Glob", "Grep"):
+        log.info("[%s] %s %s", stage, name, (inp.get("pattern") or "")[:80])
+    elif name == "TodoWrite":
+        log.info("[%s] plan: %d todo(s)", stage, len(inp.get("todos") or []))
+    else:
+        log.info("[%s] %s", stage, name)
+
+
+def run_cc_stage(
+    deps: AgentDeps, *, stage: str, prompt: str, briefing: str | None = None,
+    allowed_tools: str = "Bash,Edit,Write,Read,Glob,Grep,TodoWrite",
+    model: str | None = None, effort: str | None = None,
+    max_budget_usd: float | None = None, resume_sid: str | None = None,
+    timeout: int = 3600,
+) -> dict:
+    """Run one pipeline stage as a headless Claude Code session inside the container, STREAMING its
+    activity to the host log live (the user's window — the harness runs outside the container).
+
+    First call: pass `briefing` (written to a file, applied via --append-system-prompt-file) and a
+    fresh session id is minted. Re-invocation of the SAME stage (gate feedback, §4 hybrid-resume):
+    pass `resume_sid` and NO briefing — the resumed session keeps its system prompt + full context,
+    and `prompt` carries the gate's feedback.
+
+    Uses --output-format stream-json --verbose; each event is parsed as it arrives (tool_use →
+    trail line, assistant text → narration) and the final `result` event is returned
+    {session_id, total_cost_usd, subtype, num_turns, …}. Session id → deps.progress['cc_sessions'].
+    Autonomy: dontAsk + allowlist (bypassPermissions is refused as root); --max-budget-usd is the
+    runaway backstop. Raises UnexpectedModelBehavior if no result event is produced.
+    """
+    resuming = resume_sid is not None
+    sid = resume_sid or str(uuid.uuid4())
+    log.info("─── Stage: %s (Claude Code%s) ───", stage, " · resume" if resuming else "")
+    telemetry.stage.reset()
+
+    argv = ["claude", "-p"]
+    if resuming:
+        argv += ["--resume", sid]
+    else:
+        briefing_path = f"/workspace/.lusterna/{stage.lower()}-briefing.md"
+        container.write_file(deps.container_id, briefing_path, briefing or "")
+        argv += ["--session-id", sid, "--append-system-prompt-file", briefing_path]
+    argv += ["--output-format", "stream-json", "--verbose",
+             "--permission-mode", "dontAsk", "--allowedTools", allowed_tools,
+             "--model", model or config.CC_MODEL]
+    if effort:
+        argv += ["--effort", effort]
+    if max_budget_usd:
+        argv += ["--max-budget-usd", str(max_budget_usd)]
+    argv.append(prompt)
+
+    captured: dict = {}
+
+    def on_line(line: str) -> None:
+        if not line.strip():
+            return
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            return
+        t = ev.get("type")
+        if t == "assistant":
+            for block in ev.get("message", {}).get("content", []):
+                bt = block.get("type")
+                if bt == "tool_use":
+                    _log_cc_tool(stage, block.get("name", "?"), block.get("input") or {})
+                elif bt == "text" and block.get("text", "").strip():
+                    log.info("[%s] %s", stage, " ".join(block["text"].split())[:200])
+        elif t == "result":
+            captured.update(ev)
+
+    code, _out, err = container.exec_stream(
+        deps.container_id, argv, "/workspace", on_line,
+        passthrough_env=["ANTHROPIC_API_KEY"], timeout=timeout)
+    deps.progress.setdefault("cc_sessions", {})[stage] = sid
+
+    if code == 124:
+        log.warning("CC stage %s: timeout after %ds — the in-container session %s persists for "
+                    "resume", stage, timeout, sid[:8])
+    if not captured:
+        log.error("CC stage %s produced no result event (exit=%s). stderr tail: %s",
+                  stage, code, (err or "")[-500:])
+        raise UnexpectedModelBehavior(f"{stage}: Claude Code returned no result event")
+
+    cost = captured.get("total_cost_usd") or 0.0
+    costs = deps.progress.setdefault("cc_costs", {})
+    costs[stage] = costs.get(stage, 0.0) + cost
+    log.info("Stage %s complete — session=%s cost=$%.4f subtype=%s turns=%s",
+             stage, sid[:8], cost, captured.get("subtype"), captured.get("num_turns"))
+    if captured.get("is_error") or captured.get("subtype") != "success":
+        log.warning("CC stage %s ended non-success (subtype=%s) — the harness gate on the produced "
+                    "artefacts is authoritative regardless", stage, captured.get("subtype"))
+    return captured

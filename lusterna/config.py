@@ -103,6 +103,18 @@ COMPACTION_THRESHOLD = int(os.environ.get("LUSTERNA_COMPACTION_THRESHOLD", "2000
 # oscillation, not just an identical repeat) is the smart backstop that stops a non-converging loop.
 STALL_ROUNDS = int(os.environ.get("LUSTERNA_STALL_ROUNDS", "3"))
 
+# ── Claude Code engine (spawn-model stages; see DESIGN-claude-code-discipline.md) ──────────────
+# The CLI `--model` alias for the Claude Code sessions we spawn per stage (e.g. "opus", "sonnet").
+# This is the Claude-Code alias form, distinct from MODEL's "anthropic:…" pydantic-ai form.
+CC_MODEL = os.environ.get("LUSTERNA_CC_MODEL", "opus")
+# Per-stage hard dollar cap (`claude --max-budget-usd`) — a runaway backstop, NOT a work limiter.
+# Set generously; it should never bind on a healthy stage.
+CC_STAGE_BUDGET_USD = float(os.environ.get("LUSTERNA_CC_STAGE_BUDGET_USD", "50"))
+
+# Debug/inspection: stop right after EXPLORE so its assessment artefacts can be examined in
+# isolation (used while migrating stages to the Claude-Code spawn model).
+STOP_AFTER_EXPLORE = os.environ.get("LUSTERNA_STOP_AFTER_EXPLORE", "") not in ("", "0")
+
 # Debug/inspection: stop the pipeline right after TRANSLATE (skip spec/prove/report) so the
 # translation artefacts can be examined. Used to iterate on the TRANSLATE stage in isolation.
 STOP_AFTER_TRANSLATE = os.environ.get("LUSTERNA_STOP_AFTER_TRANSLATE", "") not in ("", "0")
