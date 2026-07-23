@@ -188,9 +188,15 @@ cleanly and compiles:
      get/last-write-wins-insert semantics, iterator-adaptor chain → explicit loop, filling an inert
      Aeneas-emitted instance with library defaults). FORBIDDEN: changing what the program computes or
      its effects. To model a structure: edit the RUST SOURCE (change the field type + rewrite its
-     ops into the translatable equivalent), confirm behaviour with `cargo test`, re-run charon+aeneas.
-     The source is the ONLY lever — you CANNOT add a Charon/Aeneas builtin (compiled in); do not
-     spelunk /opt/aeneas or /opt/charon.
+     ops into the translatable equivalent) and re-run charon+aeneas. The source is the ONLY lever —
+     you CANNOT add a Charon/Aeneas builtin (compiled in); do not spelunk /opt/aeneas or /opt/charon.
+     ⚠ REQUIRED for EVERY rung-3 edit — BEHAVIOURAL-EQUIVALENCE TESTS. Behaviour-preservation must be
+     EVIDENCED, not merely asserted: write Rust tests that pit the modelled version against the
+     original semantics — the real library/type it replaces, or an independent reference — over
+     representative inputs AND the edge/boundary cases that actually matter (zero, max/overflow,
+     rounding ties and floor-vs-ceil off-by-one, values that exceed the narrow type, empty/last-write
+     for a collection), and confirm they pass (`cargo test`). These tests ARE the justification for
+     the edit. A rung-3 edit with no equivalence tests is unverified — the TRANSLATE-JUDGE rejects it.
   4. Give up only if a target function's OWN body relies on a construct with no behaviour-preserving
      translatable form (record this in the summary + accountability).
 
@@ -200,7 +206,9 @@ globals (lazy_static). Opaque the leaf, or refactor the usage.
 ACCOUNTABILITY — every alteration is reviewed by a human and by the TRANSLATE-JUDGE. Write
 /workspace/out/translate/accountability.md documenting, for each opaque/exclude and each source or
 Lean edit: WHAT you changed and WHY it is behaviour-preserving (or why an opaqued item is a trusted
-primitive the properties don't depend on). Source edits are also captured as a git diff — still
+primitive the properties don't depend on). For a rung-3 edit the "why" is EVIDENCE, not assertion:
+name the behavioural-equivalence tests you wrote, the cases they cover (representative + the
+edge/boundary cases above), and that they pass. Source edits are also captured as a git diff — still
 narrate them. Keep edits minimal and well-justified.
 
 DELIVERABLE: the compiling translation in /workspace/out/lean (target functions as real `def`s),
@@ -236,6 +244,11 @@ Judge exactly these (one entry per problem: kind, detail, concrete fix):
     `def`s.
   • semantics_changed — a source/Lean edit changes OBSERVABLE behaviour (not just representation).
     Representation swaps are OK; a change to WHAT is computed is a defect. Judge each edit in the diff.
+    Behaviour-preservation must be EVIDENCED, not asserted: for every rung-3 edit, check that
+    `accountability.md` names passing behavioural-equivalence tests covering the edge/boundary cases
+    (zero, max/overflow, rounding ties and floor-vs-ceil, values exceeding the narrow type, …). If an
+    edit's behaviour-preservation is claimed but not backed by such tests, flag it semantics_changed —
+    fix: "add behavioural-equivalence tests covering <the relevant cases>".
   • not_faithful — the translated target does not mirror the original's logic (stubbed/simplified,
     a branch or computation silently dropped).
   • non_compiling — the facts report it does not compile.
