@@ -5,7 +5,7 @@ import json
 import logging
 import uuid
 
-from . import config, container, telemetry
+from . import config, container
 from .schemas import AgentDeps
 
 log = logging.getLogger(__name__)
@@ -55,7 +55,6 @@ def run_cc_stage(
     resuming = resume_sid is not None
     sid = resume_sid or str(uuid.uuid4())
     log.info("─── Stage: %s (Claude Code%s) ───", stage, " · resume" if resuming else "")
-    telemetry.stage.reset()
 
     argv = ["claude", "-p"]
     if resuming:

@@ -15,7 +15,7 @@ rounds fail to. See DESIGN-claude-code-discipline.md.
 import json
 import logging
 
-from . import briefings, checkpoint, config, container, lean, telemetry, tools
+from . import briefings, checkpoint, config, container, lean, tools
 from .runner import run_cc_stage, StageFailed
 from .schemas import AgentDeps
 

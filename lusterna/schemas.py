@@ -16,7 +16,6 @@ class AgentDeps:
     session_id: str
     design_doc: str
     progress: dict[str, Any] = field(default_factory=dict)
-    message_history: list = field(default_factory=list)
     # Set True only when the pipeline runs fully to completion (through REPORT). Drives container
     # lifecycle: an incomplete run (budget hit, interrupt, crash) keeps its container ALIVE so a
     # resume can re-attach with full state (repo edits/shims, out/, accountability baseline).

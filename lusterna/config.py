@@ -22,11 +22,8 @@ def setup_logging(verbose: bool = False) -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
-MODEL = os.environ.get("LUSTERNA_MODEL", "anthropic:claude-opus-4-8")
-JUDGE_MODEL = os.environ.get("LUSTERNA_JUDGE_MODEL", "anthropic:claude-opus-4-8")
-# Reasoning effort for effort-capable Anthropic models (Opus 4.x): "", low, medium, high.
-# Default "high": agents run with adaptive extended thinking at high effort (see cache_settings).
-# Set to "" to disable thinking (e.g. when overriding MODEL to a non-thinking model like Sonnet).
+# Reasoning effort for the Claude Code stage sessions (`--effort`): "", low, medium, high, xhigh,
+# max. "" disables extended thinking. Default "high".
 EFFORT = os.environ.get("LUSTERNA_EFFORT", "high").strip().lower()
 # Root directory that holds per-session checkpoint directories
 SESSIONS_DIR = Path(os.environ.get("LUSTERNA_SESSIONS_DIR", "~/.local/share/lusterna/sessions")).expanduser()
@@ -34,27 +31,20 @@ SESSIONS_DIR = Path(os.environ.get("LUSTERNA_SESSIONS_DIR", "~/.local/share/lust
 CONTAINER_IMAGE = os.environ.get("LUSTERNA_IMAGE", "lusterna-toolchain:latest")
 # Pre-existing container name/ID to attach to (skips auto-start when set)
 CONTAINER_ID = os.environ.get("LUSTERNA_CONTAINER", "")
-# Optional cumulative token budget for the entire session (all agents combined).
-# 0 or unset means unlimited.
-_budget_env = os.environ.get("LUSTERNA_TOKEN_BUDGET", "0")
-TOKEN_BUDGET: int | None = int(_budget_env) if _budget_env.strip() not in ("", "0") else None
 
+# Model choice, retry (transient blips), context compaction, and per-stage cost caps are all owned
+# by Claude Code (the spawned engine) — via CC_MODEL/--model, its own retry, and --max-budget-usd —
+# so the old pydantic-ai model/judge-model, token-budget, retry, and compaction knobs are gone
+# (see DESIGN-claude-code-discipline.md §8).
 
-# Claude Code owns model retry (transient blips) and context compaction natively, and caps cost
-# per stage via --max-budget-usd, so the old pydantic-ai model settings, client-side retry, and
-# compaction-threshold knobs are gone (see DESIGN-claude-code-discipline.md §8).
-
-# The ONE knob governing all three iterative agent loops (TRANSLATE, FORMALISE, PROVE): a loop gives
-# up after this many consecutive rounds that fail to beat the best progress seen (in FORMALISE, a
-# theorem is quarantined after this many failed-to-compile rounds; in PROVE, best = the axiom-clean
-# established-theorem count). There is deliberately NO hard round ceiling — the token budget is the
-# precise resource guard, and this progress-based stall (best-tracked, so it catches plateaus and
-# oscillation, not just an identical repeat) is the smart backstop that stops a non-converging loop.
+# The ONE knob bounding every stage's gate loop: a stage gives up after this many consecutive
+# rounds that fail to pass its trusted gate (for PROVE, this many rounds with no gain in the
+# axiom-clean established-theorem count). No hard round ceiling beyond it; each round is also
+# cost-capped by Claude Code's --max-budget-usd.
 STALL_ROUNDS = int(os.environ.get("LUSTERNA_STALL_ROUNDS", "3"))
 
 # ── Claude Code engine (spawn-model stages; see DESIGN-claude-code-discipline.md) ──────────────
 # The CLI `--model` alias for the Claude Code sessions we spawn per stage (e.g. "opus", "sonnet").
-# This is the Claude-Code alias form, distinct from MODEL's "anthropic:…" pydantic-ai form.
 CC_MODEL = os.environ.get("LUSTERNA_CC_MODEL", "opus")
 # Per-stage hard dollar cap (`claude --max-budget-usd`) — a runaway backstop, NOT a work limiter.
 # Set generously; it should never bind on a healthy stage.

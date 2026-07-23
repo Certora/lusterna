@@ -6,8 +6,8 @@ import re
 import subprocess
 from pathlib import Path
 
-from . import checkpoint, config, tools
-from .container import exec_in, OUT_IN, REPO_IN
+from . import checkpoint, tools
+from .container import exec_in, OUT_IN
 from .schemas import AgentDeps
 
 log = logging.getLogger(__name__)
@@ -190,19 +190,6 @@ def opaque_deps_in_targets(translation_text: str, target_patterns: list[str]) ->
     return sorted(hits)
 
 
-def trail_opaque_assumptions(trail: list[dict]) -> list[str]:
-    """Charon patterns made `--opaque` across the TRANSLATE trail — emitted as Lean axioms,
-    so the `#print axioms` gate flags any theorem depending on them."""
-    return sorted({pat for r in trail if r.get("action") == "OPAQUE"
-                   for pat in r.get("scope", {}).get("opaque", [])})
-
-
-def trail_refactored_paths(trail: list[dict]) -> list[str]:
-    """Source files a behaviour-preserving refactor actually edited across the TRANSLATE trail."""
-    return sorted({se["path"] for r in trail if r.get("action") == "REFACTOR"
-                   for se in r.get("source_edits", []) if se.get("applied")})
-
-
 def _theorem_names(spec_text: str) -> list[str]:
     """Names as written after `theorem`/`lemma` in the implementation spec."""
     return [m.group(2) for m in re.finditer(r"(?m)^\s*(theorem|lemma)\s+([\w.]+)", spec_text)]
@@ -295,7 +282,6 @@ def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
     afterwards. (Re-elaborating the spec from source instead is fragile: one import or
     proof failure auto-`sorry`s every declaration and taints the whole batch.)
     """
-    from . import config
     original = tools.read_out(deps, spec_rel)
     if original.startswith("ERROR:"):
         return {"clean": [], "tainted": [], "raw": original}
@@ -440,7 +426,6 @@ def _run_lake(deps: AgentDeps, args: list[str], timeout_msg: str) -> dict:
     terse `error: build failed` to real stderr), so we combine both streams, strip the
     `trace:`/`✖` build-log decoration, and keep the last _BUILD_TAIL lines (errors are at the
     end). On success "stderr" is empty; on timeout it holds *timeout_msg*."""
-    from . import config
     code, out, err = exec_in(
         deps.container_id,
         ["timeout", "-k", "10", str(_BUILD_TIMEOUT), "lake", *args],
@@ -478,60 +463,6 @@ def translation_compiles(deps: AgentDeps, lean_path: str) -> dict:
     file in the project environment (imports resolve against the prebuilt Aeneas packages)."""
     return _run_lake(deps, ["env", "lean", f"{OUT_IN}/{lean_path}"],
                      timeout_msg=f"lake env lean exceeded {_BUILD_TIMEOUT}s")
-
-
-def attribute_errors(spec_text: str, stderr: str, basename: str = "Spec.lean") -> dict:
-    """Map Lean build errors back to the impl-spec theorem they occur in, so FORMALISE can be
-    told exactly which statements to fix (and which already compile).
-
-    `lake build` diagnostics are `<severity>: <path>:<line>:<col>: <msg>` (severity FIRST), with
-    the message continuing on following lines until the next diagnostic or a lake/lean structural
-    line. (`lake env lean` uses path-first; FORMALISE's oracle is `lake build`, so we match that.)
-    `sorry` produces a WARNING, not an error — so a stub that type-checks shows only a warning;
-    only an `error` marks a theorem as failing. Returns
-    {"failing": {theorem: msg}, "preamble": [msg], "unattributed": [msg]}."""
-    import re
-    thm = list(re.finditer(r"(?m)^theorem\s+([\w.]+)", spec_text))
-    nlines = spec_text.count("\n") + 1
-    spans = []
-    for i, m in enumerate(thm):
-        start = spec_text.count("\n", 0, m.start()) + 1
-        end = spec_text.count("\n", 0, thm[i + 1].start()) if i + 1 < len(thm) else nlines
-        spans.append((m.group(1), start, end))
-    first_thm = spans[0][1] if spans else nlines + 1
-
-    def owner(line: int) -> str | None:
-        return next((n for n, s, e in spans if s <= line <= e), None)
-
-    marker = re.compile(r"^(error|warning): (\S+):(\d+):(\d+): (.*)$")
-    stop = re.compile(r"^(?:error|warning|info|trace):|^\s*✖|^Some required|^- ")
-    failing: dict[str, list[str]] = {}
-    preamble: list[str] = []
-    unattributed: list[str] = []
-    lines = stderr.splitlines()
-    i = 0
-    while i < len(lines):
-        mm = marker.match(lines[i])
-        if not mm or not mm.group(2).endswith(basename):   # only diagnostics for the impl spec
-            i += 1
-            continue
-        sev, ln = mm.group(1), int(mm.group(3))
-        block = [f"{basename}:{ln}:{mm.group(4)}: {mm.group(5)}".rstrip()]   # path-stripped
-        j = i + 1
-        while j < len(lines) and not marker.match(lines[j]) and not stop.match(lines[j]):
-            block.append(lines[j]); j += 1
-        i = j
-        if sev != "error":                              # ignore sorry/other warnings
-            continue
-        msg = "\n".join(block).strip()
-        if (who := owner(ln)) is not None:
-            failing.setdefault(who, []).append(msg)
-        elif ln < first_thm:
-            preamble.append(msg)
-        else:
-            unattributed.append(msg)
-    return {"failing": {k: "\n".join(v) for k, v in failing.items()},
-            "preamble": preamble, "unattributed": unattributed}
 
 
 def theorem_statement(spec_text: str, name: str) -> str:
@@ -606,19 +537,3 @@ def translation_text(deps: AgentDeps, lean_files: list[str] | None = None) -> st
     parts = [t for rel in lean_files
              for t in [tools.read_out(deps, rel)] if not t.startswith("ERROR:")]
     return "\n\n".join(parts)
-
-
-def translation_index(deps: AgentDeps) -> str:
-    """A compact index of the translated crate: the kind + exact (mangled) NAME of every
-    definition, without bodies. FORMALISE uses it to know what exists, then reads the exact
-    signature of the few it references with bash — so the large translation is never injected.
-    Lives here beside the other translation scanners (`_def_blocks`, `external_axioms`)."""
-    seen: set[str] = set()
-    out: list[str] = []
-    for m in re.finditer(r"(?m)^(def|abbrev|structure|inductive|axiom|theorem)\s+([\w.]+)",
-                         translation_text(deps)):
-        entry = f"{m.group(1)} {m.group(2)}"
-        if entry not in seen:
-            seen.add(entry)
-            out.append(entry)
-    return "\n".join(out)
