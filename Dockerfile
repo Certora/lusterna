@@ -89,6 +89,18 @@ RUN mkdir -p /opt/lean-template \
        > /opt/lean-template/lakefile.lean \
     && cd /opt/lean-template && lake update
 
+# ── Claude Code engine (Node + CLI) ─────────────────────────────────────────────
+# Lusterna spawns Claude Code HEADLESS inside this container (`docker exec claude -p …`),
+# driven by the host harness. Claude Code's own Bash/Read/Write/Edit then operate directly
+# on /workspace, where the toolchain (charon/aeneas/lake) and generated artefacts live — no
+# Python or SDK in the image. Node 22 LTS via NodeSource; the CLI is left unpinned for the
+# initial spike (pin to a specific version once the integration is validated).
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g @anthropic-ai/claude-code \
+    && claude --version
+
 # ── Workspace layout ───────────────────────────────────────────────────────────
 RUN git config --global user.email "lusterna@agent" \
     && git config --global user.name "Lusterna"

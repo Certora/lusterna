@@ -1,0 +1,10 @@
+# The Dockerfile fetches its entire toolchain via curl/apt/opam/lake/npm and COPYs nothing
+# from the build context, so the context can be trimmed to almost nothing — this keeps
+# `docker build` from shipping the 1.7G repo (chiefly demo/ vendored crates) to the daemon.
+.git
+.venv
+demo/
+*-lusterna/
+**/__pycache__/
+**/*.pyc
+*.log

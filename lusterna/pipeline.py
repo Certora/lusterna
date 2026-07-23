@@ -1050,12 +1050,15 @@ async def run_session(deps: AgentDeps) -> str:
         deps.completed = True   # full run — cli.py may free the container
         return result
 
-    # All three are "graceful stop, leave completed=False": snapshot the progress so a resume
-    # re-enters at the first incomplete stage, write the accountability note, and return a reason
-    # (never crash with a traceback). cli.py's finally then keeps the container alive for resume.
-    except (_PipelineAborted, UsageLimitExceeded, ModelAPIError) as e:
+    # All are "graceful stop, leave completed=False": snapshot the progress so a resume re-enters
+    # at the first incomplete stage, write the accountability note, and return a reason (never crash
+    # with a traceback). cli.py's finally then keeps the container alive for resume. A linear stage
+    # (EXPLORE/INFER/REPORT) that blows up mid-emission raises UnexpectedModelBehavior — under the
+    # Claude-Code discipline its work is already on disk, so we degrade rather than lose the run.
+    except (_PipelineAborted, UsageLimitExceeded, ModelAPIError, UnexpectedModelBehavior) as e:
         reason = ("token budget exhausted before completion" if isinstance(e, UsageLimitExceeded)
                   else "model provider unavailable after retries" if isinstance(e, ModelAPIError)
+                  else "a stage agent failed unrecoverably" if isinstance(e, UnexpectedModelBehavior)
                   else "pipeline aborted")
         log.error("Pipeline stopped — %s: %s", reason, e)
         checkpoint.snapshot(deps)
