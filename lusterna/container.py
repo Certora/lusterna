@@ -85,6 +85,11 @@ def init_out(container_id: str) -> None:
     """Create and git-init the output directory inside the container."""
     exec_in(container_id, ["mkdir", "-p", OUT_IN])
     exec_in(container_id, ["git", "init"], workdir=OUT_IN)
+    # `.lake/` is the lake BUILD tree (the Aeneas runtime, and — once a stage runs `lake build` /
+    # `lake exe cache get` — a full Mathlib source+olean tree, GBs). It is never a pipeline artefact:
+    # setup_lake re-provisions it from the image's /opt/lean-template on demand. Exclude it from the
+    # output repo so commits (and a resume's `reset --hard`) never carry gigabytes of dependency tree.
+    exec_in(container_id, ["sh", "-c", "printf '.lake/\\n' >> .git/info/exclude"], workdir=OUT_IN)
     exec_in(container_id,
             ["git", "commit", "--allow-empty", "-m", "chore: init lusterna session"],
             workdir=OUT_IN)
@@ -142,7 +147,7 @@ def push_artefacts(container_id: str, src: Path) -> None:
     """
     exec_in(container_id, ["mkdir", "-p", OUT_IN])
     tar = subprocess.Popen(
-        ["tar", "c", "-C", str(src.resolve()), "."],
+        ["tar", "c", "-C", str(src.resolve()), "--exclude=*/.lake", "."],
         stdout=subprocess.PIPE,
     )
     subprocess.run(
@@ -152,7 +157,7 @@ def push_artefacts(container_id: str, src: Path) -> None:
         check=True,
     )
     tar.wait()
-    log.info("Artefacts pushed %s → %s inside %s", src, OUT_IN, container_id[:12])
+    log.info("Artefacts pushed %s → %s inside %s (excluding .lake)", src, OUT_IN, container_id[:12])
 
 
 def reset_out(container_id: str, git_head: str) -> None:
@@ -179,10 +184,18 @@ def reset_out(container_id: str, git_head: str) -> None:
 
 
 def pull_artefacts(container_id: str, dest: Path) -> None:
-    """Copy the output directory from the container to *dest* on the host."""
+    """Copy the output directory from the container to *dest* on the host, EXCLUDING the multi-GB
+    `.lake` build tree (Aeneas/Mathlib deps — re-provisioned from the image, never a real artefact).
+
+    tar-with-exclude rather than `docker cp` (which has no exclude and would drag the whole .lake
+    tree onto the host, as it did before this was fixed)."""
     dest.mkdir(parents=True, exist_ok=True)
-    _docker("cp", f"{container_id}:{OUT_IN}/.", str(dest.resolve()))
-    log.info("Artefacts pulled %s → %s", OUT_IN, dest)
+    tar = subprocess.Popen(
+        ["docker", "exec", container_id, "tar", "c", "-C", OUT_IN, "--exclude=*/.lake", "."],
+        stdout=subprocess.PIPE)
+    subprocess.run(["tar", "x", "-C", str(dest.resolve())], stdin=tar.stdout, check=True)
+    tar.wait()
+    log.info("Artefacts pulled %s → %s (excluding .lake)", OUT_IN, dest)
 
 
 def _stop_on_exit(container_id: str) -> None:
