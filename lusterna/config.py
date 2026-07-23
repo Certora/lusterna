@@ -35,7 +35,7 @@ CONTAINER_ID = os.environ.get("LUSTERNA_CONTAINER", "")
 # Model choice, retry (transient blips), context compaction, and per-stage cost caps are all owned
 # by Claude Code (the spawned engine) — via CC_MODEL/--model, its own retry, and --max-budget-usd —
 # so the old pydantic-ai model/judge-model, token-budget, retry, and compaction knobs are gone
-# (see DESIGN-claude-code-discipline.md §8).
+#.
 
 # The ONE knob bounding every stage's gate loop: a stage gives up after this many consecutive
 # rounds that fail to pass its trusted gate (for PROVE, this many rounds with no gain in the
@@ -43,7 +43,7 @@ CONTAINER_ID = os.environ.get("LUSTERNA_CONTAINER", "")
 # cost-capped by Claude Code's --max-budget-usd.
 STALL_ROUNDS = int(os.environ.get("LUSTERNA_STALL_ROUNDS", "3"))
 
-# ── Claude Code engine (spawn-model stages; see DESIGN-claude-code-discipline.md) ──────────────
+# ── Claude Code engine (spawn-model stages) ──────────────
 # The CLI `--model` alias for the Claude Code sessions we spawn per stage (e.g. "opus", "sonnet").
 CC_MODEL = os.environ.get("LUSTERNA_CC_MODEL", "opus")
 # Per-stage hard dollar cap (`claude --max-budget-usd`) — a runaway backstop, NOT a work limiter.

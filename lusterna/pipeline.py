@@ -10,7 +10,7 @@ Each stage's deliverable is FILES under /workspace/out; the harness reads them a
   • the audit trail — the pristine-baseline git diff (tools.repo_diff).
 These never move and are never delegated. Everything else (iteration, judging) is the CC session's
 job; the harness re-invokes a stage (resume) with the gate's feedback until it passes or STALL_ROUNDS
-rounds fail to. See DESIGN-claude-code-discipline.md.
+rounds fail to.
 """
 import json
 import logging
