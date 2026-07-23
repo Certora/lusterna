@@ -108,8 +108,16 @@ def run_cc_stage(
     cost = captured.get("total_cost_usd") or 0.0
     costs = deps.progress.setdefault("cc_costs", {})
     costs[stage] = costs.get(stage, 0.0) + cost
-    log.info("Stage %s complete — session=%s cost=$%.4f subtype=%s turns=%s",
-             stage, sid[:8], cost, captured.get("subtype"), captured.get("num_turns"))
+    # modelUsage is the cumulative per-model breakdown for the whole session (its costUSD sums to
+    # total_cost_usd); summing across models gives the stage's real token totals. (Top-level .usage
+    # is only the final turn, so it under-reports.)
+    mu = (captured.get("modelUsage") or {}).values()
+    tok = lambda k: sum(m.get(k, 0) for m in mu)
+    log.info("Stage %s complete — session=%s cost=$%.4f subtype=%s turns=%s | tokens in=%d out=%d "
+             "cache_read=%d cache_write=%d",
+             stage, sid[:8], cost, captured.get("subtype"), captured.get("num_turns"),
+             tok("inputTokens"), tok("outputTokens"),
+             tok("cacheReadInputTokens"), tok("cacheCreationInputTokens"))
     if captured.get("is_error") or captured.get("subtype") != "success":
         log.warning("CC stage %s ended non-success (subtype=%s) — the harness gate on the produced "
                     "artefacts is authoritative regardless", stage, captured.get("subtype"))
