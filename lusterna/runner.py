@@ -1,171 +1,24 @@
-"""Generic stage-running machinery: the per-stage prompt briefing, running a stage agent
-with history/limits, and the shared tool wiring (the single `bash` tool on the stages that
-touch the container). Stage sequencing and the phase logic live in pipeline.py."""
+"""The stage runner: launch one pipeline stage as a headless Claude Code session inside the
+container and stream its activity to the host log live. The pipeline (pipeline.py) sequences these
+and applies the trusted mechanical gates to the files each session leaves behind."""
 import json
 import logging
 import uuid
-from typing import Any, Callable
 
-from pydantic_ai import Agent
-from pydantic_ai.exceptions import UnexpectedModelBehavior
-from pydantic_ai.usage import UsageLimits
-
-from . import config, container, lean, telemetry, tools
+from . import config, container, telemetry
 from .schemas import AgentDeps
-from .stages import (
-    explore as _explore, infer as _infer, translate as _translate,
-    translate_judge as _translate_judge, formalise as _formalise,
-    prove as _prove, report as _report,
-)
 
 log = logging.getLogger(__name__)
 
 
-# ── tool registration ───────────────────────────────────────────
-# Every stage gets ONE tool — `bash` — and reads/writes/searches and drives charon/aeneas/cargo/
-# lake itself, so nothing is injected but small hints and computed facts (no dumping repo sources
-# or whole translations into the prompt). TRANSLATE also gets setup_lake_project (build-env
-# provisioning that isn't a plain one-liner). FORMALISE gets bash too — it must navigate a large
-# translation to reference exact mangled names/signatures, so it READS the crate selectively
-# (grep/sed on /workspace/out/lean) rather than having ~9k lines injected; it still cannot smuggle
-# a proof because its FormalSpec output has no proof field (bodies are assembled as `sorry`).
-# SPEC-JUDGE stays injected (it reasons over the small assembled spec).
-
-for _agent in (_explore, _infer, _translate, _translate_judge, _formalise, _prove, _report):
-    _agent.tool(tools.bash)
-_translate.tool(tools.setup_lake_project)
-
-
-def _pipeline_briefing(deps: AgentDeps) -> str:
-    """Return a structured context block describing pipeline state so far.
-
-    Prepended to every stage's runtime prompt so each stage agent understands
-    the overall goal, what has been completed, and key findings from prior stages.
-    """
-    p = deps.progress
-
-    # Completed stages
-    stage_flags = [
-        ("explore",        "EXPLORE"),
-        ("informal_spec",  "INFER"),
-        ("aeneas",         "TRANSLATE"),
-        ("formal_spec",    "FORMALISE"),
-        ("verdict",        "SPEC-JUDGE"),
-        ("proofs_done",    "PROVE"),
-    ]
-    done = [label for key, label in stage_flags if key in p]
-
-    holes = (p.get("aeneas") or {}).get("holes", [])
-
-    lines = [
-        "## Pipeline context",
-        "Goal: derive and formally verify the properties that the target functions of the "
-        "Aeneas-translated crate actually satisfy — the CODE is the source of truth. A property "
-        "may be about one function or span several functions and types working together. The "
-        "design document (if any) is only a focus hint, not a spec to conform to.",
-        f"Completed stages: {', '.join(done) if done else 'none yet'}",
-    ]
-    if deps.design_doc.strip():
-        lines.insert(2, f"Design document (focus hint, excerpt):\n{deps.design_doc[:400].rstrip()}")
-    if holes:
-        lines.append(f"Aeneas holes (untranslated defs) in the crate: {holes}")
-
-    # TRANSLATE accountability trail: scope, opaque assumptions, source modifications.
-    trail = p.get("translate_trail")
-    if trail:
-        tp = p.get("target_patterns") or "whole crate"
-        lines.append(f"Translation target scope (Charon --start-from): {tp}")
-        opaque = lean.trail_opaque_assumptions(trail)
-        if opaque:
-            lines.append(
-                f"TRANSLATE opaque ASSUMPTIONS (emitted as Lean axioms — the `#print axioms` "
-                f"check flags any theorem that depends on them): {opaque}")
-        edited = lean.trail_refactored_paths(trail)
-        if edited:
-            lines.append(
-                f"⚠ SOURCE MODIFIED during TRANSLATE — behaviour-preserving refactor(s) to "
-                f"{edited}. The translation is NOT a verbatim image of the original for those "
-                f"items; properties touching them are verified of the REFACTORED code "
-                f"(behaviour-equivalence asserted + cross-checked by proofs, not machine-certified). "
-                f"See translate/accountability.md.")
-
-    ax = p.get("axioms")
-    if ax is not None:
-        tainted = ax.get("tainted", [])
-        lines.append(
-            f"Axiom check (Lean `#print axioms`, authoritative): "
-            f"{len(ax.get('clean', []))} theorem(s) genuinely established (no sorryAx), "
-            f"{len(tainted)} still resting on sorry"
-            + (f" — tainted: {tainted}" if tainted else "")
-        )
-
-    # Artefact inventory
-    artefacts = []
-    if "aeneas" in p:
-        lean_path = p["aeneas"].get("lean_path", "")
-        if lean_path:
-            artefacts.append(lean_path)
-    for key, path in [
-        ("informal_spec", "specs/informal_spec.json"),
-        ("formal_spec",   lean.impl_spec(deps)),
-    ]:
-        if key in p and path:
-            artefacts.append(path)
-    if artefacts:
-        lines.append(
-            f"Key artefacts (all in /workspace/out — read with bash `cat`): "
-            + ", ".join(artefacts)
-        )
-
-    # Spec-judge verdict
-    verdict = p.get("verdict")
-    if verdict is not None:
-        defects = verdict.get("defects", [])
-        if defects:
-            lines.append(
-                f"\nSpec-judge: {len(defects)} open defect(s): "
-                + ", ".join(f"{d['theorem']}[{d['kind']}]" for d in defects)
-            )
-        else:
-            lines.append("\nSpec-judge: no defects (spec approved ✓)")
-
-    lines.append("")   # trailing newline before stage-specific prompt
-    return "\n".join(lines) + "\n"
-
-
-async def _run_stage(agent: Agent, prompt: str, deps: AgentDeps, label: str,
-                     stop_check: Callable[[AgentDeps, Any], bool] | None = None) -> Any:
-    """Run one stage agent. Each stage starts with no prior history.
-
-    Stages communicate via the filesystem and deps.progress, not via conversation
-    context — so no history is passed in or accumulated across stages. When stop_check
-    is given it is polled on each graph node (deps, node); returning True ends the run early.
-    There is no per-stage request cap — the session token budget (enforced in factory's
-    before_model_request hook) is the resource guard. This must be set EXPLICITLY: pydantic-ai
-    otherwise imposes a default request_limit of 50, which silently truncates a stage mid-work
-    (e.g. PROVE while it is still discovering the Aeneas lemmas it needs). Re-raises
-    UnexpectedModelBehavior; judge stages catch it locally.
-    """
-    log.info("─── Stage: %s ───", label)
-    telemetry.stage.reset()
-    deps.message_history = []
-    full_prompt = _pipeline_briefing(deps) + prompt
-    async with agent.iter(full_prompt, deps=deps,
-                          usage_limits=UsageLimits(request_limit=None)) as run:
-        async for node in run:
-            if stop_check and stop_check(deps, node):
-                break
-        result = run.result
-    log.info(
-        "Stage %s complete — session total=%d/%s",
-        label, telemetry.session.total(), telemetry.budget or "∞",
-    )
-    return result
+class StageFailed(Exception):
+    """A spawned Claude Code stage session returned no usable result (no `result` event). The
+    pipeline catches this and stops gracefully — the on-disk artefacts + gates are authoritative."""
 
 
 def _log_cc_tool(stage: str, name: str, inp: dict) -> None:
-    """Render one CC tool_use as a concise trail line in the HOST log — the user's live window
-    into what the in-container session is doing (mirrors the old bash-tool trail)."""
+    """Render one CC tool_use as a concise trail line in the HOST log — the user's live window into
+    what the in-container session is doing (mirrors the old bash-tool trail)."""
     if name == "Bash":
         log.info("[%s] $ %s", stage, " ".join((inp.get("command") or "").split())[:200])
     elif name in ("Write", "Edit", "Read", "NotebookEdit"):
@@ -189,12 +42,12 @@ def run_cc_stage(
     activity to the host log live (the user's window — the harness runs outside the container).
 
     First call: pass `briefing` (written to a file, applied via --append-system-prompt-file) and a
-    fresh session id is minted. Re-invocation of the SAME stage (gate feedback, §4 hybrid-resume):
-    pass `resume_sid` and NO briefing — the resumed session keeps its system prompt + full context,
-    and `prompt` carries the gate's feedback.
+    fresh session id is minted. Re-invocation of the SAME stage (gate feedback / hybrid-resume): pass
+    `resume_sid` and NO briefing — the resumed session keeps its system prompt + full context, and
+    `prompt` carries the gate's feedback.
 
-    Uses --output-format stream-json --verbose; each event is parsed as it arrives (tool_use →
-    trail line, assistant text → narration) and the final `result` event is returned
+    Uses --output-format stream-json --verbose; each event is parsed as it arrives (tool_use → trail
+    line, assistant text → narration) and the final `result` event is returned
     {session_id, total_cost_usd, subtype, num_turns, …}. Session id → deps.progress['cc_sessions'].
     Autonomy: dontAsk + allowlist (bypassPermissions is refused as root); --max-budget-usd is the
     runaway backstop. Raises UnexpectedModelBehavior if no result event is produced.
@@ -251,7 +104,7 @@ def run_cc_stage(
     if not captured:
         log.error("CC stage %s produced no result event (exit=%s). stderr tail: %s",
                   stage, code, (err or "")[-500:])
-        raise UnexpectedModelBehavior(f"{stage}: Claude Code returned no result event")
+        raise StageFailed(f"{stage}: Claude Code returned no result event")
 
     cost = captured.get("total_cost_usd") or 0.0
     costs = deps.progress.setdefault("cc_costs", {})

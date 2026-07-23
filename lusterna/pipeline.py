@@ -1,1008 +1,484 @@
-"""The pipeline itself: the stage phases (SpecPhase, ProvePhase) and the linear stage
-drivers, sequenced by run_session. Companion modules: stages.py declares the stage agents;
-runner.py has the generic stage-runner and tool wiring; lean.py the Aeneas/Lean operations;
-checkpoint.py the state snapshots. Each stage runs with no shared message history — stages
-communicate via the filesystem and deps.progress."""
+"""The pipeline spine (spawn model): a deterministic sequencer that runs each stage as a headless
+Claude Code session (runner.run_cc_stage) and applies the TRUSTED, agent-inaccessible mechanical
+gates to the files the session produces. The agents own the labor; this module owns the trust.
+
+Stages: EXPLORE → INFER → TRANSLATE (+ TRANSLATE-JUDGE) → FORMALISE (+ SPEC-JUDGE) → PROVE → REPORT.
+Each stage's deliverable is FILES under /workspace/out; the harness reads them and gates:
+  • the compile gate — `lake build` (lean.build / lean.translation_compiles),
+  • the soundness gate — `#print axioms` (lean.check_axioms), the authoritative established verdict,
+  • no proof smuggling — lean.stub_proofs re-stubs FORMALISE's theorem bodies before acceptance,
+  • the audit trail — the pristine-baseline git diff (tools.repo_diff).
+These never move and are never delegated. Everything else (iteration, judging) is the CC session's
+job; the harness re-invokes a stage (resume) with the gate's feedback until it passes or STALL_ROUNDS
+rounds fail to. See DESIGN-claude-code-discipline.md.
+"""
 import json
 import logging
 
-from pydantic_ai.exceptions import ModelAPIError, UnexpectedModelBehavior, UsageLimitExceeded
-
-from . import briefings, checkpoint, container, lean, telemetry, tools
-from .schemas import InformalSpec, FormalSpec, JudgeVerdict
-from .runner import _run_stage, run_cc_stage
-from .stages import (
-    infer as _infer, formalise as _formalise,
-    judge as _judge, prove as _prove, report as _report,
-    translate as _translate, translate_judge as _translate_judge,
-)
+from . import briefings, checkpoint, config, container, lean, telemetry, tools
+from .runner import run_cc_stage, StageFailed
 from .schemas import AgentDeps
-from . import config
 
 log = logging.getLogger(__name__)
 
 
-def _assessment_hint(deps: AgentDeps) -> str:
-    """Format EXPLORE's ToolchainAssessment as an ADVISORY prompt block for INFER/TRANSLATE.
-
-    Empirically discovered facts + proposed strategy — never authoritative: the agent decides,
-    and the TRANSLATE-JUDGE + `#print axioms` gate still govern correctness. Empty when EXPLORE
-    recorded nothing useful.
-    """
-    a = (deps.progress.get("explore") or {}).get("assessment") or {}
-    parts = []
-    if a.get("build_prereqs"):
-        parts.append(f"- build-env prep already applied (folded into the baseline, NOT a program "
-                     f"edit): {a['build_prereqs']}")
-    if a.get("opaque_boundary"):
-        parts.append(f"- trust boundary to OPAQUE (external, need not be verified): "
-                     f"{a['opaque_boundary']}")
-    if a.get("must_model"):
-        parts.append(f"- must be MODELLED (untranslatable, but a property depends on its exact "
-                     f"semantics): {a['must_model']}")
-    if a.get("translatability_walls"):
-        parts.append(f"- Aeneas walls hit in the coarse pass: {a['translatability_walls']}")
-    if a.get("notes"):
-        parts.append(f"- notes: {a['notes']}")
-    if not parts:
-        return ""
-    return (f"\n\n### EXPLORE toolchain assessment (ADVISORY — empirically discovered; you decide, "
-            f"the judge + `#print axioms` still gate). buildable={a.get('buildable')}\n"
-            + "\n".join(parts))
-
-
 class _PipelineAborted(Exception):
-    pass
+    """Raised to stop the pipeline gracefully (caught in run_session): the run cannot proceed but
+    should degrade to a partial report + keep-alive, never crash with a traceback."""
 
 
-class TranslatePhase:
-    """Shell-driven TRANSLATE with a TRANSLATE-JUDGE gate (mirrors SpecPhase's agent↔judge loop).
+# ── shared CC-stage plumbing ────────────────────────────────────────────────────
 
-    The agent drives Charon+Aeneas itself via `bash`, using the least-degrading option that works
-    (scope → opaque a leaf → behaviour-preserving edit → give up), and logs every alteration. The
-    harness owns only *facts about the artefact* — never *how* to translate:
-      • HARD gates (mechanical, agent-inaccessible): the target functions are real `def`s (not
-        opaqued to `axiom`, not left as `sorry` holes) AND the translation compiles.
-      • SOFT gate: the TRANSLATE-JUDGE screens faithfulness / behaviour-preservation of edits.
-    Proof-soundness is NOT decided here — a hole/opaque becomes `sorryAx`/a non-standard axiom and
-    is caught downstream by `#print axioms`. Non-convergence aborts (no partial salvage). Every
-    source edit is captured as a git diff (accountability trail) for the human reviewer.
+def _cc_common() -> dict:
+    """Model / effort / per-stage runaway budget shared by every spawned stage session."""
+    return dict(model=config.CC_MODEL, effort=config.EFFORT or None,
+                max_budget_usd=config.CC_STAGE_BUDGET_USD)
+
+
+def _cc_gate_loop(deps: AgentDeps, *, stage: str, briefing: str, base_prompt: str,
+                  check, max_rounds: int) -> None:
+    """Run `stage` as a CC session, then apply `check(deps) -> (ok, feedback)` — the stage's TRUSTED
+    mechanical gate (plus any judge sub-session). If not ok, RESUME the same session with the gate's
+    feedback and try again, up to max_rounds. The CC session self-iterates WITHIN a round (reads its
+    own tool errors); this loop is the cross-round gate. Raises _PipelineAborted on non-convergence.
     """
-
-    STALL_ROUNDS = config.STALL_ROUNDS   # abort after this many rounds without measurable progress
-
-    def __init__(self, deps: AgentDeps, entry: str, resume_note: str):
-        self.deps = deps
-        self.entry = entry
-        self.resume_note = resume_note
-        self.target_patterns: list[str] = list(deps.progress.get("target_patterns", []))
-
-    @staticmethod
-    def _progress_score(facts: dict, defects: list | None) -> float:
-        """How close this round got to a done translation (higher = better). The five hard-gate
-        conditions each score 1; once the hard gate is met and the judge runs, fewer defects scores
-        higher. Used only to detect stagnation — a round that fails to beat the best score so far
-        made no progress."""
-        s = float(sum((
-            bool(facts.get("success")),
-            not facts.get("polluted"),
-            not facts.get("target_opaqued"),
-            not facts.get("target_holes"),
-            bool(facts.get("compiles")),
-        )))
-        if defects is not None:          # judged this round (hard gate was met)
-            s += 1.0 / (1 + len(defects))
-        return s
-
-    async def run(self) -> str:
-        if "aeneas" in self.deps.progress:          # resuming past TRANSLATE
-            return self.resume_note
-        log.info("─── Stage: TRANSLATE (target: %s) ───", self.target_patterns or "whole crate")
-
-        feedback = ""
-        best_score = -1.0
-        stale = 0
-        rnd = 0
-        while True:
-            rnd += 1
-            outcome = await self._translate(feedback)
-            if outcome is not None and outcome.gave_up:
-                self._abort(self._facts(), "the TRANSLATE agent gave up — "
-                            + (outcome.summary or "no translatable form found"))
-            facts = self._facts()
-            hard_ok = (facts["success"] and facts["compiles"] and not facts["polluted"]
-                       and not facts["target_opaqued"] and not facts["target_holes"])
-            defects: list | None = None
-            if hard_ok:
-                verdict = await self._judge(facts, outcome)
-                defects = list(verdict.defects) if verdict else []
-                if not defects:
-                    return self._accept(facts, outcome)
-
-            # Progress / stagnation: a round must beat the best score seen; otherwise it made no
-            # measurable progress. STALL_ROUNDS such rounds in a row ⇒ abort. There is no hard
-            # round ceiling — the token budget is the resource guard; this is the progress guard.
-            score = self._progress_score(facts, defects)
-            stale = 0 if score > best_score + 1e-9 else stale + 1
-            best_score = max(best_score, score)
-
-            if hard_ok:
-                summary = f"judge found {len(defects)} defect(s)"
-            else:
-                reasons = []
-                if not facts["success"]:
-                    reasons.append("no-translation-produced")
-                else:
-                    if facts["polluted"]:
-                        reasons.append(f"polluted-tree={facts['polluted']}")
-                    if facts["target_opaqued"]:
-                        reasons.append(f"target-opaqued={facts['target_opaqued']}")
-                    if facts["target_holes"]:
-                        reasons.append(f"target-holes={facts['target_holes']}")
-                    if not facts["compiles"]:
-                        reasons.append("does-not-compile")
-                summary = "hard gate not met — " + ("; ".join(reasons) or "?")
-            log.info("TRANSLATE round %d: %s (score=%.3f, stale=%d/%d)",
-                     rnd, summary, score, stale, self.STALL_ROUNDS)
-
-            if stale >= self.STALL_ROUNDS:
-                self._abort(facts, f"stagnated — no measurable progress across {self.STALL_ROUNDS} "
-                            f"consecutive rounds (stopped at round {rnd})")
-            feedback = self._feedback(facts, defects)
-
-    # ── agent + judge ─────────────────────────────────────────────────────────
-    async def _translate(self, feedback: str):
-        prompt = (
-            f"Target patterns (translate each to a real `def` — NEVER opaque them): "
-            f"{self.target_patterns or '(none — translate the whole crate)'}\n"
-            f"Suggested entry file: {self.entry}\n\n"
-            "Drive Charon + Aeneas via bash to translate the target into /workspace/out/lean, "
-            "least-degrading option first. After Aeneas, call setup_lake_project() and check it "
-            "compiles with `lake env lean`. Log every alteration to translate/accountability.md. "
-            "Return a TranslateOutcome."
-            + _assessment_hint(self.deps)
-            + (f"\n\n### Problems to FIX from the previous attempt\n{feedback}" if feedback else "")
-        )
+    prompt, feedback = base_prompt, ""
+    for rnd in range(1, max_rounds + 1):
+        sid = deps.progress.get("cc_sessions", {}).get(stage)   # resume once a round has run
         try:
-            res = await _run_stage(_translate, prompt, self.deps, "TRANSLATE")
-        except UnexpectedModelBehavior as exc:
-            log.warning("TRANSLATE agent errored (%s)", exc)
-            return None
-        return res.output if res else None
-
-    async def _judge(self, facts: dict, outcome):
-        tx = lean.translation_text(self.deps, facts["lean_files"])
-        acct = tools.read_out(self.deps, "translate/accountability.md")
-        spec = self.deps.progress.get("informal_spec", {})
-        props = (json.dumps({k: spec[k] for k in ("summary", "postconditions", "invariants")
-                             if spec.get(k)}, indent=2) if spec else "(none inferred)")
-        mech = {
-            "compiles": facts["compiles"],
-            "target_translated_as_def": lean.matched_target_defs(tx, self.target_patterns),
-            "target_OPAQUED_defect_if_nonempty": facts["target_opaqued"],
-            "target_HOLE_defect_if_nonempty": facts["target_holes"],
-            "emitted_axioms_opaqued_assumptions": facts["axioms"],
-            "opaqued_items_the_target_calls_directly": lean.opaque_deps_in_targets(
-                tx, self.target_patterns),
-            "source_files_changed": facts["repo_files"],
-            "generated_lean_files": facts["lean_files"],
-        }
-        prompt = (
-            f"Target patterns: {self.target_patterns or 'whole crate'}\n\n"
-            f"### Mechanical facts\n{json.dumps(mech, indent=2)}\n\n"
-            f"### Source git diff (judge behaviour-preservation against the original)\n"
-            f"{facts['repo_diff'] or '(no source edits)'}\n\n"
-            f"### Inferred properties (what will be verified — decide if they depend on any "
-            f"opaqued structure)\n{props}\n\n"
-            f"### translate/accountability.md\n"
-            f"{acct if not acct.startswith('ERROR:') else '(none written)'}\n\n"
-            "Read what you need with bash: the ORIGINAL Rust source is at /workspace/repo (the target "
-            "functions are `target_patterns`), and the GENERATED Lean is at /workspace/out/lean "
-            "(files above). Compare the target's translation against its source, then list every "
-            "defect as a TranslateVerdict; an empty list approves."
-        )
-        try:
-            res = await _run_stage(_translate_judge, prompt, self.deps, "TRANSLATE-JUDGE")
-        except UnexpectedModelBehavior as exc:
-            # Judge is the SOFT gate; the hard mechanical gates already passed. On a judge
-            # blow-up, accept (do not block on the semantic screen) rather than loop forever.
-            log.warning("TRANSLATE-JUDGE errored (%s) — accepting on the hard gates alone", exc)
-            return None
-        return res.output if res else None
-
-    # ── mechanical facts (agent-inaccessible) ──────────────────────────────────
-    def _facts(self) -> dict:
-        """Facts about whatever is in /workspace/out/lean — the only thing the harness decides on."""
-        lean.setup_lake(self.deps)      # ensure the lake project is wired for the compile check
-        info = lean.analyze_translation(self.deps, do_commit=False)
-        facts = {
-            "success": info["success"], "info": info,
-            "lean_files": info["lean_files"], "lean_path": info["lean_path"],
-            "holes": info["holes"], "holes_by_file": info["holes_by_file"],
-            "compiles": False, "build_errors": "",
-            "target_opaqued": [], "target_holes": [], "axioms": [], "polluted": [],
-            "repo_diff": tools.repo_diff(self.deps.container_id),
-            "repo_files": tools.repo_changed_files(self.deps.container_id),
-        }
-        # Hygiene: a clean run (no -split-files) leaves exactly ONE top-level module
-        # (lean/<Crate>.lean; the impl spec later lives under lean/<Crate>/). More than one means
-        # -split-files dropped modules flat, or two runs left orphans — either muddies the analysis.
-        top_level = [f for f in info["lean_files"]
-                     if f.startswith("lean/") and "/" not in f[len("lean/"):]]
-        facts["polluted"] = sorted(top_level) if len(top_level) > 1 else []
-        if not info["success"]:
-            return facts
-        tx = lean.translation_text(self.deps, info["lean_files"])
-        facts["axioms"] = lean.external_axioms(tx)
-        facts["target_opaqued"] = lean.opaqued_targets(tx, self.target_patterns)
-        facts["target_holes"] = lean.target_holes(tx, info["holes"], self.target_patterns)
-        build = lean.translation_compiles(self.deps, info["lean_path"])
-        facts["compiles"] = bool(build.get("success"))
-        facts["build_errors"] = (build.get("stderr", "") or "")[:2000]
-        return facts
-
-    def _feedback(self, facts: dict, defects) -> str:
-        parts: list[str] = []
-        if not facts["success"]:
-            return ("No Lean was produced in /workspace/out/lean. Re-run Charon then Aeneas "
-                    "(`aeneas -backend lean -dest /workspace/out/lean <llbc>`). If Charon exited "
-                    "101, your --start-from pattern did not resolve — fix it from the error "
-                    "(use the `crate::` keyword for the package selected by `-p`).")
-        if facts["polluted"]:
-            parts.append(f"POLLUTED output: multiple top-level Lean modules {facts['polluted']}. "
-                         f"`rm -rf /workspace/out/lean/*`, then run aeneas ONCE WITHOUT -split-files "
-                         f"so it emits a single top-level module (lean/<Crate>.lean). Do not use "
-                         f"-split-files — it drops modules flat at the top level.")
-        if facts["target_opaqued"]:
-            parts.append(f"MOCK: target function(s) {facts['target_opaqued']} were emitted as "
-                         f"`axiom` (opaqued). Translate their BODIES; opaque only their dependencies.")
-        if facts["target_holes"]:
-            parts.append(f"HOLES: target function(s) {facts['target_holes']} are a bare `sorry`. "
-                         f"Opaque a callee or apply a behaviour-preserving refactor so the body "
-                         f"translates.")
-        if not facts["compiles"]:
-            parts.append("The translation does not compile. `lake` errors:\n" + facts["build_errors"])
-        for d in (defects or []):
-            parts.append(f"JUDGE [{d.kind}]: {d.detail} → fix: {d.fix}")
-        return "\n\n".join(parts)
-
-    # ── accept / abort + accountability trail ───────────────────────────────────
-    def _accept(self, facts: dict, outcome) -> str:
-        info = facts["info"]
-        sha = tools.commit(self.deps.container_id, "feat(aeneas): accepted translation", glob="lean/")
-        self.deps.progress["aeneas"] = {
-            "success": True, "lean_files": info["lean_files"], "lean_path": info["lean_path"],
-            "holes": info["holes"], "holes_by_file": info["holes_by_file"], "commit": sha,
-        }
-        tier = self._record_trail(facts, outcome)
-        log.info("TRANSLATE accepted (%s) — %d file(s), %d hole(s), %d assumed axiom(s)",
-                 tier, len(info["lean_files"]), len(info["holes"]), len(facts["axioms"]))
-        checkpoint.snapshot(self.deps)
-        return ""
-
-    def _record_trail(self, facts: dict, outcome) -> str:
-        """Build the accountability trail (list of records, compatible with the briefing/report/
-        abort-note consumers and the `trail_*` helpers) from the mechanical facts + the agent's
-        narrative, and persist it. Returns the weakest tier reached."""
-        # Build-config files (managed by setup_lake) are NOT translation modifications — exclude
-        # them so patching the lakefile does not falsely downgrade faithfulness to MODIFICATION.
-        _BUILD_CFG = {"lakefile.lean", "lean-toolchain", "lake-manifest.json"}
-        lean_patched = [f for f in (outcome.lean_files_patched if outcome else [])
-                        if f.rsplit("/", 1)[-1] not in _BUILD_CFG]
-        edited = facts["repo_files"] + lean_patched
-        tier = "MODIFICATION" if edited else ("ASSUMPTION" if facts["axioms"] else "SAFE")
-        summary = (outcome.summary if outcome else "").strip()
-
-        trail = [{
-            "round": 0, "action": "SCOPE", "tier": "SAFE",
-            "scope": {"start_from": self.target_patterns}, "source_edits": [],
-            "rationale": summary[:800], "expected_effect": "",
-            "result": {"success": True, "target_holes": facts["target_holes"],
-                       "holes": facts["holes"], "commit": self.deps.progress["aeneas"]["commit"]},
-        }]
-        if facts["axioms"]:
-            trail.append({
-                "round": len(trail), "action": "OPAQUE", "tier": "ASSUMPTION",
-                "scope": {"opaque": facts["axioms"],
-                          "exclude": list(outcome.excluded_patterns) if outcome else []},
-                "source_edits": [],
-                "rationale": "trusted leaf dependencies emitted as Lean axioms (assumptions the "
-                             "`#print axioms` gate flags on any dependent theorem)",
-                "expected_effect": "", "result": {"success": True, "target_holes": [],
-                                                   "holes": [], "commit": ""},
-            })
-        if edited:
-            trail.append({
-                "round": len(trail), "action": "REFACTOR", "tier": "MODIFICATION", "scope": {},
-                "source_edits": [{"path": p, "applied": True,
-                                  "justification": "behaviour-preserving (see accountability.md + "
-                                                   "translate/source.diff)"} for p in edited],
-                "rationale": "behaviour-preserving edit(s); see accountability.md and the git diff",
-                "expected_effect": "", "result": {"success": True, "target_holes": [],
-                                                   "holes": [], "commit": ""},
-            })
-
-        self.deps.progress["translate_trail"] = trail
-        tools.write_out(self.deps, "translate/accountability.json", json.dumps(trail, indent=2))
-        if facts["repo_diff"]:
-            tools.write_out(self.deps, "translate/source.diff", facts["repo_diff"])
-        tools.commit(self.deps.container_id, f"translate: accountability trail ({tier})",
-                     glob="translate/")
-        return tier
-
-    def _abort(self, facts: dict, reason: str) -> None:
-        self.deps.progress.setdefault("translate_trail", [{
-            "round": 0, "action": "SCOPE", "tier": "SAFE",
-            "scope": {"start_from": self.target_patterns}, "source_edits": [],
-            "rationale": reason, "expected_effect": "",
-            "result": {"success": facts["success"], "target_holes": facts.get("target_holes", []),
-                       "holes": facts.get("holes", []), "commit": ""}}])
-        detail = []
-        if not facts["success"]:
-            detail.append("no Lean translation was produced")
-        else:
-            if facts["target_opaqued"]:
-                detail.append(f"target function(s) {facts['target_opaqued']} were opaqued (mocked), "
-                              f"not translated")
-            if facts["target_holes"]:
-                detail.append(f"target function(s) left as holes: {facts['target_holes']}")
-            if not facts["compiles"]:
-                detail.append("the translation does not compile")
-        raise _PipelineAborted(
-            "TRANSLATE could not converge: " + reason
-            + ((". " + "; ".join(detail)) if detail else "")
-            + ". See translate/accountability.md.")
+            run_cc_stage(deps, stage=stage, prompt=prompt, briefing=(None if sid else briefing),
+                         resume_sid=sid, **_cc_common())
+        except StageFailed as e:
+            log.warning("%s round %d: session produced no result (%s) — checking artefacts anyway",
+                        stage, rnd, e)
+        ok, feedback = check(deps)
+        checkpoint.snapshot(deps)
+        if ok:
+            return
+        log.info("%s round %d/%d — gate not satisfied: %s", stage, rnd, max_rounds,
+                 (feedback or "")[:200])
+        prompt = ("Your previous attempt did NOT pass the harness gate. Fix EXACTLY the following, "
+                  "then finish:\n" + feedback)
+    raise _PipelineAborted(f"{stage} did not converge in {max_rounds} rounds — last gate: "
+                           f"{(feedback or '')[:300]}")
 
 
-async def _run_translate_stages(deps: AgentDeps, resume_note: str) -> str:
-    """Run EXPLORE, INFER (on the pristine Rust), then TRANSLATE (scoped + remediation).
+def _run_judge(deps: AgentDeps, *, stage: str, briefing: str, prompt: str, verdict_rel: str) -> dict:
+    """Spawn an INDEPENDENT CC judge session (fresh context — structural independence from the stage
+    it judges), then read + parse its verdict file. A soft gate: if the judge writes no parseable
+    verdict, treat it as APPROVE (never block the pipeline on the semantic screen; the hard
+    mechanical gate already passed). Returns {"defects": [...]}."""
+    container.exec_in(deps.container_id, ["rm", "-f", f"{container.OUT_IN}/{verdict_rel}"])
+    try:
+        run_cc_stage(deps, stage=stage, prompt=prompt, briefing=briefing, **_cc_common())
+    except StageFailed as e:
+        log.warning("%s errored (%s) — approving on the hard gate alone", stage, e)
+        return {"defects": []}
+    raw = tools.read_out(deps, verdict_rel)
+    if raw.startswith("ERROR:"):
+        log.warning("%s wrote no %s — approving on the hard gate alone", stage, verdict_rel)
+        return {"defects": []}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        log.warning("%s verdict is not valid JSON — approving on the hard gate alone", stage)
+        return {"defects": []}
 
-    INFER runs BEFORE translation so the behavioural spec + target scope are pinned to the
-    original code, not to whatever the remediation loop may refactor. Raises _PipelineAborted
-    if INFER produces no spec or TRANSLATE cannot converge.
-    """
-    completed = set(deps.progress.keys())
 
-    if "explore" not in completed:
-        # EXPLORE is a Claude Code session (spawn model): it orients to the code, runs the toolchain
-        # reality-check, and writes explore/{assessment.md,handoff.json}; the harness reads the
-        # handoff into progress. The design doc is an optional, non-authoritative FOCUS HINT.
-        hint = (f"\n\nDesign focus hint (optional, non-authoritative — which code matters):\n"
-                f"{deps.design_doc.rstrip()}" if deps.design_doc.strip() else "")
-        run_cc_stage(
-            deps, stage="EXPLORE", briefing=briefings.EXPLORE,
-            prompt=(
-                "Orient to the code at /workspace/repo and run the toolchain reality-check, then "
+def _format_defects(defects: list) -> str:
+    """One line per defect for the resume-feedback prompt."""
+    out = []
+    for d in defects:
+        who = d.get("theorem") or d.get("kind", "?")
+        out.append(f"  - {who} [{d.get('kind', '?')}]: {d.get('detail', '')} "
+                   f"→ fix: {d.get('fix', '')}")
+    return "\n".join(out)
+
+
+# ── EXPLORE ─────────────────────────────────────────────────────────────────────
+
+def _stage_explore(deps: AgentDeps) -> None:
+    if "explore" in deps.progress:
+        return
+    hint = (f"\n\nDesign focus hint (optional, non-authoritative — which code matters):\n"
+            f"{deps.design_doc.rstrip()}" if deps.design_doc.strip() else "")
+    run_cc_stage(
+        deps, stage="EXPLORE", briefing=briefings.EXPLORE,
+        prompt=("Orient to the code at /workspace/repo and run the toolchain reality-check, then "
                 "write /workspace/out/explore/assessment.md and the machine-readable "
                 "/workspace/out/explore/handoff.json per your briefing. Stop once handoff.json "
                 "exists and is valid." + hint),
-            model=config.CC_MODEL, effort=config.EFFORT or None,
-            max_budget_usd=config.CC_STAGE_BUDGET_USD,
-        )
-        handoff = tools.read_out(deps, "explore/handoff.json")
-        if handoff.startswith("ERROR:"):
-            raise _PipelineAborted("EXPLORE produced no /workspace/out/explore/handoff.json")
-        try:
-            deps.progress["explore"] = json.loads(handoff)
-        except json.JSONDecodeError as e:
-            raise _PipelineAborted(f"EXPLORE handoff.json is not valid JSON: {e}")
-        # Fold any build-env prep EXPLORE applied into the pristine baseline so it is not later
-        # mistaken for a TRANSLATE source modification in the accountability diff.
-        container.refold_baseline(deps.container_id)
-        checkpoint.snapshot(deps)
-        resume_note = ""
-        completed = set(deps.progress.keys())
-        if config.STOP_AFTER_EXPLORE:
-            raise _PipelineAborted("Stopped after EXPLORE (LUSTERNA_STOP_AFTER_EXPLORE)")
-
-    if "informal_spec" not in completed:
-        # INFER on the PRISTINE Rust source (before any translation/refactor) — the CODE is the
-        # source of truth for behaviour. The design doc is only a FOCUS HINT (which functions/
-        # guarantees matter), never a spec to conform to. Derives the InformalSpec AND
-        # the Charon target patterns (the set of functions the properties concern). The agent
-        # reads the code it needs with bash (repo at /workspace/repo) — nothing is injected but the
-        # small hints (the design doc + EXPLORE's entry functions).
-        entry_functions = deps.progress.get("explore", {}).get("entry_functions", [])
-        hints = ""
-        if deps.design_doc.strip():
-            hints += ("\n\n### Design document (FOCUS HINT only — the code, not this doc, is the "
-                      f"source of truth)\n{deps.design_doc}")
-        if entry_functions:
-            hints += f"\n\n### Public entry functions (from EXPLORE)\n{entry_functions}"
-        hints += _assessment_hint(deps)
-        infer_result = await _run_stage(
-            _infer,
-            f"Proceed to INFER. The Rust repository is at /workspace/repo — read the relevant code "
-            f"with bash (start from the files the design hint points at). Derive (1) a structured "
-            f"InformalSpec of the behaviour of the ORIGINAL code, and (2) the Charon target_patterns "
-            f"scoping the verification target.{hints}" + resume_note,
-            deps, "INFER",
-        )
-        if infer_result and infer_result.output:
-            spec: InformalSpec = infer_result.output
-            deps.progress["informal_spec"] = spec.model_dump()
-            deps.progress["target_patterns"] = list(spec.target_patterns)
-            tools.write_out(deps, "specs/informal_spec.json", spec.model_dump_json(indent=2))
-            tools.commit(deps.container_id,
-                         "feat(spec): informal specification (pre-translate)", glob="specs/")
-            log.info("INFER target patterns: %s", spec.target_patterns or "(whole crate)")
-        checkpoint.snapshot(deps)
-        resume_note = ""
-        completed = set(deps.progress.keys())
-        if "informal_spec" not in completed:
-            raise _PipelineAborted("Informal spec inference failed.")
-
-    if "aeneas" not in completed:
-        entry = deps.progress.get("explore", {}).get("entry_file", "src/lib.rs")
-        resume_note = await TranslatePhase(deps, entry, resume_note).run()
-        completed = set(deps.progress.keys())
-
-    return resume_note
-
-
-def _read_spec_files(deps: AgentDeps) -> str:
-    """Read the spec files needed downstream (informal spec + impl spec) as a formatted block."""
-    paths = ["specs/informal_spec.json"]
-    if impl := lean.impl_spec(deps):
-        paths.append(impl)
-    parts = []
-    for path in paths:
-        content = tools.read_out(deps, path)
-        if not content.startswith("ERROR:"):
-            parts.append(f"### {path}\n{content}")
-    return "\n\n".join(parts)
-
-
-def _formalise_inputs(deps: AgentDeps) -> str:
-    """Static inputs injected into every FORMALISE round: a NAME INDEX of the translated crate
-    (not its bodies — FORMALISE reads those selectively with bash) + the informal spec."""
-    block = ("### Translated-crate definition index (names only — READ the exact signature with "
-             "bash from /workspace/out/lean before referencing any of these)\n"
-             f"{lean.translation_index(deps)}\n\n")
-    content = tools.read_out(deps, "specs/informal_spec.json")
-    if not content.startswith("ERROR:"):
-        block += f"### specs/informal_spec.json\n{content}\n\n"
-    return block
-
-
-class SpecPhase:
-    """The FORMALISE → assemble → build → SPEC-JUDGE loop.
-
-    Each round FORMALISE (re)states the properties as a FormalSpec; the orchestrator assembles
-    them as `:= by sorry` stubs (so no proof can be smuggled in) and builds, validating only
-    that the STATEMENTS typecheck. Build errors are attributed per-theorem and repeat offenders
-    are quarantined; spec-judge defects are fed back. Ends when the spec builds AND has no
-    defects, or progress stalls (identical build errors / unchanged defects) — there is no hard
-    round ceiling, the token budget is the resource guard. The loop state (quarantine set,
-    per-theorem fail streaks, last compiling signatures, previous defects/build errors, carried
-    feedback) lives in fields rather than threaded locals."""
-
-    STALL_ROUNDS = config.STALL_ROUNDS   # quarantine a theorem after this many failed-to-compile rounds
-
-    def __init__(self, deps: AgentDeps, resume_note: str):
-        self.deps = deps
-        self.resume_note = resume_note
-        self.impl_spec = lean.impl_spec(deps)
-        self.base_inputs = _formalise_inputs(deps)
-        self.dropped: set[str] = set()
-        self.fail_streak: dict[str, int] = {}
-        self.last_good_sigs: dict[str, str] = {}
-        self.prev_defects: frozenset | None = None
-        self.prev_build_err: str | None = None
-        self.feedback = ""     # revision feedback carried between rounds (build errors / defects)
-        self.best_spec: str | None = None   # last spec content that compiled (for best-restore)
-        self.attempt = 0
-
-    async def run(self) -> str:
-        """Run the loop and return the (possibly cleared) resume_note. Fail-fasts if the spec
-        never compiled — PROVE must not run on an unverifiable spec."""
-        if "verdict" in self.deps.progress:                 # resuming past this phase
-            return self.resume_note
-
-        while True:
-            fs = await self._formalise()
-            if fs is None:
-                break
-            kept = lean.assemble_impl_spec(self.deps, fs, drop=frozenset(self.dropped))
-            self.deps.progress["formal_spec"] = True
-            if not kept:
-                log.warning("FORMALISE: every theorem is quarantined or none was produced — "
-                            "nothing left to verify, stopping spec loop")
-                break
-            if not lean.build(self.deps).get("success"):
-                if not self._handle_build_failure(fs):
-                    break
-                self.attempt += 1
-                continue
-            # A compiling spec: snapshot it (best-restore) and remember its signatures (to later
-            # attribute a break), then judge.
-            self.best_spec = tools.read_out(self.deps, self.impl_spec)
-            self.last_good_sigs = {t.name: t.signature for t in fs.theorems
-                                   if t.name not in self.dropped}
-            if not await self._judge():
-                break
-            self.attempt += 1
-
-        # If the loop ended on a NON-compiling spec but an earlier revision DID compile, restore
-        # that last compiling spec rather than aborting: spec-judge defects don't gate the
-        # pipeline, so a compiling (even if judge-imperfect) spec is verifiable and must not be
-        # thrown away just because the final revision broke the build. (Mirrors PROVE's restore.)
-        if not self.deps.progress.get("lean_build", {}).get("success") and self.best_spec:
-            tools.write_out(self.deps, self.impl_spec, self.best_spec)
-            lean.build(self.deps)
-            log.info("FORMALISE: restored the last compiling spec after a non-compiling final round")
-
-        if not self.deps.progress.get("lean_build", {}).get("success"):
-            raise _PipelineAborted(
-                "FORMALISE could not produce a spec whose statements compile — cannot verify")
-        return self.resume_note
-
-    async def _formalise(self) -> "FormalSpec | None":
-        """One FORMALISE emit. The agent has `bash` and a name index; it reads the translation
-        selectively for exact signatures (the harness build remains the authoritative gate).
-        Returns the FormalSpec, or None to stop the loop."""
-        if self.attempt == 0:
-            instruction = (
-                "FORMALISE: return a FormalSpec (preamble + statement-only theorems) "
-                "capturing the properties that matter — the behaviour the design document "
-                "describes, as realised by the crate. You write no proofs.")
-        else:
-            cur = tools.read_out(self.deps, self.impl_spec)
-            instruction = (
-                f"FORMALISE revision (round {self.attempt + 1}). Return an updated FormalSpec. "
-                f"{self.feedback}\n\n### current assembled spec\n{cur}")
-        try:
-            fr = await _run_stage(
-                _formalise, f"{instruction}\n\n{self.base_inputs}" + self.resume_note,
-                self.deps, f"FORMALISE (round {self.attempt + 1})")
-        except UnexpectedModelBehavior as e:
-            # A retry blow-up must never hard-crash the pipeline; the compile gate turns this
-            # into a graceful abort-with-notes if no building spec was produced.
-            log.warning("FORMALISE failed after retries: %s — stopping spec loop", e)
-            return None
-        self.resume_note = ""
-        if not (fr and fr.output):
-            log.warning("FORMALISE produced no output — stopping spec loop")
-            return None
-        return fr.output
-
-    def _handle_build_failure(self, fs: FormalSpec) -> bool:
-        """Attribute the build errors to theorems, quarantine repeat offenders, and set targeted
-        revision feedback. Returns False if no progress is possible (stop), True to keep going."""
-        err = self.deps.progress["lean_build"].get("stderr", "")
-        attr = lean.attribute_errors(tools.read_out(self.deps, self.impl_spec), err)
-        failing, preamble_errs, other_errs = attr["failing"], attr["preamble"], attr["unattributed"]
-        cur_sigs = {t.name: t.signature for t in fs.theorems if t.name not in self.dropped}
-
-        # Culprits: prefer errors attributed to a specific theorem; if the break can't be pinned
-        # (and isn't a preamble error), fall back to the theorems changed since the last compile.
-        changed = [n for n, s in cur_sigs.items() if self.last_good_sigs.get(n) != s]
-        culprits = list(failing) if failing else ([] if preamble_errs else changed)
-
-        newly_dropped = []
-        for name in culprits:
-            self.fail_streak[name] = self.fail_streak.get(name, 0) + 1
-            if self.fail_streak[name] >= self.STALL_ROUNDS:
-                self.dropped.add(name); newly_dropped.append(name)
-        # Only call a theorem "compiling" if it is unchanged from a spec that DID compile and is
-        # not a culprit — never infer compilation from an absent error.
-        ok_names = [n for n in cur_sigs
-                    if n not in culprits and self.last_good_sigs.get(n) == cur_sigs[n]]
-        for name in ok_names:
-            self.fail_streak[name] = 0
-        if newly_dropped:
-            self.deps.progress["dropped_theorems"] = sorted(self.dropped)
-            log.warning("FORMALISE: quarantined %d theorem(s) after %d failed rounds: %s",
-                        len(newly_dropped), self.STALL_ROUNDS, newly_dropped)
-
-        if err == self.prev_build_err and not newly_dropped:
-            log.warning("FORMALISE: identical build errors and nothing to quarantine — no "
-                        "progress, stopping spec loop")
-            return False
-        self.prev_build_err = err
-        log.info("FORMALISE round %d: %d attributed-failing, %d culprit(s), %d known-ok, %d dropped",
-                 self.attempt + 1, len(failing), len(culprits), len(ok_names), len(self.dropped))
-        self.feedback = self._build_feedback(failing, preamble_errs, other_errs, changed, ok_names, err)
-        return True
-
-    def _build_feedback(self, failing, preamble_errs, other_errs, changed, ok_names, err) -> str:
-        """Assemble the targeted revision message: per-theorem errors, keep-verbatim list, drops."""
-        parts = ["The assembled spec did NOT compile. You still write NO proofs (bodies are "
-                 "`:= by sorry`)."]
-        if preamble_errs:
-            parts.append("PREAMBLE errors — fix the imports/helper defs in `preamble`:\n"
-                         + "\n".join(preamble_errs))
-        if failing:
-            parts.append(
-                "These theorem STATEMENTS do not typecheck — restate each so it compiles "
-                "(same intent; use the EXACT Aeneas names/types from the injected translation), "
-                "or state it more simply:\n"
-                + "\n\n".join(f"  • {n}:\n{msg}" for n, msg in failing.items()))
-        elif not preamble_errs:
-            parts.append(
-                "The build failed but the error could not be pinned to one theorem. It broke "
-                "after these theorems changed — revert them to a form that compiled, or state "
-                f"them more simply: {', '.join(changed) or '(unknown)'}\nBuild output:\n" + err[-1500:])
-        if other_errs:
-            parts.append("Other build errors:\n" + "\n".join(other_errs))
-        if ok_names:
-            parts.append("These already COMPILE — keep them EXACTLY as they are: " + ", ".join(ok_names))
-        if self.dropped:
-            parts.append("DROPPED as un-stateable — do NOT re-introduce these (they are reported "
-                         "as not formalised): " + ", ".join(sorted(self.dropped)))
-        return "\n\n".join(parts)
-
-    async def _judge(self) -> bool:
-        """Judge the compiling statements; store the verdict and set defect feedback. Returns
-        False to stop the loop (approved / no-progress / error), True to keep revising."""
-        judge_files = f"### Aeneas-translated crate\n{lean.translation_text(self.deps)}\n\n"
-        for path in ("specs/informal_spec.json", self.impl_spec):
-            content = tools.read_out(self.deps, path)
-            if not content.startswith("ERROR:"):
-                judge_files += f"### {path}\n{content}\n\n"
-        # Quarantine handshake: dropped theorems are gone for good — the judge must not re-demand
-        # them as missing_coverage, or judge and compiler fight forever.
-        dropped_note = (
-            "\n\nNOTE: the following properties could NOT be stated in a way that compiles and "
-            "were dropped from the spec — do NOT report them (or their absence) as a defect or "
-            f"missing_coverage: {', '.join(sorted(self.dropped))}." if self.dropped else "")
-        try:
-            sj = await _run_stage(
-                _judge,
-                "SPEC-JUDGE: list every defect in the implementation spec's theorem statements "
-                "(ignore sorry proofs); return an empty list if it is sound."
-                + dropped_note + f"\n\n{judge_files}",
-                self.deps, f"SPEC-JUDGE (round {self.attempt + 1})")
-        except UnexpectedModelBehavior as e:
-            log.warning("Spec judge failed after retries: %s — stopping spec loop", e)
-            return False
-        if not (sj and sj.output):
-            log.warning("Spec judge produced no output — stopping spec loop")
-            return False
-        sv: JudgeVerdict = sj.output
-        self.deps.progress["verdict"] = sv.model_dump()
-        checkpoint.snapshot(self.deps)
-        if not sv.defects:
-            log.info("Spec-judge round %d: no defects — spec approved", self.attempt + 1)
-            return False
-        log.info("Spec-judge round %d: %d defect(s): %s", self.attempt + 1, len(sv.defects),
-                 ", ".join(f"{d.theorem}[{d.kind}]" for d in sv.defects))
-        defect_sig = frozenset((d.theorem, d.kind) for d in sv.defects)
-        if defect_sig == self.prev_defects:
-            log.warning("Spec-judge: same defects as last round — no progress, stopping")
-            return False
-        self.prev_defects = defect_sig
-        defect_lines = "\n".join(
-            f"  - {d.theorem} [{d.kind}]: {d.detail} → fix: {d.fix}" for d in sv.defects)
-        self.feedback = (
-            f"The spec-judge found {len(sv.defects)} defect(s) in the STATEMENTS. Revise to fix "
-            f"EVERY one below — do not skip or deem any redundant. If a fix asks for a theorem, "
-            f"add it as a stub (state it explicitly even if another theorem entails it). Change "
-            f"nothing else.\n{defect_lines}")
-        return True
-
-
-class ProvePhase:
-    """PROVE against the real build oracle, as a best-tracked stall loop mirroring TRANSLATE and
-    FORMALISE (one shot was too noisy — proof search is stochastic, so a single pass sampled the
-    established-count distribution once, e.g. 5/9 on a bad draw vs 9/9 on a good one). Each round
-    the agent (via bash) edits proof bodies and runs `lake build`, reading the real diagnostics to
-    prove goal-directed; the harness then scores the round by the number of AXIOM-CLEAN established
-    theorems (`#print axioms`, the authoritative oracle — a de-sorried proof can still be tainted
-    by `native_decide`) and keeps the best spec seen. A round that fails to improve the best is
-    DISCARDED (restored to best), so established-count is monotone non-decreasing and one unlucky
-    round can't lose accumulated proofs; the frontier (proved / still-sorry / tainted) is fed back
-    each round. Stops when nothing is left to establish, or after STALL_ROUNDS with no gain — no
-    hard ceiling, the token budget is the resource guard. The harness owns only the objective
-    guards: a compile gate before any effort, best-restore, one authoritative final build, and the
-    `#print axioms` gate + implementation-vs-abstract partition of the established theorems."""
-
-    STALL_ROUNDS = config.STALL_ROUNDS
-
-    def __init__(self, deps: AgentDeps):
-        self.deps = deps
-        self.impl_spec = lean.impl_spec(deps)
-
-    async def run(self) -> None:
-        deps = self.deps
-        if "proofs_done" in deps.progress:
-            log.info("PROVE already complete — skipping proof stage")
-            return
-        # Airtight compile gate: NEVER spend proof effort on a spec that does not build (a resumed
-        # session may re-enter with a spec that only built in a previous container).
-        if not lean.build(deps).get("success"):
-            raise _PipelineAborted(
-                "PROVE not started — the implementation spec does not compile "
-                "(FORMALISE did not produce a spec whose statements build)")
-
-        best_spec = tools.read_out(deps, self.impl_spec)   # the compiling (all-sorry) floor
-        best_established = -1
-        stale = 0
-        rnd = 0
-        feedback = ""
-        while True:
-            rnd += 1
-            stop = False
-            try:
-                await _run_stage(_prove, self._prompt(feedback), deps, f"PROVE (round {rnd})")
-            except UnexpectedModelBehavior as e:
-                log.warning("PROVE round %d failed after retries: %s", rnd, e)
-            except (UsageLimitExceeded, ModelAPIError) as e:
-                # Budget/availability stop: do NOT drop this round on the floor — the agent may
-                # have committed real proofs before it hit. Score the on-disk spec, then finalize.
-                log.warning("PROVE hit the budget/availability backstop (%s) — "
-                            "scoring this round, then finalizing", e)
-                stop = True
-            checkpoint.snapshot(deps)
-
-            # A round that broke the build must not be scored on its rubble — fall back to best.
-            if not lean.build(deps).get("success"):
-                log.warning("PROVE round %d left a non-compiling spec — restoring best-so-far", rnd)
-                tools.write_out(deps, self.impl_spec, best_spec)
-                lean.build(deps)
-
-            ax = lean.check_axioms(deps, self.impl_spec)
-            established = len(ax["clean"])
-            total = established + len(ax["tainted"])
-            if established > best_established:
-                best_established, best_spec, stale = established, tools.read_out(deps, self.impl_spec), 0
-            else:
-                # No improvement: DISCARD this round (keep the best on disk so the next round builds
-                # on it, never on a regression), and refresh the olean so the next round's oracle and
-                # feedback reflect the best — not the discarded attempt.
-                stale += 1
-                tools.write_out(deps, self.impl_spec, best_spec)
-                lean.build(deps)
-                ax = lean.check_axioms(deps, self.impl_spec)
-            log.info("PROVE round %d: %d/%d established (best=%d, stale=%d/%d)",
-                     rnd, established, total, best_established, stale, self.STALL_ROUNDS)
-
-            if stop or not ax["tainted"]:       # out of budget, or everything provable is proved
-                break
-            if stale >= self.STALL_ROUNDS:
-                log.info("PROVE: no gain in established count across %d consecutive round(s) — "
-                         "stopping (established %d/%d)", self.STALL_ROUNDS, best_established, total)
-                break
-            feedback = self._feedback(ax)
-
-        # Finalize on the best spec seen (already on disk after the loop's discard/adopt step);
-        # it is by construction a spec that compiled, so this build is the authoritative confirmation.
-        tools.write_out(deps, self.impl_spec, best_spec)
-        if not lean.build(deps).get("success"):
-            raise _PipelineAborted("PROVE left the spec in a non-compiling state")
-        tools.commit(deps.container_id, "stage/prove: proof attempts", glob="lean/")
-        deps.progress["proofs_done"] = True
-        self._record_axioms()
-
-    def _prompt(self, feedback: str = "") -> str:
-        base = (
-            f"Proceed to PROVE. Fill in proofs for as many `sorry` theorems in "
-            f"`/workspace/out/{self.impl_spec}` as you can, WITHOUT changing any statement. Work ONE "
-            f"theorem at a time, easiest first (base cases, concrete values, simple bounds), using "
-            f"bash: `grep -n` to locate a theorem, `sed -n` to read its block, an in-place edit to "
-            f"replace ONLY its proof body, then `lake build` (from /workspace/out/lean) to check. "
-            f"The build shows the REAL errors — an incomplete proof reports `unsolved goals` with "
-            f"the remaining goal state. If a proof fails, revert that theorem to `:= by sorry` and "
-            f"move on — leaving hard theorems as `sorry` is expected and honest. Keep the file "
-            f"compiling; when done, commit with git.")
-        return base + feedback
-
-    def _feedback(self, ax: dict) -> str:
-        """Name the frontier for the next round: what is already established (leave it verbatim),
-        what is still an open `sorry`, and what compiles but is TAINTED by a non-standard axiom
-        (almost always `native_decide`/`decide` on a recursive evaluation — the exact mistake that
-        silently loses established theorems). General method guidance only — no target specifics."""
-        spec = tools.read_out(self.deps, self.impl_spec)
-        sorry_names = lean.sorry_bodied_theorems(spec)
-        open_sorry = [n for n in ax["tainted"] if n in sorry_names]
-        tainted_non_sorry = [n for n in ax["tainted"] if n not in sorry_names]
-        parts = [
-            "\n\n### Progress so far (fresh attempt — try tactics/lemmas you have NOT tried yet)",
-            f"Already ESTABLISHED — keep these proofs EXACTLY as they are, do not touch them: "
-            f"{ax['clean'] or '(none yet)'}.",
-        ]
-        if open_sorry:
-            parts.append(f"Still OPEN (`:= by sorry`) — focus your effort here: {open_sorry}.")
-        if tainted_non_sorry:
-            parts.append(
-                f"These COMPILE but are NOT established — their proof rests on a non-standard axiom "
-                f"(almost always `native_decide`/`decide` evaluating a recursive definition, which "
-                f"the soundness gate rejects): {tainted_non_sorry}. Replace each with a REASONING "
-                f"proof (induction, the function's equation lemmas, library lemmas) or revert it to "
-                f"`:= by sorry` — a tainted proof counts as unproven.")
-        return "\n".join(parts)
-
-    def _record_axioms(self) -> None:
-        """`#print axioms` (standard-axioms-only) + partition the established theorems: a theorem
-        only VERIFIES THE IMPLEMENTATION if its statement references a real Aeneas translation def
-        (referenced_defs non-empty); established theorems about abstract preamble defs alone are
-        helper lemmas, not verification of the code — a mechanical distinction, not a judgment."""
-        deps = self.deps
-        ax = lean.check_axioms(deps, self.impl_spec)
-        translation = lean.translation_text(deps)
-        spec_text = tools.read_out(deps, self.impl_spec)
-        impl_verified, abstract_only = [], []
-        for name in ax["clean"]:
-            stmt = lean.theorem_statement(spec_text, name)
-            (impl_verified if stmt and lean.referenced_defs(stmt, translation)
-             else abstract_only).append(name)
-        # Faithfulness tier for the ESTABLISHED (axiom-clean) theorems. Opacity cannot
-        # downgrade a clean theorem — one that depended on an `--opaque` axiom would be
-        # tainted, not clean — so the only tier the axiom gate can't see is MODIFICATION:
-        # a behaviour-preserving source refactor is invisible to `#print axioms`, so if the
-        # target was refactored, clean theorems are verified of the REFACTORED code.
-        refactored = lean.trail_refactored_paths(deps.progress.get("translate_trail", []))
-        faithfulness = "MODIFICATION" if refactored else "SAFE"
-        deps.progress["axioms"] = {"clean": ax["clean"], "tainted": ax["tainted"],
-                                   "impl_verified": impl_verified, "abstract_only": abstract_only,
-                                   "faithfulness": faithfulness, "refactored_paths": refactored}
-        checkpoint.snapshot(deps)
-        if refactored:
-            log.warning("PROVE: established theorems are verified of a REFACTORED implementation "
-                        "(behaviour-preserving edits to %s); not verbatim the original.", refactored)
-        if ax["clean"] and not impl_verified:
-            log.warning("PROVE: ⚠ CRITICAL — %d theorem(s) established but NONE reference the "
-                        "implementation; 0 properties of the code are verified. Established are "
-                        "abstract helper lemmas only: %s", len(ax["clean"]), abstract_only)
-        log.info("PROVE complete — %d sorry remaining; established (standard axioms only): %d/%d "
-                 "theorem(s) — %d verify the implementation %s, %d abstract-only %s; tainted=%s",
-                 max(lean.sorry_count(deps), 0), len(ax["clean"]),
-                 len(ax["clean"]) + len(ax["tainted"]), len(impl_verified), impl_verified,
-                 len(abstract_only), abstract_only, ax["tainted"])
-
-
-async def _run_report(deps: AgentDeps, resume_note: str) -> str:
-    """Run the REPORT stage and concatenate section files into VERIFICATION_REPORT.md."""
-    spec_defects     = deps.progress.get("verdict", {}).get("defects", [])
-    sorry_remaining  = max(lean.sorry_count(deps), 0)
-    holes            = deps.progress.get("aeneas", {}).get("holes", [])
-    axioms           = deps.progress.get("axioms", {})
-    ax_clean         = axioms.get("clean", [])
-    ax_tainted       = axioms.get("tainted", [])
-    ax_impl          = axioms.get("impl_verified", [])
-    ax_abstract      = axioms.get("abstract_only", [])
-
-    report_files = _read_spec_files(deps)
-    lean_path = deps.progress.get("aeneas", {}).get("lean_path", "")
-    if lean_path:
-        lean_content = tools.read_out(deps, lean_path)
-        if not lean_content.startswith("ERROR:"):
-            report_files = f"### {lean_path}\n{lean_content}\n\n{report_files}"
-    trail = deps.progress.get("translate_trail", [])
-    if trail:
-        acct = tools.read_out(deps, "translate/accountability.md")
-        if not acct.startswith("ERROR:"):
-            report_files += f"\n\n### translate/accountability.md\n{acct}"
-
-    # Translation faithfulness line — conditional on the TRANSLATE accountability trail.
-    target_patterns = deps.progress.get("target_patterns", [])
-    opaque_assumptions = lean.trail_opaque_assumptions(trail)
-    refactored_paths = axioms.get("refactored_paths", [])
-    if not opaque_assumptions and not refactored_paths:
-        translation_line = (
-            f"Translation: target scoped via --start-from ({target_patterns or 'whole crate'}); "
-            f"source UNMODIFIED — Aeneas ran on the code as written, so the translation is a "
-            f"faithful image of the real code. ")
-    else:
-        _bits = [f"target scope={target_patterns or 'whole crate'}"]
-        if opaque_assumptions:
-            _bits.append(f"OPAQUE assumptions emitted as Lean axioms {opaque_assumptions} "
-                         f"(any theorem depending on them is tainted, not established)")
-        if refactored_paths:
-            _bits.append(f"SOURCE REFACTORED (behaviour-preserving) in {refactored_paths} — "
-                         f"established theorems are verified of the REFACTORED implementation "
-                         f"(equivalence asserted + cross-checked by proofs, NOT machine-certified), "
-                         f"never claim 'verified the original code'")
-        translation_line = ("Translation (SEE translate/accountability.md and report it): "
-                            + "; ".join(_bits) + ". ")
-
-    report_result = await _run_stage(
-        _report,
-        f"Proceed to REPORT. "
-        f"Verification approach: the tool derives the properties the target functions satisfy and "
-        f"proves them against the Aeneas translation; the authoritative verdict is Lean's `#print "
-        f"axioms` (below) — a theorem that depends on an untranslated hole or an assumed axiom is "
-        f"reported as tainted, not established. "
-        + translation_line
-        + f"Untranslated holes in crate: {', '.join(holes) if holes else 'none'}. "
-        f"Spec-judge: {'approved (no defects)' if not spec_defects else str(len(spec_defects)) + ' unresolved defect(s)'}. "
-        f"Proofs: {sorry_remaining} theorem(s) remain as `sorry`. AUTHORITATIVE soundness "
-        f"(Lean `#print axioms`, standard axioms only): {len(ax_clean)} theorem(s) kernel-"
-        f"established. Of those, the HEADLINE RESULT is the {len(ax_impl)} that actually VERIFY "
-        f"THE IMPLEMENTATION (reference an Aeneas-translated def): {ax_impl or 'NONE'}"
-        + (f". ⚠ CRITICAL: {len(ax_clean)} theorem(s) were proved but NONE reference the "
-           f"implementation — 0 properties of the real code are verified; the established "
-           f"theorems are abstract helper lemmas ({ax_abstract}). Report this prominently as the "
-           f"headline, NOT as a success. " if ax_clean and not ax_impl else
-           (f"; the other {len(ax_abstract)} established are abstract helper lemmas "
-            f"({ax_abstract}) — report them separately, not as code verification. " if ax_abstract
-            else ". "))
-        + f"{len(ax_tainted)} theorem(s) are NOT established ({ax_tainted}) — still `sorry` or "
-        f"dependent on a non-standard axiom (e.g. an assumed/opaqued primitive)."
-        f"\n\n{report_files}" + resume_note,
-        deps, "REPORT",
+        **_cc_common(),
     )
+    handoff = tools.read_out(deps, "explore/handoff.json")
+    if handoff.startswith("ERROR:"):
+        raise _PipelineAborted("EXPLORE produced no /workspace/out/explore/handoff.json")
+    try:
+        deps.progress["explore"] = json.loads(handoff)
+    except json.JSONDecodeError as e:
+        raise _PipelineAborted(f"EXPLORE handoff.json is not valid JSON: {e}")
+    # Fold any build-env prep into the pristine baseline so it is not mistaken for a TRANSLATE
+    # source modification in the accountability diff.
+    container.refold_baseline(deps.container_id)
+    checkpoint.snapshot(deps)
 
-    _REPORT_SECTIONS = [
-        "report/01_overview.md", "report/02_translation.md",
-        "report/03_implementation_spec.md", "report/04_spec_judge.md",
-        "report/05_proofs.md", "report/06_summary.md",
-    ]
+
+# ── INFER ───────────────────────────────────────────────────────────────────────
+
+def _stage_infer(deps: AgentDeps) -> None:
+    if "informal_spec" in deps.progress:
+        return
+    hint = (f"\n\nDesign focus hint (optional, non-authoritative):\n{deps.design_doc.rstrip()}"
+            if deps.design_doc.strip() else "")
+
+    def check(deps: AgentDeps):
+        raw = tools.read_out(deps, "specs/informal_spec.json")
+        if raw.startswith("ERROR:"):
+            return False, "specs/informal_spec.json is missing — write it per the briefing."
+        try:
+            spec = json.loads(raw)
+        except json.JSONDecodeError as e:
+            return False, f"specs/informal_spec.json is not valid JSON: {e}"
+        if "target_patterns" not in spec:
+            return False, "specs/informal_spec.json is missing the required key `target_patterns`."
+        deps.progress["informal_spec"] = spec
+        deps.progress["target_patterns"] = list(spec.get("target_patterns") or [])
+        return True, ""
+
+    _cc_gate_loop(
+        deps, stage="INFER", briefing=briefings.INFER,
+        base_prompt=("Proceed to INFER. Read the pristine Rust at /workspace/repo and "
+                     "/workspace/out/explore/handoff.json, then write "
+                     "/workspace/out/specs/informal_spec.json per your briefing." + hint),
+        check=check, max_rounds=config.STALL_ROUNDS,
+    )
+    tools.commit(deps.container_id, "feat(spec): informal specification (pre-translate)", glob="specs/")
+    log.info("INFER target patterns: %s", deps.progress.get("target_patterns") or "(whole crate)")
+
+
+# ── TRANSLATE (+ TRANSLATE-JUDGE) ─────────────────────────────────────────────────
+
+def _translate_facts(deps: AgentDeps, targets: list) -> dict:
+    """The mechanical facts about whatever is in /workspace/out/lean — the only thing the harness
+    decides TRANSLATE on. A clean run (no -split-files) leaves exactly ONE top-level module."""
+    lean.setup_lake(deps)
+    info = lean.analyze_translation(deps, do_commit=False)
+    facts = {"success": info["success"], "lean_files": info["lean_files"],
+             "lean_path": info["lean_path"], "holes": info["holes"],
+             "compiles": False, "build_errors": "", "polluted": [],
+             "target_opaqued": [], "target_holes": [], "axioms": []}
+    top_level = [f for f in info["lean_files"]
+                 if f.startswith("lean/") and "/" not in f[len("lean/"):]]
+    facts["polluted"] = sorted(top_level) if len(top_level) > 1 else []
+    if not info["success"]:
+        return facts
+    tx = lean.translation_text(deps, info["lean_files"])
+    facts["axioms"] = lean.external_axioms(tx)
+    facts["target_opaqued"] = lean.opaqued_targets(tx, targets)
+    facts["target_holes"] = lean.target_holes(tx, info["holes"], targets)
+    build = lean.translation_compiles(deps, info["lean_path"])
+    facts["compiles"] = bool(build.get("success"))
+    facts["build_errors"] = (build.get("stderr", "") or "")[:2000]
+    return facts
+
+
+def _stage_translate(deps: AgentDeps) -> None:
+    if "aeneas" in deps.progress:
+        return
+    targets = deps.progress.get("target_patterns") or []
+    entry = deps.progress.get("explore", {}).get("entry_file", "src/lib.rs")
+
+    def check(deps: AgentDeps):
+        facts = _translate_facts(deps, targets)
+        reasons = []
+        if not facts["success"]:
+            reasons.append("no Lean was produced in /workspace/out/lean — run charon then aeneas")
+        else:
+            if facts["polluted"]:
+                reasons.append(f"POLLUTED tree — multiple top-level modules {facts['polluted']}; "
+                               f"`rm -rf /workspace/out/lean/*` and re-run aeneas WITHOUT -split-files")
+            if facts["target_opaqued"]:
+                reasons.append(f"target(s) opaqued to axioms (mocked), must be real defs: "
+                               f"{facts['target_opaqued']}")
+            if facts["target_holes"]:
+                reasons.append(f"target(s) left as `sorry` holes: {facts['target_holes']}")
+            if not facts["compiles"]:
+                reasons.append("the translation does not compile:\n" + facts["build_errors"])
+        if reasons:
+            return False, "; ".join(reasons)
+        # Hard gate passed → mechanical facts for the judge, then the semantic screen.
+        tx = lean.translation_text(deps, facts["lean_files"])
+        judge_facts = {
+            "compiles": facts["compiles"],
+            "target_translated_as_def": lean.matched_target_defs(tx, targets),
+            "target_OPAQUED_defect_if_nonempty": facts["target_opaqued"],
+            "target_HOLE_defect_if_nonempty": facts["target_holes"],
+            "emitted_axioms": facts["axioms"],
+            "opaqued_items_the_target_calls_directly": lean.opaque_deps_in_targets(tx, targets),
+            "source_files_changed": tools.repo_changed_files(deps.container_id),
+            "generated_lean_files": facts["lean_files"],
+            "source_git_diff": tools.repo_diff(deps.container_id),
+        }
+        tools.write_out(deps, "translate/facts.json", json.dumps(judge_facts, indent=2))
+        verdict = _run_judge(
+            deps, stage="TRANSLATE-JUDGE", briefing=briefings.TRANSLATE_JUDGE,
+            prompt=("Judge the translation in /workspace/out/lean against the target source in "
+                    "/workspace/repo. Read the mechanical facts at /workspace/out/translate/facts.json "
+                    "and the accountability at /workspace/out/translate/accountability.md, then write "
+                    "your verdict to /workspace/out/translate/verdict.json per your briefing."),
+            verdict_rel="translate/verdict.json")
+        defects = verdict.get("defects", [])
+        if defects:
+            return False, "TRANSLATE-JUDGE found defects:\n" + _format_defects(defects)
+        deps.progress["aeneas"] = {"lean_path": facts["lean_path"],
+                                   "lean_files": facts["lean_files"], "holes": facts["holes"]}
+        return True, ""
+
+    _cc_gate_loop(
+        deps, stage="TRANSLATE", briefing=briefings.TRANSLATE,
+        base_prompt=(f"Proceed to TRANSLATE. Target patterns (each MUST become a real `def`, never "
+                     f"opaqued): {targets or '(whole crate)'}. Suggested entry file: {entry}. Read "
+                     f"/workspace/out/specs/informal_spec.json and /workspace/out/explore/handoff.json, "
+                     f"then drive Charon + Aeneas into /workspace/out/lean per your briefing."),
+        check=check, max_rounds=config.STALL_ROUNDS,
+    )
+    tools.commit(deps.container_id, "feat(translate): aeneas translation of the target", glob=".")
+
+
+# ── FORMALISE (+ SPEC-JUDGE) ──────────────────────────────────────────────────────
+
+def _stage_formalise(deps: AgentDeps) -> None:
+    if "spec_ok" in deps.progress:
+        return
+    impl = lean.impl_spec(deps)
+
+    def check(deps: AgentDeps):
+        raw = tools.read_out(deps, impl)
+        if raw.startswith("ERROR:"):
+            return False, f"the spec {impl} is missing — write the statement-only spec there."
+        # TRUSTED no-smuggle gate: force every theorem body to `:= by sorry` before acceptance,
+        # so FORMALISE cannot sneak a proof past PROVE. Then the compile gate on the statements.
+        tools.write_out(deps, impl, lean.stub_proofs(raw))
+        deps.progress["formal_spec"] = True
+        if not lean.build(deps).get("success"):
+            err = deps.progress.get("lean_build", {}).get("stderr", "")
+            return False, "the theorem STATEMENTS do not compile (you still write NO proofs):\n" + err[-1500:]
+        verdict = _run_judge(
+            deps, stage="SPEC-JUDGE", briefing=briefings.SPEC_JUDGE,
+            prompt=(f"Judge the theorem STATEMENTS in /workspace/out/{impl} against the translation "
+                    f"in /workspace/out/lean and /workspace/out/specs/informal_spec.json, then write "
+                    f"your verdict to /workspace/out/spec/verdict.json per your briefing."),
+            verdict_rel="spec/verdict.json")
+        deps.progress["verdict"] = verdict
+        defects = verdict.get("defects", [])
+        if defects:
+            return False, "SPEC-JUDGE found defects in the statements:\n" + _format_defects(defects)
+        deps.progress["spec_ok"] = True
+        return True, ""
+
+    _cc_gate_loop(
+        deps, stage="FORMALISE", briefing=briefings.FORMALISE,
+        base_prompt=(f"Proceed to FORMALISE. Read /workspace/out/specs/informal_spec.json and the "
+                     f"translation under /workspace/out/lean, then write the statement-only spec "
+                     f"(theorem bodies `:= by sorry`) to /workspace/out/{impl} per your briefing. "
+                     f"Ensure it compiles with `lake env lean`."),
+        check=check, max_rounds=config.STALL_ROUNDS,
+    )
+    tools.commit(deps.container_id, "feat(spec): implementation spec (statements only)", glob="lean/")
+
+
+# ── PROVE ─────────────────────────────────────────────────────────────────────────
+
+def _prove_feedback(deps: AgentDeps, ax: dict) -> str:
+    """Name the frontier for the next PROVE round: already-established (keep verbatim), still-open
+    `sorry`, and compiles-but-tainted (a non-standard axiom, usually native_decide)."""
+    spec = tools.read_out(deps, lean.impl_spec(deps))
+    sorry_names = lean.sorry_bodied_theorems(spec)
+    open_sorry = [n for n in ax["tainted"] if n in sorry_names]
+    tainted_non_sorry = [n for n in ax["tainted"] if n not in sorry_names]
     parts = [
-        content for sf in _REPORT_SECTIONS
-        for content in [tools.read_out(deps, sf)]
-        if not content.startswith("ERROR:")
+        "Continue PROVE (fresh attempt — try tactics/lemmas you have NOT tried yet).",
+        f"Already ESTABLISHED — keep these proofs EXACTLY, do not touch them: {ax['clean'] or '(none yet)'}.",
     ]
+    if open_sorry:
+        parts.append(f"Still OPEN (`:= by sorry`) — focus here: {open_sorry}.")
+    if tainted_non_sorry:
+        parts.append(f"These COMPILE but are NOT established — the proof rests on a non-standard "
+                     f"axiom (almost always native_decide/decide on a recursive eval): "
+                     f"{tainted_non_sorry}. Replace with a REASONING proof or revert to `:= by sorry`.")
+    return "\n".join(parts)
+
+
+def _record_axioms(deps: AgentDeps) -> None:
+    """`#print axioms` (standard-axioms-only) + partition established theorems into those that VERIFY
+    THE IMPLEMENTATION (reference a real Aeneas def) vs abstract helper lemmas. Faithfulness tier is
+    derived mechanically: a non-empty source diff ⇒ MODIFICATION (clean theorems verified of the
+    REFACTORED code — opacity would show as tainted, not clean); otherwise SAFE."""
+    impl = lean.impl_spec(deps)
+    ax = lean.check_axioms(deps, impl)
+    translation = lean.translation_text(deps)
+    spec_text = tools.read_out(deps, impl)
+    impl_verified, abstract_only = [], []
+    for name in ax["clean"]:
+        stmt = lean.theorem_statement(spec_text, name)
+        (impl_verified if stmt and lean.referenced_defs(stmt, translation)
+         else abstract_only).append(name)
+    refactored = tools.repo_changed_files(deps.container_id)
+    deps.progress["axioms"] = {"clean": ax["clean"], "tainted": ax["tainted"],
+                               "impl_verified": impl_verified, "abstract_only": abstract_only,
+                               "faithfulness": "MODIFICATION" if refactored else "SAFE",
+                               "refactored_paths": refactored}
+    checkpoint.snapshot(deps)
+    if refactored:
+        log.warning("PROVE: established theorems are verified of a REFACTORED implementation "
+                    "(behaviour-preserving edits to %s); not verbatim the original.", refactored)
+    if ax["clean"] and not impl_verified:
+        log.warning("PROVE: ⚠ CRITICAL — %d theorem(s) established but NONE reference the "
+                    "implementation; 0 properties of the code are verified (abstract lemmas only: %s)",
+                    len(ax["clean"]), abstract_only)
+    log.info("PROVE complete — %d sorry remaining; established: %d/%d — %d verify the implementation "
+             "%s, %d abstract-only %s; tainted=%s",
+             max(lean.sorry_count(deps), 0), len(ax["clean"]),
+             len(ax["clean"]) + len(ax["tainted"]), len(impl_verified), impl_verified,
+             len(abstract_only), abstract_only, ax["tainted"])
+
+
+def _stage_prove(deps: AgentDeps) -> None:
+    """Best-tracked stall loop over a RESUMED PROVE session, scored by the axiom-clean established
+    count. A round that fails to beat the best is discarded (restore best), so the count is monotone
+    and one bad round can't lose proofs. Stops when nothing tainted remains or after STALL_ROUNDS
+    with no gain. The `#print axioms` gate and the compile gate are the trusted arbiters."""
+    if "proofs_done" in deps.progress:
+        return
+    impl = lean.impl_spec(deps)
+    if not lean.build(deps).get("success"):
+        raise _PipelineAborted("PROVE not started — the implementation spec does not compile")
+    best_spec = tools.read_out(deps, impl)
+    best_established, stale, rnd = -1, 0, 0
+    prompt = (f"Proceed to PROVE. Fill in proofs for as many `sorry` theorems in /workspace/out/{impl} "
+              f"as you can, WITHOUT changing any statement. Work one theorem at a time against "
+              f"`lake build`, keep the file compiling, then commit. Follow your briefing's strict rules.")
+    while True:
+        rnd += 1
+        sid = deps.progress.get("cc_sessions", {}).get("PROVE")
+        stop = False
+        try:
+            run_cc_stage(deps, stage="PROVE", prompt=prompt,
+                         briefing=(None if sid else briefings.PROVE), resume_sid=sid, **_cc_common())
+        except StageFailed as e:
+            log.warning("PROVE round %d: session produced no result (%s) — scoring on-disk", rnd, e)
+        checkpoint.snapshot(deps)
+        if not lean.build(deps).get("success"):
+            log.warning("PROVE round %d left a non-compiling spec — restoring best-so-far", rnd)
+            tools.write_out(deps, impl, best_spec)
+            lean.build(deps)
+        ax = lean.check_axioms(deps, impl)
+        established = len(ax["clean"])
+        total = established + len(ax["tainted"])
+        if established > best_established:
+            best_established, best_spec, stale = established, tools.read_out(deps, impl), 0
+        else:
+            stale += 1
+            tools.write_out(deps, impl, best_spec)
+            lean.build(deps)
+            ax = lean.check_axioms(deps, impl)
+        log.info("PROVE round %d: %d/%d established (best=%d, stale=%d/%d)",
+                 rnd, established, total, best_established, stale, config.STALL_ROUNDS)
+        if stop or not ax["tainted"] or stale >= config.STALL_ROUNDS:
+            break
+        prompt = _prove_feedback(deps, ax)
+
+    tools.write_out(deps, impl, best_spec)
+    if not lean.build(deps).get("success"):
+        raise _PipelineAborted("PROVE left the spec in a non-compiling state")
+    tools.commit(deps.container_id, "stage/prove: proof attempts", glob="lean/")
+    deps.progress["proofs_done"] = True
+    _record_axioms(deps)
+
+
+# ── REPORT ──────────────────────────────────────────────────────────────────────
+
+_REPORT_SECTIONS = ["report/01_overview.md", "report/02_translation.md",
+                    "report/03_implementation_spec.md", "report/04_spec_judge.md",
+                    "report/05_proofs.md", "report/06_summary.md"]
+
+
+def _stage_report(deps: AgentDeps) -> str:
+    """Prepare the authoritative facts.json (the harness's trusted verdicts), run the REPORT CC
+    session, then concatenate its report/NN_*.md sections into VERIFICATION_REPORT.md."""
+    facts = {
+        "axioms": deps.progress.get("axioms", {}),
+        "spec_judge": deps.progress.get("verdict", {}),
+        "target_patterns": deps.progress.get("target_patterns", []),
+        "opaque_assumptions": lean.external_axioms(lean.translation_text(deps)),
+        "holes": deps.progress.get("aeneas", {}).get("holes", []),
+        "lean_path": deps.progress.get("aeneas", {}).get("lean_path", ""),
+        "lean_build_success": deps.progress.get("lean_build", {}).get("success"),
+        "sorry_remaining": max(lean.sorry_count(deps), 0),
+    }
+    tools.write_out(deps, "report/facts.json", json.dumps(facts, indent=2))
+    try:
+        run_cc_stage(
+            deps, stage="REPORT", briefing=briefings.REPORT,
+            prompt=("Proceed to REPORT. Read /workspace/out/report/facts.json (the authoritative "
+                    "verdicts) and the artefacts under /workspace/out, then write the six "
+                    "report/NN_*.md section files per your briefing. Do not write VERIFICATION_REPORT.md."),
+            **_cc_common())
+    except StageFailed as e:
+        log.warning("REPORT session errored (%s) — concatenating whatever sections exist", e)
+
+    parts = [c for sf in _REPORT_SECTIONS for c in [tools.read_out(deps, sf)]
+             if not c.startswith("ERROR:")]
+    report_text = "\n\n".join(parts)
     if parts:
-        report_text = "\n\n".join(parts)
         log.info("Concatenating %d/%d report sections into VERIFICATION_REPORT.md",
                  len(parts), len(_REPORT_SECTIONS))
     else:
-        report_text = report_result.output if report_result else ""
-        if report_text:
-            log.warning("No report/ sections found — falling back to agent text output")
-        else:
-            log.warning("REPORT stage produced no sections and no text output")
-
+        log.warning("REPORT produced no sections")
     if report_text:
-        try:
-            tools.write_out(deps, "VERIFICATION_REPORT.md", report_text)
-            # glob="." stages the report/ sections too (only report files are pending here).
-            tools.commit(deps.container_id, "stage/report: final pipeline report", glob=".")
-            log.info("Report written and committed (%d chars)", len(report_text))
-        except Exception as e:
-            log.warning("Could not write report: %s", e)
-
+        tools.write_out(deps, "VERIFICATION_REPORT.md", report_text)
+        tools.commit(deps.container_id, "stage/report: final pipeline report", glob=".")
+        log.info("Report written and committed (%d chars)", len(report_text))
     checkpoint.snapshot(deps)
     return report_text or "(no report generated)"
 
 
+# ── abort notes ───────────────────────────────────────────────────────────────────
+
 def _write_abort_notes(deps: AgentDeps, reason: str) -> None:
-    """On a hard abort, drop an 'incomplete verification' notes artefact (committed, so it
-    is pulled with the rest of the output) summarising what was accomplished and what could
-    not be — so an aborted run leaves something actionable rather than empty output."""
+    """Drop a committed 'incomplete verification' artefact summarising what was reached, so an
+    aborted run leaves something actionable rather than empty output."""
     p = deps.progress
     stages = [
-        ("explore",       "EXPLORE — entry points"),
+        ("explore",       "EXPLORE — orientation + toolchain assessment"),
         ("informal_spec", "INFER — behaviour spec + target scope (pristine source)"),
-        ("aeneas",        "TRANSLATE — Aeneas translation (scoped)"),
-        ("formal_spec",   "FORMALISE — implementation spec assembled"),
-        ("verdict",       "SPEC-JUDGE — statements judged"),
+        ("aeneas",        "TRANSLATE — Aeneas translation of the target"),
+        ("spec_ok",       "FORMALISE + SPEC-JUDGE — implementation spec (statements)"),
         ("proofs_done",   "PROVE — proofs attempted"),
     ]
     done = [f"- {label}" for key, label in stages if key in p] or ["- (nothing yet)"]
     todo = [f"- {label}" for key, label in stages if key not in p] or ["- (all reached)"]
-    lines = [
-        "# Verification incomplete",
-        "",
-        f"The pipeline aborted before finishing. **Reason:** {reason}",
-        "",
-        "## Completed", *done, "",
-        "## Not reached", *todo, "",
-    ]
-    trail = p.get("translate_trail", [])
-    if trail:
-        lines += ["## TRANSLATE remediation attempted"]
-        for r in trail:
-            lines.append(f"- Round {r['round']}: {r['action']} ({r['tier']}) — {r['rationale']} "
-                         f"→ success={r['result']['success']} "
-                         f"target_holes={r['result']['target_holes']}")
-        lines += ["", "(full trail: translate/accountability.md)", ""]
+    lines = ["# Verification incomplete", "",
+             f"The pipeline aborted before finishing. **Reason:** {reason}", "",
+             "## Completed", *done, "", "## Not reached", *todo, ""]
     if "aeneas" in p:
         holes = p["aeneas"].get("holes", [])
-        lines += ["## Translation",
-                  f"- Untranslated Aeneas holes: {', '.join(holes) if holes else 'none'}", ""]
+        lines += ["## Translation", f"- Untranslated Aeneas holes: {', '.join(holes) or 'none'}", ""]
     build = p.get("lean_build", {})
     if build and not build.get("success"):
-        lines += ["## Last build errors (the implementation spec did not compile)",
+        lines += ["## Last build errors (the spec did not compile)",
                   "```", (build.get("stderr", "") or "")[:3000], "```", ""]
     defects = (p.get("verdict") or {}).get("defects", [])
     if defects:
         lines += ["## Outstanding spec-judge defects",
-                  *(f"- {d['theorem']} [{d['kind']}]: {d['detail']}" for d in defects), ""]
+                  *(f"- {d.get('theorem')} [{d.get('kind')}]: {d.get('detail')}" for d in defects), ""]
+    costs = p.get("cc_costs", {})
+    if costs:
+        lines += ["## Cost so far (per stage, USD)",
+                  *(f"- {s}: ${c:.4f}" for s, c in costs.items()), ""]
     lines += ["## What this means",
-              "No end-to-end verification was produced. Review the artefacts (specs/, lean/) "
-              "and the reason above, address the blocker, then re-run.", ""]
+              "No end-to-end verification was produced. Review the artefacts (specs/, lean/) and the "
+              "reason above, address the blocker, then re-run.", ""]
     try:
         tools.write_out(deps, "VERIFICATION_INCOMPLETE.md", "\n".join(lines))
         tools.commit(deps.container_id, "chore: incomplete-verification notes", glob=".")
@@ -1011,63 +487,43 @@ def _write_abort_notes(deps: AgentDeps, reason: str) -> None:
         log.warning("Could not write abort notes: %s", e)
 
 
-# ── main entry point ──────────────────────────────────────────────────────────
+# ── main entry point ────────────────────────────────────────────────────────────
 
 async def run_session(deps: AgentDeps) -> str:
-    """Drive the pipeline stage by stage and return a final summary string."""
-    resuming = bool(deps.progress)
-
-    if resuming:
-        log.info("Resuming session — completed stages: %s", sorted(deps.progress.keys()))
-
-    resume_note = (
-        "\n\nSESSION RESUMED — the Docker container is fresh but all previously "
-        "generated artefacts have been restored. Continue from where you left off."
-        if resuming else ""
-    )
-
+    """Drive the pipeline stage by stage (each a Claude Code session) and return a final summary.
+    Every stage self-skips when its progress marker is present, so a resume re-enters at the first
+    incomplete stage. All failure modes degrade to a graceful stop + keep-alive."""
+    if deps.progress:
+        log.info("Resuming session — completed markers: %s", sorted(deps.progress.keys()))
     try:
-        resume_note = await _run_translate_stages(deps, resume_note)
-
+        _stage_explore(deps)
+        if config.STOP_AFTER_EXPLORE:
+            return "Stopped after EXPLORE (LUSTERNA_STOP_AFTER_EXPLORE)."
+        _stage_infer(deps)
+        _stage_translate(deps)
         if config.STOP_AFTER_TRANSLATE:
-            log.info("LUSTERNA_STOP_AFTER_TRANSLATE set — stopping after TRANSLATE so the "
-                     "translation artefacts can be inspected (no spec/prove/report).")
             return "Stopped after TRANSLATE (LUSTERNA_STOP_AFTER_TRANSLATE)."
-
-        resume_note = await SpecPhase(deps, resume_note).run()
-
+        _stage_formalise(deps)
         if config.STOP_BEFORE_PROVE:
-            log.info("LUSTERNA_STOP_BEFORE_PROVE set — stopping after SPEC-JUDGE so the inferred "
-                     "implementation spec can be inspected (no prove/report).")
             return "Stopped before PROVE (LUSTERNA_STOP_BEFORE_PROVE)."
+        _stage_prove(deps)
+        result = _stage_report(deps)
 
-        await ProvePhase(deps).run()
-
-        result = await _run_report(deps, resume_note)
-
-        # Final tidy: any stage may leave stray spec files; prune once at the end.
         tools.prune_stray_specs(deps, deps.progress.get("aeneas", {}).get("lean_path", ""))
         tools.commit(deps.container_id, "chore: prune stray spec files", glob=".")
 
-        u = telemetry.session.as_dict()
-        log.info(
-            "Pipeline complete — session usage: in=%d out=%d cache_read=%d cache_write=%d total=%d/%s",
-            u["input_tokens"], u["output_tokens"],
-            u["cache_read_tokens"], u["cache_write_tokens"],
-            u["total_tokens"], telemetry.budget or "∞",
-        )
-        deps.completed = True   # full run — cli.py may free the container
+        total_cost = sum(deps.progress.get("cc_costs", {}).values())
+        log.info("Pipeline complete — total Claude Code cost: $%.4f across stages %s",
+                 total_cost, deps.progress.get("cc_costs", {}))
+        deps.completed = True
         return result
 
-    # All are "graceful stop, leave completed=False": snapshot the progress so a resume re-enters
-    # at the first incomplete stage, write the accountability note, and return a reason (never crash
-    # with a traceback). cli.py's finally then keeps the container alive for resume. A linear stage
-    # (EXPLORE/INFER/REPORT) that blows up mid-emission raises UnexpectedModelBehavior — under the
-    # Claude-Code discipline its work is already on disk, so we degrade rather than lose the run.
-    except (_PipelineAborted, UsageLimitExceeded, ModelAPIError, UnexpectedModelBehavior) as e:
-        reason = ("token budget exhausted before completion" if isinstance(e, UsageLimitExceeded)
-                  else "model provider unavailable after retries" if isinstance(e, ModelAPIError)
-                  else "a stage agent failed unrecoverably" if isinstance(e, UnexpectedModelBehavior)
+    except (_PipelineAborted, StageFailed) as e:
+        # Graceful stop, completed=False: snapshot progress (a resume re-enters at the first
+        # incomplete stage), write the accountability note, return a reason — never a traceback.
+        # cli.py's finally keeps the container alive for resume. (Provider/budget failures are now
+        # handled inside Claude Code via its own retry + --max-budget-usd, so they never reach here.)
+        reason = ("a stage session failed unrecoverably" if isinstance(e, StageFailed)
                   else "pipeline aborted")
         log.error("Pipeline stopped — %s: %s", reason, e)
         checkpoint.snapshot(deps)

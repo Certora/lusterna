@@ -1,18 +1,12 @@
-"""Agent tools + harness IO helpers.
+"""Harness IO helpers: the orchestrator's own file IO and git inside the container — reading
+generated artefacts, writing scaffolding, committing, and the source-diff accountability trail.
 
-The agents drive the container through ONE tool — `bash` — plus `setup_lake_project`
-(build-environment provisioning that is not a plain shell one-liner). Reading, writing,
-searching, git, and running the toolchain are all just shell commands.
-
-The remaining functions take plain values (not RunContext) and are HARNESS helpers: the
-orchestrator's own file IO and git, for injecting inputs, assembling artefacts, running
-gates, and checkpointing. They are not exposed to agents.
-"""
+Under the spawn model each stage agent is a Claude Code session with its OWN tools (Bash/Read/
+Write/Edit), so nothing here is exposed to an agent; these are plain functions the pipeline spine
+(pipeline.py) calls directly to inject inputs, run gates, and checkpoint."""
 import logging
 import subprocess
 from pathlib import Path
-
-from pydantic_ai import RunContext
 
 from .container import REPO_IN, OUT_IN, exec_in
 from .schemas import AgentDeps
@@ -37,48 +31,6 @@ def _tee(container_id: str, dest: str, content: str, append: bool = False) -> st
     cmd.append(dest)
     r = subprocess.run(cmd, input=content, capture_output=True, text=True)
     return None if r.returncode == 0 else r.stderr.strip()
-
-
-# ── the agent's tools ────────────────────────────────────────────────────────
-
-_BASH_MAX = 30000  # chars of combined output to return (errors are usually at the end)
-
-
-def bash(ctx: RunContext[AgentDeps], command: str, workdir: str = "/workspace",
-         timeout: int = 900) -> str:
-    """Run *command* in the container via `bash -lc` and return `exit=<code>` + its output.
-
-    This is your primary tool. Use it to run the toolchain (charon, aeneas, cargo, lake) and
-    ordinary shell utilities: cat / grep / sed / find / git, and `cat > file <<'EOF' … EOF`
-    (or tee) to write or edit files. The Rust repo is at /workspace/repo and generated Lean
-    goes under /workspace/out/lean. workdir defaults to /workspace; either pass workdir or
-    `cd` inside the command. charon, aeneas, cargo, lake are all on PATH. Combined
-    stdout+stderr is truncated to the last ~30k chars."""
-    # `bash -c`, NOT `-lc`: a login shell re-sources /etc/profile and resets PATH to a minimal
-    # set that DROPS the elan/cargo bins, so lake/cargo vanish. Non-login inherits the image's
-    # ENV PATH (what `docker exec` provides), matching the harness's own tool invocations.
-    code, out, err = exec_in(ctx.deps.container_id, ["bash", "-c", command],
-                             workdir=workdir, timeout=timeout)
-    body = out + (("\n──stderr──\n" + err) if err.strip() else "")
-    if len(body) > _BASH_MAX:
-        body = "…[output truncated — showing the last ~30k chars]…\n" + body[-_BASH_MAX:]
-    # One INFO line per command — the agent's actual activity (Opus keeps its reasoning server-side,
-    # so the command trail is the visible signal of what it is doing / whether it is stuck).
-    cmd1 = " ".join(command.split())
-    if code == 0:
-        log.info("$ %s", cmd1[:200])
-    else:
-        tail = " ".join((err or out or "").split())
-        log.info("$ %s → exit=%d: %s", cmd1[:160], code, tail[-160:] if tail else "(no output)")
-    return f"exit={code}\n{body}"
-
-
-def setup_lake_project(ctx: RunContext[AgentDeps]) -> str:
-    """Wire the lake project around the Lean you generated so `import Aeneas` resolves offline.
-    Call this AFTER running Aeneas into /workspace/out/lean; then `lake env lean <file>` (run it
-    via bash from /workspace/out/lean) type-checks a single file. Returns a status/ERROR string."""
-    from . import lean
-    return lean.setup_lake(ctx.deps)
 
 
 # ── harness file IO (plain values; not agent tools) ──────────────────────────

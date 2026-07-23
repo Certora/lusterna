@@ -40,60 +40,9 @@ _budget_env = os.environ.get("LUSTERNA_TOKEN_BUDGET", "0")
 TOKEN_BUDGET: int | None = int(_budget_env) if _budget_env.strip() not in ("", "0") else None
 
 
-# Raised to 32000 to leave headroom for adaptive extended thinking (which shares the response
-# token budget with the output) plus a full Lean proof / spec in one response.
-MAX_TOKENS = int(os.environ.get("LUSTERNA_MAX_TOKENS", "32000"))
-
-
-def cache_settings(model: str) -> dict:
-    """Return AnthropicModelSettings with prompt caching, native context management, and raised
-    max_tokens. Empty dict for non-Anthropic providers.
-
-    Caching (1h TTL) covers the system prompt, the tool definitions, AND the message prefix
-    (`anthropic_cache`), so an agent's growing history is re-sent at the cache-hit rate. The 1h
-    TTL survives slow charon/aeneas/lake turns between requests.
-
-    Context management (`clear_tool_uses_20250919`) lets the SERVER drop the oldest tool results
-    when the window fills, keeping the recent working set — a cache-friendly, model-native
-    replacement for a client-side compaction loop (a client-side rewrite would instead invalidate
-    the prompt cache on every trigger and evict context the agent then re-reads).
-
-    max_tokens is raised from pydantic-ai's 4096 default so a full Lean proof fits in one response.
-    """
-    if not model.startswith("anthropic:"):
-        return {}
-    try:
-        from pydantic_ai.models.anthropic import AnthropicModelSettings
-        settings = AnthropicModelSettings(
-            anthropic_cache="1h",
-            anthropic_cache_instructions="1h",
-            anthropic_cache_tool_definitions="1h",
-            anthropic_context_management={"edits": [{"type": "clear_tool_uses_20250919"}]},
-            max_tokens=MAX_TOKENS,
-        )
-        # Effort-capable models (Opus 4.x) reason harder with adaptive extended thinking at the
-        # configured effort. Sonnet leaves EFFORT empty, so this is a no-op there.
-        if EFFORT in ("low", "medium", "high"):
-            settings["anthropic_thinking"] = {"type": "adaptive"}
-            settings["anthropic_effort"] = EFFORT
-        return settings
-    except ImportError:
-        return {}
-
-
-# Transient model-error retry: a single provider blip (overloaded 529 / 5xx / rate-limit /
-# timeout) should not abort a long campaign. Number of attempts and the exponential-backoff base.
-MODEL_RETRY_ATTEMPTS = int(os.environ.get("LUSTERNA_MODEL_RETRY_ATTEMPTS", "10"))
-MODEL_RETRY_BASE_DELAY = float(os.environ.get("LUSTERNA_MODEL_RETRY_BASE_DELAY", "2.0"))
-
-# Server-side context compaction threshold (Anthropic `compact_20260112` edit, via
-# AnthropicCompaction). When a request's input tokens exceed this, the server summarises older
-# messages. It LAYERS on top of clear_tool_uses (both are context-management edits): tool results
-# are cleared cheaply in the common case, and compaction is the fallback that also compresses the
-# non-clearable assistant turns (e.g. the agent's own large notes) before the context window fills.
-# Min 50_000. Kept well above the observed common-case (~80-100k) so it rarely fires — preserving
-# prompt-cache warmth — but far below the 1M window so long stages can't overflow.
-COMPACTION_THRESHOLD = int(os.environ.get("LUSTERNA_COMPACTION_THRESHOLD", "200000"))
+# Claude Code owns model retry (transient blips) and context compaction natively, and caps cost
+# per stage via --max-budget-usd, so the old pydantic-ai model settings, client-side retry, and
+# compaction-threshold knobs are gone (see DESIGN-claude-code-discipline.md §8).
 
 # The ONE knob governing all three iterative agent loops (TRANSLATE, FORMALISE, PROVE): a loop gives
 # up after this many consecutive rounds that fail to beat the best progress seen (in FORMALISE, a

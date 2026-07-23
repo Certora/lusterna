@@ -4,8 +4,9 @@ version = "0.1.0"
 description = "Rust-to-Lean formal verification agent"
 requires-python = ">=3.10"
 dependencies = [
-    "pydantic-ai[anthropic]>=0.1.0",
-    "pydantic>=2.0",
+    # The pipeline spawns Claude Code (the `claude` CLI, installed in the container image) as the
+    # engine for every stage, driven over `docker exec` — so no in-process LLM SDK is needed.
+    # pydantic-ai / pydantic were retired with the spawn-model migration.
     "click>=8.0",
 ]
 

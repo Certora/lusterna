@@ -8,7 +8,7 @@ from pathlib import Path
 
 from . import checkpoint, config, tools
 from .container import exec_in, OUT_IN, REPO_IN
-from .schemas import AgentDeps, FormalSpec
+from .schemas import AgentDeps
 
 log = logging.getLogger(__name__)
 
@@ -578,33 +578,6 @@ def _proposition_only(signature: str) -> str:
         elif depth == 0 and c == ":" and signature[i + 1:i + 2] == "=":
             return signature[:i].rstrip()
     return signature.rstrip()
-
-
-def assemble_impl_spec(deps: AgentDeps, fs: FormalSpec,
-                        drop: frozenset[str] = frozenset()) -> list[str]:
-    """Write the implementation spec from a structured FormalSpec: the preamble followed by
-    one `theorem <name> <signature> := by sorry` per stub. Proofs are added here as `sorry`
-    — never by the model — so FORMALISE cannot smuggle in a proof (or a hanging tactic).
-    The preamble is passed through stub_proofs as a safety net for any stray theorem.
-
-    Theorems whose name is in *drop* (quarantined — repeatedly un-compilable) are omitted.
-    Returns the list of theorem names actually written, so the caller can attribute build
-    errors back to specific theorems and track the quarantine set."""
-    path = impl_spec(deps)
-    stem = path.split("/")[1]
-    preamble = stub_proofs(fs.preamble.rstrip())
-    header = "".join(
-        f"import {m}\n" for m in ("Aeneas", stem) if f"import {m}" not in preamble
-    )
-    kept = [t for t in fs.theorems if t.name not in drop]
-    body = "\n\n".join(
-        f"theorem {t.name} {_proposition_only(t.signature)} := by sorry"
-        for t in kept
-    )
-    tools.write_out(deps, path, f"{header}{preamble}\n\n{body}\n")
-    log.info("Assembled impl spec: %d theorem stub(s)%s at %s", len(kept),
-             f" ({len(drop)} quarantined)" if drop else "", path)
-    return [t.name for t in kept]
 
 
 def build(deps: AgentDeps) -> dict:
