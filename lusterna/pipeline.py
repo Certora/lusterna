@@ -14,6 +14,7 @@ rounds fail to. See DESIGN-claude-code-discipline.md.
 """
 import json
 import logging
+import re
 
 from . import briefings, checkpoint, config, container, lean, tools
 from .runner import run_cc_stage, StageFailed
@@ -35,15 +36,20 @@ def _cc_common() -> dict:
                 max_budget_usd=config.CC_STAGE_BUDGET_USD)
 
 
-def _cc_gate_loop(deps: AgentDeps, *, stage: str, briefing: str, base_prompt: str,
-                  check, max_rounds: int) -> None:
-    """Run `stage` as a CC session, then apply `check(deps) -> (ok, feedback)` — the stage's TRUSTED
-    mechanical gate (plus any judge sub-session). If not ok, RESUME the same session with the gate's
-    feedback and try again, up to max_rounds. The CC session self-iterates WITHIN a round (reads its
-    own tool errors); this loop is the cross-round gate. Raises _PipelineAborted on non-convergence.
+def _cc_gate_loop(deps: AgentDeps, *, stage: str, briefing: str, base_prompt: str, check) -> None:
+    """Run `stage` as a CC session, apply its TRUSTED gate (`check(deps) -> (ok, feedback)`, incl.
+    any judge sub-session), and RESUME the session with the feedback until it passes.
+
+    PROGRESS-AWARE stall (not a fixed round cap): a round whose gate feedback CHANGES is making
+    progress (a defect fixed, a new one surfaced) and the loop continues; only STALL_ROUNDS
+    CONSECUTIVE rounds with the SAME failure (feedback unchanged modulo volatile line/col numbers)
+    count as stuck and abort. So a genuinely-improving FORMALISE/TRANSLATE loop is never cut off
+    mid-progress; a stuck/oscillating one still stops. No hard round ceiling — the per-stage
+    --max-budget-usd bounds each round's cost. Mirrors the TRANSLATE/PROVE best-tracked stalls.
     """
-    prompt, feedback = base_prompt, ""
-    for rnd in range(1, max_rounds + 1):
+    prompt, feedback, prev_key, stale, rnd = base_prompt, "", None, 0, 0
+    while True:
+        rnd += 1
         sid = deps.progress.get("cc_sessions", {}).get(stage)   # resume once a round has run
         try:
             run_cc_stage(deps, stage=stage, prompt=prompt, briefing=(None if sid else briefing),
@@ -55,12 +61,17 @@ def _cc_gate_loop(deps: AgentDeps, *, stage: str, briefing: str, base_prompt: st
         checkpoint.snapshot(deps)
         if ok:
             return
-        log.info("%s round %d/%d — gate not satisfied: %s", stage, rnd, max_rounds,
-                 (feedback or "")[:200])
+        key = re.sub(r"\d+", "#", feedback or "")   # normalise volatile numbers (line:col, counts)
+        stale = stale + 1 if key == prev_key else 1
+        prev_key = key
+        log.info("%s round %d — gate not satisfied (same-failure streak %d/%d): %s",
+                 stage, rnd, stale, config.STALL_ROUNDS, (feedback or "")[:200])
+        if stale >= config.STALL_ROUNDS:
+            raise _PipelineAborted(
+                f"{stage} stalled — the same gate failure recurred {config.STALL_ROUNDS} rounds "
+                f"with no progress: {(feedback or '')[:300]}")
         prompt = ("Your previous attempt did NOT pass the harness gate. Fix EXACTLY the following, "
                   "then finish:\n" + feedback)
-    raise _PipelineAborted(f"{stage} did not converge in {max_rounds} rounds — last gate: "
-                           f"{(feedback or '')[:300]}")
 
 
 def _run_judge(deps: AgentDeps, *, stage: str, briefing: str, prompt: str, verdict_rel: str) -> dict:
@@ -150,7 +161,7 @@ def _stage_infer(deps: AgentDeps) -> None:
         base_prompt=("Proceed to INFER. Read the pristine Rust at /workspace/repo and "
                      "/workspace/out/explore/handoff.json, then write "
                      "/workspace/out/specs/informal_spec.json per your briefing." + hint),
-        check=check, max_rounds=config.STALL_ROUNDS,
+        check=check,
     )
     tools.commit(deps.container_id, "feat(spec): informal specification (pre-translate)", glob="specs/")
     log.info("INFER target patterns: %s", deps.progress.get("target_patterns") or "(whole crate)")
@@ -240,7 +251,7 @@ def _stage_translate(deps: AgentDeps) -> None:
                      f"opaqued): {targets or '(whole crate)'}. Suggested entry file: {entry}. Read "
                      f"/workspace/out/specs/informal_spec.json and /workspace/out/explore/handoff.json, "
                      f"then drive Charon + Aeneas into /workspace/out/lean per your briefing."),
-        check=check, max_rounds=config.STALL_ROUNDS,
+        check=check,
     )
     tools.commit(deps.container_id, "feat(translate): aeneas translation of the target", glob=".")
 
@@ -282,7 +293,7 @@ def _stage_formalise(deps: AgentDeps) -> None:
                      f"translation under /workspace/out/lean, then write the statement-only spec "
                      f"(theorem bodies `:= by sorry`) to /workspace/out/{impl} per your briefing. "
                      f"Ensure it compiles with `lake env lean`."),
-        check=check, max_rounds=config.STALL_ROUNDS,
+        check=check,
     )
     tools.commit(deps.container_id, "feat(spec): implementation spec (statements only)", glob="lean/")
 
