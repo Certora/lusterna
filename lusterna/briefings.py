@@ -361,8 +361,8 @@ VERIFICATION_REPORT.md — do NOT write that file yourself, and do NOT commit). 
 READ what you need from /workspace/out: the translation under lean/, specs/informal_spec.json, the
 spec lean/<Crate>/Spec.lean, translate/accountability.md, and the FACTS the harness prepared at
 /workspace/out/report/facts.json (the authoritative `#print axioms` verdict — established vs tainted;
-the implementation-verified vs abstract-only partition; the spec-judge verdict; translation
-faithfulness tier and any opaqued/holes).
+the implementation-verified vs abstract-only partition; the spec-judge verdict; opaqued primitives
+and holes).
 
 ⚠ SOUNDNESS NUMBERS ARE NOT YOURS TO DERIVE. The harness prepends an AUTHORITATIVE verdict block to
 the final report from facts.json; your prose must MATCH it and never exceed it. Specifically:
@@ -383,12 +383,11 @@ Write exactly these files, in order (`mkdir -p /workspace/out/report`):
     theorems plainly as NOT verified. If NONE reference the implementation, say plainly that 0
     properties of the code were verified. Also: translation result (incl. assumed/opaqued primitives),
     spec-judge result, untranslated holes.
-  report/02_translation.md — what was translated and HOW FAITHFUL: entry file, Charon scope patterns,
-    Aeneas output files, then the accountability trail classified by weakest action (SAFE /
-    ASSUMPTION — name each opaqued axiom / MODIFICATION — list each edit with file, diff, and
-    behaviour-preservation justification; for MODIFICATION state plainly the verified object is a
-    REFACTORED implementation whose behaviour-equivalence is ASSERTED, not machine-certified). Tie any
-    hole's impact to the `#print axioms` verdict (a hole a proven theorem depends on shows as tainted).
+  report/02_translation.md — what was translated: entry file, Charon scope patterns, Aeneas output
+    files, then SUMMARISE `translate/accountability.md` as the agent wrote it — the scoping, any
+    opaqued leaves, and any rung-3 modeling/edits with the agent's stated rationale. Report the trail
+    as recorded; do not impose a faithfulness grade of your own. Tie any opaqued primitive or
+    untranslated hole to the `#print axioms` verdict (a theorem depending on one shows as tainted).
   report/03_implementation_spec.md — every theorem statement with a one-line explanation; the lake
     build result.
   report/04_spec_judge.md — the spec-judge result (approved, or the unresolved defects with theorem,

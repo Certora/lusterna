@@ -322,9 +322,11 @@ def _prove_feedback(deps: AgentDeps, ax: dict) -> str:
 
 def _record_axioms(deps: AgentDeps) -> None:
     """`#print axioms` (standard-axioms-only) + partition established theorems into those that VERIFY
-    THE IMPLEMENTATION (reference a real Aeneas def) vs abstract helper lemmas. Faithfulness tier is
-    derived mechanically: a non-empty source diff ⇒ MODIFICATION (clean theorems verified of the
-    REFACTORED code — opacity would show as tainted, not clean); otherwise SAFE."""
+    THE IMPLEMENTATION (reference a real Aeneas def) vs abstract helper lemmas.
+
+    The harness does NOT re-derive a faithfulness tier: rung-3 modeling is a sanctioned capability,
+    screened once (semantically) by the TRANSLATE-JUDGE and disclosed by the agent in
+    translate/accountability.md — that trail is the record, not a redundant harness verdict."""
     impl = lean.impl_spec(deps)
     ax = lean.check_axioms(deps, impl)
     translation = lean.translation_text(deps)
@@ -334,15 +336,9 @@ def _record_axioms(deps: AgentDeps) -> None:
         stmt = lean.theorem_statement(spec_text, name)
         (impl_verified if stmt and lean.referenced_defs(stmt, translation)
          else abstract_only).append(name)
-    refactored = tools.repo_changed_files(deps.container_id)
     deps.progress["axioms"] = {"clean": ax["clean"], "tainted": ax["tainted"],
-                               "impl_verified": impl_verified, "abstract_only": abstract_only,
-                               "faithfulness": "MODIFICATION" if refactored else "SAFE",
-                               "refactored_paths": refactored}
+                               "impl_verified": impl_verified, "abstract_only": abstract_only}
     checkpoint.snapshot(deps)
-    if refactored:
-        log.warning("PROVE: established theorems are verified of a REFACTORED implementation "
-                    "(behaviour-preserving edits to %s); not verbatim the original.", refactored)
     if ax["clean"] and not impl_verified:
         log.warning("PROVE: ⚠ CRITICAL — %d theorem(s) established but NONE reference the "
                     "implementation; 0 properties of the code are verified (abstract lemmas only: %s)",
@@ -425,8 +421,6 @@ def _authoritative_verdict(deps: AgentDeps) -> str:
     clean, tainted = ax.get("clean", []), ax.get("tainted", [])
     impl, abstract = ax.get("impl_verified", []), ax.get("abstract_only", [])
     total = len(clean) + len(tainted)
-    refactored = ax.get("refactored_paths", [])
-    faith = ax.get("faithfulness", "SAFE") + (f" (source refactored: {refactored})" if refactored else "")
     return "\n".join([
         "# Verification verdict — AUTHORITATIVE (Lean `#print axioms`, harness-generated)",
         "",
@@ -444,7 +438,9 @@ def _authoritative_verdict(deps: AgentDeps) -> str:
         f"{len(abstract)} {abstract or ''}",
         f"- NOT established — **tainted, verify NOTHING** (a leftover `sorry`, or a proof resting on "
         f"a non-standard axiom): {len(tainted)} {tainted or ''}",
-        f"- Translation faithfulness: {faith}",
+        "",
+        "How the target was translated — scope / opaqued leaves / any rung-3 modeling — is recorded "
+        "in `translate/accountability.md` and summarised in §2 below.",
         "",
         "---",
         "",
