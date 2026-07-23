@@ -127,73 +127,12 @@ def referenced_defs(spec_text: str, translation_text: str) -> list[str]:
     return [name for name in _def_blocks(translation_text) if _mentions(name, body)]
 
 
-def _pattern_leaf(pattern: str) -> str:
-    """Final identifier of a Charon name-matcher pattern, e.g. `crate::m::fib` → `fib`,
-    `crate::Foo::_` → `Foo`. Drops trailing wildcards and any `{impl …}` decoration."""
-    p = pattern.strip().split("{")[0]            # drop `{impl …}` blocks
-    segs = [s for s in re.split(r"::", p) if s and s != "_"]
-    return segs[-1] if segs else ""
-
-
-def matched_target_defs(translation_text: str, target_patterns: list[str]) -> list[str]:
-    """Translation def names that a target pattern names, matched by final identifier
-    (Aeneas mangles `crate::fib` → `crate.fib`). Fuzzy/over-approximate: every def whose
-    final `.`-component equals a pattern leaf is a seed. Empty ⇒ no pattern matched."""
-    leaves = {_pattern_leaf(p) for p in target_patterns if _pattern_leaf(p)}
-    if not leaves:
-        return []
-    return sorted(
-        name for name in _def_blocks(translation_text)
-        if name.split(".")[-1] in leaves
-    )
-
-
-def target_holes(translation_text: str, holes: list[str], target_patterns: list[str]) -> list[str]:
-    """Holes that are THEMSELVES target functions — a target-pattern `def` left as a bare
-    `sorry`, i.e. the target's own body was not translated. The transitive question ("does
-    something the target CALLS have a hole?") is answered authoritatively downstream by
-    `#print axioms` (a hole is `sorryAx` → the theorem is tainted), so this is deliberately
-    the precise, non-transitive signal. Whole-crate (no patterns) ⇒ every hole counts."""
-    if not target_patterns:
-        return sorted(holes)
-    seeds = set(matched_target_defs(translation_text, target_patterns))
-    return sorted(h for h in holes if h in seeds)
-
-
 def external_axioms(translation_text: str) -> list[str]:
     """Top-level `axiom` names in the translation. Aeneas emits `axiom` ONLY for opaque
     external items (auto-opaqued stdlib/crypto, or a dep the agent chose to `--opaque`); the
     crate's own items are `def`/`structure`/`inductive`. These are the target's ASSUMPTIONS —
     a theorem depending on one is tainted by `#print axioms` downstream."""
     return sorted({m.group(1) for m in re.finditer(r"(?m)^axiom\s+([\w.]+)", translation_text)})
-
-
-def opaqued_targets(translation_text: str, target_patterns: list[str]) -> list[str]:
-    """Target-pattern leaves that were emitted as `axiom`s (opaqued) rather than translated —
-    i.e. a function UNDER verification was dissolved into an assumption. This must be empty:
-    opacity is only ever legitimate for a target's *dependencies*, never the target itself."""
-    leaves = {_pattern_leaf(p) for p in target_patterns if _pattern_leaf(p)}
-    return sorted({ax.split(".")[-1] for ax in external_axioms(translation_text)
-                   if ax.split(".")[-1] in leaves})
-
-
-def opaque_deps_in_targets(translation_text: str, target_patterns: list[str]) -> list[str]:
-    """Opaqued axioms referenced DIRECTLY in the target functions' own bodies — a local,
-    one-level signal (NO call-closure) that a target is a thin wrapper over assumed behaviour.
-    If the verified properties concern that behaviour, the translation is hollow — the
-    `over_opaqued` case. Feeds the TRANSLATE-JUDGE a pointed fact so it need not infer the
-    linkage itself; it is a pre-proof QUALITY signal, not a soundness gate (an opaque dependency
-    the properties truly need is caught downstream by `#print axioms` tainting the theorem)."""
-    axioms = external_axioms(translation_text)
-    seeds = set(matched_target_defs(translation_text, target_patterns))
-    if not axioms or not seeds:
-        return []
-    blocks = _def_blocks(translation_text)
-    hits = set()
-    for name in seeds:
-        body = _strip_lean_comments(blocks.get(name, ""))
-        hits.update(ax for ax in axioms if _mentions(ax, body))
-    return sorted(hits)
 
 
 def _theorem_names(spec_text: str) -> list[str]:

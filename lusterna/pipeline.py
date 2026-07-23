@@ -169,24 +169,22 @@ def _stage_infer(deps: AgentDeps) -> None:
 
 # ── TRANSLATE (+ TRANSLATE-JUDGE) ─────────────────────────────────────────────────
 
-def _translate_facts(deps: AgentDeps, targets: list) -> dict:
-    """The mechanical facts about whatever is in /workspace/out/lean — the only thing the harness
-    decides TRANSLATE on. A clean run (no -split-files) leaves exactly ONE top-level module."""
+def _translate_facts(deps: AgentDeps) -> dict:
+    """The harness's mechanical TRANSLATE gate, kept to the bare minimum: Lean was produced, the
+    layout is clean (ONE top-level module — no -split-files), and it COMPILES. Whether the target is
+    genuinely translated (a real `def`, not mocked) is the TRANSLATE-JUDGE's semantic call, and a
+    hollow target is caught downstream by `#print axioms` (its theorems come out tainted) — so the
+    harness no longer re-derives that from fragile target-name matching."""
     lean.setup_lake(deps)
     info = lean.analyze_translation(deps, do_commit=False)
     facts = {"success": info["success"], "lean_files": info["lean_files"],
              "lean_path": info["lean_path"], "holes": info["holes"],
-             "compiles": False, "build_errors": "", "polluted": [],
-             "target_opaqued": [], "target_holes": [], "axioms": []}
+             "compiles": False, "build_errors": "", "polluted": []}
     top_level = [f for f in info["lean_files"]
                  if f.startswith("lean/") and "/" not in f[len("lean/"):]]
     facts["polluted"] = sorted(top_level) if len(top_level) > 1 else []
     if not info["success"]:
         return facts
-    tx = lean.translation_text(deps, info["lean_files"])
-    facts["axioms"] = lean.external_axioms(tx)
-    facts["target_opaqued"] = lean.opaqued_targets(tx, targets)
-    facts["target_holes"] = lean.target_holes(tx, info["holes"], targets)
     build = lean.translation_compiles(deps, info["lean_path"])
     facts["compiles"] = bool(build.get("success"))
     facts["build_errors"] = (build.get("stderr", "") or "")[:2000]
@@ -200,43 +198,32 @@ def _stage_translate(deps: AgentDeps) -> None:
     entry = deps.progress.get("explore", {}).get("entry_file", "src/lib.rs")
 
     def check(deps: AgentDeps):
-        facts = _translate_facts(deps, targets)
-        reasons = []
+        facts = _translate_facts(deps)
         if not facts["success"]:
-            reasons.append("no Lean was produced in /workspace/out/lean — run charon then aeneas")
-        else:
-            if facts["polluted"]:
-                reasons.append(f"POLLUTED tree — multiple top-level modules {facts['polluted']}; "
-                               f"`rm -rf /workspace/out/lean/*` and re-run aeneas WITHOUT -split-files")
-            if facts["target_opaqued"]:
-                reasons.append(f"target(s) opaqued to axioms (mocked), must be real defs: "
-                               f"{facts['target_opaqued']}")
-            if facts["target_holes"]:
-                reasons.append(f"target(s) left as `sorry` holes: {facts['target_holes']}")
-            if not facts["compiles"]:
-                reasons.append("the translation does not compile:\n" + facts["build_errors"])
-        if reasons:
-            return False, "; ".join(reasons)
-        # Hard gate passed → mechanical facts for the judge, then the semantic screen.
-        tx = lean.translation_text(deps, facts["lean_files"])
+            return False, "no Lean was produced in /workspace/out/lean — run charon then aeneas"
+        if facts["polluted"]:
+            return False, (f"POLLUTED tree — multiple top-level modules {facts['polluted']}; "
+                           f"`rm -rf /workspace/out/lean/*` and re-run aeneas WITHOUT -split-files")
+        if not facts["compiles"]:
+            return False, "the translation does not compile:\n" + facts["build_errors"]
+        # Mechanical hard gate passed (it compiles). Whether the TARGET is genuinely translated (a
+        # real def, not opaqued/holed) and behaviour-preserving is the TRANSLATE-JUDGE's semantic
+        # call — it inspects the translation itself — with `#print axioms` the final backstop.
         judge_facts = {
-            "compiles": facts["compiles"],
-            "target_translated_as_def": lean.matched_target_defs(tx, targets),
-            "target_OPAQUED_defect_if_nonempty": facts["target_opaqued"],
-            "target_HOLE_defect_if_nonempty": facts["target_holes"],
-            "emitted_axioms": facts["axioms"],
-            "opaqued_items_the_target_calls_directly": lean.opaque_deps_in_targets(tx, targets),
-            "source_files_changed": tools.repo_changed_files(deps.container_id),
+            "compiles": True,
+            "emitted_axioms": lean.external_axioms(lean.translation_text(deps, facts["lean_files"])),
             "generated_lean_files": facts["lean_files"],
+            "source_files_changed": tools.repo_changed_files(deps.container_id),
             "source_git_diff": tools.repo_diff(deps.container_id),
         }
         tools.write_out(deps, "translate/facts.json", json.dumps(judge_facts, indent=2))
         verdict = _run_judge(
             deps, stage="TRANSLATE-JUDGE", briefing=briefings.TRANSLATE_JUDGE,
-            prompt=("Judge the translation in /workspace/out/lean against the target source in "
-                    "/workspace/repo. Read the mechanical facts at /workspace/out/translate/facts.json "
-                    "and the accountability at /workspace/out/translate/accountability.md, then write "
-                    "your verdict to /workspace/out/translate/verdict.json per your briefing."),
+            prompt=(f"Judge the translation in /workspace/out/lean against the target source in "
+                    f"/workspace/repo. The target functions are: {targets or '(whole crate)'}. Read "
+                    f"the facts at /workspace/out/translate/facts.json and the accountability at "
+                    f"/workspace/out/translate/accountability.md, then write your verdict to "
+                    f"/workspace/out/translate/verdict.json per your briefing."),
             verdict_rel="translate/verdict.json")
         defects = verdict.get("defects", [])
         if defects:

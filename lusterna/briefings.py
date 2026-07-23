@@ -225,11 +225,12 @@ your verdict to /workspace/out/translate/verdict.json (valid JSON): {"defects": 
 proceeds (that is the goal).
 
 You have Bash/Read/Grep. READ: the ORIGINAL Rust at /workspace/repo (targets = target_patterns in
-/workspace/out/specs/informal_spec.json), the GENERATED Lean at /workspace/out/lean, the accountability
-at /workspace/out/translate/accountability.md, and the MECHANICAL FACTS at
-/workspace/out/translate/facts.json (which targets are real `def`s vs `axiom`s vs holes, the emitted
-axioms, opaqued items the targets call directly, source files changed, whether it compiles). TRUST
-the facts — do not re-derive them. Then read the target's source and its translation and compare.
+/workspace/out/specs/informal_spec.json), the GENERATED Lean at /workspace/out/lean, the
+accountability at /workspace/out/translate/accountability.md, and /workspace/out/translate/facts.json
+(it compiles; the emitted `axiom`s; changed source files + the git diff). The harness has ALREADY
+gated that it compiles — your job is the semantic screen it can't do. INSPECT the translation
+yourself: for each target function, `grep`/`sed` its translated form in the Lean and confirm it is a
+real `def` with a faithful body — NOT an `axiom` (opaqued) and NOT a bare `sorry` (hole).
 
 Judge exactly these (one entry per problem: kind, detail, concrete fix):
   • target_mocked — a target function emitted as an `axiom` instead of translated. (Opaquing a
@@ -238,10 +239,9 @@ Judge exactly these (one entry per problem: kind, detail, concrete fix):
   • over_opaqued — NO mocks/stubs unless IRRELEVANT to the target. An `--opaque` dependency is a mock
     (bare `axiom`, no relating equations); acceptable ONLY when its behaviour is irrelevant to every
     inferred property. RELEVANCE, not stdlib-ness, is the test: a stdlib collection whose
-    `get`/`insert` DETERMINE the target's results is relevant and must be MODELLED. For each item in
-    `opaqued_items_the_target_calls_directly` the DEFAULT is over_opaqued — flag it UNLESS no inferred
-    property depends on its behaviour. When you flag, require it be MODELLED so its ops become real
-    `def`s.
+    `get`/`insert` DETERMINE the target's results is relevant and must be MODELLED. Read each target's
+    body; for any `axiom` it calls whose behaviour an inferred property depends on, flag over_opaqued
+    and require it be MODELLED so its ops become real `def`s.
   • semantics_changed — a source/Lean edit changes OBSERVABLE behaviour (not just representation).
     Representation swaps are OK; a change to WHAT is computed is a defect. Judge each edit in the diff.
     Behaviour-preservation must be EVIDENCED, not asserted: for every rung-3 edit, check that
@@ -251,7 +251,6 @@ Judge exactly these (one entry per problem: kind, detail, concrete fix):
     fix: "add behavioural-equivalence tests covering <the relevant cases>".
   • not_faithful — the translated target does not mirror the original's logic (stubbed/simplified,
     a branch or computation silently dropped).
-  • non_compiling — the facts report it does not compile.
 
 Do NOT judge proofs (none yet). Be strict but concrete — never invent a defect you cannot pin to a
 specific function/edit/opaqued item. STAY IN SCOPE: read the target functions, their translated
@@ -377,16 +376,16 @@ spec lean/<Crate>/Spec.lean, translate/accountability.md, and the FACTS the harn
 the implementation-verified vs abstract-only partition; the spec-judge verdict; opaqued primitives
 and holes).
 
-⚠ SOUNDNESS NUMBERS ARE NOT YOURS TO DERIVE. The harness prepends an AUTHORITATIVE verdict block to
-the final report from facts.json; your prose must MATCH it and never exceed it. Specifically:
-  • The number of theorems that VERIFY THE IMPLEMENTATION is EXACTLY `len(facts.json.axioms.impl_verified)`
-    — those exact theorem names, no more. Do NOT count a theorem as verified because it "has a proof"
-    or "compiles": a proof can COMPILE and still be TAINTED (it rests on a non-standard axiom —
-    `sorryAx`, `decide`/`native_decide` compiler trust, or an opaqued primitive). Every name in
-    `facts.json.axioms.tainted` verifies NOTHING and must be reported as NOT established, even if its
-    proof body is non-trivial and the file builds.
-  • Do NOT re-run `#print axioms`, re-elaborate the spec, or otherwise recompute the verdict — quote
-    facts.json verbatim. If your reading of the Lean seems to disagree with facts.json, facts.json wins.
+SOUNDNESS = `#print axioms`, NOT "IT COMPILES". The harness prepends an authoritative verdict block
+from facts.json (the kernel `#print axioms` result); report those same numbers in your prose.
+  • The theorems that VERIFY THE IMPLEMENTATION are exactly `facts.json.axioms.impl_verified`; every
+    name in `facts.json.axioms.tainted` verifies NOTHING. NEVER count a theorem as verified because it
+    "has a proof" or "compiles": a proof can COMPILE and still be TAINTED — resting on a non-standard
+    axiom (`sorryAx`, `decide`/`native_decide` compiler trust, an opaqued primitive) — which is exactly
+    what `#print axioms` catches and "it builds" does not.
+  • You MAY re-run `#print axioms` yourself as a cross-check. If your reading DISAGREES with
+    facts.json, do NOT silently pick one — report the discrepancy prominently (it means the gate or
+    the build is wrong, which matters more than the number). Absent a discrepancy, report facts.json.
 
 Write exactly these files, in order (`mkdir -p /workspace/out/report`):
   report/01_overview.md — title, one-paragraph executive summary, overview table. The HEADLINE metric
