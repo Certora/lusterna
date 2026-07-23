@@ -295,8 +295,7 @@ def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
     if not names:
         return {"clean": [], "tainted": [], "raw": ""}
     # Query `#print axioms` by the NAMESPACE-QUALIFIED name (parallel to `names`) — a bare name
-    # inside `namespace Foo` is `Unknown constant` and would taint every theorem. Matching the
-    # output back to `names` is still by short name, so the returned lists stay short.
+    # inside `namespace Foo` is `Unknown constant` and would taint every theorem.
     qnames = _theorem_qualified_names(original)
 
     # spec_rel = lean/<Lib>/Spec.lean  →  spec module <Lib>.Spec (matches the lean_lib root)
@@ -320,19 +319,26 @@ def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
     # [a, b, ...]" — clean iff every listed axiom is standard. Lean pretty-prints a long axiom list
     # ACROSS MULTIPLE LINES (one per line), so parse over the whole text with DOTALL rather than
     # line-by-line (a per-line regex misses the closing `]` and mis-taints such theorems).
+    # Parse each verdict keyed by the FULLY-QUALIFIED name the checker printed (e.g.
+    # 'metavault.Spec.mint_shares.spec'), then map back to theorems by that full qname. NEVER match
+    # on the last dotted component: dotted theorem names (mint_shares.spec, deposit.spec, …) collide
+    # on their tail (`spec`) and would silently inherit one another's verdict — the class of bug this
+    # gate must not have.
     verdict: dict[str, bool] = {}
     for m in re.finditer(
             r"'([\w.]+)' (?:(does not depend on any axioms)|depends on axioms: \[(.*?)\])",
             text, re.DOTALL):
-        short = m.group(1).split(".")[-1]
         if m.group(2):                  # "does not depend on any axioms"
-            verdict[short] = True
+            verdict[m.group(1)] = True
         else:
             axes = [a.strip() for a in m.group(3).replace("\n", " ").split(",") if a.strip()]
-            verdict[short] = all(a in _STD_AXIOMS for a in axes)
-    clean = [n for n in names if verdict.get(n.split(".")[-1]) is True]
-    tainted = [n for n in names if verdict.get(n.split(".")[-1]) is not True]  # False or unresolved
-    unresolved = [n for n in names if n.split(".")[-1] not in verdict]
+            verdict[m.group(1)] = all(a in _STD_AXIOMS for a in axes)
+    clean, tainted, unresolved = [], [], []
+    for written, qual in zip(names, qnames):    # parallel lists, same order
+        v = verdict.get(qual)
+        (clean if v is True else tainted).append(written)   # None (unresolved) ⇒ tainted, conservatively
+        if v is None:
+            unresolved.append(written)
     if unresolved:
         # Not a soundness signal — the checker couldn't read these back. Surface it loudly
         # instead of silently reporting them as tainted.
