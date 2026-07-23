@@ -1,8 +1,10 @@
 # The Claude-Code Discipline — Lusterna's architecture
 
-Status: **blueprint, pre-implementation.** Branch: `claude-code-discipline`.
-SDK API names below are **directional** (synthesized from Claude Code v2.1.218 docs) and must be
-verified against the installed `claude-agent-sdk` before code depends on them — see §13.
+Status: **IMPLEMENTED + validated** (full fib pipeline, spine-only, all-CC). Branch:
+`claude-code-discipline`. The engine is the **headless `claude` CLI** invoked over `docker exec`
+(Claude Code v2.1.218) — the Python `claude-agent-sdk` was evaluated (§10 of the knob inventory)
+and set aside: the toolchain image has no Python, so the CLI over `docker exec` is the clean fit
+and needs nothing extra in-process. Any "SDK" wording below is historical from the design phase.
 
 ## 1. Why
 
@@ -116,7 +118,7 @@ from CC's `ResultMessage`), `tools.read_out/write_out/commit` (harness IO helper
 | Invariants | project memory | `CLAUDE.md` in `/workspace`: the soundness ladder, "don't grind out-of-scope deps", the trust boundary |
 | Playbook | skill | `.claude/skills/aeneas/SKILL.md` (the translatability inventory, proof strategies) |
 | Compaction | on by default, overflow = hard stop | defense is per-stage session scoping; `PreCompact` hook archives if it fires |
-| Config delivery | ship in container | `.claude/settings.json` under `/workspace`; opt in via SDK `setting_sources` |
+| Config delivery | ship in container | `.claude/settings.json` under `/workspace`; opt in via CLI `--settings` / `--setting-sources` |
 | Cost/usage accounting | `ResultMessage.total_cost_usd` / `.usage` | harness sums per stage into the session total |
 
 ## 10. Soundness invariants (inviolable — hold across the whole rewrite)
@@ -189,7 +191,7 @@ Recon settled the shape. The host already has `claude` 2.1.218 + node; the toolc
 
 ## 14. Migration plan (fib green after every phase)
 
-1. **Spike** — one throwaway stage (EXPLORE) spawned via the SDK inside the container end-to-end,
+1. **Spike** — one throwaway stage (EXPLORE) spawned via the headless CLI inside the container end-to-end,
    verifying §13.1–4. Nothing else changes.
 2. **Spine skeleton** — `run_session` sequences CC-session stages; the mechanical gates stay exactly
    as they are; checkpoint thins to `{stage, cc_session_id, out_git_head}`.
