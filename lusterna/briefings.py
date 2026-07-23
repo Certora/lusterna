@@ -362,15 +362,27 @@ READ what you need from /workspace/out: the translation under lean/, specs/infor
 spec lean/<Crate>/Spec.lean, translate/accountability.md, and the FACTS the harness prepared at
 /workspace/out/report/facts.json (the authoritative `#print axioms` verdict — established vs tainted;
 the implementation-verified vs abstract-only partition; the spec-judge verdict; translation
-faithfulness tier and any opaqued/holes). TRUST facts.json for the soundness verdicts.
+faithfulness tier and any opaqued/holes).
+
+⚠ SOUNDNESS NUMBERS ARE NOT YOURS TO DERIVE. The harness prepends an AUTHORITATIVE verdict block to
+the final report from facts.json; your prose must MATCH it and never exceed it. Specifically:
+  • The number of theorems that VERIFY THE IMPLEMENTATION is EXACTLY `len(facts.json.axioms.impl_verified)`
+    — those exact theorem names, no more. Do NOT count a theorem as verified because it "has a proof"
+    or "compiles": a proof can COMPILE and still be TAINTED (it rests on a non-standard axiom —
+    `sorryAx`, `decide`/`native_decide` compiler trust, or an opaqued primitive). Every name in
+    `facts.json.axioms.tainted` verifies NOTHING and must be reported as NOT established, even if its
+    proof body is non-trivial and the file builds.
+  • Do NOT re-run `#print axioms`, re-elaborate the spec, or otherwise recompute the verdict — quote
+    facts.json verbatim. If your reading of the Lean seems to disagree with facts.json, facts.json wins.
 
 Write exactly these files, in order (`mkdir -p /workspace/out/report`):
   report/01_overview.md — title, one-paragraph executive summary, overview table. The HEADLINE metric
-    is the number of theorems that VERIFY THE IMPLEMENTATION (kernel-established via `#print axioms`,
-    standard axioms only, AND referencing an Aeneas-translated def — from facts.json). Report abstract
-    helper lemmas SEPARATELY, never as the verification result. If theorems were proved but NONE
-    reference the implementation, say plainly that 0 properties of the code were verified. Also:
-    translation result (incl. assumed/opaqued primitives), spec-judge result, untranslated holes.
+    is `len(facts.json.axioms.impl_verified)` — theorems that VERIFY THE IMPLEMENTATION (kernel-
+    established via `#print axioms`, standard axioms only, AND referencing an Aeneas-translated def).
+    Report abstract helper lemmas SEPARATELY, never as the verification result, and report the tainted
+    theorems plainly as NOT verified. If NONE reference the implementation, say plainly that 0
+    properties of the code were verified. Also: translation result (incl. assumed/opaqued primitives),
+    spec-judge result, untranslated holes.
   report/02_translation.md — what was translated and HOW FAITHFUL: entry file, Charon scope patterns,
     Aeneas output files, then the accountability trail classified by weakest action (SAFE /
     ASSUMPTION — name each opaqued axiom / MODIFICATION — list each edit with file, diff, and
