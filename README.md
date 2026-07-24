@@ -2,7 +2,7 @@
 
 An AI agent that translates Rust programs into formally verified Lean 4 specifications.
 
-Lusterna **spawns Claude Code as the engine for each pipeline stage** — a headless `claude`
+Lusterna **spawns an AI agent as the engine for each pipeline stage** — a headless agent
 session, running inside the toolchain container, drives Charon/Aeneas/Lake and does all the file
 and proof work itself. The Python harness is a thin, **trusted spine**: it sequences the stages and
 runs the soundness gates that the agents are not allowed to touch.
@@ -30,7 +30,7 @@ Given a Rust repository and a design document, Lusterna:
 8. Writes a **verification report** — led by a harness-generated verdict block that no agent
    narrative can override.
 
-Each stage is one Claude Code session with its own tools; its **deliverable is files** under
+Each stage is one AI-agent session with its own tools; its **deliverable is files** under
 `/workspace/out` (not a structured blob). The harness reads those files and applies the mechanical
 gates. The session's activity is streamed to the host log live, so you can watch what it does.
 
@@ -38,7 +38,7 @@ gates. The session's activity is streamed to the host log live, so you can watch
 
 The one line the whole design is built on:
 
-- **Claude Code owns the labor** — reading code, driving charon/aeneas/lake, writing Lean,
+- **The AI agent owns the labor** — reading code, driving charon/aeneas/lake, writing Lean,
   attempting proofs, judging, reporting. It brings todos, incremental file-based deliverables,
   context compaction, resume, and per-run cost caps for free.
 - **The harness owns the trust** — a small, deterministic, agent-inaccessible spine: the soundness
@@ -54,10 +54,10 @@ agent, never inferred from "it compiled"):
   PROVE can earn a proof;
 - **the pristine-baseline git diff** — the audit trail of every source edit.
 
-A stage runs as a Claude Code session; the harness then applies that stage's gate and, if it is not
+A stage runs as an AI-agent session; the harness then applies that stage's gate and, if it is not
 satisfied, **resumes the session with the gate's feedback** until it passes or a progress-aware
 stall trips (`STALL_ROUNDS` consecutive rounds with the *same* failure — a genuinely-improving loop
-is never cut off). Each session is bounded by Claude Code's own `--max-budget-usd`.
+is never cut off). Each session is bounded by the agent's own `--max-budget-usd`.
 
 ## Pipeline
 
@@ -68,7 +68,7 @@ flowchart TD
 
   EXPLORE["EXPLORE<br/>entry file + fns + toolchain assessment"]:::impl
   INFER["INFER<br/>behaviour spec + target_patterns<br/>(pristine source)"]:::impl
-  TRANSLATE["TRANSLATE<br/>CC session drives Charon → Aeneas → Lean"]:::impl
+  TRANSLATE["TRANSLATE<br/>agent session drives Charon → Aeneas → Lean"]:::impl
   TJUDGE{"TRANSLATE-JUDGE<br/>target translated & faithful?"}:::gate
   FORMALISE["FORMALISE<br/>theorem statements"]:::impl
   FBUILD{"stub_proofs + lake build<br/>statements compile?"}:::gate
@@ -93,7 +93,7 @@ flowchart TD
   classDef report fill:#e2e8f0,stroke:#334155,stroke-width:1.5px,color:#0f172a;
 ```
 
-Each stage runs with a fresh Claude Code session (fresh context — the judge's context is
+Each stage runs with a fresh AI-agent session (fresh context — the judge's context is
 independent of the author's); stages communicate via git-committed files under `/workspace/out`,
 not via message history.
 
@@ -160,7 +160,7 @@ toolchain, so `tools/aeneas-characterize/` measures it directly rather than rely
 ```
 lusterna/
 ├── cli.py          — Click entry point; manages the container lifecycle
-├── pipeline.py     — The spine: per-stage functions that spawn a Claude Code session and apply
+├── pipeline.py     — The spine: per-stage functions that spawn an AI-agent session and apply
 │                     the trusted gate (the _cc_gate_loop / PROVE best-loop), + run_session
 ├── runner.py       — run_cc_stage: launch `claude -p` headless in-container and stream its
 │                     stream-json activity to the host log; mint/resume the session id
@@ -183,8 +183,8 @@ invoked over `docker exec`. `pydantic-ai` was retired with the spawn-model migra
 
 ## Docker interaction
 
-The toolchain (Rust/Cargo, Charon, Aeneas, Lean/Lake) **and Claude Code itself** (Node + the
-`claude` CLI) live entirely inside a Docker container. There are no bind-mounts: the source repo is
+The toolchain (Rust/Cargo, Charon, Aeneas, Lean/Lake) **and the AI agent itself** (Node + the
+agent CLI) live entirely inside a Docker container. There are no bind-mounts: the source repo is
 pushed in via a tar pipe at session start and artefacts are pulled back out at the end.
 
 - The container has its own isolated filesystem — no host paths are exposed. The source is at
@@ -195,7 +195,7 @@ pushed in via a tar pipe at session start and artefacts are pulled back out at t
   allowlist (`bypassPermissions` is refused as root), and `--max-budget-usd` caps each session.
 - The container runs with `--cap-drop all` and `--security-opt no-new-privileges`. Network is
   enabled so Charon can `cargo build` targets whose dependencies are fetched on demand, and so
-  Claude Code can reach the Anthropic API.
+  the agent can reach the Anthropic API.
 
 ## Checkpoints & resuming
 
@@ -205,7 +205,7 @@ After each stage the harness saves a numbered checkpoint under a per-session dir
 ~/.local/share/lusterna/sessions/<session-id>/checkpoint-001.json …
 ```
 
-Each records the progress dict (incl. per-stage Claude Code session ids and costs), container ID,
+Each records the progress dict (incl. per-stage agent session ids and costs), container ID,
 repo/work paths, design doc, and the `git_head` SHA of `/workspace/out` at save time.
 
 An interrupted run (a stage session failing unrecoverably, or a graceful abort) is stopped
@@ -291,7 +291,7 @@ lusterna show-checkpoint SESSION_ID [--number N]   # a checkpoint's state (JSON)
 | `LUSTERNA_STOP_BEFORE_PROVE` | (off) | Stop after SPEC-JUDGE so the inferred spec can be inspected |
 | `LUSTERNA_LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
 
-Model retry, context compaction, and cost caps are owned by Claude Code itself, so there are no
+Model retry, context compaction, and cost caps are owned by the AI agent itself, so there are no
 knobs for them here.
 
 ## Output artefacts
