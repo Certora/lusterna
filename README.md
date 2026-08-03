@@ -388,23 +388,25 @@ After a run, the target repo carries branch `lusterna/<session>` with one commit
 multi-GB `.lake` build tree is excluded). The branch holds the original source (plus any
 behaviour-preserving edit TRANSLATE made) and all generated artefacts under `verification/`:
 
+The mental model: `lean/` is the verified artifact; every other dir is one stage's trail.
+
 ```
 <repo>/  (on branch lusterna/<session>)
-├── …                            — the original source, plus any TRANSLATE source edit
+├── …                             — the original source, plus any TRANSLATE source edit
 └── verification/
+    ├── lean/                      — the verified Lean project (unchanged layout — lakefile-driven)
+    │   ├── <Crate>.lean           — Aeneas translation (root module)
+    │   ├── <Crate>/…              — translation submodules + <Crate>/Spec.lean (the theorem spec)
+    │   └── lakefile.lean          — Lake project file
     ├── explore/
-    │   ├── assessment.md         — EXPLORE's narrative
-    │   └── handoff.json          — entry file/functions + the toolchain assessment
-    ├── lean/
-    │   ├── <Crate>.lean          — Aeneas translation (root module)
-    │   ├── <Crate>/…             — translation submodules + <Crate>/Spec.lean (the theorem spec)
-    │   └── lakefile.lean         — Lake project file
-    ├── specs/informal_spec.json  — the inferred behavioural properties + target_patterns
-    ├── translate/                — plan.md, accountability.md, verdict.json (every scope/opaque/edit)
-    ├── spec/verdict.json         — the spec-judge verdict
-    ├── report/                   — facts.json + the individual report sections
-    └── VERIFICATION_REPORT.md    — led by the harness's authoritative #print axioms verdict, then
-                                     theorem status, assumptions, and proof sketches
+    │   ├── assessment.md          — EXPLORE's narrative
+    │   └── handoff.json           — entry file/functions + the toolchain assessment
+    ├── infer/properties.json      — the inferred behavioural properties/invariants + target_patterns
+    ├── translate/                 — plan.md, accountability.md, source.diff, facts.json, verdict.json
+    ├── spec-judge/verdict.json    — the spec-judge verdict
+    ├── report/                    — axioms.json (authoritative verdicts) + the report sections
+    └── VERIFICATION_REPORT.md     — led by the harness's authoritative #print axioms verdict, then
+                                      theorem status, assumptions, and proof sketches
 ```
 
 Review the whole run as a single diff:

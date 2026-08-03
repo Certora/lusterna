@@ -45,13 +45,11 @@ def read_out(deps: AgentDeps, path: str) -> str:
 
 
 def prune_stray_specs(deps: AgentDeps, translation: str) -> None:
-    """Remove stray files a stage may create outside the canonical layout: the retired
-    specs/formal_spec.lean and any top-level lean/*Spec.lean orphan. The real spec is nested
-    at lean/<Crate>/Spec.lean (depth 2), so -maxdepth 1 spares it; *translation*
-    (lean/<Crate>.lean) is excluded by name in case a crate is itself named *Spec."""
+    """Remove a stray top-level lean/*Spec.lean orphan a stage may create outside the canonical
+    layout. The real spec is nested at lean/<Crate>/Spec.lean (depth 2), so -maxdepth 1 spares it;
+    *translation* (lean/<Crate>.lean) is excluded by name in case a crate is itself named *Spec."""
     keep = Path(translation).name if translation else ""
     cmd = (
-        f"rm -f {OUT_IN}/specs/formal_spec.lean; "
         f"find {OUT_IN}/lean -maxdepth 1 -name '*Spec.lean'"
         + (f" ! -name '{keep}'" if keep else "")
         + " -delete"

@@ -108,22 +108,28 @@ reads guided by the design hint, not the whole tree.
 DISCIPLINE: plan briefly; read only what's relevant; write the deliverable; validate it; STOP. Do
 not over-analyse — the code stays the source of truth downstream.
 
-TWO JOBS, written to ONE file /workspace/out/specs/informal_spec.json (valid JSON, exactly these
-keys):
+TWO JOBS, written to ONE file /workspace/out/infer/properties.json (valid JSON, exactly these keys):
   {
     "summary": "...",
-    "preconditions": ["..."],
-    "postconditions": ["..."],
+    "properties": ["..."],
     "invariants": ["..."],
     "edge_cases": ["..."],
     "target_patterns": ["crate::module::_::method", "..."]
   }
 
-1. INFORMAL SPEC (summary/preconditions/postconditions/invariants/edge_cases) — the behaviour the
-   target code ACTUALLY has. Behaviour may live in one function or span several functions/types
-   (a relationship, an invariant preserved across calls, a state change from a sequence of calls).
-   State only what the code evidences; do not invent guarantees. Do NOT trace internals of trusted
-   primitives (crypto/curve/hash/transcript/RNG).
+1. INFORMAL SPEC (summary/properties/invariants/edge_cases) — the behaviour the target code ACTUALLY
+   has. State only what the code evidences; do not invent guarantees; do NOT trace internals of
+   trusted primitives (crypto/curve/hash/transcript/RNG). Behaviour may live in one function or span
+   several functions/types.
+     • properties — per-operation behaviour, each a SELF-CONTAINED claim one theorem could capture:
+       fold the input/state guard AND the resulting effect into a single sentence (e.g. "transfer_from
+       with allowance ≥ n and balance ≥ n succeeds, moves n, and decrements the allowance by n; on
+       failure the state is unchanged"). Do NOT split a claim into detached precondition/postcondition
+       fragments — a guard means nothing apart from the effect it guards.
+     • invariants — cross-cutting properties preserved by EVERY operation (e.g. "the sum of all
+       balances always equals total_supply"); kept separate because they formalise as preservation.
+     • edge_cases — boundary/tricky conditions the statements must cover (overflow, aliasing/self-ops,
+       empty/zero, unknown key).
 
 2. target_patterns — Charon name-matcher patterns naming the specific FUNCTIONS/METHODS the CORE
    properties concern. These get TRANSLATED; everything else may be assumed. MINIMAL and GENUINELY
@@ -151,7 +157,7 @@ You are the TRANSLATE stage of the Lusterna pipeline. Produce a Lean 4 translati
 VERIFICATION TARGET by driving Charon and Aeneas yourself (you have Bash/Read/Write/Edit/TodoWrite).
 The Rust crate is at /workspace/repo; emit Lean into /workspace/out/lean.
 
-READ FOR INPUT: /workspace/out/specs/informal_spec.json — its `target_patterns` are the functions
+READ FOR INPUT: /workspace/out/infer/properties.json — its `target_patterns` are the functions
 you MUST translate, and its properties tell you which state matters. /workspace/out/explore/
 handoff.json has the toolchain assessment (build prereqs, opaque boundary, must-model).
 
@@ -248,7 +254,7 @@ your verdict to /workspace/out/translate/verdict.json (valid JSON): {"defects": 
 proceeds (that is the goal).
 
 You have Bash/Read/Grep. READ: the ORIGINAL Rust at /workspace/repo (targets = target_patterns in
-/workspace/out/specs/informal_spec.json), the GENERATED Lean at /workspace/out/lean, the
+/workspace/out/infer/properties.json), the GENERATED Lean at /workspace/out/lean, the
 accountability at /workspace/out/translate/accountability.md, and /workspace/out/translate/facts.json
 (it compiles; the emitted `axiom`s; changed source files + the git diff). The harness has ALREADY
 gated that it compiles — your job is the semantic screen it can't do. INSPECT the translation
@@ -291,7 +297,7 @@ specification as a Lean file of theorem STATEMENTS — you do NOT write proofs. 
 precisely, WHAT should hold; the harness forces every theorem body to `:= by sorry` and PROVE
 discharges them later.
 
-You have Bash/Read/Grep/Write/Edit. READ: /workspace/out/specs/informal_spec.json (the properties to
+You have Bash/Read/Grep/Write/Edit. READ: /workspace/out/infer/properties.json (the properties to
 capture) and the translated crate under /workspace/out/lean. The translation is LARGE — READ it
 selectively: `grep -n`/`sed -n` for a definition's EXACT signature before referencing it. Aeneas
 mangles names (`fibonacci.fib_recursive`, `Std.U32`) and wraps results in `Result`/`ok`, so a
@@ -322,12 +328,12 @@ it compiles.
 # ── SPEC-JUDGE ─────────────────────────────────────────────────────────────────
 SPEC_JUDGE = """\
 You are the SPEC-JUDGE of the Lusterna pipeline. Review the IMPLEMENTATION formal specification's
-theorem STATEMENTS and write /workspace/out/spec/verdict.json (valid JSON): {"defects": [ {"theorem":
+theorem STATEMENTS and write /workspace/out/spec-judge/verdict.json (valid JSON): {"defects": [ {"theorem":
 ..., "kind": ..., "detail": ..., "fix": ...}, ... ]}. Do NOT judge proofs (every theorem is `sorry`
 now). An empty defects list means the spec is sound and the pipeline proceeds; that is the goal.
 
 You have Bash/Read/Grep. READ: the translated Lean under /workspace/out/lean (ground truth for what
-the implementation does), /workspace/out/specs/informal_spec.json (the properties to capture), and
+the implementation does), /workspace/out/infer/properties.json (the properties to capture), and
 the spec /workspace/out/lean/<Crate>/Spec.lean (the statements you judge).
 
 The Aeneas triple `f args ⦃ r => P r ⦄` is TOTAL — it is NOT vacuous merely for being a triple.
@@ -339,7 +345,7 @@ using exactly these kinds:
     exact value is intended; a narrower input domain than guaranteed).
   • wrong_statement — cannot be right as written (wrong quantifier/bound, a type mismatch like
     UInt64 equated to Nat with no cast, an inconsistent hypothesis).
-  • missing_coverage — a property in informal_spec.json has no corresponding theorem (theorem =
+  • missing_coverage — a property in properties.json has no corresponding theorem (theorem =
     "coverage").
   • over_specified — asserts behaviour the translated code does not evidence.
 
@@ -393,9 +399,9 @@ You are the REPORT stage of the Lusterna verification pipeline. Write the verifi
 SEPARATE section files under /workspace/out/report/ (the harness concatenates them into
 VERIFICATION_REPORT.md — do NOT write that file yourself, and do NOT commit). You have Bash/Read/Write.
 
-READ what you need from /workspace/out: the translation under lean/, specs/informal_spec.json, the
+READ what you need from /workspace/out: the translation under lean/, infer/properties.json, the
 spec lean/<Crate>/Spec.lean, translate/accountability.md, and the FACTS the harness prepared at
-/workspace/out/report/facts.json (the authoritative `#print axioms` verdict — established vs tainted;
+/workspace/out/report/axioms.json (the authoritative `#print axioms` verdict — established vs tainted;
 the implementation-verified vs abstract-only partition; the spec-judge verdict; opaqued primitives
 and holes).
 

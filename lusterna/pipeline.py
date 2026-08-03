@@ -142,15 +142,15 @@ def _stage_infer(deps: AgentDeps) -> None:
             if deps.design_doc.strip() else "")
 
     def check(deps: AgentDeps):
-        raw = tools.read_out(deps, "specs/informal_spec.json")
+        raw = tools.read_out(deps, "infer/properties.json")
         if raw.startswith("ERROR:"):
-            return False, "specs/informal_spec.json is missing — write it per the briefing."
+            return False, "infer/properties.json is missing — write it per the briefing."
         try:
             spec = json.loads(raw)
         except json.JSONDecodeError as e:
-            return False, f"specs/informal_spec.json is not valid JSON: {e}"
+            return False, f"infer/properties.json is not valid JSON: {e}"
         if "target_patterns" not in spec:
-            return False, "specs/informal_spec.json is missing the required key `target_patterns`."
+            return False, "infer/properties.json is missing the required key `target_patterns`."
         deps.progress["informal_spec"] = spec
         deps.progress["target_patterns"] = list(spec.get("target_patterns") or [])
         return True, ""
@@ -159,7 +159,7 @@ def _stage_infer(deps: AgentDeps) -> None:
         deps, stage="INFER", briefing=briefings.INFER,
         base_prompt=("Proceed to INFER. Read the pristine Rust at /workspace/repo and "
                      "/workspace/out/explore/handoff.json, then write "
-                     "/workspace/out/specs/informal_spec.json per your briefing." + hint),
+                     "/workspace/out/infer/properties.json per your briefing." + hint),
         check=check,
     )
     tools.commit(deps.container_id, "feat(spec): informal specification (pre-translate)")
@@ -235,7 +235,7 @@ def _stage_translate(deps: AgentDeps) -> None:
         deps, stage="TRANSLATE", briefing=briefings.TRANSLATE,
         base_prompt=(f"Proceed to TRANSLATE. Target patterns (each MUST become a real `def`, never "
                      f"opaqued): {targets or '(whole crate)'}. Suggested entry file: {entry}. Read "
-                     f"/workspace/out/specs/informal_spec.json and /workspace/out/explore/handoff.json, "
+                     f"/workspace/out/infer/properties.json and /workspace/out/explore/handoff.json, "
                      f"then drive Charon + Aeneas into /workspace/out/lean per your briefing."),
         check=check,
     )
@@ -263,9 +263,9 @@ def _stage_formalise(deps: AgentDeps) -> None:
         verdict = _run_judge(
             deps, stage="SPEC-JUDGE", briefing=briefings.SPEC_JUDGE,
             prompt=(f"Judge the theorem STATEMENTS in /workspace/out/{impl} against the translation "
-                    f"in /workspace/out/lean and /workspace/out/specs/informal_spec.json, then write "
-                    f"your verdict to /workspace/out/spec/verdict.json per your briefing."),
-            verdict_rel="spec/verdict.json")
+                    f"in /workspace/out/lean and /workspace/out/infer/properties.json, then write "
+                    f"your verdict to /workspace/out/spec-judge/verdict.json per your briefing."),
+            verdict_rel="spec-judge/verdict.json")
         deps.progress["verdict"] = verdict
         defects = verdict.get("defects", [])
         if defects:
@@ -275,7 +275,7 @@ def _stage_formalise(deps: AgentDeps) -> None:
 
     _cc_gate_loop(
         deps, stage="FORMALISE", briefing=briefings.FORMALISE,
-        base_prompt=(f"Proceed to FORMALISE. Read /workspace/out/specs/informal_spec.json and the "
+        base_prompt=(f"Proceed to FORMALISE. Read /workspace/out/infer/properties.json and the "
                      f"translation under /workspace/out/lean, then write the statement-only spec "
                      f"(theorem bodies `:= by sorry`) to /workspace/out/{impl} per your briefing. "
                      f"Ensure it compiles with `lake env lean`."),
@@ -446,11 +446,11 @@ def _stage_report(deps: AgentDeps) -> str:
         "lean_build_success": deps.progress.get("lean_build", {}).get("success"),
         "sorry_remaining": max(lean.sorry_count(deps), 0),
     }
-    tools.write_out(deps, "report/facts.json", json.dumps(facts, indent=2))
+    tools.write_out(deps, "report/axioms.json", json.dumps(facts, indent=2))
     try:
         run_cc_stage(
             deps, stage="REPORT", briefing=briefings.REPORT,
-            prompt=("Proceed to REPORT. Read /workspace/out/report/facts.json (the authoritative "
+            prompt=("Proceed to REPORT. Read /workspace/out/report/axioms.json (the authoritative "
                     "verdicts) and the artefacts under /workspace/out, then write the six "
                     "report/NN_*.md section files per your briefing. Do not write VERIFICATION_REPORT.md."),
             **_cc_common())
@@ -509,7 +509,7 @@ def _write_abort_notes(deps: AgentDeps, reason: str) -> None:
         lines += ["## Cost so far (per stage, USD)",
                   *(f"- {s}: ${c:.4f}" for s, c in costs.items()), ""]
     lines += ["## What this means",
-              "No end-to-end verification was produced. Review the artefacts (specs/, lean/) and the "
+              "No end-to-end verification was produced. Review the artefacts (infer/, lean/) and the "
               "reason above, address the blocker, then re-run.", ""]
     try:
         tools.write_out(deps, "VERIFICATION_INCOMPLETE.md", "\n".join(lines))
