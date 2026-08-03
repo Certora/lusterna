@@ -209,7 +209,9 @@ Lean edit: WHAT you changed and WHY it is behaviour-preserving (or why an opaque
 primitive the properties don't depend on). For a rung-3 edit the "why" is EVIDENCE, not assertion:
 name the behavioural-equivalence tests you wrote, the cases they cover (representative + the
 edge/boundary cases above), and that they pass. Source edits are also captured as a git diff — still
-narrate them. Keep edits minimal and well-justified.
+narrate them. Keep edits minimal and well-justified. (FYI: /workspace/repo is already a git repo at
+a pristine baseline, so you don't need to `git init` or stage a baseline yourself to track edits —
+the harness diffs your changes against it automatically. Use git however you find useful otherwise.)
 
 DELIVERABLE: the compiling translation in /workspace/out/lean (target functions as real `def`s),
 plus translate/plan.md and translate/accountability.md. STOP once the target translates and
