@@ -26,7 +26,7 @@ DEFAULT_IMAGE = "lusterna-toolchain:latest"
 REPO_IN  = "/workspace/repo"
 VERIF_IN = f"{REPO_IN}/verification"     # generated artefacts live here, inside the one repo
 OUT_IN   = "/workspace/out"              # symlink → VERIF_IN (stable path for sessions + helpers)
-BASE_REF = "refs/lusterna/base"          # accountability base: the state just before TRANSLATE edits
+PRISTINE_REF = "refs/lusterna/pristine"  # the pristine root commit — exactly the source we were handed
 
 
 def run_branch(session_id: str) -> str:
@@ -136,52 +136,30 @@ def init_repo_git(container_id: str, session_id: str) -> None:
             ["git", "commit", "-q", "--allow-empty", "-m", "chore: pristine source (baseline)"],
             workdir=REPO_IN)
     exec_in(container_id, ["git", "checkout", "-q", "-b", run_branch(session_id)], workdir=REPO_IN)
-    # Accountability base = the state before any source edit. It is advanced past EXPLORE's build-env
-    # prep in commit_build_prep, so TRANSLATE's source-edit diff (base..worktree) carries only
-    # genuine, behaviour-relevant edits.
-    exec_in(container_id, ["git", "update-ref", BASE_REF, "HEAD"], workdir=REPO_IN)
+    # Pin the pristine root (the source exactly as handed to us) so export can offer it as the
+    # `<branch>-base` review anchor. It never moves; the whole run is `git diff <branch>-base <branch>`.
+    exec_in(container_id, ["git", "update-ref", PRISTINE_REF, "HEAD"], workdir=REPO_IN)
     exec_in(container_id, ["mkdir", "-p", VERIF_IN], workdir=REPO_IN)
     _link_out(container_id)
     log.info("Source repo git-initialised at %s (branch %s) inside %s",
              REPO_IN, run_branch(session_id), container_id[:12])
 
 
-def commit_build_prep(container_id: str) -> None:
-    """Commit EXPLORE's output + any BUILD-ENVIRONMENT prep as the branch's first stage commit,
-    then advance the accountability base past it.
-
-    EXPLORE may apply build-env prep (dropping a `cdylib` crate-type, neutralising a removed nightly
-    feature, fixing a vendored `.cargo-checksum`) to make the target buildable — build configuration,
-    irrelevant to program behaviour. Committing it here and moving the accountability base to this
-    commit keeps TRANSLATE's source-edit diff (base..worktree) showing only genuine edits, exactly as
-    folding it into the pristine baseline used to. The build-env prep stays visible in the branch
-    history (this commit) for anyone who wants it.
-    """
-    exec_in(container_id, ["git", "add", "-A"], workdir=REPO_IN)
-    exec_in(container_id,
-            ["git", "commit", "-q", "--allow-empty", "-m",
-             "chore(explore): assessment + build-env prep"],
-            workdir=REPO_IN)
-    exec_in(container_id, ["git", "update-ref", BASE_REF, "HEAD"], workdir=REPO_IN)
-    log.info("Committed EXPLORE assessment + build-env prep; accountability base advanced in %s",
-             container_id[:12])
-
-
 def export_branch(container_id: str, dest: Path, session_id: str) -> None:
     """Fetch the run branch out of the container into the target repo at *dest*.
 
     The container holds the one repo (source + verification/, on branch lusterna/<session>). We
-    bundle the branch and its accountability base, copy the bundle to the host, and `git fetch` it
-    into *dest* — git-initialising *dest* if it is not already a repo. The fetch creates
-    `lusterna/<session>` and `lusterna/<session>-base` (plus the internal base ref) and touches
-    nothing else: the working tree, and any branch the delivered repo already has, are left as-is.
-    Review the run with:  git -C <dest> diff lusterna/<session>-base lusterna/<session>
+    bundle the branch and the pristine root, copy the bundle to the host, and `git fetch` it into
+    *dest* — git-initialising *dest* if it is not already a repo. The fetch creates
+    `lusterna/<session>` and `lusterna/<session>-base` (= the pristine source) and touches nothing
+    else: the working tree, and any branch the delivered repo already has, are left as-is.
+    Review the whole run with:  git -C <dest> diff lusterna/<session>-base lusterna/<session>
 
     Best-effort by design — a failure is logged, not raised, so it never masks the run's own result.
     """
     branch = run_branch(session_id)
     bundle_in = "/workspace/lusterna.bundle"
-    code, _, err = exec_in(container_id, ["git", "bundle", "create", bundle_in, branch, BASE_REF],
+    code, _, err = exec_in(container_id, ["git", "bundle", "create", bundle_in, branch, PRISTINE_REF],
                            workdir=REPO_IN)
     if code != 0:
         log.warning("Skipping export — could not bundle %s: %s", branch, err.strip()[:200])
@@ -195,8 +173,7 @@ def export_branch(container_id: str, dest: Path, session_id: str) -> None:
         subprocess.run(
             ["git", "-C", str(dest), "fetch", "-q", str(bundle_host.resolve()),
              f"+{branch}:refs/heads/{branch}",
-             f"+{BASE_REF}:refs/heads/{branch}-base",
-             f"+{BASE_REF}:{BASE_REF}"],
+             f"+{PRISTINE_REF}:refs/heads/{branch}-base"],
             check=True)
     finally:
         bundle_host.unlink(missing_ok=True)
@@ -259,9 +236,9 @@ def stop(container_id: str) -> None:
 
 
 def keep_alive(container_id: str) -> None:
-    """Leave the container running so a later resume can re-attach to it with FULL state — repo
-    edits/shims, out/ artefacts, and the accountability baseline all intact — instead of restarting
-    the interrupted stage from a pristine tree. Used when a run does not complete (budget hit,
+    """Leave the container running so a later resume can re-attach to it with FULL state — source
+    edits, the verification/ tree, and the run branch all intact — instead of restarting the
+    interrupted stage from a pristine tree. Used when a run does not complete (budget hit,
     interrupt, crash). Cancels the atexit auto-stop; the `sleep infinity` entrypoint keeps it alive
     until the session is resumed (which re-attaches) or it is freed with `docker kill`."""
     atexit.unregister(_stop_on_exit)

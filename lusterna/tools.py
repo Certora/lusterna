@@ -8,7 +8,7 @@ import logging
 import subprocess
 from pathlib import Path
 
-from .container import REPO_IN, OUT_IN, BASE_REF, exec_in
+from .container import REPO_IN, OUT_IN, exec_in
 from .schemas import AgentDeps
 
 log = logging.getLogger(__name__)
@@ -81,12 +81,8 @@ def write_out(deps: AgentDeps, path: str, content: str) -> str:
 #    from REPO_IN's git for the accountability trail) ──────────────────────────
 
 def _repo_baseline(container_id: str) -> str:
-    """SHA of the accountability base — the state just before any TRANSLATE source edit (pristine
-    plus EXPLORE's build-env prep). Falls back to the root commit if the base ref is somehow absent."""
-    code, out, _ = exec_in(container_id, ["git", "rev-parse", "--verify", "-q", BASE_REF],
-                           workdir=REPO_IN)
-    if code == 0 and out.strip():
-        return out.strip()
+    """SHA of the pristine root — the source exactly as handed to us, before any edit. The source
+    diff is taken against this; build-env prep and TRANSLATE edits alike show up (all narrated)."""
     _, out, _ = exec_in(container_id, ["git", "rev-list", "--max-parents=0", "HEAD"],
                         workdir=REPO_IN)
     lines = [l.strip() for l in out.splitlines() if l.strip()]
@@ -98,8 +94,8 @@ _SRC_PATHSPEC = ["--", ".", ":(exclude)verification"]
 
 
 def repo_diff(container_id: str) -> str:
-    """Combined diff of the Rust SOURCE since the accountability base (working tree vs the base, so
-    it captures edits whether or not committed; the generated `verification/` tree is excluded).
+    """Combined diff of the Rust SOURCE since the pristine root (working tree vs the root, so it
+    captures edits whether or not committed; the generated `verification/` tree is excluded).
     Empty if the agent made no source edits. The authoritative record of every source modification,
     for human review and the TRANSLATE accountability trail."""
     _, out, _ = exec_in(container_id, ["git", "diff", _repo_baseline(container_id),
@@ -108,7 +104,7 @@ def repo_diff(container_id: str) -> str:
 
 
 def repo_changed_files(container_id: str) -> list[str]:
-    """Repo-relative paths of Rust-SOURCE files changed since the accountability base (the generated
+    """Repo-relative paths of Rust-SOURCE files changed since the pristine root (the generated
     `verification/` tree excluded)."""
     _, out, _ = exec_in(container_id, ["git", "diff", _repo_baseline(container_id),
                                        "--name-only", *_SRC_PATHSPEC], workdir=REPO_IN)
