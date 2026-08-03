@@ -171,7 +171,7 @@ def sorry_bodied_theorems(spec_text: str) -> set[str]:
     out: set[str] = set()
     for i, m in enumerate(decls):
         end = decls[i + 1].start() if i + 1 < len(decls) else len(spec_text)
-        body = spec_text[m.end():end]
+        body = _strip_lean_comments(spec_text[m.end():end])   # a `sorry` in a comment is not an obligation
         if re.search(r"\bsorry\b", body):
             out.add(m.group(1).split(".")[-1])
     return out
@@ -471,10 +471,12 @@ def build(deps: AgentDeps) -> dict:
 
 
 def sorry_count(deps: AgentDeps) -> int:
-    """Remaining `sorry` in the implementation spec — PROVE's progress metric.
-    Returns -1 if the file can't be read, so the caller never mistakes it for done."""
+    """Number of theorems in the implementation spec still bodied by `sorry` — the genuinely-open
+    obligations, and PROVE's progress metric. Counts per-theorem (not raw text occurrences), so a
+    stray `sorry` in a header/proof comment is not miscounted. Returns -1 if the file can't be
+    read, so the caller never mistakes it for done."""
     content = tools.read_out(deps, impl_spec(deps))
-    return -1 if content.startswith("ERROR:") else content.count("sorry")
+    return -1 if content.startswith("ERROR:") else len(sorry_bodied_theorems(content))
 
 
 def translation_text(deps: AgentDeps, lean_files: list[str] | None = None) -> str:
