@@ -58,8 +58,7 @@ def analyze_translation(deps: AgentDeps, *, do_commit: bool = True) -> dict:
         sha = tools.commit(
             deps.container_id,
             f"feat(aeneas): translation ({len(lean_files)} file(s)"
-            + (f", {len(holes)} hole(s)" if holes else "") + ")",
-            glob="lean/")
+            + (f", {len(holes)} hole(s)" if holes else "") + ")")
     log.info("Translation: %d Lean file(s), %d hole(s), crate module %s",
              len(lean_files), len(holes), crate_module)
     return {

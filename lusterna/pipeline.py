@@ -130,7 +130,7 @@ def _stage_explore(deps: AgentDeps) -> None:
         raise _PipelineAborted(f"EXPLORE handoff.json is not valid JSON: {e}")
     # Fold any build-env prep into the pristine baseline so it is not mistaken for a TRANSLATE
     # source modification in the accountability diff.
-    container.refold_baseline(deps.container_id)
+    container.commit_build_prep(deps.container_id)
     checkpoint.snapshot(deps)
 
 
@@ -163,7 +163,7 @@ def _stage_infer(deps: AgentDeps) -> None:
                      "/workspace/out/specs/informal_spec.json per your briefing." + hint),
         check=check,
     )
-    tools.commit(deps.container_id, "feat(spec): informal specification (pre-translate)", glob="specs/")
+    tools.commit(deps.container_id, "feat(spec): informal specification (pre-translate)")
     log.info("INFER target patterns: %s", deps.progress.get("target_patterns") or "(whole crate)")
 
 
@@ -240,7 +240,7 @@ def _stage_translate(deps: AgentDeps) -> None:
                      f"then drive Charon + Aeneas into /workspace/out/lean per your briefing."),
         check=check,
     )
-    tools.commit(deps.container_id, "feat(translate): aeneas translation of the target", glob=".")
+    tools.commit(deps.container_id, "feat(translate): aeneas translation of the target")
 
 
 # ── FORMALISE (+ SPEC-JUDGE) ──────────────────────────────────────────────────────
@@ -282,7 +282,7 @@ def _stage_formalise(deps: AgentDeps) -> None:
                      f"Ensure it compiles with `lake env lean`."),
         check=check,
     )
-    tools.commit(deps.container_id, "feat(spec): implementation spec (statements only)", glob="lean/")
+    tools.commit(deps.container_id, "feat(spec): implementation spec (statements only)")
 
 
 # ── PROVE ─────────────────────────────────────────────────────────────────────────
@@ -385,7 +385,7 @@ def _stage_prove(deps: AgentDeps) -> None:
     tools.write_out(deps, impl, best_spec)
     if not lean.build(deps).get("success"):
         raise _PipelineAborted("PROVE left the spec in a non-compiling state")
-    tools.commit(deps.container_id, "stage/prove: proof attempts", glob="lean/")
+    tools.commit(deps.container_id, "stage/prove: proof attempts")
     deps.progress["proofs_done"] = True
     _record_axioms(deps)
 
@@ -470,7 +470,7 @@ def _stage_report(deps: AgentDeps) -> str:
         log.warning("REPORT produced no sections")
     if report_text:
         tools.write_out(deps, "VERIFICATION_REPORT.md", report_text)
-        tools.commit(deps.container_id, "stage/report: final pipeline report", glob=".")
+        tools.commit(deps.container_id, "stage/report: final pipeline report")
         log.info("Report written and committed (%d chars)", len(report_text))
     checkpoint.snapshot(deps)
     return report_text or "(no report generated)"
@@ -514,7 +514,7 @@ def _write_abort_notes(deps: AgentDeps, reason: str) -> None:
               "reason above, address the blocker, then re-run.", ""]
     try:
         tools.write_out(deps, "VERIFICATION_INCOMPLETE.md", "\n".join(lines))
-        tools.commit(deps.container_id, "chore: incomplete-verification notes", glob=".")
+        tools.commit(deps.container_id, "chore: incomplete-verification notes")
         log.info("Wrote VERIFICATION_INCOMPLETE.md (abort notes)")
     except Exception as e:
         log.warning("Could not write abort notes: %s", e)
@@ -543,7 +543,7 @@ async def run_session(deps: AgentDeps) -> str:
         result = _stage_report(deps)
 
         tools.prune_stray_specs(deps, deps.progress.get("aeneas", {}).get("lean_path", ""))
-        tools.commit(deps.container_id, "chore: prune stray spec files", glob=".")
+        tools.commit(deps.container_id, "chore: prune stray spec files")
 
         total_cost = sum(deps.progress.get("cc_costs", {}).values())
         log.info("Pipeline complete — total Claude Code cost: $%.4f across stages %s",

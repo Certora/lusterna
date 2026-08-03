@@ -1,12 +1,15 @@
 """Docker container lifecycle management.
 
-The container has its own isolated filesystem — no bind-mounts.
-The source repo is pushed in with `docker cp` at session start;
-artefacts are pulled out with `docker cp` at session end.
+The container has its own isolated filesystem — no bind-mounts. The source repo is pushed in at
+session start; the run works ONE git repo on branch lusterna/<session>, and that branch is fetched
+back into the target repo at session end.
 
 Fixed paths inside every container:
-  /workspace/repo  — target Rust repo (pushed from host, read by agent)
-  /workspace/out   — generated artefacts (git-tracked, pulled to host on exit)
+  /workspace/repo               — the ONE git repo of the run (source + edits + artefacts),
+                                  worked on branch lusterna/<session>
+  /workspace/repo/verification  — generated artefacts (Lean, specs, report)
+  /workspace/out                — symlink → /workspace/repo/verification, so the stage sessions
+                                  and IO helpers address artefacts by a stable path
 """
 import atexit
 import logging
@@ -20,8 +23,33 @@ log = logging.getLogger(__name__)
 
 DEFAULT_IMAGE = "lusterna-toolchain:latest"
 
-REPO_IN = "/workspace/repo"
-OUT_IN  = "/workspace/out"
+REPO_IN  = "/workspace/repo"
+VERIF_IN = f"{REPO_IN}/verification"     # generated artefacts live here, inside the one repo
+OUT_IN   = "/workspace/out"              # symlink → VERIF_IN (stable path for sessions + helpers)
+BASE_REF = "refs/lusterna/base"          # accountability base: the state just before TRANSLATE edits
+
+
+def run_branch(session_id: str) -> str:
+    """The branch every stage commits onto — namespaced so it never collides with a branch the
+    delivered repo may already have."""
+    return f"lusterna/{session_id}"
+
+
+def _link_out(container_id: str) -> None:
+    """Point the stable /workspace/out path at verification/ inside the one repo (the image does not
+    pre-create /workspace/out, so this is the sole thing that establishes the path)."""
+    exec_in(container_id, ["ln", "-s", VERIF_IN, OUT_IN])
+
+
+def _write_excludes(container_id: str) -> None:
+    """Establish the repo's build-tree excludes in .git/info/exclude — the multi-GB `.lake` lake
+    tree (re-provisioned on demand by setup_lake), `target/` (cargo output) and `*.llbc` (Charon
+    output). Kept in info/exclude rather than a committed .gitignore so the delivered repo is never
+    polluted with a lusterna file. Because info/exclude lives in .git (not in the tree, not in the
+    bundle), it must be re-established on import_repo, not only at init — else a resumed stage's
+    `git add -A` would start committing the build tree."""
+    exec_in(container_id, ["sh", "-c", "printf 'target/\\n*.llbc\\n.lake/\\n' >> .git/info/exclude"],
+            workdir=REPO_IN)
 
 
 def _docker(*args: str, check: bool = True) -> subprocess.CompletedProcess:
@@ -81,121 +109,140 @@ def push_repo(container_id: str, repo_path: Path) -> None:
     log.info("Repo pushed into container %s → %s", container_id[:12], REPO_IN)
 
 
-def init_out(container_id: str) -> None:
-    """Create and git-init the output directory inside the container."""
-    exec_in(container_id, ["mkdir", "-p", OUT_IN])
-    exec_in(container_id, ["git", "init"], workdir=OUT_IN)
-    # `.lake/` is the lake BUILD tree (the Aeneas runtime, and — once a stage runs `lake build` /
-    # `lake exe cache get` — a full Mathlib source+olean tree, GBs). It is never a pipeline artefact:
-    # setup_lake re-provisions it from the image's /opt/lean-template on demand. Exclude it from the
-    # output repo so commits (and a resume's `reset --hard`) never carry gigabytes of dependency tree.
-    exec_in(container_id, ["sh", "-c", "printf '.lake/\\n' >> .git/info/exclude"], workdir=OUT_IN)
-    exec_in(container_id,
-            ["git", "commit", "--allow-empty", "-m", "chore: init lusterna session"],
-            workdir=OUT_IN)
-    log.info("Output repo initialised at %s inside %s", OUT_IN, container_id[:12])
+def init_repo_git(container_id: str, session_id: str) -> None:
+    """Git-init the pushed source as the ONE repo of the run and branch off a pristine baseline.
 
+    Everything the run produces — the Aeneas translation, the specs, the report — lands in a
+    `verification/` subtree of THIS repo, and every stage commits onto branch lusterna/<session>.
+    So a single `git diff lusterna/<session>-base lusterna/<session>` in the delivered repo shows
+    the whole change: the generated Lean plus any behaviour-preserving source edit TRANSLATE made.
 
-def init_repo_git(container_id: str) -> None:
-    """Git-init the pushed Rust source in REPO_IN and commit a pristine baseline.
+    `/workspace/out` is kept as a symlink into `verification/`, so the stage sessions and the harness
+    IO helpers address artefacts by the same stable path while they physically live in the one repo.
+    `target/` (cargo output), `*.llbc` (Charon output) and `.lake/` (the multi-GB lake build tree,
+    re-provisioned on demand by setup_lake) are excluded so neither commits nor the diff carry them.
 
-    TRANSLATE may (as a last resort) apply behaviour-preserving refactors to the source;
-    this baseline is what every such edit is diffed against for the accountability trail.
-    `target/` (cargo build output) and `*.llbc` (Charon output) are excluded via
-    .git/info/exclude so they never pollute the diffs.
-
-    A pinned `rust-toolchain.toml` would force a stable channel Charon cannot drive (it needs
-    its own bundled nightly for MIR extraction), so any such pin is neutralised BEFORE the
-    baseline commit — it is build configuration, irrelevant to program behaviour, and baking it
-    into pristine keeps it out of the accountability diff.
+    A pinned `rust-toolchain.toml` would force a stable channel Charon cannot drive (it needs its own
+    bundled nightly for MIR extraction), so any such pin is neutralised BEFORE the baseline commit —
+    build configuration, irrelevant to program behaviour.
     """
     exec_in(container_id,
             ["find", REPO_IN, "-maxdepth", "4", "-name", "rust-toolchain*", "-delete"],
             workdir=REPO_IN)
-    exec_in(container_id, ["git", "init"], workdir=REPO_IN)
-    exec_in(container_id,
-            ["sh", "-c", "printf 'target/\\n*.llbc\\n' >> .git/info/exclude"],
-            workdir=REPO_IN)
+    exec_in(container_id, ["git", "init", "-q"], workdir=REPO_IN)
+    _write_excludes(container_id)
     exec_in(container_id, ["git", "add", "-A"], workdir=REPO_IN)
     exec_in(container_id,
-            ["git", "commit", "--allow-empty", "-m", "chore: pristine source (baseline for edit diffs)"],
+            ["git", "commit", "-q", "--allow-empty", "-m", "chore: pristine source (baseline)"],
             workdir=REPO_IN)
-    log.info("Source repo git-initialised at %s inside %s", REPO_IN, container_id[:12])
+    exec_in(container_id, ["git", "checkout", "-q", "-b", run_branch(session_id)], workdir=REPO_IN)
+    # Accountability base = the state before any source edit. It is advanced past EXPLORE's build-env
+    # prep in commit_build_prep, so TRANSLATE's source-edit diff (base..worktree) carries only
+    # genuine, behaviour-relevant edits.
+    exec_in(container_id, ["git", "update-ref", BASE_REF, "HEAD"], workdir=REPO_IN)
+    exec_in(container_id, ["mkdir", "-p", VERIF_IN], workdir=REPO_IN)
+    _link_out(container_id)
+    log.info("Source repo git-initialised at %s (branch %s) inside %s",
+             REPO_IN, run_branch(session_id), container_id[:12])
 
 
-def refold_baseline(container_id: str) -> None:
-    """Fold any working-tree changes into the pristine baseline commit (amend).
+def commit_build_prep(container_id: str) -> None:
+    """Commit EXPLORE's output + any BUILD-ENVIRONMENT prep as the branch's first stage commit,
+    then advance the accountability base past it.
 
-    EXPLORE may apply BUILD-ENVIRONMENT prep (dropping a `cdylib` crate-type, neutralising a
-    removed nightly feature, fixing a vendored `.cargo-checksum`) to make the target buildable.
-    Like the `rust-toolchain` pin neutralised in init_repo_git, this is build configuration —
-    irrelevant to program behaviour — so it belongs IN the baseline, not in the TRANSLATE
-    accountability diff. Amending the single root commit keeps `repo_diff` (root..worktree)
-    showing only TRANSLATE's genuine source edits. Safe because REPO_IN holds exactly one commit.
+    EXPLORE may apply build-env prep (dropping a `cdylib` crate-type, neutralising a removed nightly
+    feature, fixing a vendored `.cargo-checksum`) to make the target buildable — build configuration,
+    irrelevant to program behaviour. Committing it here and moving the accountability base to this
+    commit keeps TRANSLATE's source-edit diff (base..worktree) showing only genuine edits, exactly as
+    folding it into the pristine baseline used to. The build-env prep stays visible in the branch
+    history (this commit) for anyone who wants it.
     """
     exec_in(container_id, ["git", "add", "-A"], workdir=REPO_IN)
-    exec_in(container_id, ["git", "commit", "--amend", "--no-edit", "--allow-empty"],
+    exec_in(container_id,
+            ["git", "commit", "-q", "--allow-empty", "-m",
+             "chore(explore): assessment + build-env prep"],
             workdir=REPO_IN)
-    log.info("Refolded EXPLORE build-env prep into the pristine baseline in %s", container_id[:12])
+    exec_in(container_id, ["git", "update-ref", BASE_REF, "HEAD"], workdir=REPO_IN)
+    log.info("Committed EXPLORE assessment + build-env prep; accountability base advanced in %s",
+             container_id[:12])
 
 
-def push_artefacts(container_id: str, src: Path) -> None:
-    """Push existing artefacts from *src* on the host back into OUT_IN.
+def export_branch(container_id: str, dest: Path, session_id: str) -> None:
+    """Fetch the run branch out of the container into the target repo at *dest*.
 
-    Used when resuming a session with a dead container: restores the partial
-    output (including the git history) into a freshly started container.
+    The container holds the one repo (source + verification/, on branch lusterna/<session>). We
+    bundle the branch and its accountability base, copy the bundle to the host, and `git fetch` it
+    into *dest* — git-initialising *dest* if it is not already a repo. The fetch creates
+    `lusterna/<session>` and `lusterna/<session>-base` (plus the internal base ref) and touches
+    nothing else: the working tree, and any branch the delivered repo already has, are left as-is.
+    Review the run with:  git -C <dest> diff lusterna/<session>-base lusterna/<session>
+
+    Best-effort by design — a failure is logged, not raised, so it never masks the run's own result.
     """
-    exec_in(container_id, ["mkdir", "-p", OUT_IN])
+    branch = run_branch(session_id)
+    bundle_in = "/workspace/lusterna.bundle"
+    code, _, err = exec_in(container_id, ["git", "bundle", "create", bundle_in, branch, BASE_REF],
+                           workdir=REPO_IN)
+    if code != 0:
+        log.warning("Skipping export — could not bundle %s: %s", branch, err.strip()[:200])
+        return
+    dest.mkdir(parents=True, exist_ok=True)
+    if not (dest / ".git").exists():
+        subprocess.run(["git", "init", "-q", str(dest)], check=True)
+    bundle_host = dest / ".lusterna-run.bundle"
+    _docker("cp", f"{container_id}:{bundle_in}", str(bundle_host))
+    try:
+        subprocess.run(
+            ["git", "-C", str(dest), "fetch", "-q", str(bundle_host.resolve()),
+             f"+{branch}:refs/heads/{branch}",
+             f"+{BASE_REF}:refs/heads/{branch}-base",
+             f"+{BASE_REF}:{BASE_REF}"],
+            check=True)
+    finally:
+        bundle_host.unlink(missing_ok=True)
+    log.info("Run branch exported → %s (%s; base %s-base)", dest, branch, branch)
+
+
+def host_has_branch(dest: Path, session_id: str) -> bool:
+    """True if *dest* is a git repo already carrying this session's run branch (a prior run exported
+    it) — the signal that a dead-container resume can restore full state from disk."""
+    if not (dest / ".git").exists():
+        return False
+    r = subprocess.run(["git", "-C", str(dest), "rev-parse", "--verify", "-q",
+                        f"refs/heads/{run_branch(session_id)}"], capture_output=True, text=True)
+    return r.returncode == 0
+
+
+def import_repo(container_id: str, src: Path, session_id: str, git_head: str) -> None:
+    """Restore the run's repo from the target repo at *src* into a fresh container (dead-container
+    resume). Pushes the host repo WITH its .git — so the branch, its history, and the source edits
+    all come along — checks out the run branch, hard-resets to the checkpoint commit, and recreates
+    the /workspace/out symlink. `.lake`/`target` are not carried (setup_lake re-provisions .lake).
+    Raises if the checkpoint commit is absent (the target dir does not match the checkpoint) rather
+    than continuing from a mismatched state."""
+    branch = run_branch(session_id)
+    exec_in(container_id, ["mkdir", "-p", REPO_IN])
     tar = subprocess.Popen(
-        ["tar", "c", "-C", str(src.resolve()), "--exclude=*/.lake", "."],
-        stdout=subprocess.PIPE,
-    )
-    subprocess.run(
-        ["docker", "exec", "-i", container_id,
-         "tar", "x", "--no-same-owner", "-C", OUT_IN],
-        stdin=tar.stdout,
-        check=True,
-    )
+        ["tar", "c", "-C", str(src.resolve()), "--exclude=./target", "--exclude=*/.lake", "."],
+        stdout=subprocess.PIPE)
+    subprocess.run(["docker", "exec", "-i", container_id, "tar", "x", "--no-same-owner",
+                    "-C", REPO_IN], stdin=tar.stdout, check=True)
     tar.wait()
-    log.info("Artefacts pushed %s → %s inside %s (excluding .lake)", src, OUT_IN, container_id[:12])
-
-
-def reset_out(container_id: str, git_head: str) -> None:
-    """Hard-reset the output repo to *git_head* — the commit a checkpoint captured.
-
-    After push_artefacts restores whatever tree was last on the host, this pins the
-    output back to exactly the state of the checkpoint being resumed, discarding any
-    later commits and untracked files. Without it, resume trusts the on-disk tree
-    rather than the checkpoint, so a drifted work_path silently resumes stale Lean
-    files. Raises if the commit is absent from the restored history (the artefacts do
-    not match the checkpoint) rather than continuing from a mismatched state.
-    """
-    code, _, _ = exec_in(
-        container_id, ["git", "cat-file", "-e", f"{git_head}^{{commit}}"], workdir=OUT_IN)
+    code, _, _ = exec_in(container_id, ["git", "cat-file", "-e", f"{git_head}^{{commit}}"],
+                         workdir=REPO_IN)
     if code != 0:
         raise RuntimeError(
-            f"Checkpoint commit {git_head[:12]} is not present in the restored output "
-            f"at {OUT_IN}. The artefacts on disk do not match this checkpoint — refusing "
-            f"to resume from a mismatched state.")
-    exec_in(container_id, ["git", "reset", "--hard", git_head], workdir=OUT_IN)
-    exec_in(container_id, ["git", "clean", "-fdq"], workdir=OUT_IN)
-    log.info("Output repo reset to checkpoint commit %s inside %s",
-             git_head[:12], container_id[:12])
-
-
-def pull_artefacts(container_id: str, dest: Path) -> None:
-    """Copy the output directory from the container to *dest* on the host, EXCLUDING the multi-GB
-    `.lake` build tree (Aeneas/Mathlib deps — re-provisioned from the image, never a real artefact).
-
-    tar-with-exclude rather than `docker cp` (which has no exclude and would drag the whole .lake
-    tree onto the host, as it did before this was fixed)."""
-    dest.mkdir(parents=True, exist_ok=True)
-    tar = subprocess.Popen(
-        ["docker", "exec", container_id, "tar", "c", "-C", OUT_IN, "--exclude=*/.lake", "."],
-        stdout=subprocess.PIPE)
-    subprocess.run(["tar", "x", "-C", str(dest.resolve())], stdin=tar.stdout, check=True)
-    tar.wait()
-    log.info("Artefacts pulled %s → %s (excluding .lake)", OUT_IN, dest)
+            f"Checkpoint commit {git_head[:12]} is absent from the repo restored from {src}. "
+            f"The target dir does not match this checkpoint — refusing to resume from a mismatch.")
+    exec_in(container_id, ["git", "checkout", "-q", "-f", branch], workdir=REPO_IN)
+    exec_in(container_id, ["git", "reset", "--hard", git_head], workdir=REPO_IN)
+    exec_in(container_id, ["git", "clean", "-fdq"], workdir=REPO_IN)
+    # The tarred-in host .git carries an empty info/exclude (it was git-init'd on the host at export),
+    # so re-establish the build-tree excludes before any resumed stage runs `git add -A`.
+    _write_excludes(container_id)
+    _link_out(container_id)
+    log.info("Repo restored from %s into %s (branch %s @ %s)",
+             src, container_id[:12], branch, git_head[:12])
 
 
 def _stop_on_exit(container_id: str) -> None:

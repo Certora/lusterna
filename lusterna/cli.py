@@ -26,9 +26,6 @@ def main(verbose: bool) -> None:
 @main.command()
 @click.argument("repo", type=click.Path(exists=True, file_okay=False, resolve_path=True))
 @click.argument("design_doc", type=click.Path(exists=True, dir_okay=False, resolve_path=True))
-@click.option("--out", "out_dir", type=click.Path(resolve_path=True), default=None,
-              help="Host directory to pull artefacts into when done "
-                   "(default: <repo>/../<repo>-lusterna)")
 @click.option("--session-id", default=None, help="Resume an existing session by ID")
 @click.option("--checkpoint-number", "ckpt_number", default=None, type=int,
               help="Checkpoint number to resume from (default: latest)")
@@ -39,7 +36,6 @@ def main(verbose: bool) -> None:
 def run(
     repo: str,
     design_doc: str,
-    out_dir: str | None,
     session_id: str | None,
     ckpt_number: int | None,
     container: str | None,
@@ -47,14 +43,17 @@ def run(
 ) -> None:
     """Run the verification pipeline on REPO using DESIGN_DOC.
 
-    Per-stage cost is capped by Claude Code's own --max-budget-usd (config.CC_STAGE_BUDGET_USD);
+    The run works one git repo inside the container and, on exit, fetches its results into REPO as
+    branch `lusterna/<session>` (REPO is git-initialised if it is not already a repo; its working
+    tree and existing branches are left untouched). Review with:
+    `git -C REPO diff lusterna/<session>-base lusterna/<session>`.
+
+    Per-stage cost is capped by the agent's own --max-budget-usd (config.CC_STAGE_BUDGET_USD);
     there is no session-wide token budget knob."""
     from . import pipeline
     from . import container as container_mod
 
     repo_path = Path(repo)
-    work_path = Path(out_dir) if out_dir else repo_path.parent / (repo_path.name + "-lusterna")
-
     doc_text = Path(design_doc).read_text()
 
     sid = session_id or str(uuid.uuid4())
@@ -63,10 +62,7 @@ def run(
     _user_container = container
     saved = checkpoint.load(sid, number=ckpt_number)
     if saved:
-        log.info(
-            "Resuming session %s from checkpoint %s",
-            sid, ckpt_number or "latest",
-        )
+        log.info("Resuming session %s from checkpoint %s", sid, ckpt_number or "latest")
         progress = saved.get("progress", {})
         container = container or saved.get("container_id")
     else:
@@ -77,42 +73,45 @@ def run(
     resuming = bool(saved)
 
     if container and container_mod.is_running(container):
+        # Container kept alive from an interrupted run — re-attach with full in-container state.
         container_id = container
         log.info("Attaching to existing container %s", container_id[:12])
     else:
         if container:
             log.info("Container %s is not running — starting a fresh one", container[:12])
         container_id = container_mod.start(image=image)
-        container_mod.push_repo(container_id, repo_path)
-        # Git-init the source so TRANSLATE can diff any behaviour-preserving refactor
-        # against a pristine baseline for the accountability trail.
-        container_mod.init_repo_git(container_id)
-        if resuming and work_path.exists():
-            # Restore partial artefacts so the agent can continue where it left off,
-            # then pin the output repo to the checkpoint's commit so we resume from
-            # exactly that state rather than trusting whatever drifted onto disk.
-            container_mod.push_artefacts(container_id, work_path)
-            log.info("Restored artefacts from %s into container", work_path)
-            git_head = saved.get("git_head")
-            if git_head:
-                container_mod.reset_out(container_id, git_head)
+        if resuming and container_mod.host_has_branch(repo_path, sid):
+            # Dead-container resume: rebuild the whole repo (source edits + verification + branch)
+            # from the target dir, pinned to the checkpoint commit — no stage is restarted pristine.
+            container_mod.import_repo(container_id, repo_path, sid, saved.get("git_head", "HEAD"))
+            # import_repo does not carry the (excluded) .lake build tree; re-provision it if the
+            # translation already exists so a resumed lean stage builds against the cache, not a
+            # cold full Mathlib rebuild.
+            needs_lake = "aeneas" in progress
         else:
-            container_mod.init_out(container_id)
+            container_mod.push_repo(container_id, repo_path)
+            container_mod.init_repo_git(container_id, sid)
+            needs_lake = False
 
     deps = AgentDeps(
         container_id=container_id,
         repo_path=repo_path,
-        work_path=work_path,
+        work_path=repo_path,     # the run branch lands here
         session_id=sid,
         design_doc=doc_text,
         progress=progress,
     )
 
+    if needs_lake:
+        from . import lean
+        lean.setup_lake(deps)
+
     try:
         summary = asyncio.run(pipeline.run_session(deps))
     finally:
-        container_mod.pull_artefacts(container_id, work_path)
-        log.info("Artefacts written to %s", work_path)
+        # Always fetch the branch out (partial too), so the target repo holds the latest state even
+        # if the kept-alive container is later killed. Best-effort: never masks the run's result.
+        container_mod.export_branch(container_id, repo_path, sid)
         if _external:
             log.info("Leaving user-provided container %s as-is", container_id[:12])
         elif deps.completed:
@@ -124,7 +123,8 @@ def run(
 
     output = {
         "session_id": sid,
-        "out_dir": str(work_path),
+        "repo": str(repo_path),
+        "branch": container_mod.run_branch(sid),
         "container_id": container_id,
         "summary": summary,
         "progress_keys": list(deps.progress.keys()),

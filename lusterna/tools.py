@@ -8,7 +8,7 @@ import logging
 import subprocess
 from pathlib import Path
 
-from .container import REPO_IN, OUT_IN, exec_in
+from .container import REPO_IN, OUT_IN, BASE_REF, exec_in
 from .schemas import AgentDeps
 
 log = logging.getLogger(__name__)
@@ -81,43 +81,56 @@ def write_out(deps: AgentDeps, path: str, content: str) -> str:
 #    from REPO_IN's git for the accountability trail) ──────────────────────────
 
 def _repo_baseline(container_id: str) -> str:
-    """SHA of the pristine baseline — the root commit init_repo_git made before any edits."""
+    """SHA of the accountability base — the state just before any TRANSLATE source edit (pristine
+    plus EXPLORE's build-env prep). Falls back to the root commit if the base ref is somehow absent."""
+    code, out, _ = exec_in(container_id, ["git", "rev-parse", "--verify", "-q", BASE_REF],
+                           workdir=REPO_IN)
+    if code == 0 and out.strip():
+        return out.strip()
     _, out, _ = exec_in(container_id, ["git", "rev-list", "--max-parents=0", "HEAD"],
                         workdir=REPO_IN)
     lines = [l.strip() for l in out.splitlines() if l.strip()]
     return lines[-1] if lines else "HEAD"
 
 
+# The generated artefacts share the repo with the source, so the source-edit diff excludes them.
+_SRC_PATHSPEC = ["--", ".", ":(exclude)verification"]
+
+
 def repo_diff(container_id: str) -> str:
-    """Combined diff of the Rust source since the pristine baseline (working tree vs the root
-    commit, so it captures edits whether or not the agent committed them). Empty if the agent
-    made no source edits. The authoritative record of every source modification, for human
-    review and the TRANSLATE accountability trail."""
+    """Combined diff of the Rust SOURCE since the accountability base (working tree vs the base, so
+    it captures edits whether or not committed; the generated `verification/` tree is excluded).
+    Empty if the agent made no source edits. The authoritative record of every source modification,
+    for human review and the TRANSLATE accountability trail."""
     _, out, _ = exec_in(container_id, ["git", "diff", _repo_baseline(container_id),
-                                       "--stat", "--patch"], workdir=REPO_IN)
+                                       "--stat", "--patch", *_SRC_PATHSPEC], workdir=REPO_IN)
     return out
 
 
 def repo_changed_files(container_id: str) -> list[str]:
-    """Repo-relative paths of Rust-source files changed since the pristine baseline."""
+    """Repo-relative paths of Rust-SOURCE files changed since the accountability base (the generated
+    `verification/` tree excluded)."""
     _, out, _ = exec_in(container_id, ["git", "diff", _repo_baseline(container_id),
-                                       "--name-only"], workdir=REPO_IN)
+                                       "--name-only", *_SRC_PATHSPEC], workdir=REPO_IN)
     return sorted({l.strip() for l in out.splitlines() if l.strip()})
 
 
-# ── output-repo git (harness commits + checkpoint head) ──────────────────────
+# ── run-branch git (harness stage commits + checkpoint head) ─────────────────
 
-def commit(container_id: str, message: str, glob: str = ".", workdir: str = OUT_IN) -> str:
-    """Stage *glob* and commit in *workdir* (default /workspace/out). Returns the new SHA."""
-    exec_in(container_id, ["git", "add", glob], workdir=workdir)
-    exec_in(container_id, ["git", "commit", "--allow-empty", "-m", message], workdir=workdir)
-    _, sha, _ = exec_in(container_id, ["git", "rev-parse", "HEAD"], workdir=workdir)
+def commit(container_id: str, message: str) -> str:
+    """Stage the whole worktree and commit onto the run branch. Returns the new SHA. `git add -A`
+    at the repo root captures BOTH the generated `verification/` artefacts and any source edit in
+    one stage commit, so the delivered branch shows the complete change; excluded build trees
+    (`target/`, `.lake/`, `*.llbc`) stay out."""
+    exec_in(container_id, ["git", "add", "-A"], workdir=REPO_IN)
+    exec_in(container_id, ["git", "commit", "-q", "--allow-empty", "-m", message], workdir=REPO_IN)
+    _, sha, _ = exec_in(container_id, ["git", "rev-parse", "HEAD"], workdir=REPO_IN)
     sha = sha.strip()
     log.info("Committed %s: %s", sha[:8], message)
     return sha
 
 
 def head_sha(container_id: str) -> str:
-    """Current HEAD SHA of the output repo, or empty string if uninitialised."""
-    code, out, _ = exec_in(container_id, ["git", "rev-parse", "HEAD"], workdir=OUT_IN)
+    """Current run-branch HEAD SHA, or empty string if uninitialised."""
+    code, out, _ = exec_in(container_id, ["git", "rev-parse", "HEAD"], workdir=REPO_IN)
     return out.strip() if code == 0 else ""

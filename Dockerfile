@@ -105,5 +105,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 RUN git config --global user.email "lusterna@agent" \
     && git config --global user.name "Lusterna"
 
-RUN mkdir -p /workspace/repo /workspace/out
+# /workspace/out is NOT pre-created: the run makes it a symlink into the one repo's verification/
+# subtree (container.init_repo_git), so a pre-existing directory here would shadow that link.
+RUN mkdir -p /workspace/repo
 WORKDIR /workspace
