@@ -1,12 +1,8 @@
-"""Load bundled Aeneas documentation and inject into agent instructions.
+"""Load bundled Aeneas documentation appended to the relevant stage briefings.
 
-Files live under lusterna/docs/ and are committed to the repo so no network
-call is needed at runtime.  They are read once at module import and exposed
-as module-level strings.
-
-Usage in agent.py:
-    from . import docs
-    # append docs.FOR_FORMALISE to formalise agent instructions
+Files live under lusterna/docs/ and are committed to the repo so no network call is needed at
+runtime. They are read once at module import and exposed as module-level strings (FOR_TRANSLATE,
+FOR_FORMALISE, FOR_PROVE) that briefings.py concatenates onto the corresponding stage prompt.
 """
 from pathlib import Path
 

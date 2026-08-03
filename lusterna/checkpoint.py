@@ -9,7 +9,7 @@ Layout:
 
 Each file is a self-contained snapshot written atomically.  The highest-numbered
 file is the "latest" checkpoint.  Any prior file can be used to resume an older
-state (the caller is responsible for resetting the git output repo accordingly).
+state (the caller resets the run branch to the checkpoint's git_head accordingly).
 """
 import json
 import logging
@@ -28,7 +28,6 @@ def snapshot(deps: AgentDeps) -> int:
     that knows how to serialise a run (paths, container, design doc, progress, git head)."""
     return save(deps.session_id, {
         "repo_path": str(deps.repo_path),
-        "work_path": str(deps.work_path),
         "container_id": deps.container_id,
         "design_doc": deps.design_doc,
         "progress": deps.progress,

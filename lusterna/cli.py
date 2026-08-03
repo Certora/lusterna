@@ -72,6 +72,7 @@ def run(
     _external = bool(_user_container) and container_mod.is_running(_user_container)
     resuming = bool(saved)
 
+    needs_lake = False   # only the dead-container import path (below) drops the .lake build tree
     if container and container_mod.is_running(container):
         # Container kept alive from an interrupted run — re-attach with full in-container state.
         container_id = container
@@ -91,12 +92,10 @@ def run(
         else:
             container_mod.push_repo(container_id, repo_path)
             container_mod.init_repo_git(container_id, sid)
-            needs_lake = False
 
     deps = AgentDeps(
         container_id=container_id,
         repo_path=repo_path,
-        work_path=repo_path,     # the run branch lands here
         session_id=sid,
         design_doc=doc_text,
         progress=progress,

@@ -7,7 +7,7 @@ Each stage's deliverable is FILES under /workspace/out; the harness reads them a
   • the compile gate — `lake build` (lean.build / lean.translation_compiles),
   • the soundness gate — `#print axioms` (lean.check_axioms), the authoritative established verdict,
   • no proof smuggling — lean.stub_proofs re-stubs FORMALISE's theorem bodies before acceptance,
-  • the audit trail — the pristine-baseline git diff (tools.repo_diff).
+  • the audit trail — the source-edit git diff vs the accountability base (tools.repo_diff).
 These never move and are never delegated. Everything else (iteration, judging) is the CC session's
 job; the harness re-invokes a stage (resume) with the gate's feedback until it passes or STALL_ROUNDS
 rounds fail to.
@@ -128,8 +128,8 @@ def _stage_explore(deps: AgentDeps) -> None:
         deps.progress["explore"] = json.loads(handoff)
     except json.JSONDecodeError as e:
         raise _PipelineAborted(f"EXPLORE handoff.json is not valid JSON: {e}")
-    # Fold any build-env prep into the pristine baseline so it is not mistaken for a TRANSLATE
-    # source modification in the accountability diff.
+    # Commit EXPLORE's output + any build-env prep and advance the accountability base past it, so a
+    # later TRANSLATE source edit is not conflated with build config in the accountability diff.
     container.commit_build_prep(deps.container_id)
     checkpoint.snapshot(deps)
 

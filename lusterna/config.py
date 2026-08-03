@@ -32,11 +32,6 @@ CONTAINER_IMAGE = os.environ.get("LUSTERNA_IMAGE", "lusterna-toolchain:latest")
 # Pre-existing container name/ID to attach to (skips auto-start when set)
 CONTAINER_ID = os.environ.get("LUSTERNA_CONTAINER", "")
 
-# Model choice, retry (transient blips), context compaction, and per-stage cost caps are all owned
-# by Claude Code (the spawned engine) — via CC_MODEL/--model, its own retry, and --max-budget-usd —
-# so the old pydantic-ai model/judge-model, token-budget, retry, and compaction knobs are gone
-#.
-
 # The ONE knob bounding every stage's gate loop: a stage gives up after this many consecutive
 # rounds that fail to pass its trusted gate (for PROVE, this many rounds with no gain in the
 # axiom-clean established-theorem count). No hard round ceiling beyond it; each round is also
