@@ -145,6 +145,66 @@ def init_repo_git(container_id: str, session_id: str) -> None:
              REPO_IN, run_branch(session_id), container_id[:12])
 
 
+def resolve_seed_ref(target: Path, branch: str | None) -> str | None:
+    """Decide what commit a new run seeds from (and anchors `<branch>-base` at).
+
+    - *branch* given → that ref (raises if it does not resolve in the target repo);
+    - omitted, target is a git repo with a resolvable HEAD → "HEAD" (seed from the current checkout);
+    - omitted, non-git dir or an unborn HEAD (no commits yet) → None (caller synthesises the pristine
+      root from the loose working tree via push_repo + init_repo_git).
+    """
+    is_git = subprocess.run(["git", "-C", str(target), "rev-parse", "--git-dir"],
+                            capture_output=True, text=True).returncode == 0
+    if branch:
+        if not is_git:
+            raise RuntimeError(f"{target} is not a git repository, so branch '{branch}' cannot be used")
+        r = subprocess.run(["git", "-C", str(target), "rev-parse", "--verify", "-q", f"{branch}^{{commit}}"],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"branch/ref '{branch}' does not resolve to a commit in {target}")
+        return branch
+    if is_git and subprocess.run(["git", "-C", str(target), "rev-parse", "--verify", "-q", "HEAD^{commit}"],
+                                 capture_output=True, text=True).returncode == 0:
+        return "HEAD"
+    return None
+
+
+def seed_from_ref(container_id: str, target: Path, seed_ref: str, session_id: str) -> None:
+    """Start a NEW run seeded from *seed_ref* of the host repo at *target* (a prior run's branch for
+    an incremental campaign, or HEAD/a source branch for a fresh one).
+
+    The seed commit becomes both the starting tree of `lusterna/<session>` and the `<branch>-base`
+    anchor, so `git diff <branch>-base <branch>` is exactly what THIS run adds. We bundle the seed
+    ref on the host and reconstruct it in a fresh in-container repo by SHA (avoids ref-name games),
+    then branch off it. If the seed already carries a `verification/` tree (incremental), the stages
+    reconcile against it; otherwise it's a plain source seed. `.lake`/`target` stay excluded, and a
+    pinned rust-toolchain is neutralised in the working tree (recorded by the first stage commit)."""
+    branch = run_branch(session_id)
+    seed_sha = subprocess.run(["git", "-C", str(target), "rev-parse", f"{seed_ref}^{{commit}}"],
+                              capture_output=True, text=True, check=True).stdout.strip()
+    bundle_host = target / ".lusterna-seed.bundle"
+    subprocess.run(["git", "-C", str(target), "bundle", "create", str(bundle_host.resolve()), seed_ref],
+                   capture_output=True, text=True, check=True)
+    bundle_in = "/workspace/seed.bundle"
+    try:
+        exec_in(container_id, ["mkdir", "-p", REPO_IN])
+        _docker("cp", str(bundle_host), f"{container_id}:{bundle_in}")
+        exec_in(container_id, ["git", "init", "-q"], workdir=REPO_IN)
+        _write_excludes(container_id)
+        exec_in(container_id, ["git", "fetch", "-q", bundle_in, seed_ref], workdir=REPO_IN)  # brings the objects
+    finally:
+        bundle_host.unlink(missing_ok=True)
+    exec_in(container_id, ["git", "branch", branch, seed_sha], workdir=REPO_IN)
+    exec_in(container_id, ["git", "update-ref", PRISTINE_REF, seed_sha], workdir=REPO_IN)
+    exec_in(container_id, ["git", "checkout", "-q", branch], workdir=REPO_IN)
+    exec_in(container_id,
+            ["find", REPO_IN, "-maxdepth", "4", "-name", "rust-toolchain*", "-delete"], workdir=REPO_IN)
+    exec_in(container_id, ["mkdir", "-p", VERIF_IN], workdir=REPO_IN)
+    _link_out(container_id)
+    log.info("Seeded %s from %s (%s @ %s) inside %s",
+             run_branch(session_id), target, seed_ref, seed_sha[:12], container_id[:12])
+
+
 def export_branch(container_id: str, dest: Path, session_id: str) -> None:
     """Fetch the run branch out of the container into the target repo at *dest*.
 

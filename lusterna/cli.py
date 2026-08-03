@@ -26,6 +26,7 @@ def main(verbose: bool) -> None:
 @main.command()
 @click.argument("repo", type=click.Path(exists=True, file_okay=False, resolve_path=True))
 @click.argument("design_doc", type=click.Path(exists=True, dir_okay=False, resolve_path=True))
+@click.argument("branch", required=False, default=None)
 @click.option("--session-id", default=None, help="Resume an existing session by ID")
 @click.option("--checkpoint-number", "ckpt_number", default=None, type=int,
               help="Checkpoint number to resume from (default: latest)")
@@ -36,16 +37,21 @@ def main(verbose: bool) -> None:
 def run(
     repo: str,
     design_doc: str,
+    branch: str | None,
     session_id: str | None,
     ckpt_number: int | None,
     container: str | None,
     image: str,
 ) -> None:
-    """Run the verification pipeline on REPO using DESIGN_DOC.
+    """Run the verification pipeline on REPO using DESIGN_DOC, optionally seeded from BRANCH.
 
     The run works one git repo inside the container and, on exit, fetches its results into REPO as
-    branch `lusterna/<session>` (REPO is git-initialised if it is not already a repo; its working
-    tree and existing branches are left untouched). Review with:
+    branch `lusterna/<session>`. It SEEDS from BRANCH — its tree is the starting point and its
+    `<branch>-base` anchor. Passing a prior run's `lusterna/<sid>` branch makes the run INCREMENTAL:
+    the earlier translation/spec/proofs are reused (what to redo vs reuse is driven by DESIGN_DOC,
+    not flags), and only the delta is recomputed. Omit BRANCH to seed from the target's current HEAD
+    (or, for a non-git target, a synthesised pristine baseline). REPO's working tree and existing
+    branches are left untouched. Review with:
     `git -C REPO diff lusterna/<session>-base lusterna/<session>`.
 
     Per-stage cost is capped by the agent's own --max-budget-usd (config.CC_STAGE_BUDGET_USD);
@@ -89,7 +95,17 @@ def run(
             # translation already exists so a resumed lean stage builds against the cache, not a
             # cold full Mathlib rebuild.
             needs_lake = "aeneas" in progress
+        elif (seed_ref := container_mod.resolve_seed_ref(repo_path, branch)) is not None:
+            # New session seeded from a branch/HEAD — fresh or (if the seed carries prior artefacts)
+            # incremental. Same path either way; the stages reconcile against whatever the seed holds.
+            container_mod.seed_from_ref(container_id, repo_path, seed_ref, sid)
+            # A seed that already has a translation needs .lake re-provisioned (it isn't carried), so
+            # a reused/continued lean stage builds against the cache rather than cold.
+            needs_lake = container_mod.exec_in(
+                container_id, ["test", "-d", f"{container_mod.VERIF_IN}/lean"],
+                workdir=container_mod.REPO_IN)[0] == 0
         else:
+            # Non-git target (or unborn HEAD): synthesise a pristine baseline from the working tree.
             container_mod.push_repo(container_id, repo_path)
             container_mod.init_repo_git(container_id, sid)
 

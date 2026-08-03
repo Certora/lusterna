@@ -7,6 +7,27 @@ Each briefing is passed to `claude -p` via --append-system-prompt-file (see runn
 from . import docs
 
 
+# Appended to every labour stage. A run may be SEEDED from a prior run's branch (incremental), in
+# which case that stage's artefact already exists and must be reconciled with — not discarded.
+INCREMENTAL = """
+
+CONTINUING A PRIOR RUN (incremental). This run may be seeded from an earlier one: the repo can
+already hold that run's artefacts under /workspace/out (and behaviour-preserving source edits in
+/workspace/repo). If so, they are your STARTING POINT — the instruction document above defines what
+THIS run must achieve; reuse what still holds and add/revise only what the instruction calls for,
+instead of redoing it from scratch. If no prior artefact is present, proceed from scratch as usual."""
+
+# PROVE-specific: reuse a prior run's proof scripts instead of re-deriving them.
+PROVE_REUSE = """
+
+REUSING PRIOR PROOFS. If this run continues an earlier one, that run's proof scripts live at
+`git show refs/lusterna/pristine:verification/lean/<Crate>/Spec.lean` (this run's -base). For every
+theorem whose statement is unchanged, copy its proof script back verbatim and confirm it with
+`lake build` — do NOT re-derive it. Spend effort only on the theorems still bodied `sorry`.
+(`#print axioms` re-checks every proof from source regardless, so a copied-back proof is verified
+afresh, never trusted on faith.)"""
+
+
 EXPLORE = """\
 You are the EXPLORE stage of the Lusterna verification pipeline — the orientation of BOTH the code
 and the toolchain. You are a full Claude Code session: you have your own Bash, Read, Write, Edit,
@@ -70,7 +91,7 @@ DELIVERABLE (write both, then STOP):
         }
 Validate the JSON parses (e.g. `python3 -c 'import json,sys;json.load(open(sys.argv[1]))'` or `jq .`)
 before you finish. The stage is done when handoff.json exists and is valid — stop there.
-""" + docs.FOR_TRANSLATE
+""" + docs.FOR_TRANSLATE + INCREMENTAL
 
 
 # ── INFER ──────────────────────────────────────────────────────────────────────
@@ -121,7 +142,7 @@ keys):
    only if the crate has no identifiable target.
 
 Validate the JSON parses, then STOP.
-"""
+""" + INCREMENTAL
 
 
 # ── TRANSLATE ──────────────────────────────────────────────────────────────────
@@ -216,7 +237,7 @@ the harness diffs your changes against it automatically. Use git however you fin
 DELIVERABLE: the compiling translation in /workspace/out/lean (target functions as real `def`s),
 plus translate/plan.md and translate/accountability.md. STOP once the target translates and
 `lake env lean` accepts it.
-""" + docs.FOR_TRANSLATE
+""" + docs.FOR_TRANSLATE + INCREMENTAL
 
 
 # ── TRANSLATE-JUDGE ─────────────────────────────────────────────────────────────
@@ -295,7 +316,7 @@ valid. Choose whichever fits.
 
 DELIVERABLE: /workspace/out/lean/<Crate>/Spec.lean with compiling statement-only theorems. STOP once
 it compiles.
-""" + docs.FOR_FORMALISE
+""" + docs.FOR_FORMALISE + INCREMENTAL
 
 
 # ── SPEC-JUDGE ─────────────────────────────────────────────────────────────────
@@ -363,7 +384,7 @@ STRICT RULES:
   • It is acceptable — expected — to leave hard theorems as `sorry`.
 
 DELIVERABLE: Spec.lean compiling, with as many real proofs as you could discharge; committed.
-""" + docs.FOR_PROVE
+""" + docs.FOR_PROVE + PROVE_REUSE
 
 
 # ── REPORT ─────────────────────────────────────────────────────────────────────

@@ -276,6 +276,31 @@ lusterna list-checkpoints <session-id>
 lusterna run /path/to/repo design.md --session-id <uuid>
 ```
 
+## Incremental runs
+
+Distinct from resuming: an incremental run is a **new session seeded from a prior run's branch**, so
+a fresh campaign builds on earlier work instead of starting over. You pass the prior run's branch as
+the seed:
+
+```sh
+lusterna run /path/to/repo new-campaign.md lusterna/<prior-session>
+```
+
+The prior branch's tree (translation, spec, proofs, source edits) becomes the starting point and the
+`-base` anchor, so `git diff lusterna/<new>-base lusterna/<new>` is exactly what the new campaign
+added. **What to reuse vs. redo is driven by the instruction document, not by flags** — every stage
+is told a prior artefact may already be present and reconciles it against the new instruction
+(reuse / extend / revise). Two motivating cases:
+
+- **Grow a campaign** — a new instruction that adds properties: EXPLORE + TRANSLATE are reused, INFER
+  adds the new properties, FORMALISE/PROVE handle the delta, and prior proofs carry over.
+- **Close remaining `sorry`s** — an instruction to finish the open obligations: everything upstream
+  is reused and PROVE re-attacks just the unproven theorems (with more budget/effort).
+
+Reuse saves **labor**, never **trust**: the branch carries Lean *source text* (defs, statements,
+proof scripts) but not the compiled `.lake`, so every run rebuilds and re-runs `#print axioms` over
+the whole final state — a reused proof is re-verified from scratch, not inherited on faith.
+
 ## Requirements
 
 - Python 3.10+ (only `click`; no LLM SDK)
@@ -307,8 +332,14 @@ lusterna run /path/to/rust-repo /path/to/design.md
 ## Commands
 
 ```
-lusterna run REPO DESIGN_DOC [OPTIONS]
+lusterna run REPO DESIGN_DOC [BRANCH] [OPTIONS]
 ```
+
+`BRANCH` (optional) is the commit the run **seeds from** and anchors `<branch>-base` at — its tree is
+the starting point. Omit it to seed from the target's current `HEAD` (or, for a non-git target, a
+synthesised pristine baseline). Pass a prior run's `lusterna/<sid>` branch to make the run
+**incremental**: the earlier translation/spec/proofs are reused and only the delta is recomputed
+(see [Incremental runs](#incremental-runs)).
 
 | Option | Default | Description |
 |---|---|---|
