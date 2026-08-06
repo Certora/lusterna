@@ -97,13 +97,15 @@ themselves rather than to maintaining a framework integration or tracking an SDK
 
 The rest of the structure follows from the same boundary:
 
-- The agent reads the source directly in the container — no retrieval index or vector store.
+- The agent reads the source directly in the container.
 - Run state is numbered checkpoint JSON files and the output repo's git history — no database;
   containers are disposable and runs resume from a checkpoint.
 - The filesystem is the container's, isolated by Docker (`--cap-drop all`,
   `--security-opt no-new-privileges`, no bind-mounts) — no virtual filesystem or sandbox shim.
 - The agent runs inside that isolated container rather than through a custom tool broker — no
   separate tool-call allow-listing or sanitization layer; the security boundary is the container.
+- No RAG DB — knowledge lives as code in repositories for transparency, interpretability,
+  enabling sharing over transparent semantics rather than opaque vector embeddings.
 
 Because the trusted core is small and carries no framework dependencies, a future Rust
 re-implementation of the harness is bounded work: the gates and the stage sequence port directly,
