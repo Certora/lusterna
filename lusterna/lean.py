@@ -432,15 +432,32 @@ def theorem_statement(spec_text: str, name: str) -> str:
 
 # ── implementation-spec operations ─────────────────────────────────────────────
 
-def impl_spec(deps: AgentDeps) -> str:
-    """Canonical implementation-spec path — the single file FORMALISE fills and PROVE
-    proves. Placed under the Aeneas lib root (lean/<Crate>/) so the existing lakefile
-    builds it with no lakefile changes. Deterministic, never agent-chosen."""
+def _crate_stem(deps: AgentDeps) -> str:
+    """The Aeneas crate module name (e.g. `Metavault`) from the committed translation root."""
     lean_path = deps.progress.get("aeneas", {}).get("lean_path", "")
-    if not lean_path:
-        return ""
-    stem = lean_path.rsplit("/", 1)[-1].removesuffix(".lean")
-    return f"lean/{stem}/Spec.lean"
+    return lean_path.rsplit("/", 1)[-1].removesuffix(".lean") if lean_path else ""
+
+
+def campaign_spec(deps: AgentDeps) -> str:
+    """The CURRENT campaign's spec module — lean/<Crate>/Spec/<Campaign>.lean. Each campaign is a
+    SEPARATE module in its own namespace, so runs ACCUMULATE (a new campaign adds a file) instead of
+    overwriting one Spec.lean. The Aeneas lib's `andSubmodules` glob builds them all, no lakefile
+    change. Deterministic (campaign from the instruction filename), never agent-chosen."""
+    stem = _crate_stem(deps)
+    return f"lean/{stem}/Spec/{deps.campaign}.lean" if stem else ""
+
+
+def spec_modules(deps: AgentDeps) -> list[str]:
+    """Every campaign spec module present under lean/<Crate>/Spec/ — the cumulative set the
+    `#print axioms` verdict spans, so prior campaigns' established theorems keep counting."""
+    stem = _crate_stem(deps)
+    if not stem:
+        return []
+    _, out, _ = exec_in(deps.container_id,
+                        ["sh", "-c", f"find {OUT_IN}/lean/{stem}/Spec -maxdepth 1 -name '*.lean' "
+                                     f"2>/dev/null | sort"])
+    pre = OUT_IN + "/"
+    return [l.strip().removeprefix(pre) for l in out.splitlines() if l.strip()]
 
 
 def _proposition_only(signature: str) -> str:
@@ -462,8 +479,8 @@ def _proposition_only(signature: str) -> str:
 
 
 def build(deps: AgentDeps) -> dict:
-    """Run `lake build` on the impl spec and record it as PROVE's progress metric does."""
-    result = check_lean(deps, impl_spec(deps))
+    """Run `lake build` over the whole Lean project (all campaign spec modules) and record it."""
+    result = check_lean(deps, campaign_spec(deps))
     deps.progress["lean_build"] = result
     deps.progress["build_seq"] = deps.progress.get("build_seq", 0) + 1
     checkpoint.snapshot(deps)
@@ -475,7 +492,7 @@ def sorry_count(deps: AgentDeps) -> int:
     obligations, and PROVE's progress metric. Counts per-theorem (not raw text occurrences), so a
     stray `sorry` in a header/proof comment is not miscounted. Returns -1 if the file can't be
     read, so the caller never mistakes it for done."""
-    content = tools.read_out(deps, impl_spec(deps))
+    content = tools.read_out(deps, campaign_spec(deps))
     return -1 if content.startswith("ERROR:") else len(sorry_bodied_theorems(content))
 
 

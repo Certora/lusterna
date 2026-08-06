@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import re
 import sys
 import uuid
 from pathlib import Path
@@ -14,6 +15,18 @@ from .schemas import AgentDeps
 log = logging.getLogger(__name__)
 
 _DOCKERFILE_DIR = Path(__file__).parent.parent
+
+
+def _campaign_name(design_doc: str) -> str:
+    """CamelCase campaign identifier from the instruction filename — names the per-campaign spec
+    module and gets embedded in the session id / branch so runs are scannable, not opaque UUIDs.
+    `SHARE_PRICE_DEPOSIT.md` → `SharePriceDeposit`; a digit-leading result is prefixed to stay a
+    valid Lean module ident; empty → `Spec`."""
+    stem = Path(design_doc).stem
+    name = "".join(p.capitalize() for p in re.split(r"[^0-9A-Za-z]+", stem) if p)
+    if not name:
+        return "Spec"
+    return name if name[0].isalpha() else "C" + name
 
 
 @click.group()
@@ -62,7 +75,10 @@ def run(
     repo_path = Path(repo)
     doc_text = Path(design_doc).read_text()
 
-    sid = session_id or str(uuid.uuid4())
+    campaign = _campaign_name(design_doc)
+    # Session id / branch carry the campaign so `git branch` and checkpoint dirs are scannable
+    # (Core-…, SharePriceDeposit-…) rather than opaque UUIDs.
+    sid = session_id or f"{campaign}-{uuid.uuid4()}"
     # A container the USER passed (--container / env) is external — we never stop it. One that only
     # comes from the checkpoint is ours (a prior run kept it alive), and we manage its lifecycle.
     _user_container = container
@@ -114,6 +130,7 @@ def run(
         repo_path=repo_path,
         session_id=sid,
         design_doc=doc_text,
+        campaign=campaign,
         progress=progress,
     )
 

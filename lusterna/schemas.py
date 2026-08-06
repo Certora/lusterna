@@ -14,6 +14,8 @@ class AgentDeps:
     repo_path: Path        # host target repo — source is pushed in from here, the run branch lands back here
     session_id: str
     design_doc: str
+    campaign: str = "Spec"  # CamelCase campaign name (from the instruction filename); names the
+                            #   per-campaign spec module lean/<Crate>/Spec/<campaign>.lean and the report
     progress: dict[str, Any] = field(default_factory=dict)
     # Set True only when the pipeline runs fully to completion (through REPORT). Drives container
     # lifecycle: an incomplete run (budget hit, interrupt, crash) keeps its container ALIVE so a

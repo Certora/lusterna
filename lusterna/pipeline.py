@@ -106,6 +106,21 @@ def _format_defects(defects: list) -> str:
     return "\n".join(out)
 
 
+# ── per-campaign artefact paths ───────────────────────────────────────────────────
+# Every stage's per-run reasoning is namespaced by campaign, so runs ACCUMULATE and never
+# overwrite a prior campaign's. Only the TRANSLATION itself (lean/<Crate>.lean + submodules, and
+# translate/probe/) is shared substrate, reused/extended across campaigns.
+
+def _explore_dir(deps: AgentDeps) -> str:
+    return f"explore/campaigns/{deps.campaign}"
+
+def _infer_spec(deps: AgentDeps) -> str:
+    return f"infer/campaigns/{deps.campaign}.json"
+
+def _translate_dir(deps: AgentDeps) -> str:
+    return f"translate/campaigns/{deps.campaign}"
+
+
 # ── EXPLORE ─────────────────────────────────────────────────────────────────────
 
 def _stage_explore(deps: AgentDeps) -> None:
@@ -113,17 +128,18 @@ def _stage_explore(deps: AgentDeps) -> None:
         return
     hint = (f"\n\nDesign focus hint (optional, non-authoritative — which code matters):\n"
             f"{deps.design_doc.rstrip()}" if deps.design_doc.strip() else "")
+    xdir = _explore_dir(deps)
     run_cc_stage(
         deps, stage="EXPLORE", briefing=briefings.EXPLORE,
-        prompt=("Orient to the code at /workspace/repo and run the toolchain reality-check, then "
-                "write /workspace/out/explore/assessment.md and the machine-readable "
-                "/workspace/out/explore/handoff.json per your briefing. Stop once handoff.json "
-                "exists and is valid." + hint),
+        prompt=(f"Orient to the code at /workspace/repo and run the toolchain reality-check, then "
+                f"write /workspace/out/{xdir}/assessment.md and the machine-readable "
+                f"/workspace/out/{xdir}/handoff.json per your briefing. Stop once handoff.json "
+                f"exists and is valid." + hint),
         **_cc_common(),
     )
-    handoff = tools.read_out(deps, "explore/handoff.json")
+    handoff = tools.read_out(deps, f"{xdir}/handoff.json")
     if handoff.startswith("ERROR:"):
-        raise _PipelineAborted("EXPLORE produced no /workspace/out/explore/handoff.json")
+        raise _PipelineAborted(f"EXPLORE produced no /workspace/out/{xdir}/handoff.json")
     try:
         deps.progress["explore"] = json.loads(handoff)
     except json.JSONDecodeError as e:
@@ -141,25 +157,27 @@ def _stage_infer(deps: AgentDeps) -> None:
     hint = (f"\n\nDesign focus hint (optional, non-authoritative):\n{deps.design_doc.rstrip()}"
             if deps.design_doc.strip() else "")
 
+    ispec = _infer_spec(deps)
+
     def check(deps: AgentDeps):
-        raw = tools.read_out(deps, "infer/properties.json")
+        raw = tools.read_out(deps, ispec)
         if raw.startswith("ERROR:"):
-            return False, "infer/properties.json is missing — write it per the briefing."
+            return False, f"{ispec} is missing — write it per the briefing."
         try:
             spec = json.loads(raw)
         except json.JSONDecodeError as e:
-            return False, f"infer/properties.json is not valid JSON: {e}"
+            return False, f"{ispec} is not valid JSON: {e}"
         if "target_patterns" not in spec:
-            return False, "infer/properties.json is missing the required key `target_patterns`."
+            return False, f"{ispec} is missing the required key `target_patterns`."
         deps.progress["informal_spec"] = spec
         deps.progress["target_patterns"] = list(spec.get("target_patterns") or [])
         return True, ""
 
     _cc_gate_loop(
         deps, stage="INFER", briefing=briefings.INFER,
-        base_prompt=("Proceed to INFER. Read the pristine Rust at /workspace/repo and "
-                     "/workspace/out/explore/handoff.json, then write "
-                     "/workspace/out/infer/properties.json per your briefing." + hint),
+        base_prompt=(f"Proceed to INFER. Read the pristine Rust at /workspace/repo and "
+                     f"/workspace/out/{_explore_dir(deps)}/handoff.json, then write "
+                     f"/workspace/out/{ispec} per your briefing." + hint),
         check=check,
     )
     tools.commit(deps.container_id, "feat(spec): informal specification (pre-translate)")
@@ -208,6 +226,7 @@ def _stage_translate(deps: AgentDeps) -> None:
         # Mechanical hard gate passed (it compiles). Whether the TARGET is genuinely translated (a
         # real def, not opaqued/holed) and behaviour-preserving is the TRANSLATE-JUDGE's semantic
         # call — it inspects the translation itself — with `#print axioms` the final backstop.
+        tdir = _translate_dir(deps)
         judge_facts = {
             "compiles": True,
             "emitted_axioms": lean.external_axioms(lean.translation_text(deps, facts["lean_files"])),
@@ -215,15 +234,15 @@ def _stage_translate(deps: AgentDeps) -> None:
             "source_files_changed": tools.repo_changed_files(deps.container_id),
             "source_git_diff": tools.repo_diff(deps.container_id),
         }
-        tools.write_out(deps, "translate/facts.json", json.dumps(judge_facts, indent=2))
+        tools.write_out(deps, f"{tdir}/facts.json", json.dumps(judge_facts, indent=2))
         verdict = _run_judge(
             deps, stage="TRANSLATE-JUDGE", briefing=briefings.TRANSLATE_JUDGE,
             prompt=(f"Judge the translation in /workspace/out/lean against the target source in "
                     f"/workspace/repo. The target functions are: {targets or '(whole crate)'}. Read "
-                    f"the facts at /workspace/out/translate/facts.json and the accountability at "
-                    f"/workspace/out/translate/accountability.md, then write your verdict to "
-                    f"/workspace/out/translate/verdict.json per your briefing."),
-            verdict_rel="translate/verdict.json")
+                    f"the facts at /workspace/out/{tdir}/facts.json and this campaign's accountability "
+                    f"at /workspace/out/{tdir}/accountability.md, then write your verdict to "
+                    f"/workspace/out/{tdir}/verdict.json per your briefing."),
+            verdict_rel=f"{tdir}/verdict.json")
         defects = verdict.get("defects", [])
         if defects:
             return False, "TRANSLATE-JUDGE found defects:\n" + _format_defects(defects)
@@ -235,26 +254,50 @@ def _stage_translate(deps: AgentDeps) -> None:
         deps, stage="TRANSLATE", briefing=briefings.TRANSLATE,
         base_prompt=(f"Proceed to TRANSLATE. Target patterns (each MUST become a real `def`, never "
                      f"opaqued): {targets or '(whole crate)'}. Suggested entry file: {entry}. Read "
-                     f"/workspace/out/infer/properties.json and /workspace/out/explore/handoff.json, "
-                     f"then drive Charon + Aeneas into /workspace/out/lean per your briefing."),
+                     f"/workspace/out/{_infer_spec(deps)} and /workspace/out/{_explore_dir(deps)}/handoff.json, "
+                     f"then drive Charon + Aeneas into /workspace/out/lean (the SHARED translation — "
+                     f"reuse/extend it, do not restart from scratch). Record THIS campaign's decision "
+                     f"(reused verbatim / extended with <defs> / any source edit) in "
+                     f"/workspace/out/{_translate_dir(deps)}/accountability.md per your briefing."),
         check=check,
     )
-    tools.commit(deps.container_id, "feat(translate): aeneas translation of the target")
+    tools.commit(deps.container_id, f"feat(translate): {deps.campaign} — translation reuse/extend")
 
 
 # ── FORMALISE (+ SPEC-JUDGE) ──────────────────────────────────────────────────────
 
+def _restore_prior_specs(deps: AgentDeps) -> None:
+    """Prior campaigns' spec modules are IMMUTABLE. Restore every Spec/*.lean present in the seed
+    (refs/lusterna/pristine) EXCEPT the current campaign's, so a new campaign can neither edit nor
+    smuggle a proof into an earlier one — it must reuse prior lemmas by `import`. On a fresh run the
+    seed has no spec modules, so this is a no-op."""
+    stem = lean._crate_stem(deps)
+    if not stem:
+        return
+    current = lean.campaign_spec(deps)
+    cid = deps.container_id
+    _, out, _ = container.exec_in(
+        cid, ["git", "ls-tree", "-r", "--name-only", "refs/lusterna/pristine",
+              f"verification/lean/{stem}/Spec/"], workdir=container.REPO_IN)
+    for gitpath in (l.strip() for l in out.splitlines() if l.strip().endswith(".lean")):
+        if gitpath.removeprefix("verification/") == current:
+            continue
+        container.exec_in(cid, ["git", "checkout", "refs/lusterna/pristine", "--", gitpath],
+                          workdir=container.REPO_IN)
+
+
 def _stage_formalise(deps: AgentDeps) -> None:
     if "spec_ok" in deps.progress:
         return
-    impl = lean.impl_spec(deps)
+    impl = lean.campaign_spec(deps)
 
     def check(deps: AgentDeps):
+        _restore_prior_specs(deps)   # prior campaigns' modules are immutable — revert any edits
         raw = tools.read_out(deps, impl)
         if raw.startswith("ERROR:"):
             return False, f"the spec {impl} is missing — write the statement-only spec there."
-        # TRUSTED no-smuggle gate: force every theorem body to `:= by sorry` before acceptance,
-        # so FORMALISE cannot sneak a proof past PROVE. Then the compile gate on the statements.
+        # TRUSTED no-smuggle gate: force every theorem body in THIS campaign's module to `:= by sorry`
+        # before acceptance, so FORMALISE cannot sneak a proof past PROVE. Then the compile gate.
         tools.write_out(deps, impl, lean.stub_proofs(raw))
         deps.progress["formal_spec"] = True
         if not lean.build(deps).get("success"):
@@ -263,7 +306,7 @@ def _stage_formalise(deps: AgentDeps) -> None:
         verdict = _run_judge(
             deps, stage="SPEC-JUDGE", briefing=briefings.SPEC_JUDGE,
             prompt=(f"Judge the theorem STATEMENTS in /workspace/out/{impl} against the translation "
-                    f"in /workspace/out/lean and /workspace/out/infer/properties.json, then write "
+                    f"in /workspace/out/lean and /workspace/out/{_infer_spec(deps)}, then write "
                     f"your verdict to /workspace/out/spec-judge/verdict.json per your briefing."),
             verdict_rel="spec-judge/verdict.json")
         deps.progress["verdict"] = verdict
@@ -275,9 +318,11 @@ def _stage_formalise(deps: AgentDeps) -> None:
 
     _cc_gate_loop(
         deps, stage="FORMALISE", briefing=briefings.FORMALISE,
-        base_prompt=(f"Proceed to FORMALISE. Read /workspace/out/infer/properties.json and the "
+        base_prompt=(f"Proceed to FORMALISE. Read /workspace/out/{_infer_spec(deps)} and the "
                      f"translation under /workspace/out/lean, then write the statement-only spec "
-                     f"(theorem bodies `:= by sorry`) to /workspace/out/{impl} per your briefing. "
+                     f"(theorem bodies `:= by sorry`) for THIS campaign to /workspace/out/{impl} "
+                     f"per your briefing. It is a NEW module — do NOT edit or delete any other "
+                     f"lean/**/Spec/*.lean (prior campaigns); reuse their lemmas by `import`. "
                      f"Ensure it compiles with `lake env lean`."),
         check=check,
     )
@@ -289,7 +334,7 @@ def _stage_formalise(deps: AgentDeps) -> None:
 def _prove_feedback(deps: AgentDeps, ax: dict) -> str:
     """Name the frontier for the next PROVE round: already-established (keep verbatim), still-open
     `sorry`, and compiles-but-tainted (a non-standard axiom, usually native_decide)."""
-    spec = tools.read_out(deps, lean.impl_spec(deps))
+    spec = tools.read_out(deps, lean.campaign_spec(deps))
     sorry_names = lean.sorry_bodied_theorems(spec)
     open_sorry = [n for n in ax["tainted"] if n in sorry_names]
     tainted_non_sorry = [n for n in ax["tainted"] if n not in sorry_names]
@@ -312,17 +357,26 @@ def _record_axioms(deps: AgentDeps) -> None:
 
     The harness does NOT re-derive a faithfulness tier: rung-3 modeling is a sanctioned capability,
     screened once (semantically) by the TRANSLATE-JUDGE and disclosed by the agent in
-    translate/accountability.md — that trail is the record, not a redundant harness verdict."""
-    impl = lean.impl_spec(deps)
-    ax = lean.check_axioms(deps, impl)
+    translate/accountability.md — that trail is the record, not a redundant harness verdict.
+
+    CUMULATIVE across all campaign modules (lean/<Crate>/Spec/*.lean): each campaign's established
+    theorems keep counting, so the verdict reflects every campaign run against this target, not just
+    the latest. Names are campaign-qualified (`<Campaign>::<theorem>`) to show provenance."""
+    from pathlib import Path as _P
     translation = lean.translation_text(deps)
-    spec_text = tools.read_out(deps, impl)
-    impl_verified, abstract_only = [], []
-    for name in ax["clean"]:
-        stmt = lean.theorem_statement(spec_text, name)
-        (impl_verified if stmt and lean.referenced_defs(stmt, translation)
-         else abstract_only).append(name)
-    deps.progress["axioms"] = {"clean": ax["clean"], "tainted": ax["tainted"],
+    clean, tainted, impl_verified, abstract_only = [], [], [], []
+    for mod in lean.spec_modules(deps):
+        camp = _P(mod).stem
+        ax = lean.check_axioms(deps, mod)
+        spec_text = tools.read_out(deps, mod)
+        clean += [f"{camp}::{n}" for n in ax["clean"]]
+        tainted += [f"{camp}::{n}" for n in ax["tainted"]]
+        for name in ax["clean"]:
+            stmt = lean.theorem_statement(spec_text, name)
+            (impl_verified if stmt and lean.referenced_defs(stmt, translation)
+             else abstract_only).append(f"{camp}::{name}")
+    ax = {"clean": clean, "tainted": tainted}
+    deps.progress["axioms"] = {"clean": clean, "tainted": tainted,
                                "impl_verified": impl_verified, "abstract_only": abstract_only}
     checkpoint.snapshot(deps)
     if ax["clean"] and not impl_verified:
@@ -343,7 +397,7 @@ def _stage_prove(deps: AgentDeps) -> None:
     with no gain. The `#print axioms` gate and the compile gate are the trusted arbiters."""
     if "proofs_done" in deps.progress:
         return
-    impl = lean.impl_spec(deps)
+    impl = lean.campaign_spec(deps)
     if not lean.build(deps).get("success"):
         raise _PipelineAborted("PROVE not started — the implementation spec does not compile")
     best_spec = tools.read_out(deps, impl)
@@ -391,9 +445,19 @@ def _stage_prove(deps: AgentDeps) -> None:
 
 # ── REPORT ──────────────────────────────────────────────────────────────────────
 
-_REPORT_SECTIONS = ["report/01_overview.md", "report/02_translation.md",
-                    "report/03_implementation_spec.md", "report/04_spec_judge.md",
-                    "report/05_proofs.md", "report/06_summary.md"]
+_SECTION_NAMES = ["01_overview.md", "02_translation.md", "03_implementation_spec.md",
+                  "04_spec_judge.md", "05_proofs.md", "06_summary.md"]
+
+
+def _campaigns_index(deps: AgentDeps) -> str:
+    """A bullet index of every per-campaign report under report/campaigns/*.md — the cumulative
+    top-level VERIFICATION_REPORT.md links to each, so no campaign's report is ever hidden."""
+    _, out, _ = container.exec_in(
+        deps.container_id, ["sh", "-c", f"find {container.OUT_IN}/report/campaigns -maxdepth 1 "
+                                        f"-name '*.md' 2>/dev/null | sort"])
+    from pathlib import Path as _P
+    names = [_P(l.strip()).stem for l in out.splitlines() if l.strip()]
+    return "\n".join(["## Campaigns", ""] + [f"- [{n}](report/campaigns/{n}.md)" for n in names]) + "\n"
 
 
 def _authoritative_verdict(deps: AgentDeps) -> str:
@@ -426,7 +490,7 @@ def _authoritative_verdict(deps: AgentDeps) -> str:
         f"a non-standard axiom): {len(tainted)} {tainted or ''}",
         "",
         "How the target was translated — scope / opaqued leaves / any rung-3 modeling — is recorded "
-        "in `translate/accountability.md` and summarised in §2 below.",
+        f"in `{_translate_dir(deps)}/accountability.md` and summarised in §2 below.",
         "",
         "---",
         "",
@@ -434,8 +498,10 @@ def _authoritative_verdict(deps: AgentDeps) -> str:
 
 
 def _stage_report(deps: AgentDeps) -> str:
-    """Prepare the authoritative facts.json (the harness's trusted verdicts), run the REPORT CC
-    session, then concatenate its report/NN_*.md sections into VERIFICATION_REPORT.md."""
+    """Write the CURRENT campaign's report as report/campaigns/<Campaign>.md (never overwriting a
+    prior campaign's), and regenerate the cumulative top-level VERIFICATION_REPORT.md — the
+    authoritative `#print axioms` verdict (spanning ALL campaign modules) + an index of every
+    per-campaign report. report/axioms.json holds the cumulative facts."""
     facts = {
         "axioms": deps.progress.get("axioms", {}),
         "spec_judge": deps.progress.get("verdict", {}),
@@ -447,32 +513,36 @@ def _stage_report(deps: AgentDeps) -> str:
         "sorry_remaining": max(lean.sorry_count(deps), 0),
     }
     tools.write_out(deps, "report/axioms.json", json.dumps(facts, indent=2))
+    secdir = f"report/campaigns/{deps.campaign}"
     try:
         run_cc_stage(
             deps, stage="REPORT", briefing=briefings.REPORT,
-            prompt=("Proceed to REPORT. Read /workspace/out/report/axioms.json (the authoritative "
-                    "verdicts) and the artefacts under /workspace/out, then write the six "
-                    "report/NN_*.md section files per your briefing. Do not write VERIFICATION_REPORT.md."),
+            prompt=(f"Proceed to REPORT for the '{deps.campaign}' campaign. Read "
+                    f"/workspace/out/report/axioms.json (the authoritative cumulative verdicts) and "
+                    f"the artefacts under /workspace/out, then write the six section files to "
+                    f"/workspace/out/{secdir}/NN_*.md per your briefing. Do not write "
+                    f"VERIFICATION_REPORT.md or touch other campaigns' reports."),
             **_cc_common())
     except StageFailed as e:
         log.warning("REPORT session errored (%s) — concatenating whatever sections exist", e)
 
-    parts = [c for sf in _REPORT_SECTIONS for c in [tools.read_out(deps, sf)]
+    parts = [c for n in _SECTION_NAMES for c in [tools.read_out(deps, f"{secdir}/{n}")]
              if not c.startswith("ERROR:")]
-    # The harness's authoritative verdict ALWAYS leads the report — the agent's sections cannot
-    # override the kernel gate's soundness numbers, only elaborate on them.
-    report_text = _authoritative_verdict(deps) + "\n\n".join(parts) if parts else ""
+    # Per-campaign report (never clobbers a sibling campaign's).
     if parts:
-        log.info("Concatenating %d/%d report sections under the authoritative verdict block",
-                 len(parts), len(_REPORT_SECTIONS))
+        campaign_report = f"# Campaign report — {deps.campaign}\n\n" + "\n\n".join(parts)
+        tools.write_out(deps, f"report/campaigns/{deps.campaign}.md", campaign_report)
+        log.info("Wrote report/campaigns/%s.md (%d/%d sections)",
+                 deps.campaign, len(parts), len(_SECTION_NAMES))
     else:
-        log.warning("REPORT produced no sections")
-    if report_text:
-        tools.write_out(deps, "VERIFICATION_REPORT.md", report_text)
-        tools.commit(deps.container_id, "stage/report: final pipeline report")
-        log.info("Report written and committed (%d chars)", len(report_text))
+        log.warning("REPORT produced no sections for campaign %s", deps.campaign)
+    # Cumulative top-level: the harness's authoritative verdict (all campaign modules) leads, then
+    # an index of every campaign report. Regenerated each run — it is MEANT to be cumulative.
+    report_text = _authoritative_verdict(deps) + _campaigns_index(deps)
+    tools.write_out(deps, "VERIFICATION_REPORT.md", report_text)
+    tools.commit(deps.container_id, f"stage/report: {deps.campaign} campaign report + cumulative index")
     checkpoint.snapshot(deps)
-    return report_text or "(no report generated)"
+    return (f"report/campaigns/{deps.campaign}.md" if parts else "(no report generated)")
 
 
 # ── abort notes ───────────────────────────────────────────────────────────────────

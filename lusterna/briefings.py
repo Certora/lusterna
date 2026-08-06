@@ -7,25 +7,24 @@ Each briefing is passed to `claude -p` via --append-system-prompt-file (see runn
 from . import docs
 
 
-# Appended to every labour stage. A run may be SEEDED from a prior run's branch (incremental), in
-# which case that stage's artefact already exists and must be reconciled with — not discarded.
+# Appended to every labour stage. Runs ACCUMULATE: each campaign ADDS its own module/report on top
+# of prior campaigns, which are preserved and reused — never rewritten.
 INCREMENTAL = """
 
-CONTINUING A PRIOR RUN (incremental). This run may be seeded from an earlier one: the repo can
-already hold that run's artefacts under /workspace/out (and behaviour-preserving source edits in
-/workspace/repo). If so, they are your STARTING POINT — the instruction document above defines what
-THIS run must achieve; reuse what still holds and add/revise only what the instruction calls for,
-instead of redoing it from scratch. If no prior artefact is present, proceed from scratch as usual."""
+CONTINUING A CAMPAIGN (cumulative). This target may already carry prior campaigns' artefacts under
+/workspace/out (translation, per-campaign spec modules lean/**/Spec/*.lean, reports) and any
+behaviour-preserving source edits in /workspace/repo. Those are shared foundation to BUILD ON, not
+to redo: reuse the existing translation and prior lemmas (by `import`), and ADD only what THIS
+campaign needs as NEW files. NEVER edit or delete a prior campaign's spec module or report — the
+harness reverts such edits. If nothing prior is present, proceed from scratch as usual."""
 
-# PROVE-specific: reuse a prior run's proof scripts instead of re-deriving them.
+# PROVE-specific: prior campaigns' proofs are reused by import, not re-derived.
 PROVE_REUSE = """
 
-REUSING PRIOR PROOFS. If this run continues an earlier one, that run's proof scripts live at
-`git show refs/lusterna/pristine:verification/lean/<Crate>/Spec.lean` (this run's -base). For every
-theorem whose statement is unchanged, copy its proof script back verbatim and confirm it with
-`lake build` — do NOT re-derive it. Spend effort only on the theorems still bodied `sorry`.
-(`#print axioms` re-checks every proof from source regardless, so a copied-back proof is verified
-afresh, never trusted on faith.)"""
+REUSING PRIOR WORK. Prior campaigns' theorems are already proved in their own modules under
+lean/<Crate>/Spec/ — do NOT restate or re-prove them; `import` those modules and apply their lemmas
+(`exact`/`apply`/`simp [Prior.lemma]`) to discharge yours. Prove only the theorems in YOUR campaign's
+module. (`#print axioms` re-checks every proof from source, so reuse never inherits trust on faith.)"""
 
 
 EXPLORE = """\
@@ -36,8 +35,8 @@ Glob, and TodoWrite. The Rust repository is at /workspace/repo; all your deliver
 
 WORKING DISCIPLINE (this matters as much as the result):
 - Start by writing a short plan (use TodoWrite). Keep it current.
-- Externalise every conclusion the MOMENT you reach it: append it to /workspace/out/explore/
-  assessment.md. Do not hold findings in your head to emit at the end.
+- Externalise every conclusion the MOMENT you reach it: append it to your campaign's
+  assessment.md (the harness names the path, under explore/campaigns/<Campaign>/). Do not hold findings in your head to emit at the end.
 - You are ASSESSING, not translating. A partial or scoped build is enough to learn what you need.
   Do NOT try to make the whole crate compile. When an out-of-scope external crate fails on a
   systemic issue (e.g. struct-layout/derive asserts across a protocol/account crate that is the
@@ -73,9 +72,9 @@ pass, reading the real errors. Only build a tiny isolated probe crate if that is
      oracles, external-protocol account/amount types) → `opaque_boundary`.
 
 DELIVERABLE (write both, then STOP):
-  1. /workspace/out/explore/assessment.md — your full narrative: what the code is, what you ran, the
+  1. /workspace/out/explore/campaigns/<Campaign>/assessment.md — your full narrative: what the code is, what you ran, the
      errors you saw, and the reasoning behind each field below.
-  2. /workspace/out/explore/handoff.json — EXACTLY this shape (valid JSON, the machine-readable
+  2. /workspace/out/explore/campaigns/<Campaign>/handoff.json — EXACTLY this shape (valid JSON, the machine-readable
      handoff the next stages consume):
         {
           "entry_file": "src/lib.rs",
@@ -101,14 +100,14 @@ You are the INFER stage of the Lusterna pipeline. You run on the PRISTINE Rust s
 document (in your task prompt) is only a FOCUS HINT — never a spec to match. You are a Claude Code
 session with Bash/Read/Grep/TodoWrite.
 
-READ FOR ORIENTATION: /workspace/out/explore/handoff.json (entry_file + entry_functions + the
+READ FOR ORIENTATION: /workspace/out/explore/campaigns/<Campaign>/handoff.json (entry_file + entry_functions + the
 toolchain assessment). Then read the target functions and what they directly call — a handful of
 reads guided by the design hint, not the whole tree.
 
 DISCIPLINE: plan briefly; read only what's relevant; write the deliverable; validate it; STOP. Do
 not over-analyse — the code stays the source of truth downstream.
 
-TWO JOBS, written to ONE file /workspace/out/infer/properties.json (valid JSON, exactly these keys):
+TWO JOBS, written to ONE file /workspace/out/infer/campaigns/<Campaign>.json (valid JSON, exactly these keys):
   {
     "summary": "...",
     "properties": ["..."],
@@ -157,9 +156,9 @@ You are the TRANSLATE stage of the Lusterna pipeline. Produce a Lean 4 translati
 VERIFICATION TARGET by driving Charon and Aeneas yourself (you have Bash/Read/Write/Edit/TodoWrite).
 The Rust crate is at /workspace/repo; emit Lean into /workspace/out/lean.
 
-READ FOR INPUT: /workspace/out/infer/properties.json — its `target_patterns` are the functions
-you MUST translate, and its properties tell you which state matters. /workspace/out/explore/
-handoff.json has the toolchain assessment (build prereqs, opaque boundary, must-model).
+READ FOR INPUT: /workspace/out/infer/campaigns/<Campaign>.json — its `target_patterns` are the functions
+you MUST translate, and its properties tell you which state matters.
+/workspace/out/explore/campaigns/<Campaign>/handoff.json has the toolchain assessment (build prereqs, opaque boundary, must-model).
 
 GOAL — every target function (`target_patterns`) MUST appear in the generated Lean as a real
 translated `def` with a body. A target emitted as an `axiom` (opaqued) or a bare `sorry` (hole) is a
@@ -167,7 +166,7 @@ FAILURE — a mock, not a verification. Opacity is legitimate ONLY for the targe
 DEPENDENCIES, never the target itself.
 
 PLAN FIRST, THEN EXECUTE — do NOT grind primitive-by-primitive. Your FIRST action is to read the
-target functions ONCE and write a short PLAN to /workspace/out/translate/plan.md: the minimal set to
+target functions ONCE and write a short PLAN to /workspace/out/translate/campaigns/<Campaign>/plan.md: the minimal set to
 translate and how, via the ladder below IN ORDER. Classify every external dependency in a SINGLE
 pass: the target's own logic = translatable core (keep); trusted primitives whose internal value the
 properties don't reason about (crypto/curve/scalar/point arithmetic, hashing, Fiat–Shamir transcript,
@@ -231,7 +230,7 @@ Aeneas cannot handle iterator-adaptor chains, Option/Result combinators, closure
 globals (lazy_static). Opaque the leaf, or refactor the usage.
 
 ACCOUNTABILITY — every alteration is reviewed by a human and by the TRANSLATE-JUDGE. Write
-/workspace/out/translate/accountability.md documenting, for each opaque/exclude and each source or
+/workspace/out/translate/campaigns/<Campaign>/accountability.md documenting, for each opaque/exclude and each source or
 Lean edit: WHAT you changed and WHY it is behaviour-preserving (or why an opaqued item is a trusted
 primitive the properties don't depend on). For a rung-3 edit the "why" is EVIDENCE, not assertion:
 name the behavioural-equivalence tests you wrote, the cases they cover (representative + the
@@ -241,7 +240,7 @@ a pristine baseline, so you don't need to `git init` or stage a baseline yoursel
 the harness diffs your changes against it automatically. Use git however you find useful otherwise.)
 
 DELIVERABLE: the compiling translation in /workspace/out/lean (target functions as real `def`s),
-plus translate/plan.md and translate/accountability.md. STOP once the target translates and
+plus translate/campaigns/<Campaign>/plan.md and translate/campaigns/<Campaign>/accountability.md. STOP once the target translates and
 `lake env lean` accepts it.
 """ + docs.FOR_TRANSLATE + INCREMENTAL
 
@@ -254,8 +253,8 @@ your verdict to /workspace/out/translate/verdict.json (valid JSON): {"defects": 
 proceeds (that is the goal).
 
 You have Bash/Read/Grep. READ: the ORIGINAL Rust at /workspace/repo (targets = target_patterns in
-/workspace/out/infer/properties.json), the GENERATED Lean at /workspace/out/lean, the
-accountability at /workspace/out/translate/accountability.md, and /workspace/out/translate/facts.json
+/workspace/out/infer/campaigns/<Campaign>.json), the GENERATED Lean at /workspace/out/lean, the
+accountability at /workspace/out/translate/campaigns/<Campaign>/accountability.md, and /workspace/out/translate/campaigns/<Campaign>/facts.json
 (it compiles; the emitted `axiom`s; changed source files + the git diff). The harness has ALREADY
 gated that it compiles — your job is the semantic screen it can't do. INSPECT the translation
 yourself: for each target function, `grep`/`sed` its translated form in the Lean and confirm it is a
@@ -297,22 +296,25 @@ specification as a Lean file of theorem STATEMENTS — you do NOT write proofs. 
 precisely, WHAT should hold; the harness forces every theorem body to `:= by sorry` and PROVE
 discharges them later.
 
-You have Bash/Read/Grep/Write/Edit. READ: /workspace/out/infer/properties.json (the properties to
+You have Bash/Read/Grep/Write/Edit. READ: /workspace/out/infer/campaigns/<Campaign>.json (the properties to
 capture) and the translated crate under /workspace/out/lean. The translation is LARGE — READ it
 selectively: `grep -n`/`sed -n` for a definition's EXACT signature before referencing it. Aeneas
 mangles names (`fibonacci.fib_recursive`, `Std.U32`) and wraps results in `Result`/`ok`, so a
 guessed name or type will not compile.
 
-WRITE the spec to /workspace/out/lean/<Crate>/Spec.lean (the crate subdirectory, so the lakefile's
-`.andSubmodules` glob builds it). Structure:
-  • a preamble: `import`/`open` lines and any helper `def`s (e.g. an abstract model function). Put
-    NO theorems in the preamble. `import Aeneas` and the crate module import are expected.
+WRITE this campaign's spec as its OWN module — the harness gives the exact path in your task prompt
+(`lean/<Crate>/Spec/<Campaign>.lean`, so the lakefile's `.andSubmodules` glob builds it). It is a NEW
+module in `namespace <Crate>.Spec.<Campaign>`. Campaigns ACCUMULATE: **never edit or delete another
+`lean/**/Spec/*.lean` module** (a prior campaign) — reuse its lemmas by `import`ing it. (The harness
+reverts any change to a prior module, so edits there are wasted.) Structure:
+  • a preamble: `import`/`open` lines (including `import Aeneas`, the crate module, and any prior
+    campaign module whose lemmas you reuse) and any helper `def`s. Put NO theorems in the preamble.
   • one `theorem` per property that matters, EACH with body `:= by sorry`. A property may be about
     one function or span several functions/types (a relationship, an invariant across method calls).
     You decide what genuinely matters; state the real guarantee, not a tautology.
 
 SELF-CHECK your STATEMENTS compile before finishing: `cd /workspace/out/lean && lake env lean
-<Crate>/Spec.lean` (or a scratch file). Fix name/type/import errors — a spec that does not compile is
+<your module>` (or a scratch file). Fix name/type/import errors — a spec that does not compile is
 useless. NEVER write a real proof (leave every body `:= by sorry`); the harness re-stubs and builds
 regardless, so a smuggled proof is discarded.
 
@@ -320,8 +322,8 @@ In this toolchain the Aeneas postcondition triple `f args ⦃ r => P r ⦄` is T
 P holds), so a triple already carries the ok-ness guarantee; an equality `f args = ok v` is equally
 valid. Choose whichever fits.
 
-DELIVERABLE: /workspace/out/lean/<Crate>/Spec.lean with compiling statement-only theorems. STOP once
-it compiles.
+DELIVERABLE: this campaign's spec module (the path the harness gave you) with compiling
+statement-only theorems, and prior campaign modules untouched. STOP once it compiles.
 """ + docs.FOR_FORMALISE + INCREMENTAL
 
 
@@ -333,8 +335,9 @@ theorem STATEMENTS and write /workspace/out/spec-judge/verdict.json (valid JSON)
 now). An empty defects list means the spec is sound and the pipeline proceeds; that is the goal.
 
 You have Bash/Read/Grep. READ: the translated Lean under /workspace/out/lean (ground truth for what
-the implementation does), /workspace/out/infer/properties.json (the properties to capture), and
-the spec /workspace/out/lean/<Crate>/Spec.lean (the statements you judge).
+the implementation does), /workspace/out/infer/campaigns/<Campaign>.json (the properties to capture), and
+THIS campaign's spec module (the harness names it in your task prompt, `lean/<Crate>/Spec/<Campaign>.lean`)
+— judge only that module's statements, not other campaigns'.
 
 The Aeneas triple `f args ⦃ r => P r ⦄` is TOTAL — it is NOT vacuous merely for being a triple.
 Report one defect per concrete problem (name a specific theorem, or "coverage"), with a concrete fix,
@@ -356,10 +359,11 @@ the spec faithfully and non-trivially captures the code and the informal spec, w
 
 # ── PROVE ──────────────────────────────────────────────────────────────────────
 PROVE = """\
-You are the PROVE stage of the Lusterna pipeline. The implementation spec at
-/workspace/out/lean/<Crate>/Spec.lean compiles with every theorem `:= by sorry`. Fill in as many
-proofs as you can WITHOUT changing any statement. Leaving hard theorems as `sorry` is expected and
-honest — never fake a proof. You have Bash/Read/Edit.
+You are the PROVE stage of the Lusterna pipeline. THIS campaign's spec module (the harness names it
+in your task prompt, `lean/<Crate>/Spec/<Campaign>.lean`) compiles with every theorem `:= by sorry`.
+Fill in as many proofs as you can in THAT module WITHOUT changing any statement, and without touching
+other campaigns' modules. Leaving hard theorems as `sorry` is expected and honest — never fake a
+proof. You have Bash/Read/Edit.
 
 Your oracle is `lake build`: from /workspace/out/lean run `lake build`, which returns the REAL Lean
 diagnostics. An incomplete proof reports `error: …: unsolved goals` + the remaining goal state — read
@@ -389,18 +393,20 @@ STRICT RULES:
   • NEVER introduce an axiom or `sorry`-hiding trick to fake a proof.
   • It is acceptable — expected — to leave hard theorems as `sorry`.
 
-DELIVERABLE: Spec.lean compiling, with as many real proofs as you could discharge; committed.
+DELIVERABLE: your campaign module compiling, with as many real proofs as you could discharge; committed.
 """ + docs.FOR_PROVE + PROVE_REUSE
 
 
 # ── REPORT ─────────────────────────────────────────────────────────────────────
 REPORT = """\
-You are the REPORT stage of the Lusterna verification pipeline. Write the verification report as
-SEPARATE section files under /workspace/out/report/ (the harness concatenates them into
-VERIFICATION_REPORT.md — do NOT write that file yourself, and do NOT commit). You have Bash/Read/Write.
+You are the REPORT stage of the Lusterna verification pipeline. Write THIS campaign's report as
+SEPARATE section files under the campaign report directory the harness names in your task prompt
+(`report/campaigns/<Campaign>/NN_*.md`). The harness assembles them into `report/campaigns/<Campaign>.md`
+and regenerates the cumulative top-level VERIFICATION_REPORT.md — do NOT write those yourself, do NOT
+touch other campaigns' reports, and do NOT commit. You have Bash/Read/Write.
 
-READ what you need from /workspace/out: the translation under lean/, infer/properties.json, the
-spec lean/<Crate>/Spec.lean, translate/accountability.md, and the FACTS the harness prepared at
+READ what you need from /workspace/out: the translation under lean/, infer/campaigns/<Campaign>.json, the
+campaign spec modules under lean/<Crate>/Spec/, translate/campaigns/<Campaign>/accountability.md, and the FACTS the harness prepared at
 /workspace/out/report/axioms.json (the authoritative `#print axioms` verdict — established vs tainted;
 the implementation-verified vs abstract-only partition; the spec-judge verdict; opaqued primitives
 and holes).
@@ -416,30 +422,31 @@ from facts.json (the kernel `#print axioms` result); report those same numbers i
     facts.json, do NOT silently pick one — report the discrepancy prominently (it means the gate or
     the build is wrong, which matters more than the number). Absent a discrepancy, report facts.json.
 
-Write exactly these files, in order (`mkdir -p /workspace/out/report`):
-  report/01_overview.md — title, one-paragraph executive summary, overview table. The HEADLINE metric
+Write exactly these files, in order, into the campaign report dir the harness gave you
+(`mkdir -p /workspace/out/report/campaigns/<Campaign>`):
+  01_overview.md — title, one-paragraph executive summary, overview table. The HEADLINE metric
     is `len(facts.json.axioms.impl_verified)` — theorems that VERIFY THE IMPLEMENTATION (kernel-
     established via `#print axioms`, standard axioms only, AND referencing an Aeneas-translated def).
     Report abstract helper lemmas SEPARATELY, never as the verification result, and report the tainted
     theorems plainly as NOT verified. If NONE reference the implementation, say plainly that 0
     properties of the code were verified. Also: translation result (incl. assumed/opaqued primitives),
     spec-judge result, untranslated holes.
-  report/02_translation.md — what was translated: entry file, Charon scope patterns, Aeneas output
-    files, then SUMMARISE `translate/accountability.md` as the agent wrote it — the scoping, any
+  02_translation.md — what was translated: entry file, Charon scope patterns, Aeneas output
+    files, then SUMMARISE `translate/campaigns/<Campaign>/accountability.md` as the agent wrote it — the scoping, any
     opaqued leaves, and any rung-3 modeling/edits with the agent's stated rationale. Report the trail
     as recorded; do not impose a faithfulness grade of your own. Tie any opaqued primitive or
     untranslated hole to the `#print axioms` verdict (a theorem depending on one shows as tainted).
-  report/03_implementation_spec.md — every theorem statement with a one-line explanation; the lake
+  03_implementation_spec.md — every theorem statement with a one-line explanation; the lake
     build result.
-  report/04_spec_judge.md — the spec-judge result (approved, or the unresolved defects with theorem,
+  04_spec_judge.md — the spec-judge result (approved, or the unresolved defects with theorem,
     kind, detail, fix).
-  report/05_proofs.md — proof status. The AUTHORITATIVE verdict is `#print axioms` (facts.json):
+  05_proofs.md — proof status. The AUTHORITATIVE verdict is `#print axioms` (facts.json):
     established only if the proof depends on nothing beyond the standard axioms
     (propext/Classical.choice/Quot.sound). Split established into (a) implementation-verifying
     (reference an Aeneas def) and (b) abstract helper lemmas — only (a) verifies the code. Mark each
     theorem implementation-verified / abstract-only / not-established, with a one-line sketch or a
     suggested strategy.
-  report/06_summary.md — open obligations (each sorry + a concrete next step), known gaps/limitations,
+  06_summary.md — open obligations (each sorry + a concrete next step), known gaps/limitations,
     overall verdict paragraph.
 
 Be thorough; do not summarise away detail a reader needs. STOP once the six files exist.
