@@ -294,6 +294,15 @@ def import_repo(container_id: str, src: Path, session_id: str, git_head: str) ->
     exec_in(container_id, ["git", "checkout", "-q", "-f", branch], workdir=REPO_IN)
     exec_in(container_id, ["git", "reset", "--hard", git_head], workdir=REPO_IN)
     exec_in(container_id, ["git", "clean", "-fdq"], workdir=REPO_IN)
+    # Re-establish the pristine baseline ref from the exported `-base` branch (which IS the pristine
+    # root). PRISTINE_REF is container-only in a normal run — a dead-container resume rebuilds from the
+    # host, which carries `<branch>-base` as a branch but not the custom ref — so without this the next
+    # `export_branch` (`git bundle create … refs/lusterna/pristine`) fails and the resumed run cannot
+    # be delivered. `-base` is present whenever a prior run exported (the precondition for this path).
+    base = f"{branch}-base"
+    if exec_in(container_id, ["git", "rev-parse", "--verify", "-q", f"refs/heads/{base}"],
+               workdir=REPO_IN)[0] == 0:
+        exec_in(container_id, ["git", "update-ref", PRISTINE_REF, f"refs/heads/{base}"], workdir=REPO_IN)
     # The tarred-in host .git carries an empty info/exclude (it was git-init'd on the host at export),
     # so re-establish the build-tree excludes before any resumed stage runs `git add -A`.
     _write_excludes(container_id)

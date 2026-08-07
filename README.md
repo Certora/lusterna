@@ -157,7 +157,7 @@ not via message history.
 | TRANSLATE-JUDGE | `translate/verdict.json` | empty defect list (semantic screen; independent session) |
 | FORMALISE | `lean/<Crate>/Spec.lean` (statements, bodies `:= by sorry`) | `stub_proofs` + `lake build` compiles |
 | SPEC-JUDGE | `spec/verdict.json` | empty defect list |
-| PROVE | proofs filled into `Spec.lean` | `#print axioms` (best-tracked: maximise established count) |
+| PROVE | proofs + supporting lemmas committed into the Lean library | `#print axioms` — three-way: established / modulo trusted base / tainted |
 | REPORT | `report/NN_*.md` | — (harness prepends the authoritative verdict) |
 
 FORMALISE cannot smuggle in a proof: the harness runs `stub_proofs` on its `Spec.lean` before the
@@ -206,6 +206,42 @@ toolchain, so `tools/aeneas-characterize/` measures it directly rather than rely
   and the editable-installed package). It prints a table and writes the JSON.
 - **When.** On a toolchain-image bump — the fragment is version-specific. Then reconcile the
   playbook's verdict table and recipes with the fresh `characterization.json`.
+
+## PROVE
+
+PROVE discharges the `sorry`-bodied statements, and like every other labor stage it is *not*
+refereed by the harness. It runs one budgeted, resumable agent session — the per-stage
+`--max-budget-usd` is the hard stop — and the agent drives an ordinary, cumulative Lean development:
+proving supporting lemmas, giving the translated functions and their loops the `@[progress]` spec
+lemmas a bottom-up proof needs, and committing as it goes. Git is both the persistence and the
+safety net (a session that leaves the build red falls back to its own last green commit); `#print
+axioms` over the committed library is the sole arbiter. There is no scoring, stall-detection, or
+rollback logic in the harness — that machinery constrained the agent against the grain of how proofs
+are actually built, and it is gone.
+
+A hard obligation can bottom out in a fact that is *true but intractable to prove at this modelling
+altitude* — typically the value semantics of a low-level primitive the translation reproduced
+bit-for-bit (e.g. a multi-limb fixed-point multiply-divide whose faithful Lean model is a
+256-iteration restoring-division loop). For these the agent may declare a **trusted assumption**: a
+general `axiom` in a dedicated `lean/<Crate>/Assumptions.lean` stating the primitive's value
+contract, and then prove the rest *modulo* it. The trust is disclosed, never hidden — `#print
+axioms` still reports the dependency — so the verdict is three-way rather than binary:
+
+- **established** — the proof rests only on the standard axioms (`propext` / `Classical.choice` /
+  `Quot.sound`);
+- **established modulo the trusted base** — rests only on those plus declared assumptions (each
+  listed with the theorems that use it);
+- **not established** — a leftover `sorry` or a non-standard axiom; verifies nothing.
+
+This is the proof-time analogue of TRANSLATE's `--opaque` (assume an untranslatable *leaf*): here we
+assume an *unprovable substrate fact*, disclosed the same way. And it is bounded by the same
+principle that keeps the whole harness honest — it can never launder a goal into the trusted base. A
+declared assumption may reference **only the substrate, never a target function under verification**
+(the harness checks each assumption's statement against the INFER `target_patterns`; an assumption
+that mentions a target is refused and any theorem leaning on it is demoted to *tainted*). Since a
+goal states a property *of* a target, no goal can be admitted as an assumption — if it cannot be
+proved it stays an honest `sorry`. The assumptions are general and reusable across campaigns, and can
+later be *discharged* — proved against a value model — to retire the trust entirely.
 
 ## Architecture
 
