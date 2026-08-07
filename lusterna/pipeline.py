@@ -391,53 +391,76 @@ def _record_axioms(deps: AgentDeps) -> None:
 
 
 def _stage_prove(deps: AgentDeps) -> None:
-    """Best-tracked stall loop over a RESUMED PROVE session, scored by the axiom-clean established
-    count. A round that fails to beat the best is discarded (restore best), so the count is monotone
-    and one bad round can't lose proofs. Stops when nothing tainted remains or after STALL_ROUNDS
-    with no gain. The `#print axioms` gate and the compile gate are the trusted arbiters."""
+    """Resumed PROVE session driven by a PROGRESS-PRESERVING stall loop.
+
+    The invariant keeps the established count monotone WITHOUT discarding in-progress scaffolding —
+    the flaw of the old 'roll back every non-improving round', which deleted helper lemmas and
+    partial `have`-ladders the moment a round failed to close a NEW theorem, so multi-round proofs
+    could never accumulate. Here a round is KEPT whenever it leaves the build green and does not
+    REGRESS the `#print axioms`-clean count; it is rolled back to the last good state ONLY on a
+    broken build or a clean-count regression (which would lose an already-established theorem). So
+    helper lemmas / partial proofs survive across rounds, while proven theorems are never lost.
+
+    The loop stops when nothing tainted remains, or when the FRONTIER (the clean set + the open-`sorry`
+    set) stops moving for STALL_ROUNDS — adding, proving, or closing a lemma all move the frontier and
+    reset the counter, so decomposition-in-progress is not mistaken for a stall. `#print axioms` and
+    the compile gate remain the trusted arbiters."""
     if "proofs_done" in deps.progress:
         return
     impl = lean.campaign_spec(deps)
     if not lean.build(deps).get("success"):
         raise _PipelineAborted("PROVE not started — the implementation spec does not compile")
-    best_spec = tools.read_out(deps, impl)
-    best_established, stale, rnd = -1, 0, 0
+
+    def _frontier(ax: dict) -> tuple:
+        open_sorry = lean.sorry_bodied_theorems(tools.read_out(deps, impl))
+        return (frozenset(ax["clean"]), frozenset(open_sorry))
+
+    good_spec = tools.read_out(deps, impl)            # last green, non-regressing file
+    best_clean = len(lean.check_axioms(deps, impl)["clean"])
+    prev_frontier, stale, rnd = None, 0, 0
     prompt = (f"Proceed to PROVE. Fill in proofs for as many `sorry` theorems in /workspace/out/{impl} "
               f"as you can, WITHOUT changing any statement. Work one theorem at a time against "
               f"`lake build`, keep the file compiling, then commit. Follow your briefing's strict rules.")
     while True:
         rnd += 1
         sid = deps.progress.get("cc_sessions", {}).get("PROVE")
-        stop = False
         try:
             run_cc_stage(deps, stage="PROVE", prompt=prompt,
                          briefing=(None if sid else briefings.PROVE), resume_sid=sid, **_cc_common())
         except StageFailed as e:
             log.warning("PROVE round %d: session produced no result (%s) — scoring on-disk", rnd, e)
         checkpoint.snapshot(deps)
-        if not lean.build(deps).get("success"):
-            log.warning("PROVE round %d left a non-compiling spec — restoring best-so-far", rnd)
-            tools.write_out(deps, impl, best_spec)
-            lean.build(deps)
-        ax = lean.check_axioms(deps, impl)
-        established = len(ax["clean"])
-        total = established + len(ax["tainted"])
-        if established > best_established:
-            best_established, best_spec, stale = established, tools.read_out(deps, impl), 0
+
+        if lean.build(deps).get("success"):
+            ax = lean.check_axioms(deps, impl)
+            clean = len(ax["clean"])
+            if clean >= best_clean:                   # keep — scaffolding rides along
+                good_spec, best_clean = tools.read_out(deps, impl), clean
+            else:                                     # regression would drop a proven theorem
+                log.warning("PROVE round %d regressed established %d→%d — restoring last good state",
+                            rnd, best_clean, clean)
+                tools.write_out(deps, impl, good_spec)
+                lean.build(deps)
+                ax = lean.check_axioms(deps, impl)
         else:
-            stale += 1
-            tools.write_out(deps, impl, best_spec)
+            log.warning("PROVE round %d left a non-compiling spec — restoring last good state", rnd)
+            tools.write_out(deps, impl, good_spec)
             lean.build(deps)
             ax = lean.check_axioms(deps, impl)
-        log.info("PROVE round %d: %d/%d established (best=%d, stale=%d/%d)",
-                 rnd, established, total, best_established, stale, config.STALL_ROUNDS)
-        if stop or not ax["tainted"] or stale >= config.STALL_ROUNDS:
+
+        frontier = _frontier(ax)
+        stale = stale + 1 if frontier == prev_frontier else 0
+        prev_frontier = frontier
+        log.info("PROVE round %d: %d/%d established (open sorry=%d, stale=%d/%d)",
+                 rnd, len(ax["clean"]), len(ax["clean"]) + len(ax["tainted"]),
+                 max(lean.sorry_count(deps), 0), stale, config.STALL_ROUNDS)
+        if not ax["tainted"] or stale >= config.STALL_ROUNDS:
             break
         prompt = _prove_feedback(deps, ax)
 
-    tools.write_out(deps, impl, best_spec)
-    if not lean.build(deps).get("success"):
-        raise _PipelineAborted("PROVE left the spec in a non-compiling state")
+    if not lean.build(deps).get("success"):           # paranoia — good_spec always compiled
+        tools.write_out(deps, impl, good_spec)
+        lean.build(deps)
     tools.commit(deps.container_id, "stage/prove: proof attempts")
     deps.progress["proofs_done"] = True
     _record_axioms(deps)
