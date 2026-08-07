@@ -212,12 +212,17 @@ def export_branch(container_id: str, dest: Path, session_id: str) -> None:
     bundle the branch and the pristine root, copy the bundle to the host, and `git fetch` it into
     *dest* — git-initialising *dest* if it is not already a repo. The fetch creates
     `lusterna/<session>` and `lusterna/<session>-base` (= the pristine source) and touches nothing
-    else: the working tree, and any branch the delivered repo already has, are left as-is.
+    else: any OTHER branch the delivered repo already has is left as-is.
     Review the whole run with:  git -C <dest> diff lusterna/<session>-base lusterna/<session>
 
-    Best-effort by design — a failure is logged, not raised, so it never masks the run's own result.
+    Robust to the run branch already being CHECKED OUT in *dest* (e.g. re-exporting a resumed session
+    whose branch you inspected): a plain fetch into the current branch is refused, so we pass git's
+    sanctioned `--update-head-ok` and then re-sync the working tree to the new tip ONLY if it is clean
+    — a dirty worktree is never clobbered. Best-effort by design: a failure is logged, never raised,
+    and the bundle is KEPT on failure (it is the only host copy of the run) with a recovery command.
     """
     branch = run_branch(session_id)
+    base = f"{branch}-base"
     bundle_in = "/workspace/lusterna.bundle"
     code, _, err = exec_in(container_id, ["git", "bundle", "create", bundle_in, branch, PRISTINE_REF],
                            workdir=REPO_IN)
@@ -229,15 +234,30 @@ def export_branch(container_id: str, dest: Path, session_id: str) -> None:
         subprocess.run(["git", "init", "-q", str(dest)], check=True)
     bundle_host = dest / ".lusterna-run.bundle"
     _docker("cp", f"{container_id}:{bundle_in}", str(bundle_host))
-    try:
-        subprocess.run(
-            ["git", "-C", str(dest), "fetch", "-q", str(bundle_host.resolve()),
-             f"+{branch}:refs/heads/{branch}",
-             f"+{PRISTINE_REF}:refs/heads/{branch}-base"],
-            check=True)
-    finally:
-        bundle_host.unlink(missing_ok=True)
-    log.info("Run branch exported → %s (%s; base %s-base)", dest, branch, branch)
+
+    def _git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", "-C", str(dest), *args], capture_output=True, text=True)
+
+    fetch = _git("fetch", "-q", "--update-head-ok", str(bundle_host.resolve()),
+                 f"+{branch}:refs/heads/{branch}", f"+{PRISTINE_REF}:refs/heads/{base}")
+    if fetch.returncode != 0:
+        # NEVER delete the bundle on failure — it is the only host copy of the run.
+        log.warning("Export fetch failed (%s) — the run is PRESERVED at %s; recover with:\n"
+                    "  git -C %s fetch --update-head-ok %s '+%s:refs/heads/%s' '+%s:refs/heads/%s'",
+                    (fetch.stderr or "").strip()[:200], bundle_host, dest, bundle_host,
+                    branch, branch, PRISTINE_REF, base)
+        return
+    # If the run branch is the one checked out here, --update-head-ok moved its ref but not the
+    # worktree; re-sync a CLEAN worktree to match, and leave a dirty one untouched (never lose edits).
+    if _git("symbolic-ref", "-q", "--short", "HEAD").stdout.strip() == branch:
+        if _git("status", "--porcelain").stdout.strip():
+            log.warning("Export updated %s but its checked-out worktree in %s has uncommitted changes "
+                        "— left as-is; `git -C %s reset --hard %s` to sync when ready.",
+                        branch, dest, dest, branch)
+        else:
+            _git("reset", "--hard", "-q", branch)
+    bundle_host.unlink(missing_ok=True)
+    log.info("Run branch exported → %s (%s; base %s)", dest, branch, base)
 
 
 def host_has_branch(dest: Path, session_id: str) -> bool:

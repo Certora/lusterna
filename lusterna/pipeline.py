@@ -183,6 +183,7 @@ def _stage_infer(deps: AgentDeps) -> None:
         check=check,
     )
     tools.commit(deps.container_id, "feat(spec): informal specification (pre-translate)")
+    checkpoint.snapshot(deps)   # commit-then-snapshot: git_head must track this stage's own commit
     log.info("INFER target patterns: %s", deps.progress.get("target_patterns") or "(whole crate)")
 
 
@@ -264,6 +265,7 @@ def _stage_translate(deps: AgentDeps) -> None:
         check=check,
     )
     tools.commit(deps.container_id, f"feat(translate): {deps.campaign} — translation reuse/extend")
+    checkpoint.snapshot(deps)   # commit-then-snapshot: git_head must track this stage's own commit
 
 
 # ── FORMALISE (+ SPEC-JUDGE) ──────────────────────────────────────────────────────
@@ -329,6 +331,7 @@ def _stage_formalise(deps: AgentDeps) -> None:
         check=check,
     )
     tools.commit(deps.container_id, "feat(spec): implementation spec (statements only)")
+    checkpoint.snapshot(deps)   # commit-then-snapshot: git_head must track this stage's own commit
 
 
 # ── PROVE ─────────────────────────────────────────────────────────────────────────
