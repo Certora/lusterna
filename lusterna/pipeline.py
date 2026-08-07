@@ -45,7 +45,9 @@ def _cc_gate_loop(deps: AgentDeps, *, stage: str, briefing: str, base_prompt: st
     CONSECUTIVE rounds with the SAME failure (feedback unchanged modulo volatile line/col numbers)
     count as stuck and abort. So a genuinely-improving FORMALISE/TRANSLATE loop is never cut off
     mid-progress; a stuck/oscillating one still stops. No hard round ceiling — the per-stage
-    --max-budget-usd bounds each round's cost. Mirrors the TRANSLATE/PROVE best-tracked stalls.
+    --max-budget-usd bounds each round's cost. This gate-feedback loop is for stages with a gate that
+    must PASS (a spec that must compile / clear the judge); PROVE has no such gate (leftover `sorry`
+    is a valid outcome), so it runs as a single budgeted session with no iteration.
     """
     prompt, feedback, prev_key, stale, rnd = base_prompt, "", None, 0, 0
     while True:
@@ -331,33 +333,6 @@ def _stage_formalise(deps: AgentDeps) -> None:
 
 # ── PROVE ─────────────────────────────────────────────────────────────────────────
 
-def _prove_feedback(deps: AgentDeps, ax: dict, violations: list | None = None) -> str:
-    """Name the frontier for the next PROVE round: already-established (keep verbatim, incl. those
-    resting on the trusted base), still-open `sorry`, compiles-but-tainted (a non-standard axiom,
-    usually native_decide), and any ILLEGITIMATE trusted assumptions to withdraw."""
-    spec = tools.read_out(deps, lean.campaign_spec(deps))
-    sorry_names = lean.sorry_bodied_theorems(spec)
-    open_sorry = [n for n in ax["tainted"] if n in sorry_names]
-    tainted_non_sorry = [n for n in ax["tainted"] if n not in sorry_names]
-    established = ax["clean"] + list(ax["assumed"])
-    parts = [
-        "Continue PROVE (fresh attempt — try tactics/lemmas you have NOT tried yet).",
-        f"Already ESTABLISHED — keep these proofs EXACTLY, do not touch them: {established or '(none yet)'}.",
-    ]
-    if ax["assumed"]:
-        parts.append(f"Established MODULO the trusted base (fine — keep): {ax['assumed']}.")
-    if open_sorry:
-        parts.append(f"Still OPEN (`:= by sorry`) — focus here: {open_sorry}.")
-    if tainted_non_sorry:
-        parts.append(f"These COMPILE but are NOT established — the proof rests on a non-standard "
-                     f"axiom (almost always native_decide/decide on a recursive eval): "
-                     f"{tainted_non_sorry}. Replace with a REASONING proof or revert to `:= by sorry`.")
-    if violations:
-        parts.append("ILLEGITIMATE trusted assumptions — WITHDRAW these from the assumptions module; "
-                     "they reference a target function, which would relax a GOAL (you must PROVE such "
-                     "facts, never assume them):\n  - " + "\n  - ".join(v["reason"] for v in violations))
-    return "\n".join(parts)
-
 
 def _verifies_impl(spec_text: str, translation: str, name: str) -> bool:
     """True if theorem *name*'s statement references a translated def — i.e. it is about the
@@ -425,88 +400,38 @@ def _record_axioms(deps: AgentDeps) -> None:
 
 
 def _stage_prove(deps: AgentDeps) -> None:
-    """Resumed PROVE session driven by a PROGRESS-PRESERVING stall loop.
+    """One budgeted, resume-aware PROVE session — the agent, not the harness, drives the proof.
 
-    The invariant keeps the established count monotone WITHOUT discarding in-progress scaffolding —
-    the flaw of the old 'roll back every non-improving round', which deleted helper lemmas and
-    partial `have`-ladders the moment a round failed to close a NEW theorem, so multi-round proofs
-    could never accumulate. Here a round is KEPT whenever it leaves the build green and does not
-    REGRESS the `#print axioms`-clean count; it is rolled back to the last good state ONLY on a
-    broken build or a clean-count regression (which would lose an already-established theorem). So
-    helper lemmas / partial proofs survive across rounds, while proven theorems are never lost.
-
-    The loop stops when nothing tainted remains, or when the FRONTIER (the clean set + the open-`sorry`
-    set) stops moving for STALL_ROUNDS — adding, proving, or closing a lemma all move the frontier and
-    reset the counter, so decomposition-in-progress is not mistaken for a stall. `#print axioms` and
-    the compile gate remain the trusted arbiters."""
+    Like EXPLORE/INFER/REPORT (and unlike the old scored, stall-detected, rollback loop this
+    replaces), PROVE runs the agent ONCE and lets it work: it develops a cumulative Lean library —
+    helper lemmas, `@[progress]` loop-spec lemmas, trusted assumptions, target proofs — and COMMITS
+    as it goes. The per-stage `--max-budget-usd` is the hard stop; the session ends when the agent is
+    done (leftover `sorry` is honest) or the budget backstop trips. The harness does not referee: git
+    is both the persistence AND the safety net (a red tree falls back to the agent's own last commit),
+    and `#print axioms` over the committed library is the sole, mechanical arbiter."""
     if "proofs_done" in deps.progress:
         return
-    impl = lean.campaign_spec(deps)
     if not lean.build(deps).get("success"):
         raise _PipelineAborted("PROVE not started — the implementation spec does not compile")
 
-    translation = lean.translation_text(deps)
-    _EMPTY = lean._empty_axioms()
+    sid = deps.progress.get("cc_sessions", {}).get("PROVE")
+    prompt = ("Proceed to PROVE. Discharge as many `sorry` theorems in this campaign's spec module as "
+              "you can, WITHOUT changing any statement. Build up and COMMIT whatever supporting lemmas "
+              "you need across the Lean library, reuse them by import, keep it compiling and commit as "
+              "you go. Leaving genuinely hard theorems as `sorry` is fine. Follow your briefing.")
+    try:
+        run_cc_stage(deps, stage="PROVE", prompt=prompt,
+                     briefing=(None if sid else briefings.PROVE), resume_sid=sid, **_cc_common())
+    except StageFailed as e:
+        log.warning("PROVE session produced no result (%s) — gating on-disk regardless", e)
+    checkpoint.snapshot(deps)
 
-    def _score(ax: dict) -> tuple[int, list]:
-        """(#established, legitimacy violations). Established = clean PLUS `assumed` theorems resting
-        ONLY on LEGITIMATE declared assumptions — a theorem leaning on an illegitimate axiom (one
-        referencing a target → would relax a goal) is NOT counted, so an inadmissible trusted base can
-        never register as progress (fail-closed). Counts are LIST lengths, so two theorems sharing a
-        written name across namespaces are not conflated (a set would undercount)."""
-        viols = lean.legitimacy_check(deps, translation)
-        bad = {v["axiom"] for v in viols}
-        good_assumed = [t for t, used in ax["assumed"].items() if not (set(used) & bad)]
-        return len(ax["clean"]) + len(good_assumed), viols
-
-    def _frontier(ax: dict) -> tuple:
-        open_sorry = lean.sorry_bodied_theorems(tools.read_out(deps, impl))
-        return (len(ax["clean"]), len(ax["assumed"]), frozenset(open_sorry))
-
-    good_spec = tools.read_out(deps, impl)            # last green, legitimate, non-regressing file
-    best_established = _score(lean.check_axioms(deps, impl))[0]
-    prev_frontier, stale, rnd = None, 0, 0
-    prompt = (f"Proceed to PROVE. Fill in proofs for as many `sorry` theorems in /workspace/out/{impl} "
-              f"as you can, WITHOUT changing any statement. Work one theorem at a time against "
-              f"`lake build`, keep the file compiling, then commit. Follow your briefing's strict rules.")
-    while True:
-        rnd += 1
-        sid = deps.progress.get("cc_sessions", {}).get("PROVE")
-        try:
-            run_cc_stage(deps, stage="PROVE", prompt=prompt,
-                         briefing=(None if sid else briefings.PROVE), resume_sid=sid, **_cc_common())
-        except StageFailed as e:
-            log.warning("PROVE round %d: session produced no result (%s) — scoring on-disk", rnd, e)
-        checkpoint.snapshot(deps)
-
-        green = lean.build(deps).get("success")
-        ax = lean.check_axioms(deps, impl) if green else _EMPTY
-        est, viols = _score(ax)
-        if green and not viols and est >= best_established:        # keep — scaffolding rides along
-            good_spec, best_established = tools.read_out(deps, impl), est
-        else:
-            reason = ("non-compiling spec" if not green
-                      else f"illegitimate trusted assumption(s) {sorted(v['axiom'] for v in viols)}"
-                      if viols else f"established regressed {best_established}→{est}")
-            log.warning("PROVE round %d rejected (%s) — restoring last good state", rnd, reason)
-            tools.write_out(deps, impl, good_spec)
-            lean.build(deps)
-            ax = lean.check_axioms(deps, impl)
-            est, viols = _score(ax)
-
-        frontier = _frontier(ax)
-        stale = stale + 1 if frontier == prev_frontier else 0
-        prev_frontier = frontier
-        log.info("PROVE round %d: %d established (%d clean + %d assumed), %d tainted "
-                 "(open sorry=%d, stale=%d/%d)", rnd, est, len(ax["clean"]),
-                 est - len(ax["clean"]), len(ax["tainted"]),
-                 max(lean.sorry_count(deps), 0), stale, config.STALL_ROUNDS)
-        if not ax["tainted"] or stale >= config.STALL_ROUNDS:
-            break
-        prompt = _prove_feedback(deps, ax, viols)
-
-    if not lean.build(deps).get("success"):           # paranoia — good_spec always compiled
-        tools.write_out(deps, impl, good_spec)
+    # Git is the net: if the agent left the tree non-compiling, fall back to its own last commit (by
+    # discipline a green state) rather than a harness-tracked snapshot. A green tree is committed as-is.
+    if not lean.build(deps).get("success"):
+        log.warning("PROVE left a non-compiling tree — resetting to the agent's last commit")
+        container.exec_in(deps.container_id, ["git", "reset", "--hard", "HEAD"],
+                          workdir=container.REPO_IN)
         lean.build(deps)
     tools.commit(deps.container_id, "stage/prove: proof attempts")
     deps.progress["proofs_done"] = True
