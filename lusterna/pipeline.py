@@ -339,14 +339,13 @@ def _prove_feedback(deps: AgentDeps, ax: dict, violations: list | None = None) -
     sorry_names = lean.sorry_bodied_theorems(spec)
     open_sorry = [n for n in ax["tainted"] if n in sorry_names]
     tainted_non_sorry = [n for n in ax["tainted"] if n not in sorry_names]
-    established = list(ax["clean"]) + list(ax["assumed"])
+    established = ax["clean"] + list(ax["assumed"])
     parts = [
         "Continue PROVE (fresh attempt — try tactics/lemmas you have NOT tried yet).",
         f"Already ESTABLISHED — keep these proofs EXACTLY, do not touch them: {established or '(none yet)'}.",
     ]
     if ax["assumed"]:
-        parts.append(f"Established MODULO the trusted base (fine — keep): "
-                     f"{ {t: u for t, u in ax['assumed'].items()} }.")
+        parts.append(f"Established MODULO the trusted base (fine — keep): {ax['assumed']}.")
     if open_sorry:
         parts.append(f"Still OPEN (`:= by sorry`) — focus here: {open_sorry}.")
     if tainted_non_sorry:
@@ -358,6 +357,13 @@ def _prove_feedback(deps: AgentDeps, ax: dict, violations: list | None = None) -
                      "they reference a target function, which would relax a GOAL (you must PROVE such "
                      "facts, never assume them):\n  - " + "\n  - ".join(v["reason"] for v in violations))
     return "\n".join(parts)
+
+
+def _verifies_impl(spec_text: str, translation: str, name: str) -> bool:
+    """True if theorem *name*'s statement references a translated def — i.e. it is about the
+    implementation (a candidate goal), not an abstract helper lemma."""
+    stmt = lean.theorem_statement(spec_text, name)
+    return bool(stmt and lean.referenced_defs(stmt, translation))
 
 
 def _record_axioms(deps: AgentDeps) -> None:
@@ -380,21 +386,18 @@ def _record_axioms(deps: AgentDeps) -> None:
         camp = _P(mod).stem
         ax = lean.check_axioms(deps, mod)
         spec_text = tools.read_out(deps, mod)
-
-        def _is_impl(name: str, _txt=spec_text) -> bool:
-            stmt = lean.theorem_statement(_txt, name)
-            return bool(stmt and lean.referenced_defs(stmt, translation))
-
         clean += [f"{camp}::{n}" for n in ax["clean"]]
         for n in ax["clean"]:
-            (impl_verified if _is_impl(n) else abstract_only).append(f"{camp}::{n}")
+            dst = impl_verified if _verifies_impl(spec_text, translation, n) else abstract_only
+            dst.append(f"{camp}::{n}")
         for n, used in ax["assumed"].items():
             q = f"{camp}::{n}"
             if set(used) & bad:                          # leans on an inadmissible axiom → fail-closed
                 tainted.append(q)
                 continue
             assumed[q] = used
-            (impl_verified_assumed if _is_impl(n) else abstract_only).append(q)
+            dst = impl_verified_assumed if _verifies_impl(spec_text, translation, n) else abstract_only
+            dst.append(q)
         tainted += [f"{camp}::{n}" for n in ax["tainted"]]
 
     deps.progress["axioms"] = {
@@ -443,7 +446,7 @@ def _stage_prove(deps: AgentDeps) -> None:
         raise _PipelineAborted("PROVE not started — the implementation spec does not compile")
 
     translation = lean.translation_text(deps)
-    _EMPTY = {"clean": [], "assumed": {}, "tainted": []}
+    _EMPTY = lean._empty_axioms()
 
     def _score(ax: dict) -> tuple[int, list]:
         """(#established, legitimacy violations). Established = clean PLUS `assumed` theorems resting

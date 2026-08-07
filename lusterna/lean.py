@@ -104,19 +104,6 @@ def _def_blocks(text: str) -> dict[str, str]:
     return blocks
 
 
-def _axiom_blocks(text: str) -> dict[str, str]:
-    """Map each `axiom NAME` to its source block (header through just before the next top-level
-    declaration). Used to inspect what a declared trusted assumption is ABOUT — legitimacy_check
-    scans the block for target-function references."""
-    blocks: dict[str, str] = {}
-    for m in re.finditer(r"(?m)^axiom\s+([\w.]+)", text):
-        rest = text[m.end():]
-        nxt = re.search(r"(?m)^(axiom|def|theorem|lemma|end|namespace|section)\b", rest)
-        end = m.end() + (nxt.start() if nxt else len(rest))
-        blocks[m.group(1)] = text[m.start():end].rstrip()
-    return blocks
-
-
 def _strip_lean_comments(s: str) -> str:
     """Drop Lean block comments (incl. `/-- … -/` docstrings) and line comments, so a
     following def's docstring — swallowed into a block — can't create a false call edge."""
@@ -152,48 +139,54 @@ def _theorem_names(spec_text: str) -> list[str]:
     return [m.group(2) for m in re.finditer(r"(?m)^\s*(theorem|lemma)\s+([\w.]+)", spec_text)]
 
 
-def _theorem_qualified_names(spec_text: str) -> list[str]:
-    """Theorem/lemma names PREFIXED with any enclosing `namespace` — parallel to _theorem_names
-    (same theorems, same order). `#print axioms` needs the fully-qualified name: a theorem inside
-    `namespace Foo` is `Foo.bar`, not `bar`, so querying the bare name fails with 'unknown constant'
-    and taints everything. `section` scopes are tracked (they don't contribute to the name but their
-    `end` must not pop a namespace)."""
-    scopes: list[tuple[bool, str]] = []   # (is_namespace, name), innermost last
-    out: list[str] = []
-    for raw in spec_text.splitlines():
+def _qualified_decls(spec_text: str, kind_re: str) -> list[tuple[str, str]]:
+    """Single namespace-aware pass: for each top-level declaration whose keyword matches *kind_re*
+    (e.g. r'axiom' or r'(?:theorem|lemma)'), yield (fully-qualified name, source block). The
+    qualified name is what `#print axioms` reports — a decl inside `namespace Foo` is `Foo.bar`, not
+    `bar`, so the bare name would 'unknown constant' and taint everything — and the block runs from
+    the decl line to just before the next top-level construct. One walker keeps name and body
+    intrinsically paired (no positional zip to drift) and shares the namespace/`section`/`end` scope
+    tracking across callers. `section` scopes are tracked (their `end` must not pop a namespace) but
+    do not contribute to the name."""
+    scopes: list[tuple[bool, str]] = []      # (is_namespace, name), innermost last
+    lines = spec_text.splitlines()
+    kind = re.compile(rf"{kind_re}\s+([\w.]+)")
+    out: list[tuple[str, str]] = []
+    cur: tuple[str, int] | None = None       # (qualified_name, start line idx) of the open decl
+    def flush(end: int) -> None:
+        nonlocal cur
+        if cur:
+            out.append((cur[0], "\n".join(lines[cur[1]:end])))
+            cur = None
+    for i, raw in enumerate(lines):
         s = raw.strip()
+        if not re.match(r"(axiom|def|theorem|lemma|namespace|section|end)\b", s):
+            continue
+        flush(i)                             # any top-level construct closes the open block
         if m := re.match(r"(namespace|section)\s+(\S+)", s):
             scopes.append((m.group(1) == "namespace", m.group(2)))
-        elif re.match(r"section\b\s*$", s):        # anonymous section
+        elif re.match(r"section\b\s*$", s):  # anonymous section
             scopes.append((False, ""))
         elif re.match(r"end\b", s):
             if scopes:
                 scopes.pop()
-        elif m := re.match(r"(theorem|lemma)\s+([\w.]+)", s):
+        elif m := kind.match(s):
             prefix = ".".join(n for is_ns, n in scopes if is_ns)
-            out.append(f"{prefix}.{m.group(2)}" if prefix else m.group(2))
+            cur = (f"{prefix}.{m.group(1)}" if prefix else m.group(1), i)
+    flush(len(lines))
     return out
+
+
+def _theorem_qualified_names(spec_text: str) -> list[str]:
+    """Theorem/lemma names prefixed with any enclosing `namespace` — parallel to `_theorem_names`
+    (same theorems, same order), the fully-qualified names `#print axioms` needs."""
+    return [q for q, _ in _qualified_decls(spec_text, r"(?:theorem|lemma)")]
 
 
 def _qualified_axiom_names(spec_text: str) -> list[str]:
-    """`axiom` names PREFIXED with any enclosing `namespace` — the fully-qualified names that
-    `#print axioms` reports in a theorem's dependency list, so a declared trusted assumption can be
-    matched against it. Mirrors _theorem_qualified_names' namespace/section scope tracking."""
-    scopes: list[tuple[bool, str]] = []
-    out: list[str] = []
-    for raw in spec_text.splitlines():
-        s = raw.strip()
-        if m := re.match(r"(namespace|section)\s+(\S+)", s):
-            scopes.append((m.group(1) == "namespace", m.group(2)))
-        elif re.match(r"section\b\s*$", s):
-            scopes.append((False, ""))
-        elif re.match(r"end\b", s):
-            if scopes:
-                scopes.pop()
-        elif m := re.match(r"axiom\s+([\w.]+)", s):
-            prefix = ".".join(n for is_ns, n in scopes if is_ns)
-            out.append(f"{prefix}.{m.group(1)}" if prefix else m.group(1))
-    return out
+    """`axiom` names prefixed with any enclosing `namespace` — the qualified names `#print axioms`
+    reports in a theorem's dependency list, so a declared trusted assumption can be matched to it."""
+    return [q for q, _ in _qualified_decls(spec_text, r"axiom")]
 
 
 def sorry_bodied_theorems(spec_text: str) -> set[str]:
@@ -240,6 +233,13 @@ def stub_proofs(text: str) -> str:
 _STD_AXIOMS = {"propext", "Classical.choice", "Quot.sound"}  # the standard, trusted Lean axioms
 
 
+def _empty_axioms(raw: str = "") -> dict:
+    """The empty check_axioms result — the canonical 3-way shape every early return and every caller
+    relies on (nothing clean/assumed/tainted). Keeping it in one place stops an early return from
+    silently omitting a key (e.g. `assumed`) that downstream code indexes."""
+    return {"clean": [], "assumed": {}, "tainted": [], "raw": raw}
+
+
 def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
     """Authoritative established-theorem oracle. Ask Lean which impl-spec theorems are GENUINELY
     established — i.e. whose proof term depends on NOTHING beyond the standard trusted axioms
@@ -269,10 +269,10 @@ def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
     """
     original = tools.read_out(deps, spec_rel)
     if original.startswith("ERROR:"):
-        return {"clean": [], "tainted": [], "raw": original}
+        return _empty_axioms(original)
     names = _theorem_names(original)
     if not names:
-        return {"clean": [], "tainted": [], "raw": ""}
+        return _empty_axioms()
     # Query `#print axioms` by the NAMESPACE-QUALIFIED name (parallel to `names`) — a bare name
     # inside `namespace Foo` is `Unknown constant` and would taint every theorem.
     qnames = _theorem_qualified_names(original)
@@ -280,13 +280,13 @@ def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
     # spec_rel = lean/<Lib>/Spec.lean  →  spec module <Lib>.Spec (matches the lean_lib root)
     parts = tools._norm_out(spec_rel).split("/")
     if len(parts) < 3 or parts[0] != "lean":
-        return {"clean": [], "tainted": [], "raw": f"ERROR: unexpected spec path {spec_rel!r}"}
+        return _empty_axioms(f"ERROR: unexpected spec path {spec_rel!r}")
     spec_module = ".".join(parts[1:]).removesuffix(".lean")
 
     checker_rel = "_axiom_check.lean"          # at out root — outside the lean_lib srcDir
     body = f"import {spec_module}\n\n" + "\n".join(f"#print axioms {n}" for n in qnames) + "\n"
     if (w := tools.write_out(deps, checker_rel, body)).startswith("ERROR:"):
-        return {"clean": [], "tainted": [], "raw": w}
+        return _empty_axioms(w)
     _, out, err = exec_in(deps.container_id,
                           ["timeout", "-k", "10", str(_BUILD_TIMEOUT),
                            "lake", "env", "lean", f"{OUT_IN}/{checker_rel}"],
@@ -536,12 +536,17 @@ def target_defs(deps: AgentDeps, translation: str) -> set[str]:
     under verification. A pattern `a::b::c` matches a translated def whose dotted name equals or ends
     with `a.b.c`. legitimacy_check forbids an assumption from referencing any of these, which is what
     makes 'the goal is never relaxed' mechanical: a GOAL states a property OF a target, so an axiom
-    that may reference no target can never be a goal."""
+    that may reference no target can never be a goal.
+
+    WHOLE-CRATE mode (empty `target_patterns`): every crate `def` is a target, so no assumption about
+    crate code can pass — only facts about the truly-external substrate (Aeneas emits those as
+    `axiom`s, not `def`s, so they are not in this set) remain admissible. Without this the legitimacy
+    gate would be VACUOUS exactly when everything is a goal."""
     pats = [p.replace("::", ".").strip(".") for p in deps.progress.get("target_patterns", []) if p]
+    defs = set(_def_blocks(translation))
     if not pats:
-        return set()
-    return {d for d in _def_blocks(translation)
-            if any(d == p or d.endswith("." + p) for p in pats)}
+        return defs
+    return {d for d in defs if any(d == p or d.endswith("." + p) for p in pats)}
 
 
 def legitimacy_check(deps: AgentDeps, translation: str) -> list[dict]:
@@ -562,9 +567,9 @@ def legitimacy_check(deps: AgentDeps, translation: str) -> list[dict]:
         return []
     targets = target_defs(deps, translation)
     violations = []
-    # _qualified_axiom_names and _axiom_blocks both walk the file in document order → zip aligns
-    # each qualified name with its statement block.
-    for qual, block in zip(_qualified_axiom_names(text), _axiom_blocks(text).values()):
+    # One walker yields (qualified name, statement block) already paired — no positional zip that a
+    # duplicate bare axiom name across namespaces could misalign.
+    for qual, block in _qualified_decls(text, r"axiom"):
         hit = sorted(set(referenced_defs(block, translation)) & targets)
         if hit:
             violations.append({
