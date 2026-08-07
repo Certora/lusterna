@@ -390,8 +390,30 @@ STRICT RULES:
     closed terms.
   • NEVER alter a theorem's statement (anything before `:= by`).
   • Make targeted edits to proof bodies; do NOT rewrite the whole spec file.
-  • NEVER introduce an axiom or `sorry`-hiding trick to fake a proof.
+  • NEVER fake a proof — no `sorry`-hiding trick, and no axiom that stands in for the theorem itself.
+    (A DISCLOSED trusted assumption about the substrate is different and allowed — see below.)
   • It is acceptable — expected — to leave hard theorems as `sorry`.
+
+WHEN A SUPPORTING FACT IS GENUINELY INTRACTABLE — the trusted base (use SPARINGLY, never for a goal):
+  A proof may bottom out in a SUPPORTING fact you cannot discharge at this modelling altitude (e.g. a
+  property of a low-level library operation whose implementation is opaque or astronomically large to
+  reason through). ONLY after you have tried and can show it is intractable, you MAY:
+    1. declare that fact as a GENERAL `axiom` in the shared assumptions module (the harness names its
+       path in your task prompt — `lean/<Crate>/Assumptions.lean`), stated as broadly as is true
+       (∀-quantified over the operation's inputs), not as a one-off instance;
+    2. use it (`exact`/`apply`/`simp [..]`) to finish the DEPENDENT proof;
+    3. record in prove/assumptions.md each assumption + WHY it is intractable (what you tried, the wall
+       you hit) — the audit trail a human reviews.
+  HARD LIMITS (the harness enforces these mechanically and rejects a round that breaks them):
+    • An assumption may reference ONLY the substrate — the underlying operations the target is built
+      on — NEVER a target function under verification. You may therefore NEVER assume a GOAL (a property
+      of a target): those must be PROVED. If the task is to prove solvency, the solvency theorem is
+      never assumed.
+    • Keep the base MINIMAL: assume only what is genuinely intractable; prefer the most general,
+      primitive statement; every assumption widens what must be trusted and is reported LOUDLY.
+    • A theorem proved using an assumption is reported "verified MODULO the trusted base", not
+      unconditionally — and `#print axioms` still records the dependency, so nothing is hidden.
+      (`native_decide`/`sorryAx` are NEVER acceptable and can never be a trusted assumption.)
 
 DELIVERABLE: your campaign module compiling, with as many real proofs as you could discharge; committed.
 """ + docs.FOR_PROVE + PROVE_REUSE
@@ -413,11 +435,17 @@ and holes).
 
 SOUNDNESS = `#print axioms`, NOT "IT COMPILES". The harness prepends an authoritative verdict block
 from facts.json (the kernel `#print axioms` result); report those same numbers in your prose.
-  • The theorems that VERIFY THE IMPLEMENTATION are exactly `facts.json.axioms.impl_verified`; every
-    name in `facts.json.axioms.tainted` verifies NOTHING. NEVER count a theorem as verified because it
-    "has a proof" or "compiles": a proof can COMPILE and still be TAINTED — resting on a non-standard
-    axiom (`sorryAx`, `decide`/`native_decide` compiler trust, an opaqued primitive) — which is exactly
-    what `#print axioms` catches and "it builds" does not.
+  • Theorems that VERIFY THE IMPLEMENTATION on standard axioms are exactly
+    `facts.json.axioms.impl_verified`; every name in `facts.json.axioms.tainted` verifies NOTHING.
+    NEVER count a theorem as verified because it "has a proof" or "compiles": a proof can COMPILE and
+    still be TAINTED — resting on a non-standard axiom (`sorryAx`, `decide`/`native_decide` compiler
+    trust, an undeclared axiom) — which is exactly what `#print axioms` catches and "it builds" does not.
+  • TRUSTED BASE: `facts.json.axioms.impl_verified_assumed` are established and about the implementation
+    but rest on ≥1 DECLARED ASSUMPTION (`facts.json.axioms.declared_assumptions`) — report these as
+    "verified MODULO the trusted base", clearly SEPARATE from the unconditional count, and list the
+    assumptions they depend on (`facts.json.axioms.assumed`) as trusted-not-proved. If
+    `facts.json.axioms.illegitimate_assumptions` is non-empty, flag it prominently — those were demoted
+    to tainted.
   • You MAY re-run `#print axioms` yourself as a cross-check. If your reading DISAGREES with
     facts.json, do NOT silently pick one — report the discrepancy prominently (it means the gate or
     the build is wrong, which matters more than the number). Absent a discrepancy, report facts.json.

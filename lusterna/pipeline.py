@@ -331,23 +331,32 @@ def _stage_formalise(deps: AgentDeps) -> None:
 
 # ── PROVE ─────────────────────────────────────────────────────────────────────────
 
-def _prove_feedback(deps: AgentDeps, ax: dict) -> str:
-    """Name the frontier for the next PROVE round: already-established (keep verbatim), still-open
-    `sorry`, and compiles-but-tainted (a non-standard axiom, usually native_decide)."""
+def _prove_feedback(deps: AgentDeps, ax: dict, violations: list | None = None) -> str:
+    """Name the frontier for the next PROVE round: already-established (keep verbatim, incl. those
+    resting on the trusted base), still-open `sorry`, compiles-but-tainted (a non-standard axiom,
+    usually native_decide), and any ILLEGITIMATE trusted assumptions to withdraw."""
     spec = tools.read_out(deps, lean.campaign_spec(deps))
     sorry_names = lean.sorry_bodied_theorems(spec)
     open_sorry = [n for n in ax["tainted"] if n in sorry_names]
     tainted_non_sorry = [n for n in ax["tainted"] if n not in sorry_names]
+    established = list(ax["clean"]) + list(ax["assumed"])
     parts = [
         "Continue PROVE (fresh attempt — try tactics/lemmas you have NOT tried yet).",
-        f"Already ESTABLISHED — keep these proofs EXACTLY, do not touch them: {ax['clean'] or '(none yet)'}.",
+        f"Already ESTABLISHED — keep these proofs EXACTLY, do not touch them: {established or '(none yet)'}.",
     ]
+    if ax["assumed"]:
+        parts.append(f"Established MODULO the trusted base (fine — keep): "
+                     f"{ {t: u for t, u in ax['assumed'].items()} }.")
     if open_sorry:
         parts.append(f"Still OPEN (`:= by sorry`) — focus here: {open_sorry}.")
     if tainted_non_sorry:
         parts.append(f"These COMPILE but are NOT established — the proof rests on a non-standard "
                      f"axiom (almost always native_decide/decide on a recursive eval): "
                      f"{tainted_non_sorry}. Replace with a REASONING proof or revert to `:= by sorry`.")
+    if violations:
+        parts.append("ILLEGITIMATE trusted assumptions — WITHDRAW these from the assumptions module; "
+                     "they reference a target function, which would relax a GOAL (you must PROVE such "
+                     "facts, never assume them):\n  - " + "\n  - ".join(v["reason"] for v in violations))
     return "\n".join(parts)
 
 
@@ -364,30 +373,52 @@ def _record_axioms(deps: AgentDeps) -> None:
     the latest. Names are campaign-qualified (`<Campaign>::<theorem>`) to show provenance."""
     from pathlib import Path as _P
     translation = lean.translation_text(deps)
-    clean, tainted, impl_verified, abstract_only = [], [], [], []
+    bad = {v["axiom"] for v in lean.legitimacy_check(deps, translation)}   # fail-closed set
+    clean, assumed, tainted = [], {}, []
+    impl_verified, impl_verified_assumed, abstract_only = [], [], []
     for mod in lean.spec_modules(deps):
         camp = _P(mod).stem
         ax = lean.check_axioms(deps, mod)
         spec_text = tools.read_out(deps, mod)
+
+        def _is_impl(name: str, _txt=spec_text) -> bool:
+            stmt = lean.theorem_statement(_txt, name)
+            return bool(stmt and lean.referenced_defs(stmt, translation))
+
         clean += [f"{camp}::{n}" for n in ax["clean"]]
+        for n in ax["clean"]:
+            (impl_verified if _is_impl(n) else abstract_only).append(f"{camp}::{n}")
+        for n, used in ax["assumed"].items():
+            q = f"{camp}::{n}"
+            if set(used) & bad:                          # leans on an inadmissible axiom → fail-closed
+                tainted.append(q)
+                continue
+            assumed[q] = used
+            (impl_verified_assumed if _is_impl(n) else abstract_only).append(q)
         tainted += [f"{camp}::{n}" for n in ax["tainted"]]
-        for name in ax["clean"]:
-            stmt = lean.theorem_statement(spec_text, name)
-            (impl_verified if stmt and lean.referenced_defs(stmt, translation)
-             else abstract_only).append(f"{camp}::{name}")
-    ax = {"clean": clean, "tainted": tainted}
-    deps.progress["axioms"] = {"clean": clean, "tainted": tainted,
-                               "impl_verified": impl_verified, "abstract_only": abstract_only}
+
+    deps.progress["axioms"] = {
+        "clean": clean, "assumed": assumed, "tainted": tainted,
+        "impl_verified": impl_verified, "impl_verified_assumed": impl_verified_assumed,
+        "abstract_only": abstract_only,
+        "declared_assumptions": sorted(lean.declared_assumptions(deps)),
+        "illegitimate_assumptions": sorted(bad),
+    }
     checkpoint.snapshot(deps)
-    if ax["clean"] and not impl_verified:
+    established = len(clean) + len(assumed)
+    if bad:
+        log.warning("PROVE: ⚠ CRITICAL — %d declared assumption(s) ILLEGITIMATE (reference a target; "
+                    "would relax a goal); theorems leaning on them DEMOTED to tainted: %s", len(bad),
+                    sorted(bad))
+    if established and not (impl_verified or impl_verified_assumed):
         log.warning("PROVE: ⚠ CRITICAL — %d theorem(s) established but NONE reference the "
-                    "implementation; 0 properties of the code are verified (abstract lemmas only: %s)",
-                    len(ax["clean"]), abstract_only)
-    log.info("PROVE complete — %d sorry remaining; established: %d/%d — %d verify the implementation "
-             "%s, %d abstract-only %s; tainted=%s",
-             max(lean.sorry_count(deps), 0), len(ax["clean"]),
-             len(ax["clean"]) + len(ax["tainted"]), len(impl_verified), impl_verified,
-             len(abstract_only), abstract_only, ax["tainted"])
+                    "implementation; 0 properties of the code are verified (abstract only: %s)",
+                    established, abstract_only)
+    log.info("PROVE complete — %d sorry remaining; established %d (%d clean + %d assumed) of %d; "
+             "impl-verified %d clean + %d modulo-base; abstract-only %d; tainted %d",
+             max(lean.sorry_count(deps), 0), established, len(clean), len(assumed),
+             established + len(tainted), len(impl_verified), len(impl_verified_assumed),
+             len(abstract_only), len(tainted))
 
 
 def _stage_prove(deps: AgentDeps) -> None:
@@ -411,12 +442,26 @@ def _stage_prove(deps: AgentDeps) -> None:
     if not lean.build(deps).get("success"):
         raise _PipelineAborted("PROVE not started — the implementation spec does not compile")
 
+    translation = lean.translation_text(deps)
+    _EMPTY = {"clean": [], "assumed": {}, "tainted": []}
+
+    def _score(ax: dict) -> tuple[int, list]:
+        """(#established, legitimacy violations). Established = clean PLUS `assumed` theorems resting
+        ONLY on LEGITIMATE declared assumptions — a theorem leaning on an illegitimate axiom (one
+        referencing a target → would relax a goal) is NOT counted, so an inadmissible trusted base can
+        never register as progress (fail-closed). Counts are LIST lengths, so two theorems sharing a
+        written name across namespaces are not conflated (a set would undercount)."""
+        viols = lean.legitimacy_check(deps, translation)
+        bad = {v["axiom"] for v in viols}
+        good_assumed = [t for t, used in ax["assumed"].items() if not (set(used) & bad)]
+        return len(ax["clean"]) + len(good_assumed), viols
+
     def _frontier(ax: dict) -> tuple:
         open_sorry = lean.sorry_bodied_theorems(tools.read_out(deps, impl))
-        return (frozenset(ax["clean"]), frozenset(open_sorry))
+        return (len(ax["clean"]), len(ax["assumed"]), frozenset(open_sorry))
 
-    good_spec = tools.read_out(deps, impl)            # last green, non-regressing file
-    best_clean = len(lean.check_axioms(deps, impl)["clean"])
+    good_spec = tools.read_out(deps, impl)            # last green, legitimate, non-regressing file
+    best_established = _score(lean.check_axioms(deps, impl))[0]
     prev_frontier, stale, rnd = None, 0, 0
     prompt = (f"Proceed to PROVE. Fill in proofs for as many `sorry` theorems in /workspace/out/{impl} "
               f"as you can, WITHOUT changing any statement. Work one theorem at a time against "
@@ -431,32 +476,31 @@ def _stage_prove(deps: AgentDeps) -> None:
             log.warning("PROVE round %d: session produced no result (%s) — scoring on-disk", rnd, e)
         checkpoint.snapshot(deps)
 
-        if lean.build(deps).get("success"):
-            ax = lean.check_axioms(deps, impl)
-            clean = len(ax["clean"])
-            if clean >= best_clean:                   # keep — scaffolding rides along
-                good_spec, best_clean = tools.read_out(deps, impl), clean
-            else:                                     # regression would drop a proven theorem
-                log.warning("PROVE round %d regressed established %d→%d — restoring last good state",
-                            rnd, best_clean, clean)
-                tools.write_out(deps, impl, good_spec)
-                lean.build(deps)
-                ax = lean.check_axioms(deps, impl)
+        green = lean.build(deps).get("success")
+        ax = lean.check_axioms(deps, impl) if green else _EMPTY
+        est, viols = _score(ax)
+        if green and not viols and est >= best_established:        # keep — scaffolding rides along
+            good_spec, best_established = tools.read_out(deps, impl), est
         else:
-            log.warning("PROVE round %d left a non-compiling spec — restoring last good state", rnd)
+            reason = ("non-compiling spec" if not green
+                      else f"illegitimate trusted assumption(s) {sorted(v['axiom'] for v in viols)}"
+                      if viols else f"established regressed {best_established}→{est}")
+            log.warning("PROVE round %d rejected (%s) — restoring last good state", rnd, reason)
             tools.write_out(deps, impl, good_spec)
             lean.build(deps)
             ax = lean.check_axioms(deps, impl)
+            est, viols = _score(ax)
 
         frontier = _frontier(ax)
         stale = stale + 1 if frontier == prev_frontier else 0
         prev_frontier = frontier
-        log.info("PROVE round %d: %d/%d established (open sorry=%d, stale=%d/%d)",
-                 rnd, len(ax["clean"]), len(ax["clean"]) + len(ax["tainted"]),
+        log.info("PROVE round %d: %d established (%d clean + %d assumed), %d tainted "
+                 "(open sorry=%d, stale=%d/%d)", rnd, est, len(ax["clean"]),
+                 est - len(ax["clean"]), len(ax["tainted"]),
                  max(lean.sorry_count(deps), 0), stale, config.STALL_ROUNDS)
         if not ax["tainted"] or stale >= config.STALL_ROUNDS:
             break
-        prompt = _prove_feedback(deps, ax)
+        prompt = _prove_feedback(deps, ax, viols)
 
     if not lean.build(deps).get("success"):           # paranoia — good_spec always compiled
         tools.write_out(deps, impl, good_spec)
@@ -492,32 +536,66 @@ def _authoritative_verdict(deps: AgentDeps) -> str:
     exactly what `#print axioms` catches and the count below reflects)."""
     ax = deps.progress.get("axioms", {})
     clean, tainted = ax.get("clean", []), ax.get("tainted", [])
+    assumed = ax.get("assumed", {})                        # {thm: [assumption qnames]}
     impl, abstract = ax.get("impl_verified", []), ax.get("abstract_only", [])
-    total = len(clean) + len(tainted)
-    return "\n".join([
+    impl_assumed = ax.get("impl_verified_assumed", [])
+    declared = ax.get("declared_assumptions", [])
+    illegit = ax.get("illegitimate_assumptions", [])
+    total = len(clean) + len(assumed) + len(tainted)
+    lines = [
         "# Verification verdict — AUTHORITATIVE (Lean `#print axioms`, harness-generated)",
         "",
         "> Generated by the harness directly from the kernel `#print axioms` gate — the definitive "
         "result. A theorem that COMPILES is not necessarily established: a proof can rest on a "
-        "non-standard axiom (`sorryAx`, `decide`/`native_decide` compiler trust, or an "
-        "assumed/opaqued primitive), and only the count below — not \"has a proof body\" — reflects "
-        "what the kernel actually accepts. Any narrative in the sections that follow which conflicts "
-        "with this block is wrong.",
+        "non-standard axiom (`sorryAx`, `decide`/`native_decide` compiler trust, or an opaqued "
+        "primitive), and only the counts below reflect what the kernel accepts. Results split into "
+        "established on STANDARD axioms vs established MODULO the trusted base (declared assumptions, "
+        "listed below — trusted, not proved). Any narrative that conflicts with this block is wrong.",
         "",
-        f"- **Theorems that VERIFY THE IMPLEMENTATION: {len(impl)} / {total}** "
-        f"(kernel-established on standard axioms only, AND referencing an Aeneas-translated def):",
+        f"- **VERIFY THE IMPLEMENTATION on standard axioms: {len(impl)} / {total}** "
+        f"(kernel-established, standard axioms only, referencing an Aeneas-translated def):",
         f"  {impl or '(none)'}",
-        f"- Abstract-only established lemmas (established, but not about the implementation): "
-        f"{len(abstract)} {abstract or ''}",
-        f"- NOT established — **tainted, verify NOTHING** (a leftover `sorry`, or a proof resting on "
-        f"a non-standard axiom): {len(tainted)} {tainted or ''}",
+    ]
+    if impl_assumed or declared:
+        lines += [
+            f"- **VERIFY THE IMPLEMENTATION modulo the trusted base: {len(impl_assumed)}** "
+            f"(established and about the implementation, but resting on ≥1 assumed fact below — "
+            f"\"verified modulo the trusted base\", NOT unconditionally verified):",
+            f"  {impl_assumed or '(none)'}",
+        ]
+    lines += [
+        f"- Abstract-only established lemmas (not about the implementation): {len(abstract)} {abstract or ''}",
+        f"- NOT established — **tainted, verify NOTHING** (a leftover `sorry`, native_decide, or an "
+        f"undeclared axiom): {len(tainted)} {tainted or ''}",
         "",
+    ]
+    if declared or illegit:
+        used_by: dict[str, list] = {}
+        for thm, used in assumed.items():
+            for a in used:
+                used_by.setdefault(a, []).append(thm)
+        lines += ["## Trusted base — assumed, NOT proved", "",
+                  "These facts are ASSUMED (declared `axiom`s in "
+                  f"`{lean.assumptions_module(deps)}`): trusted, not proved. Every result marked "
+                  "\"modulo the trusted base\" depends on them; each must be reviewed, and can be "
+                  "discharged later by proving it (e.g. against a value model) to retire the trust."]
+        for a in declared:
+            flag = ("  ⚠ ILLEGITIMATE (references a target — dependents demoted to tainted)"
+                    if a in illegit else "")
+            lines.append(f"- `{a}` — relied on by: {used_by.get(a) or '(nothing established)'}{flag}")
+        if illegit:
+            lines += ["", f"⚠ {len(illegit)} declared assumption(s) ILLEGITIMATE and NOT honored: "
+                      f"{illegit}. An assumption may not reference a target function (that would relax a "
+                      f"goal); such facts must be proved, not assumed."]
+        lines.append("")
+    lines += [
         "How the target was translated — scope / opaqued leaves / any rung-3 modeling — is recorded "
         f"in `{_translate_dir(deps)}/accountability.md` and summarised in §2 below.",
         "",
         "---",
         "",
-    ])
+    ]
+    return "\n".join(lines)
 
 
 def _stage_report(deps: AgentDeps) -> str:

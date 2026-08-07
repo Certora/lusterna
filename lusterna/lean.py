@@ -104,6 +104,19 @@ def _def_blocks(text: str) -> dict[str, str]:
     return blocks
 
 
+def _axiom_blocks(text: str) -> dict[str, str]:
+    """Map each `axiom NAME` to its source block (header through just before the next top-level
+    declaration). Used to inspect what a declared trusted assumption is ABOUT — legitimacy_check
+    scans the block for target-function references."""
+    blocks: dict[str, str] = {}
+    for m in re.finditer(r"(?m)^axiom\s+([\w.]+)", text):
+        rest = text[m.end():]
+        nxt = re.search(r"(?m)^(axiom|def|theorem|lemma|end|namespace|section)\b", rest)
+        end = m.end() + (nxt.start() if nxt else len(rest))
+        blocks[m.group(1)] = text[m.start():end].rstrip()
+    return blocks
+
+
 def _strip_lean_comments(s: str) -> str:
     """Drop Lean block comments (incl. `/-- … -/` docstrings) and line comments, so a
     following def's docstring — swallowed into a block — can't create a false call edge."""
@@ -162,6 +175,27 @@ def _theorem_qualified_names(spec_text: str) -> list[str]:
     return out
 
 
+def _qualified_axiom_names(spec_text: str) -> list[str]:
+    """`axiom` names PREFIXED with any enclosing `namespace` — the fully-qualified names that
+    `#print axioms` reports in a theorem's dependency list, so a declared trusted assumption can be
+    matched against it. Mirrors _theorem_qualified_names' namespace/section scope tracking."""
+    scopes: list[tuple[bool, str]] = []
+    out: list[str] = []
+    for raw in spec_text.splitlines():
+        s = raw.strip()
+        if m := re.match(r"(namespace|section)\s+(\S+)", s):
+            scopes.append((m.group(1) == "namespace", m.group(2)))
+        elif re.match(r"section\b\s*$", s):
+            scopes.append((False, ""))
+        elif re.match(r"end\b", s):
+            if scopes:
+                scopes.pop()
+        elif m := re.match(r"axiom\s+([\w.]+)", s):
+            prefix = ".".join(n for is_ns, n in scopes if is_ns)
+            out.append(f"{prefix}.{m.group(1)}" if prefix else m.group(1))
+    return out
+
+
 def sorry_bodied_theorems(spec_text: str) -> set[str]:
     """Short names of theorems/lemmas whose proof BODY still contains a literal `sorry` — i.e.
     genuinely-open obligations, as opposed to theorems that compile but are tainted by a
@@ -216,8 +250,15 @@ def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
     model might smuggle in all taint a theorem — "established" means kernel-checked with only the
     standard axioms.
 
-    Returns {"clean": [names], "tainted": [names], "raw": <trimmed lean output>}, where
-    tainted = depends on a non-standard axiom OR could not be resolved (the conservative direction).
+    Returns {"clean": [names], "assumed": {name: [assumption_qnames]}, "tainted": [names],
+    "raw": <trimmed lean output>}. A THREE-way partition (the gate does not relax — it partitions):
+      • clean   — depends only on the standard trusted axioms;
+      • assumed — depends only on standard axioms + DECLARED trusted assumptions (the `axiom`s in the
+        assumptions module, admitted by legitimacy_check); records which assumptions it leans on;
+      • tainted — anything else (`sorryAx`, native_decide compiler trust, an UNdeclared axiom) OR
+        could not be resolved (the conservative direction). `sorryAx`/native_decide can never be
+        `assumed`. With no assumptions module present, `assumed` is empty and this reduces exactly to
+        the prior binary clean/tainted gate.
 
     Mechanism: write a throwaway checker that IMPORTS the already-built `Spec.olean` and
     runs `#print axioms` against it, then elaborate just that checker with `lake env lean`.
@@ -262,30 +303,39 @@ def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
     # on the last dotted component: dotted theorem names (mint_shares.spec, deposit.spec, …) collide
     # on their tail (`spec`) and would silently inherit one another's verdict — the class of bug this
     # gate must not have.
-    verdict: dict[str, bool] = {}
+    verdict: dict[str, set[str] | None] = {}      # qual → its axiom-name set (None = unresolved)
     for m in re.finditer(
             r"'([\w.]+)' (?:(does not depend on any axioms)|depends on axioms: \[(.*?)\])",
             text, re.DOTALL):
         if m.group(2):                  # "does not depend on any axioms"
-            verdict[m.group(1)] = True
+            verdict[m.group(1)] = set()
         else:
-            axes = [a.strip() for a in m.group(3).replace("\n", " ").split(",") if a.strip()]
-            verdict[m.group(1)] = all(a in _STD_AXIOMS for a in axes)
-    clean, tainted, unresolved = [], [], []
+            verdict[m.group(1)] = {a.strip() for a in m.group(3).replace("\n", " ").split(",")
+                                   if a.strip()}
+    declared = declared_assumptions(deps)   # the trusted base — declared `axiom`s in the module
+    clean, assumed, tainted, unresolved = [], {}, [], []
     for written, qual in zip(names, qnames):    # parallel lists, same order
-        v = verdict.get(qual)
-        (clean if v is True else tainted).append(written)   # None (unresolved) ⇒ tainted, conservatively
-        if v is None:
+        axset = verdict.get(qual)
+        if axset is None:                        # the checker couldn't read this one back
+            tainted.append(written)
             unresolved.append(written)
+            continue
+        non_std = axset - _STD_AXIOMS
+        if not non_std:                          # standard axioms only
+            clean.append(written)
+        elif non_std <= declared:                # rests only on declared trusted assumptions
+            assumed[written] = sorted(non_std)
+        else:                                    # sorryAx / native_decide / an UNdeclared axiom
+            tainted.append(written)
     if unresolved:
         # Not a soundness signal — the checker couldn't read these back. Surface it loudly
         # instead of silently reporting them as tainted.
         log.warning("check_axioms: %d/%d theorem(s) UNRESOLVED (conservatively tainted, not a "
                     "real axiom finding): %s — lean output tail:\n%s",
                     len(unresolved), len(names), unresolved, text[-1200:])
-    log.info("check_axioms: %d established (only standard axioms), %d tainted, of %d theorem(s)",
-             len(clean), len(tainted), len(names))
-    return {"clean": clean, "tainted": tainted, "raw": text[-3000:]}
+    log.info("check_axioms: %d clean, %d assumed (modulo %d declared), %d tainted, of %d theorem(s)",
+             len(clean), len(assumed), len(declared), len(tainted), len(names))
+    return {"clean": clean, "assumed": assumed, "tainted": tainted, "raw": text[-3000:]}
 
 
 def _detect_holes(deps: AgentDeps, lean_files: list[str]) -> dict[str, list[str]]:
@@ -458,6 +508,71 @@ def spec_modules(deps: AgentDeps) -> list[str]:
                                      f"2>/dev/null | sort"])
     pre = OUT_IN + "/"
     return [l.strip().removeprefix(pre) for l in out.splitlines() if l.strip()]
+
+
+def assumptions_module(deps: AgentDeps) -> str:
+    """The shared TRUSTED-BASE module — lean/<Crate>/Assumptions.lean. Holds ONLY declared `axiom`s:
+    general facts about the SUBSTRATE (never a target property) that a proof genuinely cannot
+    discharge. Cumulative across campaigns like the translation. `#print axioms` still reports every
+    use, so the trust is disclosed, gated (legitimacy_check), and retirable — never hidden. Domain-
+    neutral by design: nothing here presumes the intractable facts are arithmetic."""
+    stem = _crate_stem(deps)
+    return f"lean/{stem}/Assumptions.lean" if stem else ""
+
+
+def declared_assumptions(deps: AgentDeps) -> set[str]:
+    """Fully-qualified names of the `axiom`s declared in the assumptions module — the trusted base
+    `check_axioms` recognises as `assumed` rather than `tainted`. Empty when the module is absent, so
+    a run with no trusted base behaves exactly as the prior binary clean/tainted gate."""
+    mod = assumptions_module(deps)
+    if not mod:
+        return set()
+    text = tools.read_out(deps, mod)
+    return set() if text.startswith("ERROR:") else set(_qualified_axiom_names(text))
+
+
+def target_defs(deps: AgentDeps, translation: str) -> set[str]:
+    """Translation def names corresponding to the INFER `target_patterns` — the functions actually
+    under verification. A pattern `a::b::c` matches a translated def whose dotted name equals or ends
+    with `a.b.c`. legitimacy_check forbids an assumption from referencing any of these, which is what
+    makes 'the goal is never relaxed' mechanical: a GOAL states a property OF a target, so an axiom
+    that may reference no target can never be a goal."""
+    pats = [p.replace("::", ".").strip(".") for p in deps.progress.get("target_patterns", []) if p]
+    if not pats:
+        return set()
+    return {d for d in _def_blocks(translation)
+            if any(d == p or d.endswith("." + p) for p in pats)}
+
+
+def legitimacy_check(deps: AgentDeps, translation: str) -> list[dict]:
+    """Mechanical admissibility of the declared trusted base — NOT a proof-quality judgement. Returns
+    one violation record `{"axiom": <qualified name>, "targets": [...], "reason": <str>}` per
+    illegitimate `axiom`; empty ⇒ the base is admissible. An axiom is illegitimate iff its statement
+    references a target function (`target_defs`): the trusted base may only ever hold facts about the
+    substrate, never a property of the code under verification — so a GOAL (a property OF a target)
+    can never be admitted. Keyed by the fully-qualified name, so callers can fail-closed by matching
+    it against the `assumed` dependency lists from `check_axioms`. (A rogue `axiom` declared OUTSIDE
+    this module is not in `declared_assumptions`, so `check_axioms` already taints anything leaning on
+    it — this checker guards the in-module declarations.)"""
+    mod = assumptions_module(deps)
+    if not mod:
+        return []
+    text = tools.read_out(deps, mod)
+    if text.startswith("ERROR:"):
+        return []
+    targets = target_defs(deps, translation)
+    violations = []
+    # _qualified_axiom_names and _axiom_blocks both walk the file in document order → zip aligns
+    # each qualified name with its statement block.
+    for qual, block in zip(_qualified_axiom_names(text), _axiom_blocks(text).values()):
+        hit = sorted(set(referenced_defs(block, translation)) & targets)
+        if hit:
+            violations.append({
+                "axiom": qual, "targets": hit,
+                "reason": (f"axiom `{qual}` references target function(s) {hit} — the trusted base "
+                           f"may not contain a property of the code under verification (that would "
+                           f"relax a GOAL); prove it, do not assume it")})
+    return violations
 
 
 def _proposition_only(signature: str) -> str:
