@@ -408,6 +408,21 @@ THE ONE LEGITIMATE ASSUMPTION — a genuinely intractable SUBSTRATE fact, and no
   monadic case-split) is NOT a substrate fact — prove it, do not assume it. Keep the trusted base
   minimal; each assumption is reported LOUDLY as "verified MODULO the trusted base".
 
+WHEN A THEOREM IS FALSE — refute it (this is a RESULT, not giving up):
+  A statement can be false as STATED — usually a missing precondition (an unguarded overflow, a
+  divide-by-zero, a domain the code does not actually cover). If persistent effort surfaces a concrete
+  counterexample, REFUTE the theorem: in the refutations module the harness names in your task prompt
+  (`lean/<Crate>/Refutations.lean`), prove the negation —
+      `theorem <thatTheoremName>__refuted : ¬ (<the exact statement, verbatim>) := by <proof>`
+  — exhibiting the counterexample witness and discharging the goal (`decide`/`native_decide` on the
+  concrete instance IS allowed here: it is a finite counterexample, not a general proof). Also list
+  the theorem + a one-line reason in `prove/refutations.json` (`{"refuted": ["<name>", …]}`). Then
+  STOP working that theorem and anything downstream of it — proving a false theorem is impossible.
+  Do NOT edit the false statement yourself (statements are immutable to you); the harness mechanically
+  verifies your refutation (`#print axioms`: no `sorryAx`) and, if it holds, re-opens FORMALISE to
+  correct the statement — your refutation is the evidence that drives the fix. Never fake a refutation
+  to escape a hard-but-TRUE theorem; a bogus one fails the check and wastes the correction budget.
+
 IMMUTABLE — statements and prior work:
   • NEVER alter a theorem's statement (anything before `:= by`).
   • Do NOT disturb ALREADY-ESTABLISHED proofs, or another campaign's module; ADD supporting

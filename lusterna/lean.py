@@ -204,27 +204,35 @@ def sorry_bodied_theorems(spec_text: str) -> set[str]:
     return out
 
 
-def stub_proofs(text: str) -> str:
-    """Force every `theorem`/`lemma` proof body to `:= by sorry`, preserving statements,
-    definitions, imports and docstrings. FORMALISE emits statement-only structured output,
-    so its theorems never carry proofs; this is a safety net for any stray theorem the
-    model puts in the free-form `preamble` — keeping proofs (and pathological tactics like
-    `native_decide`) out of the spec until the PROVE stage."""
+def stub_proofs(text: str, only: set[str] | None = None) -> str:
+    """Force `theorem`/`lemma` proof bodies to `:= by sorry`, preserving statements, definitions,
+    imports and docstrings. FORMALISE emits statement-only structured output, so its theorems never
+    carry proofs; this is a safety net for any stray theorem the model puts in the free-form
+    `preamble` — keeping proofs (and pathological tactics like `native_decide`) out of the spec until
+    the PROVE stage.
+
+    If *only* is given, re-stub ONLY those theorem/lemma NAMES (matched after the keyword), leaving
+    every other body intact — used by FORMALISE's correction mode, where already-established proofs
+    must be preserved and only a corrected statement's now-stale body is re-stubbed."""
     import re
     lines = text.split("\n")
-    decl = re.compile(r"^\s*(theorem|lemma)\b")
+    decl = re.compile(r"^\s*(?:theorem|lemma)\s+([\w.]+)")
     newtop = re.compile(r"^\s*(theorem|lemma|def|abbrev|noncomputable|instance|structure|"
                         r"inductive|namespace|end|section|open|variable|@\[|/-|--|#|import)")
     out, i, n = [], 0, len(lines)
     while i < n:
-        if decl.match(lines[i]):
+        m0 = decl.match(lines[i])
+        if m0:
             block = [lines[i]]
             i += 1
             while i < n and not newtop.match(lines[i]):
                 block.append(lines[i]); i += 1
             joined = "\n".join(block)
-            m = re.search(r":=", joined)
-            out.append((joined[:m.start()].rstrip() + " := by sorry") if m else joined)
+            if only is not None and m0.group(1) not in only:
+                out.append(joined)                       # preserve this theorem's body verbatim
+            else:
+                m = re.search(r":=", joined)
+                out.append((joined[:m.start()].rstrip() + " := by sorry") if m else joined)
         else:
             out.append(lines[i]); i += 1
     return "\n".join(out)
@@ -578,6 +586,92 @@ def legitimacy_check(deps: AgentDeps, translation: str) -> list[dict]:
                            f"may not contain a property of the code under verification (that would "
                            f"relax a GOAL); prove it, do not assume it")})
     return violations
+
+
+_REFUTATION_SUFFIX = "__refuted"
+
+
+def refutations_module(deps: AgentDeps) -> str:
+    """Module where PROVE records a REFUTATION — a proof of `¬<statement>` — for a theorem it found
+    false. A refutation lemma is `theorem <written-theorem-name>__refuted : ¬ <that statement> := by …`.
+    It is verified like any proof (compiles, no `sorryAx`), but `decide`/`native_decide` is PERMITTED:
+    a refutation evaluates a concrete finite counterexample (unlike a general proof, where
+    native_decide's compiler-trust taints). A verified refutation re-opens FORMALISE to correct the
+    demonstrably-false statement — the dual of the `#print axioms` proof gate."""
+    stem = _crate_stem(deps)
+    return f"lean/{stem}/Refutations.lean" if stem else ""
+
+
+def _module_of(rel: str) -> str:
+    """`lean/<A>/<B>.lean` → the Lean module name `<A>.<B>` (the lean_lib import path)."""
+    parts = tools._norm_out(rel).split("/")
+    return ".".join(parts[1:]).removesuffix(".lean") if len(parts) >= 2 and parts[0] == "lean" else ""
+
+
+def verify_refutations(deps: AgentDeps) -> list[str]:
+    """WRITTEN theorem names the refutations module MECHANICALLY establishes FALSE. For each
+    `theorem <name>__refuted : ¬ …` it applies TWO checks, both required:
+      • TYPE TIE — `example : False := <name>__refuted <name>` type-checks. This holds iff
+        `<name>__refuted` refutes the EXACT statement of `<name>` (application forces the negated type
+        to equal `<name>`'s type), so the agent cannot refute a strawman and weaken a true theorem.
+        (`<name>` being `sorry`-proved is irrelevant — it is used only as a term of its type.)
+      • PURITY — `#print axioms <name>__refuted` shows NO `sorryAx`, so the refutation is a real proof
+        of the negation, not a faked/incomplete one. `native_decide` IS allowed: a refutation is a
+        concrete finite counterexample, not a general proof.
+    A refutation passing both means `<name>` is genuinely false as stated, so it may re-open FORMALISE
+    for correction. Conservative: if the checker does not compile (a tie failed), NO refutation is
+    honored this round."""
+    rmod = refutations_module(deps)
+    rtext = tools.read_out(deps, rmod)
+    if rtext.startswith("ERROR:"):
+        return []
+    ref_pairs = [(n, q) for n, q in zip(_theorem_names(rtext), _theorem_qualified_names(rtext))
+                 if n.endswith(_REFUTATION_SUFFIX)]
+    if not ref_pairs:
+        return []
+    spec = campaign_spec(deps)
+    stext = tools.read_out(deps, spec)
+    orig_qual = dict(zip(_theorem_names(stext), _theorem_qualified_names(stext)))
+    # each refutation must target an EXISTING theorem of THIS campaign's spec
+    checks = [(n[:-len(_REFUTATION_SUFFIX)], q, orig_qual[n[:-len(_REFUTATION_SUFFIX)]])
+              for n, q in ref_pairs if n[:-len(_REFUTATION_SUFFIX)] in orig_qual]
+    if not checks:
+        return []
+    if not build(deps).get("success"):
+        log.warning("verify_refutations: project does not compile with %s — no refutation honored", rmod)
+        return []
+    rmodule, smodule = _module_of(rmod), _module_of(spec)
+    if not rmodule or not smodule:
+        return []
+    checker_rel = "_refutation_check.lean"
+    ties = "\n".join(f"example : False := {ref_q} {orig_q}" for _, ref_q, orig_q in checks)
+    prints = "\n".join(f"#print axioms {ref_q}" for _, ref_q, _ in checks)
+    body = f"import {smodule}\nimport {rmodule}\n\n{ties}\n\n{prints}\n"
+    if tools.write_out(deps, checker_rel, body).startswith("ERROR:"):
+        return []
+    code, out, err = exec_in(deps.container_id,
+                             ["timeout", "-k", "10", str(_BUILD_TIMEOUT),
+                              "lake", "env", "lean", f"{OUT_IN}/{checker_rel}"],
+                             workdir=f"{OUT_IN}/lean", timeout=_BUILD_TIMEOUT + 30)
+    exec_in(deps.container_id, ["rm", "-f", f"{OUT_IN}/{checker_rel}"])
+    text2 = f"{out}\n{err}"
+    if code != 0 or "error:" in text2:
+        log.warning("verify_refutations: type-tie/checker did not compile — no refutation honored "
+                    "(a refutation must prove ¬ the EXACT statement). Lean tail:\n%s", text2[-1200:])
+        return []
+    axset: dict[str, set[str]] = {}
+    for m in re.finditer(
+            r"'([\w.]+)' (?:(does not depend on any axioms)|depends on axioms: \[(.*?)\])",
+            text2, re.DOTALL):
+        axset[m.group(1)] = (set() if m.group(2)
+                             else {a.strip() for a in m.group(3).replace("\n", " ").split(",")
+                                   if a.strip()})
+    refuted = [target for target, ref_q, _ in checks
+               if ref_q in axset and "sorryAx" not in axset[ref_q]]
+    if refuted:
+        log.info("verify_refutations: %d theorem(s) mechanically REFUTED (false as stated): %s",
+                 len(refuted), refuted)
+    return refuted
 
 
 def _proposition_only(signature: str) -> str:
