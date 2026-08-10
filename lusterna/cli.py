@@ -107,6 +107,12 @@ def run(
             # Dead-container resume: rebuild the whole repo (source edits + verification + branch)
             # from the target dir, pinned to the checkpoint commit — no stage is restarted pristine.
             container_mod.import_repo(container_id, repo_path, sid, saved.get("git_head", "HEAD"))
+            # The Claude Code sessions are container-local — they died with the old container. Drop
+            # their ids so any stage that RE-RUNS here starts a FRESH session (with its briefing)
+            # rather than trying to resume a conversation that no longer exists (which fails instantly,
+            # error_during_execution/turns=0). Completed stages are skipped by their progress markers,
+            # so clearing their ids is harmless.
+            progress["cc_sessions"] = {}
             # import_repo does not carry the (excluded) .lake build tree; re-provision it if the
             # translation already exists so a resumed lean stage builds against the cache, not a
             # cold full Mathlib rebuild.
