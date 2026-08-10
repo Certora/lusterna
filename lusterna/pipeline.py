@@ -418,10 +418,11 @@ def _stage_prove(deps: AgentDeps) -> None:
         raise _PipelineAborted("PROVE not started — the implementation spec does not compile")
 
     sid = deps.progress.get("cc_sessions", {}).get("PROVE")
-    prompt = ("Proceed to PROVE. Discharge as many `sorry` theorems in this campaign's spec module as "
-              "you can, WITHOUT changing any statement. Build up and COMMIT whatever supporting lemmas "
-              "you need across the Lean library, reuse them by import, keep it compiling and commit as "
-              "you go. Leaving genuinely hard theorems as `sorry` is fine. Follow your briefing.")
+    prompt = ("Proceed to PROVE. Prove the `sorry` theorems in this campaign's spec module — the hard "
+              "ones are the objective, not optional — WITHOUT changing any statement. Decompose them, "
+              "build and COMMIT the supporting lemmas (and `@[progress]` specs for the functions/loops "
+              "you step through), reuse by import, and iterate against `lake build`. Do not stop at the "
+              "easy theorems; a `sorry` is a last resort after real effort. Follow your briefing.")
     try:
         run_cc_stage(deps, stage="PROVE", prompt=prompt,
                      briefing=(None if sid else briefings.PROVE), resume_sid=sid, **_cc_common())
