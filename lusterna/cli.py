@@ -43,6 +43,10 @@ def main(verbose: bool) -> None:
 @click.option("--session-id", default=None, help="Resume an existing session by ID")
 @click.option("--checkpoint-number", "ckpt_number", default=None, type=int,
               help="Checkpoint number to resume from (default: latest)")
+@click.option("--reprove", is_flag=True,
+              help="On resume, re-open PROVE for another budgeted session on the already-committed "
+                   "proof library — keeps established proofs (FORMALISE stays skipped), lets the agent "
+                   "continue the remaining `sorry` theorems. Use to spend more budget on a hard frontier.")
 @click.option("--container", default=config.CONTAINER_ID or None,
               help="Attach to a pre-running container instead of starting a new one")
 @click.option("--image", default=config.CONTAINER_IMAGE, show_default=True,
@@ -53,6 +57,7 @@ def run(
     branch: str | None,
     session_id: str | None,
     ckpt_number: int | None,
+    reprove: bool,
     container: str | None,
     image: str,
 ) -> None:
@@ -87,6 +92,15 @@ def run(
         log.info("Resuming session %s from checkpoint %s", sid, ckpt_number or "latest")
         progress = saved.get("progress", {})
         container = container or saved.get("container_id")
+        if reprove:
+            # Re-open PROVE on the committed library: drop the done-marker (PROVE re-runs) and its
+            # cc-session (a FRESH session with the current briefing, attacking the open `sorry`s rather
+            # than resuming one that already declared itself finished). FORMALISE stays skipped
+            # (`spec_ok` kept), so the established proofs already in the module are preserved, and PROVE
+            # builds on the committed helper lemmas / assumptions. REPORT (no skip-guard) regenerates.
+            progress.pop("proofs_done", None)
+            (progress.get("cc_sessions") or {}).pop("PROVE", None)
+            log.info("--reprove: re-opening PROVE on the committed proof library")
     else:
         log.info("Starting new session %s", sid)
         progress = {}
