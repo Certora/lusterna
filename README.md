@@ -115,18 +115,18 @@ while the interchangeable agent remains outside that boundary.
 
 ```mermaid
 flowchart TD
-  DESIGN["📄 DESIGN.md<br/>focus hint"]:::src
-  RUST["🦀 Rust crate<br/>source of truth"]:::src
+  DESIGN["📄 DESIGN.md — focus hint"]:::src
+  RUST["🦀 Rust crate — source of truth"]:::src
 
-  EXPLORE["EXPLORE<br/>entry file + fns + toolchain assessment"]:::impl
-  INFER["INFER<br/>behaviour spec + target_patterns<br/>(pristine source)"]:::impl
-  TRANSLATE["TRANSLATE<br/>agent session drives Charon → Aeneas → Lean"]:::impl
-  TJUDGE{"TRANSLATE-JUDGE<br/>target translated & faithful?"}:::gate
-  FORMALISE["FORMALISE<br/>theorem statements"]:::impl
-  FBUILD{"stub_proofs + lake build<br/>statements compile?"}:::gate
-  SJUDGE{"SPEC-JUDGE<br/>defects?"}:::gate
-  PROVE["PROVE<br/>discharge sorry vs lake build"]:::impl
-  AXIOMS["#print axioms<br/>established-theorem gate"]:::verify
+  EXPLORE["EXPLORE — entry file + fns + toolchain assessment"]:::impl
+  INFER["INFER — behaviour spec + target_patterns (pristine source)"]:::impl
+  TRANSLATE["TRANSLATE — agent drives Charon → Aeneas → Lean"]:::impl
+  TJUDGE{"TRANSLATE-JUDGE — target translated & faithful?"}:::gate
+  FORMALISE["FORMALISE — theorem statements"]:::impl
+  FBUILD{"stub_proofs + lake build — statements compile?"}:::gate
+  SJUDGE{"SPEC-JUDGE — defects?"}:::gate
+  PROVE["PROVE — discharge sorry vs lake build"]:::impl
+  AXIOMS["#print axioms — established-theorem gate"]:::verify
   REPORT["REPORT"]:::report
 
   RUST --> EXPLORE --> INFER --> TRANSLATE --> TJUDGE
@@ -157,7 +157,7 @@ not via message history.
 | TRANSLATE-JUDGE | `translate/verdict.json` | empty defect list (semantic screen; independent session) |
 | FORMALISE | `lean/<Crate>/Spec.lean` (statements, bodies `:= by sorry`) | `stub_proofs` + `lake build` compiles |
 | SPEC-JUDGE | `spec/verdict.json` | empty defect list |
-| PROVE | proofs + supporting lemmas committed into the Lean library | `#print axioms` — three-way: established / modulo trusted base / tainted |
+| PROVE | proofs + supporting lemmas committed into the Lean library; any theorem that is false as stated → refuted in `Refutations.lean` + `prove/refutations.json` | `#print axioms` — three-way: established / modulo trusted base / tainted; a refutation is kernel-checked by `verify_refutations` |
 | REPORT | `report/NN_*.md` | — (harness prepends the authoritative verdict) |
 
 FORMALISE cannot smuggle in a proof: the harness runs `stub_proofs` on its `Spec.lean` before the
@@ -322,6 +322,13 @@ with full in-stage state and continues rather than restarting the stage. Only if
 gone does resume rebuild a fresh one: it restores the repo (source edits, `verification/`, and the
 branch) from the run branch already fetched into the target repo, and hard-resets to the
 checkpoint's `git_head`, continuing from exactly that state.
+
+When resume must start a **fresh agent session** (its predecessor's in-container conversation is gone
+with the dead container), the work carries across on **disk, not in the agent's memory**: the stage
+briefing tells every resumed session to first re-read the committed artefacts — the translation, spec
+modules, established lemmas, and its own `prove/` notes (`assumptions.md`, `refutations.json`) — and
+continue from them rather than re-derive. Artefacts are streamed to disk *as* a stage works, not only
+at its end, so a resumed session that skipped them would be "unprimed" and re-tread banked work.
 
 ```sh
 lusterna list-sessions
