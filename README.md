@@ -243,6 +243,23 @@ goal states a property *of* a target, no goal can be admitted as an assumption �
 proved it stays an honest `sorry`. The assumptions are general and reusable across campaigns, and can
 later be *discharged* — proved against a value model — to retire the trust entirely.
 
+### Counterexamples — when a property is *false*
+
+Sometimes the sustained effort to prove a theorem instead surfaces a **counterexample**: the property
+simply does not hold for the code as written (a classic case is an unguarded arithmetic overflow the
+statement forgot to exclude). This is not a failure — finding it is the most valuable thing the
+pipeline can produce. Rather than leave an unprovable `sorry`, PROVE *refutes* the theorem: it proves
+the negation as a `<name>__refuted` lemma in a dedicated `lean/<Crate>/Refutations.lean` (a concrete
+counterexample, so `decide` / `native_decide` is admissible here) and records it in
+`prove/refutations.json`. The harness verifies the refutation mechanically — the dual of the proof
+gate — with two checks: a **type tie** (`example : False := <name>__refuted <name>` type-checks, so
+the refutation targets the *exact* statement, not a strawman) and **purity** (`#print axioms` clean of
+`sorryAx`). A refutation passing both is surfaced as a **headline finding** in the verdict and report:
+a kernel-verified discrepancy warranting investigation. The prover never edits the statement to make
+the counterexample vanish (statements are FORMALISE's, and the spec was already independently judged
+by SPEC-JUDGE), and a refutation is a *falsehood* — it can never enter `Assumptions.lean`, the
+trusted-*true* ledger. It is reported, not papered over.
+
 ## Architecture
 
 ```

@@ -7,24 +7,26 @@ Each briefing is passed to `claude -p` via --append-system-prompt-file (see runn
 from . import docs
 
 
-# Appended to every labour stage. Runs ACCUMULATE: each campaign ADDS its own module/report on top
-# of prior campaigns, which are preserved and reused — never rewritten.
-INCREMENTAL = """
+# Appended to EVERY stage. Two ways there may already be work on disk, both read-first / build-on:
+# a prior CAMPAIGN (cumulative runs accumulate), and YOUR OWN progress in this campaign after a
+# RESUME (you may be a fresh process that did not write the files it must continue from).
+CONTINUING = """
 
-CONTINUING A CAMPAIGN (cumulative). This target may already carry prior campaigns' artefacts under
-/workspace/out (translation, per-campaign spec modules lean/**/Spec/*.lean, reports) and any
-behaviour-preserving source edits in /workspace/repo. Those are shared foundation to BUILD ON, not
-to redo: reuse the existing translation and prior lemmas (by `import`), and ADD only what THIS
-campaign needs as NEW files. NEVER edit or delete a prior campaign's spec module or report — the
-harness reverts such edits. If nothing prior is present, proceed from scratch as usual."""
-
-# PROVE-specific: prior campaigns' proofs are reused by import, not re-derived.
-PROVE_REUSE = """
-
-REUSING PRIOR WORK. Prior campaigns' theorems are already proved in their own modules under
-lean/<Crate>/Spec/ — do NOT restate or re-prove them; `import` those modules and apply their lemmas
-(`exact`/`apply`/`simp [Prior.lemma]`) to discharge yours. Prove only the theorems in YOUR campaign's
-module. (`#print axioms` re-checks every proof from source, so reuse never inherits trust on faith.)"""
+CONTINUING FROM COMMITTED STATE — read what is already on disk BEFORE doing new work. You may be a
+FRESH process picking up an interrupted run, so the files under /workspace/out and /workspace/repo
+were streamed there by a predecessor whose reasoning you do not remember; they are committed and
+authoritative. Two kinds of prior state, both to BUILD ON, never to redo or contradict:
+  • Prior CAMPAIGNS (cumulative). An existing translation, per-campaign spec modules
+    lean/**/Spec/*.lean, their proofs, and reports. Reuse them (by `import` — apply prior lemmas with
+    `exact`/`apply`/`simp [Prior.lemma]`), and ADD only what THIS campaign needs as NEW files. NEVER
+    edit or delete another campaign's spec module or report — the harness reverts such edits. (`#print
+    axioms` re-checks every proof from source, so reuse never inherits trust on faith.)
+  • YOUR OWN progress in THIS campaign (a RESUME). A partial translation, helper lemmas and proofs
+    already committed, trusted assumptions (`prove/assumptions.md`), documented refutations
+    (`prove/refutations.json`), and any report roadmap. Re-read them and CONTINUE — the artefacts are
+    written in-situ AS the work happens, not only at a stage's end, so a resumed session that skips
+    them is effectively unprimed and re-treads or contradicts work already banked.
+If nothing prior is present, proceed from scratch as usual."""
 
 
 EXPLORE = """\
@@ -90,7 +92,7 @@ DELIVERABLE (write both, then STOP):
         }
 Validate the JSON parses (e.g. `python3 -c 'import json,sys;json.load(open(sys.argv[1]))'` or `jq .`)
 before you finish. The stage is done when handoff.json exists and is valid — stop there.
-""" + docs.FOR_TRANSLATE + INCREMENTAL
+""" + docs.FOR_TRANSLATE + CONTINUING
 
 
 # ── INFER ──────────────────────────────────────────────────────────────────────
@@ -147,7 +149,7 @@ TWO JOBS, written to ONE file /workspace/out/infer/campaigns/<Campaign>.json (va
    only if the crate has no identifiable target.
 
 Validate the JSON parses, then STOP.
-""" + INCREMENTAL
+""" + CONTINUING
 
 
 # ── TRANSLATE ──────────────────────────────────────────────────────────────────
@@ -242,7 +244,7 @@ the harness diffs your changes against it automatically. Use git however you fin
 DELIVERABLE: the compiling translation in /workspace/out/lean (target functions as real `def`s),
 plus translate/campaigns/<Campaign>/plan.md and translate/campaigns/<Campaign>/accountability.md. STOP once the target translates and
 `lake env lean` accepts it.
-""" + docs.FOR_TRANSLATE + INCREMENTAL
+""" + docs.FOR_TRANSLATE + CONTINUING
 
 
 # ── TRANSLATE-JUDGE ─────────────────────────────────────────────────────────────
@@ -324,7 +326,7 @@ valid. Choose whichever fits.
 
 DELIVERABLE: this campaign's spec module (the path the harness gave you) with compiling
 statement-only theorems, and prior campaign modules untouched. STOP once it compiles.
-""" + docs.FOR_FORMALISE + INCREMENTAL
+""" + docs.FOR_FORMALISE + CONTINUING
 
 
 # ── SPEC-JUDGE ─────────────────────────────────────────────────────────────────
@@ -408,9 +410,11 @@ THE ONE LEGITIMATE ASSUMPTION — a genuinely intractable SUBSTRATE fact, and no
   monadic case-split) is NOT a substrate fact — prove it, do not assume it. Keep the trusted base
   minimal; each assumption is reported LOUDLY as "verified MODULO the trusted base".
 
-WHEN A THEOREM IS FALSE — refute it (this is a RESULT, not giving up):
-  A statement can be false as STATED — usually a missing precondition (an unguarded overflow, a
-  divide-by-zero, a domain the code does not actually cover). If persistent effort surfaces a concrete
+WHEN A THEOREM IS FALSE — refute it (this is a HEADLINE RESULT, not giving up):
+  Finding that a stated property does NOT hold for the code is the single most valuable thing this
+  pipeline can produce — more valuable than one more green checkmark. A statement can be false as
+  STATED — usually a missing precondition the code does not actually enforce (an unguarded overflow, a
+  divide-by-zero, a domain the code does not cover). If persistent effort surfaces a concrete
   counterexample, REFUTE the theorem: in the refutations module the harness names in your task prompt
   (`lean/<Crate>/Refutations.lean`), prove the negation —
       `theorem <thatTheoremName>__refuted : ¬ (<the exact statement, verbatim>) := by <proof>`
@@ -418,10 +422,14 @@ WHEN A THEOREM IS FALSE — refute it (this is a RESULT, not giving up):
   concrete instance IS allowed here: it is a finite counterexample, not a general proof). Also list
   the theorem + a one-line reason in `prove/refutations.json` (`{"refuted": ["<name>", …]}`). Then
   STOP working that theorem and anything downstream of it — proving a false theorem is impossible.
-  Do NOT edit the false statement yourself (statements are immutable to you); the harness mechanically
-  verifies your refutation (`#print axioms`: no `sorryAx`) and, if it holds, re-opens FORMALISE to
-  correct the statement — your refutation is the evidence that drives the fix. Never fake a refutation
-  to escape a hard-but-TRUE theorem; a bogus one fails the check and wastes the correction budget.
+  The harness mechanically verifies your refutation (type-tied to the EXACT statement; `#print axioms`
+  no `sorryAx`) and surfaces it PROMINENTLY in the report as a candidate discrepancy to investigate.
+  You do NOT edit the statement (statements are FORMALISE's, and the spec was already independently
+  judged) and you do NOT weaken it to make the counterexample vanish — you REPORT it as found. Never
+  fake a refutation to escape a hard-but-TRUE theorem; a bogus one fails the mechanical check.
+  HARD RULE — a refutation is a FALSEHOOD; it must NEVER go in `Assumptions.lean` / `prove/assumptions.md`.
+  That ledger is the trusted base — things assumed TRUE. A counterexample proves a statement FALSE;
+  filing it there inverts its meaning. Refutations live ONLY in `Refutations.lean` + `refutations.json`.
 
 IMMUTABLE — statements and prior work:
   • NEVER alter a theorem's statement (anything before `:= by`).
@@ -431,7 +439,7 @@ IMMUTABLE — statements and prior work:
 DELIVERABLE: your campaign module compiling, with every theorem you could genuinely prove proved and
 committed, its reusable lemmas committed alongside, and any trusted assumption disclosed in
 `prove/assumptions.md`.
-""" + docs.FOR_PROVE + PROVE_REUSE
+""" + docs.FOR_PROVE + CONTINUING
 
 
 # ── REPORT ─────────────────────────────────────────────────────────────────────
@@ -461,6 +469,13 @@ from facts.json (the kernel `#print axioms` result); report those same numbers i
     assumptions they depend on (`facts.json.axioms.assumed`) as trusted-not-proved. If
     `facts.json.axioms.illegitimate_assumptions` is non-empty, flag it prominently — those were demoted
     to tainted.
+  • COUNTEREXAMPLES: `facts.json.axioms.refutations` lists theorems shown FALSE as stated by a
+    kernel-verified counterexample (a `<name>__refuted` proof of the negation). This is a HEADLINE
+    finding, not a footnote — the property does not hold for the code as written, a candidate
+    discrepancy warranting investigation (the code may be wrong, e.g. an unguarded overflow, or the
+    property mis-stated). Lead with it where present. Word it as a REFUTED PROPERTY / discrepancy to
+    investigate — do NOT overclaim it as a confirmed, adjudicated bug, and do NOT dismiss it as a mere
+    spec defect. Cite the `__refuted` lemma and `prove/refutations.json`.
   • You MAY re-run `#print axioms` yourself as a cross-check. If your reading DISAGREES with
     facts.json, do NOT silently pick one — report the discrepancy prominently (it means the gate or
     the build is wrong, which matters more than the number). Absent a discrepancy, report facts.json.
@@ -472,8 +487,9 @@ Write exactly these files, in order, into the campaign report dir the harness ga
     established via `#print axioms`, standard axioms only, AND referencing an Aeneas-translated def).
     Report abstract helper lemmas SEPARATELY, never as the verification result, and report the tainted
     theorems plainly as NOT verified. If NONE reference the implementation, say plainly that 0
-    properties of the code were verified. Also: translation result (incl. assumed/opaqued primitives),
-    spec-judge result, untranslated holes.
+    properties of the code were verified. If `facts.json.axioms.refutations` is non-empty, lead the
+    summary with it — a refuted property is the most important thing a reader needs to see. Also:
+    translation result (incl. assumed/opaqued primitives), spec-judge result, untranslated holes.
   02_translation.md — what was translated: entry file, Charon scope patterns, Aeneas output
     files, then SUMMARISE `translate/campaigns/<Campaign>/accountability.md` as the agent wrote it — the scoping, any
     opaqued leaves, and any rung-3 modeling/edits with the agent's stated rationale. Report the trail
@@ -488,9 +504,12 @@ Write exactly these files, in order, into the campaign report dir the harness ga
     (propext/Classical.choice/Quot.sound). Split established into (a) implementation-verifying
     (reference an Aeneas def) and (b) abstract helper lemmas — only (a) verifies the code. Mark each
     theorem implementation-verified / abstract-only / not-established, with a one-line sketch or a
-    suggested strategy.
-  06_summary.md — open obligations (each sorry + a concrete next step), known gaps/limitations,
-    overall verdict paragraph.
+    suggested strategy. For any theorem in `facts.json.axioms.refutations`, mark it REFUTED and
+    describe the counterexample (the witness and why the property fails) — a distinct, prominent
+    category, never lumped in with "not yet proved".
+  06_summary.md — open obligations (each sorry + a concrete next step), any REFUTED properties
+    called out as candidate discrepancies to investigate (with the counterexample), known
+    gaps/limitations, overall verdict paragraph.
 
 Be thorough; do not summarise away detail a reader needs. STOP once the six files exist.
 """

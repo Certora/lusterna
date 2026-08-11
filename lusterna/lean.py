@@ -204,35 +204,27 @@ def sorry_bodied_theorems(spec_text: str) -> set[str]:
     return out
 
 
-def stub_proofs(text: str, only: set[str] | None = None) -> str:
-    """Force `theorem`/`lemma` proof bodies to `:= by sorry`, preserving statements, definitions,
-    imports and docstrings. FORMALISE emits statement-only structured output, so its theorems never
-    carry proofs; this is a safety net for any stray theorem the model puts in the free-form
-    `preamble` — keeping proofs (and pathological tactics like `native_decide`) out of the spec until
-    the PROVE stage.
-
-    If *only* is given, re-stub ONLY those theorem/lemma NAMES (matched after the keyword), leaving
-    every other body intact — used by FORMALISE's correction mode, where already-established proofs
-    must be preserved and only a corrected statement's now-stale body is re-stubbed."""
+def stub_proofs(text: str) -> str:
+    """Force every `theorem`/`lemma` proof body to `:= by sorry`, preserving statements,
+    definitions, imports and docstrings. FORMALISE emits statement-only structured output,
+    so its theorems never carry proofs; this is a safety net for any stray theorem the
+    model puts in the free-form `preamble` — keeping proofs (and pathological tactics like
+    `native_decide`) out of the spec until the PROVE stage."""
     import re
     lines = text.split("\n")
-    decl = re.compile(r"^\s*(?:theorem|lemma)\s+([\w.]+)")
+    decl = re.compile(r"^\s*(theorem|lemma)\b")
     newtop = re.compile(r"^\s*(theorem|lemma|def|abbrev|noncomputable|instance|structure|"
                         r"inductive|namespace|end|section|open|variable|@\[|/-|--|#|import)")
     out, i, n = [], 0, len(lines)
     while i < n:
-        m0 = decl.match(lines[i])
-        if m0:
+        if decl.match(lines[i]):
             block = [lines[i]]
             i += 1
             while i < n and not newtop.match(lines[i]):
                 block.append(lines[i]); i += 1
             joined = "\n".join(block)
-            if only is not None and m0.group(1) not in only:
-                out.append(joined)                       # preserve this theorem's body verbatim
-            else:
-                m = re.search(r":=", joined)
-                out.append((joined[:m.start()].rstrip() + " := by sorry") if m else joined)
+            m = re.search(r":=", joined)
+            out.append((joined[:m.start()].rstrip() + " := by sorry") if m else joined)
         else:
             out.append(lines[i]); i += 1
     return "\n".join(out)
@@ -596,8 +588,10 @@ def refutations_module(deps: AgentDeps) -> str:
     false. A refutation lemma is `theorem <written-theorem-name>__refuted : ¬ <that statement> := by …`.
     It is verified like any proof (compiles, no `sorryAx`), but `decide`/`native_decide` is PERMITTED:
     a refutation evaluates a concrete finite counterexample (unlike a general proof, where
-    native_decide's compiler-trust taints). A verified refutation re-opens FORMALISE to correct the
-    demonstrably-false statement — the dual of the `#print axioms` proof gate."""
+    native_decide's compiler-trust taints). A verified refutation is a kernel-checked DISCREPANCY —
+    the property does not hold for the code as written — surfaced prominently in the report as a
+    candidate finding warranting investigation. The dual of the `#print axioms` proof gate; it does
+    NOT amend the spec (statements are FORMALISE's, and the spec was already independently judged)."""
     stem = _crate_stem(deps)
     return f"lean/{stem}/Refutations.lean" if stem else ""
 
@@ -618,9 +612,9 @@ def verify_refutations(deps: AgentDeps) -> list[str]:
       • PURITY — `#print axioms <name>__refuted` shows NO `sorryAx`, so the refutation is a real proof
         of the negation, not a faked/incomplete one. `native_decide` IS allowed: a refutation is a
         concrete finite counterexample, not a general proof.
-    A refutation passing both means `<name>` is genuinely false as stated, so it may re-open FORMALISE
-    for correction. Conservative: if the checker does not compile (a tie failed), NO refutation is
-    honored this round."""
+    A refutation passing both means `<name>` is genuinely false as stated — a kernel-verified
+    discrepancy to REPORT as a headline finding (not a trigger to amend the spec). Conservative: if
+    the checker does not compile (a tie failed), NO refutation is honored this round."""
     rmod = refutations_module(deps)
     rtext = tools.read_out(deps, rmod)
     if rtext.startswith("ERROR:"):

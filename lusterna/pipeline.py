@@ -290,86 +290,10 @@ def _restore_prior_specs(deps: AgentDeps) -> None:
                           workdir=container.REPO_IN)
 
 
-def _open_correction(deps: AgentDeps, refuted: list[str]) -> None:
-    """A verified PROVE refutation re-opens FORMALISE for the false theorem(s). Record them for the
-    correction-mode FORMALISE + informed SPEC-JUDGE, and drop the spec_ok/proofs_done markers (and
-    the FORMALISE/SPEC-JUDGE/PROVE cc-sessions, so those re-run FRESH with the correction briefing).
-    Only the refuted statements are corrected; established proofs are preserved."""
-    deps.progress["corrections"] = sorted(refuted)
-    for k in ("spec_ok", "proofs_done"):
-        deps.progress.pop(k, None)
-    ccs = deps.progress.get("cc_sessions", {})
-    for s in ("FORMALISE", "SPEC-JUDGE", "PROVE"):
-        ccs.pop(s, None)
-    log.info("spec-correction: re-opening FORMALISE to correct refuted theorem(s): %s", sorted(refuted))
-    checkpoint.snapshot(deps)
-
-
-def _formalise_correct(deps: AgentDeps, impl: str, corrections: set[str]) -> None:
-    """CORRECTION mode: each named theorem was proven FALSE (a verified `__refuted` counterexample).
-    FORMALISE edits ONLY those statements (adds the missing precondition); the harness re-stubs ONLY
-    them (their bodies are stale), preserving every other theorem's established proof; SPEC-JUDGE
-    re-screens — informed by the counterexample — for a FAITHFUL fix vs a targeted dodge."""
-    refs = lean.refutations_module(deps)
-
-    def check(deps: AgentDeps):
-        _restore_prior_specs(deps)
-        raw = tools.read_out(deps, impl)
-        if raw.startswith("ERROR:"):
-            return False, f"the spec {impl} is missing."
-        # Re-stub ONLY the corrected theorems — their old bodies no longer match the new statement;
-        # every other theorem (established proofs included) is preserved verbatim.
-        tools.write_out(deps, impl, lean.stub_proofs(raw, only=corrections))
-        deps.progress["formal_spec"] = True
-        if not lean.build(deps).get("success"):
-            err = deps.progress.get("lean_build", {}).get("stderr", "")
-            return False, "the corrected statement(s) do not compile:\n" + err[-1500:]
-        verdict = _run_judge(
-            deps, stage="SPEC-JUDGE", briefing=briefings.SPEC_JUDGE,
-            prompt=(f"CORRECTION review. The theorem(s) {sorted(corrections)} in /workspace/out/{impl} "
-                    f"were each REFUTED by a verified counterexample — see the matching `__refuted` "
-                    f"lemma in /workspace/out/{refs} and /workspace/out/prove/refutations.json. Their "
-                    f"statements have now been corrected. For EACH, judge whether the correction is a "
-                    f"FAITHFUL fix (a natural precondition the code genuinely needs, e.g. a no-overflow "
-                    f"bound) or a TARGETED DODGE that merely excludes the counterexample or guts the "
-                    f"claim — report a `too_weak`/`wrong_statement` defect if so. Also re-judge them as "
-                    f"normal statements. Write /workspace/out/spec-judge/verdict.json per your briefing."),
-            verdict_rel="spec-judge/verdict.json")
-        deps.progress["verdict"] = verdict
-        defects = verdict.get("defects", [])
-        if defects:
-            return False, "SPEC-JUDGE rejected the correction(s):\n" + _format_defects(defects)
-        deps.progress["spec_ok"] = True
-        return True, ""
-
-    _cc_gate_loop(
-        deps, stage="FORMALISE", briefing=briefings.FORMALISE,
-        base_prompt=(f"CORRECTION mode. The theorem(s) {sorted(corrections)} in /workspace/out/{impl} "
-                     f"were proven FALSE by a verified counterexample (the matching `__refuted` lemma "
-                     f"in /workspace/out/{refs}). CORRECT each: add the missing precondition the "
-                     f"counterexample violates (make it a NATURAL well-formedness/no-overflow "
-                     f"condition, not an ad-hoc exclusion of the counterexample's specific values). "
-                     f"Edit ONLY those theorems' statements; leave every OTHER theorem untouched — "
-                     f"their proofs are established. Bodies stay `:= by sorry`. Ensure it compiles."),
-        check=check,
-    )
-    deps.progress.pop("corrections", None)
-    deps.progress.setdefault("corrected_theorems", [])
-    for t in sorted(corrections):
-        if t not in deps.progress["corrected_theorems"]:
-            deps.progress["corrected_theorems"].append(t)
-    tools.commit(deps.container_id, f"fix(spec): correct refuted statement(s) {sorted(corrections)}")
-    checkpoint.snapshot(deps)
-
-
 def _stage_formalise(deps: AgentDeps) -> None:
-    corrections = deps.progress.get("corrections")
-    if "spec_ok" in deps.progress and not corrections:
+    if "spec_ok" in deps.progress:
         return
     impl = lean.campaign_spec(deps)
-    if corrections:
-        _formalise_correct(deps, impl, set(corrections))
-        return
 
     def check(deps: AgentDeps):
         _restore_prior_specs(deps)   # prior campaigns' modules are immutable — revert any edits
@@ -454,14 +378,22 @@ def _record_axioms(deps: AgentDeps) -> None:
             dst.append(q)
         tainted += [f"{camp}::{n}" for n in ax["tainted"]]
 
+    # A kernel-verified refutation is a DISCREPANCY, not a spec amendment: a theorem shown FALSE as
+    # stated (the property does not hold for the code as written). Surfaced as a headline finding in
+    # the verdict/report; it never edits a statement and never enters the trusted base.
+    refuted = lean.verify_refutations(deps)
     deps.progress["axioms"] = {
         "clean": clean, "assumed": assumed, "tainted": tainted,
         "impl_verified": impl_verified, "impl_verified_assumed": impl_verified_assumed,
         "abstract_only": abstract_only,
         "declared_assumptions": sorted(lean.declared_assumptions(deps)),
         "illegitimate_assumptions": sorted(bad),
-        "corrected_statements": deps.progress.get("corrected_theorems", []),
+        "refutations": refuted,
     }
+    if refuted:
+        log.warning("PROVE: ⚑ %d theorem(s) REFUTED — a kernel-verified counterexample shows the "
+                    "property FALSE as stated (a candidate CODE discrepancy to investigate): %s",
+                    len(refuted), refuted)
     checkpoint.snapshot(deps)
     established = len(clean) + len(assumed)
     if bad:
@@ -553,7 +485,7 @@ def _authoritative_verdict(deps: AgentDeps) -> str:
     impl_assumed = ax.get("impl_verified_assumed", [])
     declared = ax.get("declared_assumptions", [])
     illegit = ax.get("illegitimate_assumptions", [])
-    corrected = ax.get("corrected_statements", [])
+    refuted = ax.get("refutations", [])
     total = len(clean) + len(assumed) + len(tainted)
     lines = [
         "# Verification verdict — AUTHORITATIVE (Lean `#print axioms`, harness-generated)",
@@ -565,6 +497,22 @@ def _authoritative_verdict(deps: AgentDeps) -> str:
         "established on STANDARD axioms vs established MODULO the trusted base (declared assumptions, "
         "listed below — trusted, not proved). Any narrative that conflicts with this block is wrong.",
         "",
+    ]
+    if refuted:
+        lines += [
+            f"## ⚑ COUNTEREXAMPLE FOUND — {len(refuted)} property REFUTED (investigate the code)",
+            "",
+            f"A kernel-verified counterexample shows {len(refuted)} stated property does NOT hold for "
+            "the code as written — the negation is proved (a `<name>__refuted` lemma, `#print axioms` "
+            "clean of `sorryAx`; type-tied to the EXACT statement). This is the pipeline's most "
+            "important kind of output: a candidate DISCREPANCY warranting investigation — the code may "
+            "be wrong (e.g. an unguarded overflow) or the intended property mis-stated. It is NOT a "
+            "spec defect to paper over, and NOT a claim of an adjudicated bug — it is a verified fact "
+            "to be examined. See the `__refuted` lemma(s) and `prove/refutations.json`. Refuted: "
+            f"{refuted}",
+            "",
+        ]
+    lines += [
         f"- **VERIFY THE IMPLEMENTATION on standard axioms: {len(impl)} / {total}** "
         f"(kernel-established, standard axioms only, referencing an Aeneas-translated def):",
         f"  {impl or '(none)'}",
@@ -601,13 +549,6 @@ def _authoritative_verdict(deps: AgentDeps) -> str:
                       f"{illegit}. An assumption may not reference a target function (that would relax a "
                       f"goal); such facts must be proved, not assumed."]
         lines.append("")
-    if corrected:
-        lines += ["## Corrected statements — review the spec change", "",
-                  f"{len(corrected)} theorem statement(s) were CORRECTED after PROVE refuted the "
-                  "original with a verified counterexample (the original was false as stated — e.g. a "
-                  "missing no-overflow precondition). Any result about these is verified against the "
-                  "CORRECTED statement; the change was re-screened by SPEC-JUDGE but the spec contract "
-                  "is yours — review each: " + str(corrected), ""]
     lines += [
         "How the target was translated — scope / opaqued leaves / any rung-3 modeling — is recorded "
         f"in `{_translate_dir(deps)}/accountability.md` and summarised in §2 below.",
@@ -726,24 +667,14 @@ async def run_session(deps: AgentDeps) -> str:
         _stage_translate(deps)
         if config.STOP_AFTER_TRANSLATE:
             return "Stopped after TRANSLATE (LUSTERNA_STOP_AFTER_TRANSLATE)."
-        # Statement↔proof loop: PROVE may REFUTE a statement with a verified counterexample, which
-        # re-opens FORMALISE to CORRECT it (add the missing precondition), re-screened by SPEC-JUDGE.
-        # Bounded by MAX_SPEC_CORRECTIONS so a refute/correct cycle cannot spin. On the first pass
-        # FORMALISE writes statements as usual; a correction pass edits only the refuted ones.
-        for corr_round in range(config.MAX_SPEC_CORRECTIONS + 1):
-            _stage_formalise(deps)
-            if config.STOP_BEFORE_PROVE:
-                return "Stopped before PROVE (LUSTERNA_STOP_BEFORE_PROVE)."
-            _stage_prove(deps)
-            refuted = lean.verify_refutations(deps)
-            if not refuted:
-                break
-            if corr_round == config.MAX_SPEC_CORRECTIONS:
-                log.warning("spec-correction: %d refuted theorem(s) remain after %d correction(s) — "
-                            "left as documented refutations: %s", len(refuted),
-                            config.MAX_SPEC_CORRECTIONS, refuted)
-                break
-            _open_correction(deps, refuted)
+        _stage_formalise(deps)
+        if config.STOP_BEFORE_PROVE:
+            return "Stopped before PROVE (LUSTERNA_STOP_BEFORE_PROVE)."
+        # PROVE may REFUTE a statement with a kernel-verified counterexample. That is a RESULT, not a
+        # spec amendment: _record_axioms banks it (progress['axioms']['refutations']) and the report
+        # headlines it as a candidate code discrepancy. The spec was independently judged; a
+        # counterexample is a bug-finding signal to surface, never a licence to weaken the property.
+        _stage_prove(deps)
         result = _stage_report(deps)
 
         tools.prune_stray_specs(deps, deps.progress.get("aeneas", {}).get("lean_path", ""))

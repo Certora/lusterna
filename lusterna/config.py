@@ -37,9 +37,6 @@ CONTAINER_ID = os.environ.get("LUSTERNA_CONTAINER", "")
 # axiom-clean established-theorem count). No hard round ceiling beyond it; each round is also
 # cost-capped by Claude Code's --max-budget-usd.
 STALL_ROUNDS = int(os.environ.get("LUSTERNA_STALL_ROUNDS", "3"))
-# How many times a PROVE refutation (verified counterexample) may re-open FORMALISE to correct a
-# false statement, per run — a backstop so a refute/correct cycle cannot spin.
-MAX_SPEC_CORRECTIONS = int(os.environ.get("LUSTERNA_MAX_SPEC_CORRECTIONS", "2"))
 
 # ── Claude Code engine (spawn-model stages) ──────────────
 # The CLI `--model` alias for the Claude Code sessions we spawn per stage (e.g. "opus", "sonnet").
