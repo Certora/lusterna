@@ -427,14 +427,12 @@ def _stage_prove(deps: AgentDeps) -> None:
         raise _PipelineAborted("PROVE not started — the implementation spec does not compile")
 
     sid = deps.progress.get("cc_sessions", {}).get("PROVE")
-    prompt = (f"Proceed to PROVE. Prove the `sorry` theorems in this campaign's spec module — the hard "
-              f"ones are the objective, not optional — WITHOUT changing any statement. Decompose them, "
-              f"build and COMMIT the supporting lemmas (and `@[progress]` specs for the functions/loops "
-              f"you step through), reuse by import, and iterate against `lake build`. Do not stop at the "
-              f"easy theorems; a `sorry` is a last resort after real effort. If a theorem is FALSE as "
-              f"stated, refute it in /workspace/out/{lean.refutations_module(deps)} (a `<name>__refuted` "
-              f"lemma proving `¬<statement>`) and list it in /workspace/out/prove/refutations.json, per "
-              f"your briefing. Follow your briefing.")
+    prompt = ("Proceed to PROVE. Prove the `sorry` theorems in this campaign's spec module — the hard "
+              "ones are the objective, not optional — WITHOUT changing any statement. Decompose them, "
+              "build and COMMIT the supporting lemmas (and `@[progress]` specs for the functions/loops "
+              "you step through), reuse by import, and iterate against `lake build`. Do not stop at the "
+              "easy theorems; a `sorry` is a last resort after real effort, and if a theorem is FALSE "
+              "as stated, refute it instead. Follow your briefing.")
     try:
         run_cc_stage(deps, stage="PROVE", prompt=prompt,
                      briefing=(None if sid else briefings.PROVE), resume_sid=sid, **_cc_common())
@@ -499,17 +497,19 @@ def _authoritative_verdict(deps: AgentDeps) -> str:
         "",
     ]
     if refuted:
+        n = len(refuted)
+        subj = ("A kernel-verified counterexample shows a stated property does NOT hold" if n == 1
+                else f"Kernel-verified counterexamples show {n} stated properties do NOT hold")
         lines += [
-            f"## ⚑ COUNTEREXAMPLE FOUND — {len(refuted)} property REFUTED (investigate the code)",
+            f"## ⚑ COUNTEREXAMPLE FOUND — {n} REFUTED (investigate the code)",
             "",
-            f"A kernel-verified counterexample shows {len(refuted)} stated property does NOT hold for "
-            "the code as written — the negation is proved (a `<name>__refuted` lemma, `#print axioms` "
-            "clean of `sorryAx`; type-tied to the EXACT statement). This is the pipeline's most "
-            "important kind of output: a candidate DISCREPANCY warranting investigation — the code may "
-            "be wrong (e.g. an unguarded overflow) or the intended property mis-stated. It is NOT a "
-            "spec defect to paper over, and NOT a claim of an adjudicated bug — it is a verified fact "
-            "to be examined. See the `__refuted` lemma(s) and `prove/refutations.json`. Refuted: "
-            f"{refuted}",
+            f"{subj} for the code as written — the negation is proved (a `<name>__refuted` lemma, "
+            "`#print axioms` clean of `sorryAx`; type-tied to the EXACT statement). This is the "
+            "pipeline's most important kind of output: a candidate DISCREPANCY warranting investigation "
+            "— the code may be wrong (e.g. an unguarded overflow) or the intended property mis-stated. "
+            "It is NOT a spec defect to paper over, and NOT a claim of an adjudicated bug — it is a "
+            f"verified fact to be examined. See the `__refuted` lemma(s) and `prove/refutations.json`. "
+            f"Refuted: {refuted}",
             "",
         ]
     lines += [

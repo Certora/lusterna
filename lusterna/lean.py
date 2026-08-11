@@ -233,6 +233,38 @@ def stub_proofs(text: str) -> str:
 _STD_AXIOMS = {"propext", "Classical.choice", "Quot.sound"}  # the standard, trusted Lean axioms
 
 
+def _run_lean_checker(deps: AgentDeps, body: str, rel: str) -> tuple[int, str]:
+    """Elaborate a THROWAWAY top-level Lean file (BODY) with `lake env lean`, against the already-built
+    oleans, then delete it — returning (lean exit code, combined stdout+stderr). The shared mechanism
+    behind both the `#print axioms` gate and the refutation type-tie: neither re-elaborates the spec
+    from source (which would auto-`sorry` and taint the whole batch on one import/proof failure). A
+    write failure returns (1, "ERROR: …") — distinguishable from Lean output, which never starts with
+    an uppercase `ERROR:`."""
+    if (w := tools.write_out(deps, rel, body)).startswith("ERROR:"):
+        return 1, w
+    code, out, err = exec_in(deps.container_id,
+                             ["timeout", "-k", "10", str(_BUILD_TIMEOUT),
+                              "lake", "env", "lean", f"{OUT_IN}/{rel}"],
+                             workdir=f"{OUT_IN}/lean", timeout=_BUILD_TIMEOUT + 30)
+    exec_in(deps.container_id, ["rm", "-f", f"{OUT_IN}/{rel}"])
+    return code, f"{out}\n{err}"
+
+
+_AXIOM_VERDICT_RE = re.compile(
+    r"'([\w.]+)' (?:(does not depend on any axioms)|depends on axioms: \[(.*?)\])", re.DOTALL)
+
+
+def _parse_axiom_verdicts(text: str) -> dict[str, set[str]]:
+    """Parse `#print axioms` output into {fully-qualified name → its axiom-name set} (empty set = "does
+    not depend on any axioms"). Keyed by the FULL qualified name the checker printed, NEVER the last
+    dotted component: dotted theorem names (`mint_shares.spec`, `deposit.spec`, …) collide on their
+    tail (`spec`) and would silently inherit one another's verdict. Lean wraps a long axiom list across
+    lines, so the regex is DOTALL and the list is re-joined before splitting."""
+    return {m.group(1): (set() if m.group(2)
+                         else {a.strip() for a in m.group(3).replace("\n", " ").split(",") if a.strip()})
+            for m in _AXIOM_VERDICT_RE.finditer(text)}
+
+
 def _empty_axioms(raw: str = "") -> dict:
     """The empty check_axioms result — the canonical 3-way shape every early return and every caller
     relies on (nothing clean/assumed/tainted). Keeping it in one place stops an early return from
@@ -283,35 +315,14 @@ def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
         return _empty_axioms(f"ERROR: unexpected spec path {spec_rel!r}")
     spec_module = ".".join(parts[1:]).removesuffix(".lean")
 
-    checker_rel = "_axiom_check.lean"          # at out root — outside the lean_lib srcDir
+    # Query `#print axioms` by qualified name, parse the verdicts keyed by that full qname, then map
+    # back to theorems (see _run_lean_checker / _parse_axiom_verdicts). A qname absent from the parse
+    # (`verdict.get` → None) is UNRESOLVED — the checker couldn't read it back — conservatively tainted.
     body = f"import {spec_module}\n\n" + "\n".join(f"#print axioms {n}" for n in qnames) + "\n"
-    if (w := tools.write_out(deps, checker_rel, body)).startswith("ERROR:"):
-        return _empty_axioms(w)
-    _, out, err = exec_in(deps.container_id,
-                          ["timeout", "-k", "10", str(_BUILD_TIMEOUT),
-                           "lake", "env", "lean", f"{OUT_IN}/{checker_rel}"],
-                          workdir=f"{OUT_IN}/lean", timeout=_BUILD_TIMEOUT + 30)
-    exec_in(deps.container_id, ["rm", "-f", f"{OUT_IN}/{checker_rel}"])
-
-    text = f"{out}\n{err}"
-    # Each verdict is "'name' does not depend on any axioms" (clean) or "'name' depends on axioms:
-    # [a, b, ...]" — clean iff every listed axiom is standard. Lean pretty-prints a long axiom list
-    # ACROSS MULTIPLE LINES (one per line), so parse over the whole text with DOTALL rather than
-    # line-by-line (a per-line regex misses the closing `]` and mis-taints such theorems).
-    # Parse each verdict keyed by the FULLY-QUALIFIED name the checker printed (e.g.
-    # 'metavault.Spec.mint_shares.spec'), then map back to theorems by that full qname. NEVER match
-    # on the last dotted component: dotted theorem names (mint_shares.spec, deposit.spec, …) collide
-    # on their tail (`spec`) and would silently inherit one another's verdict — the class of bug this
-    # gate must not have.
-    verdict: dict[str, set[str] | None] = {}      # qual → its axiom-name set (None = unresolved)
-    for m in re.finditer(
-            r"'([\w.]+)' (?:(does not depend on any axioms)|depends on axioms: \[(.*?)\])",
-            text, re.DOTALL):
-        if m.group(2):                  # "does not depend on any axioms"
-            verdict[m.group(1)] = set()
-        else:
-            verdict[m.group(1)] = {a.strip() for a in m.group(3).replace("\n", " ").split(",")
-                                   if a.strip()}
+    _, text = _run_lean_checker(deps, body, "_axiom_check.lean")
+    if text.startswith("ERROR:"):
+        return _empty_axioms(text)
+    verdict = _parse_axiom_verdicts(text)
     declared = declared_assumptions(deps)   # the trusted base — declared `axiom`s in the module
     clean, assumed, tainted, unresolved = [], {}, [], []
     for written, qual in zip(names, qnames):    # parallel lists, same order
@@ -637,29 +648,17 @@ def verify_refutations(deps: AgentDeps) -> list[str]:
     rmodule, smodule = _module_of(rmod), _module_of(spec)
     if not rmodule or not smodule:
         return []
-    checker_rel = "_refutation_check.lean"
+    # One checker does both gates: a type-tie `example : False := <ref> <orig>` per refutation (forces
+    # the negation to the EXACT statement) plus a `#print axioms` on each (purity — no `sorryAx`).
     ties = "\n".join(f"example : False := {ref_q} {orig_q}" for _, ref_q, orig_q in checks)
     prints = "\n".join(f"#print axioms {ref_q}" for _, ref_q, _ in checks)
     body = f"import {smodule}\nimport {rmodule}\n\n{ties}\n\n{prints}\n"
-    if tools.write_out(deps, checker_rel, body).startswith("ERROR:"):
-        return []
-    code, out, err = exec_in(deps.container_id,
-                             ["timeout", "-k", "10", str(_BUILD_TIMEOUT),
-                              "lake", "env", "lean", f"{OUT_IN}/{checker_rel}"],
-                             workdir=f"{OUT_IN}/lean", timeout=_BUILD_TIMEOUT + 30)
-    exec_in(deps.container_id, ["rm", "-f", f"{OUT_IN}/{checker_rel}"])
-    text2 = f"{out}\n{err}"
-    if code != 0 or "error:" in text2:
+    code, text = _run_lean_checker(deps, body, "_refutation_check.lean")
+    if code != 0 or "error:" in text:
         log.warning("verify_refutations: type-tie/checker did not compile — no refutation honored "
-                    "(a refutation must prove ¬ the EXACT statement). Lean tail:\n%s", text2[-1200:])
+                    "(a refutation must prove ¬ the EXACT statement). Lean tail:\n%s", text[-1200:])
         return []
-    axset: dict[str, set[str]] = {}
-    for m in re.finditer(
-            r"'([\w.]+)' (?:(does not depend on any axioms)|depends on axioms: \[(.*?)\])",
-            text2, re.DOTALL):
-        axset[m.group(1)] = (set() if m.group(2)
-                             else {a.strip() for a in m.group(3).replace("\n", " ").split(",")
-                                   if a.strip()})
+    axset = _parse_axiom_verdicts(text)
     refuted = [target for target, ref_q, _ in checks
                if ref_q in axset and "sorryAx" not in axset[ref_q]]
     if refuted:
