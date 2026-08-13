@@ -13,9 +13,7 @@ Fixed paths inside every container:
 """
 import atexit
 import logging
-import select
 import subprocess
-import time
 from pathlib import Path
 from typing import Callable
 
@@ -397,16 +395,18 @@ def exec_stream(
     workdir: str,
     on_line: Callable[[str], None],
     passthrough_env: list[str] | None = None,
-    timeout: int = 3600,
 ) -> tuple[int, str, str]:
-    """Run *cmd* in the container, invoking *on_line* for each stdout line AS IT ARRIVES.
+    """Run *cmd* in the container, invoking *on_line* for each stdout line AS IT ARRIVES, and stream
+    to completion. Returns (returncode, full_stdout, stderr).
 
-    Unlike exec_in (which buffers), this streams stdout live so a long in-container process —
-    chiefly a headless Claude Code session emitting stream-json events — can be surfaced to the
-    host log in real time (the user watches the harness's stderr, outside the container). Returns
-    (returncode, full_stdout, stderr). Enforces *timeout* as a wall-clock deadline even across
-    output stalls (model-thinking gaps) via select; on breach the process is killed and 124 is
-    returned. stderr is read at the end.
+    Unlike exec_in (which buffers), this streams stdout live so a long in-container process — chiefly
+    a headless Claude Code session emitting stream-json events — is surfaced to the host log in real
+    time (the user watches the harness's stderr, outside the container).
+
+    There is NO wall-clock deadline: a campaign is bounded by its own `--max-budget-usd`, and a human
+    watching the log notices a genuine hang. A total-time cap cannot tell a deep-thinking gap or a
+    long build from a hang, so it only ever false-kills productive work (and, killing mid-turn, drops
+    the session's `result` event and its cost). We do not abruptly kill a running session.
     """
     env_flags: list[str] = []
     for k in (passthrough_env or []):
@@ -416,34 +416,13 @@ def exec_stream(
     proc = subprocess.Popen(full_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, bufsize=1)
     out_chunks: list[str] = []
-    deadline = time.monotonic() + timeout
-    timed_out = False
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            proc.kill(); timed_out = True; break
-        ready, _, _ = select.select([proc.stdout], [], [], min(remaining, 5.0))
-        if ready:
-            line = proc.stdout.readline()
-            if line == "":            # EOF
-                break
-            out_chunks.append(line)
-            try:
-                on_line(line.rstrip("\n"))
-            except Exception as exc:   # a logging/parse slip must never kill the stage
-                log.debug("exec_stream on_line error: %s", exc)
-        elif proc.poll() is not None:  # no data pending and process exited — drain remainder
-            for line in proc.stdout:
-                out_chunks.append(line)
-                try:
-                    on_line(line.rstrip("\n"))
-                except Exception:
-                    pass
-            break
+    for line in proc.stdout:                 # blocks until the next line or EOF (process exit)
+        out_chunks.append(line)
+        try:
+            on_line(line.rstrip("\n"))
+        except Exception as exc:             # a logging/parse slip must never kill the stage
+            log.debug("exec_stream on_line error: %s", exc)
     err = proc.stderr.read() if proc.stderr else ""
-    if timed_out:
-        log.warning("exec_stream timed out after %ss: %s", timeout, " ".join(cmd[:3]))
-        return 124, "".join(out_chunks), (err + f"\n[timed out after {timeout}s]").strip()
     proc.wait()
     return proc.returncode, "".join(out_chunks), err
 

@@ -424,9 +424,12 @@ def _write_lakefile(deps: AgentDeps, lean_out_dir: str, lib_name: str) -> None:
 
 
 _BUILD_TAIL = 200  # lines of stderr to keep on failure — errors appear at the end
-# A legitimate build is seconds; this hard cap fails-fast on a pathological tactic
-# (e.g. `native_decide` evaluating naive recursion) instead of pegging a core for 20 min.
-_BUILD_TIMEOUT = int(os.environ.get("LUSTERNA_BUILD_TIMEOUT", "180"))
+# Cap on the HARNESS's own `lake build`/`lake env lean` gate (NOT the agent — that is un-clocked and
+# budget-bounded). A legitimate full build of a large multi-module library against prebuilt Mathlib
+# takes minutes, so this is set generously (matching the agent's own `timeout 900 lake build`): it is
+# only a stuck-build backstop — e.g. a pathological `native_decide` evaluating naive recursion —
+# never a work limiter (a false timeout here would wrongly report a good tree as non-compiling/tainted).
+_BUILD_TIMEOUT = int(os.environ.get("LUSTERNA_BUILD_TIMEOUT", "900"))
 
 
 def _run_lake(deps: AgentDeps, args: list[str], timeout_msg: str) -> dict:

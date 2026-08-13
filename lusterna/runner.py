@@ -36,7 +36,6 @@ def run_cc_stage(
     allowed_tools: str = "Bash,Edit,Write,Read,Glob,Grep,TodoWrite",
     model: str | None = None, effort: str | None = None,
     max_budget_usd: float | None = None, resume_sid: str | None = None,
-    timeout: int = 3600,
 ) -> dict:
     """Run one pipeline stage as a headless Claude Code session inside the container, STREAMING its
     activity to the host log live (the user's window — the harness runs outside the container).
@@ -92,14 +91,14 @@ def run_cc_stage(
         elif t == "result":
             captured.update(ev)
 
+    # No wall-clock deadline on the session (exec_stream timeout=None): the agent is bounded by its
+    # own --max-budget-usd, and git commits persist partial work — a clock cannot tell productive
+    # thinking/building from a hang, so it only false-kills real work (and drops the result event).
     code, _out, err = container.exec_stream(
         deps.container_id, argv, "/workspace", on_line,
-        passthrough_env=["ANTHROPIC_API_KEY"], timeout=timeout)
+        passthrough_env=["ANTHROPIC_API_KEY"])
     deps.progress.setdefault("cc_sessions", {})[stage] = sid
 
-    if code == 124:
-        log.warning("CC stage %s: timeout after %ds — the in-container session %s persists for "
-                    "resume", stage, timeout, sid[:8])
     if not captured:
         log.error("CC stage %s produced no result event (exit=%s). stderr tail: %s",
                   stage, code, (err or "")[-500:])
