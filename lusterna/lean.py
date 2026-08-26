@@ -689,10 +689,11 @@ def check_lean(deps: AgentDeps, lean_file: str) -> dict:  # noqa: ARG001
 def translation_compiles(deps: AgentDeps, lean_path: str) -> dict:
     """Typecheck a single translation file via `lake env lean <file>` — NOT `lake build`.
 
-    At TRANSLATE time the lakefile's `globs := .andSubmodules` target needs the `<Crate>/`
-    submodule directory (created later by FORMALISE's Spec.lean); it does not exist yet, so
-    `lake build` would fail on the glob, not on the code. `lake env lean` compiles just this
-    file in the project environment (imports resolve against the prebuilt Aeneas packages)."""
+    A whole-project `lake build` here would report on more than the translation: the lakefile's
+    `globs := .andSubmodules` target also picks up whatever else sits under `<Crate>/` — the
+    checks tool `setup_lake` provisions, and later FORMALISE's Spec module. `lake env lean`
+    compiles just this file in the project environment (imports resolve against the prebuilt
+    Aeneas packages), so a failure here is always the translation's."""
     return _run_lake(deps, ["env", "lean", f"{OUT_IN}/{lean_path}"],
                      timeout_msg=f"lake env lean exceeded {_BUILD_TIMEOUT}s")
 
