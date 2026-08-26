@@ -208,7 +208,7 @@ def _translate_facts(deps: AgentDeps) -> dict:
     lean.setup_lake(deps)
     info = lean.analyze_translation(deps, do_commit=False)
     facts = {"success": info["success"], "lean_files": info["lean_files"],
-             "lean_path": info["lean_path"], "holes": info["holes"],
+             "lean_path": info["lean_path"], "holes": info["holes"], "error": info.get("error", ""),
              "compiles": False, "build_errors": "", "polluted": []}
     top_level = [f for f in info["lean_files"]
                  if f.startswith("lean/") and "/" not in f[len("lean/"):]]
@@ -229,6 +229,8 @@ def _stage_translate(deps: AgentDeps) -> None:
 
     def check(deps: AgentDeps):
         facts = _translate_facts(deps)
+        if facts["error"]:
+            return False, facts["error"]
         if not facts["success"]:
             return False, "no Lean was produced in /workspace/out/lean — run charon then aeneas"
         if facts["polluted"]:

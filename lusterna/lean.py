@@ -37,6 +37,9 @@ def analyze_translation(deps: AgentDeps, *, do_commit: bool = True) -> dict:
     returns the shape the pipeline already expects for `progress['aeneas']`, so downstream
     stages are unchanged:
       success       — True iff any translation Lean file exists
+      error         — a specific reason the tree is unusable (currently: `lean/` is a symlink),
+                      empty otherwise. The gate reports it verbatim, because "no Lean was produced"
+                      is actively misleading for a tree that exists but cannot be walked.
       lean_files    — generated Lean files (relative to /workspace/out; lakefile excluded)
       lean_path     — the top-level crate module `lean/<Module>.lean`, for downstream tools
       holes         — flat list of untranslated function names (bare `sorry` body)
@@ -44,6 +47,22 @@ def analyze_translation(deps: AgentDeps, *, do_commit: bool = True) -> dict:
       commit        — git SHA of the committed lean/ (empty if do_commit=False or empty tree)
     """
     lean_out_dir = f"{OUT_IN}/lean"
+    # `lean/` must be a REAL directory. `/workspace/out` is itself a symlink to
+    # `/workspace/repo/verification`, so an agent that "reuses" an existing translation by
+    # symlinking `lean` at `/workspace/repo/verification/lean` has pointed the directory at ITSELF —
+    # and `find` does not descend into a symlinked start point, so the tree reads as empty and the
+    # gate blames the agent for producing no Lean while its own `lake env lean` said COMPILE OK.
+    # REJECT rather than follow: `find -L` would let the gate pass, and then `tools.commit`'s
+    # `git add -A` commits the symlink, delivering a branch with no Lean in it at all — a loud
+    # failure traded for a silent one.
+    if exec_in(deps.container_id, ["test", "-L", lean_out_dir], workdir=OUT_IN)[0] == 0:
+        return {"success": False, "lean_files": [], "lean_path": "", "holes": [],
+                "holes_by_file": {}, "commit": "",
+                "error": (f"{lean_out_dir} is a SYMLINK, not a directory. /workspace/out already IS "
+                          f"/workspace/repo/verification, so linking `lean` under it points the "
+                          f"directory at itself. Replace it with a real directory and put the "
+                          f"generated Lean inside: `rm -f {lean_out_dir} && mkdir -p {lean_out_dir}`, "
+                          f"then re-run aeneas with `-dest {lean_out_dir}`.")}
     # EXCLUDE `.lake/` — it holds the built lake project's DEPENDENCY source (Aeneas runtime, and,
     # once a stage runs `lake build`/`lake exe cache get`, the entire Mathlib+Qq source tree — 9000+
     # files). Those are not the translation; enumerating and reading them would be pathologically
@@ -60,7 +79,7 @@ def analyze_translation(deps: AgentDeps, *, do_commit: bool = True) -> dict:
     ]
     if not lean_files:
         return {"success": False, "lean_files": [], "lean_path": "",
-                "holes": [], "holes_by_file": {}, "commit": ""}
+                "holes": [], "holes_by_file": {}, "commit": "", "error": ""}
 
     # The crate module is the top-level `lean/<Module>.lean` (submodules live under
     # `lean/<Module>/`). Aeneas CamelCases multi-word crates (`erc20_rs` → `Erc20Rs`).
@@ -80,6 +99,7 @@ def analyze_translation(deps: AgentDeps, *, do_commit: bool = True) -> dict:
              len(lean_files), len(holes), crate_module)
     return {
         "success": True,
+        "error": "",
         "lean_files": lean_files,
         "lean_path": crate_module,
         "holes": holes,
