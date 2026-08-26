@@ -1,5 +1,6 @@
 """Aeneas/Lean operations and analysis: translation, build, the `#print axioms` gate, and
 spec assembly helpers. The heavy Lean logic, kept out of the trivial file tools in tools.py."""
+import json
 import logging
 import os
 import re
@@ -11,6 +12,22 @@ from .container import exec_in, OUT_IN
 from .schemas import AgentDeps
 
 log = logging.getLogger(__name__)
+
+
+def _container_exec(deps: AgentDeps, cmd_args: list[str]) -> None:
+    """Run a provisioning command in the container, raising on failure. For the harness's own
+    file wiring (the lakefile, the checks tool) — `container.exec_in` is for commands whose
+    output or exit code the caller reasons about."""
+    subprocess.run(["docker", "exec", deps.container_id] + cmd_args,
+                   capture_output=True, text=True, check=True)
+
+
+def _container_write(deps: AgentDeps, path: str, content: str) -> None:
+    """Write *content* to *path* inside the container, creating its parent directory."""
+    _container_exec(deps, ["mkdir", "-p", str(Path(path).parent)])
+    subprocess.run(["docker", "exec", "--interactive", deps.container_id, "tee", path],
+                   input=content, capture_output=True, text=True, check=True)
+
 
 
 def analyze_translation(deps: AgentDeps, *, do_commit: bool = True) -> dict:
@@ -39,7 +56,7 @@ def analyze_translation(deps: AgentDeps, *, do_commit: bool = True) -> dict:
         l.strip().removeprefix(OUT_IN + "/")
         for l in lean_list.splitlines()
         if l.strip() and not Path(l.strip()).name.startswith("._")
-        and Path(l.strip()).name != "lakefile.lean"   # not a translation module
+        and Path(l.strip()).name not in _HARNESS_OWNED_LEAN
     ]
     if not lean_files:
         return {"success": False, "lean_files": [], "lean_path": "",
@@ -88,7 +105,56 @@ def setup_lake(deps: AgentDeps) -> str:
                 "`-dest /workspace/out/lean` first")
     lib_name = mods[0]
     _write_lakefile(deps, lean_out_dir, lib_name)
+    _write_lint_tool(deps, lean_out_dir, lib_name)
     return f"lake project wired for lib «{lib_name}» (now: lake env lean <file>)"
+
+
+# Files the HARNESS writes into `lean/`. They are build/tooling infrastructure, not the agent's
+# translation, so `analyze_translation` filters them out — otherwise they would be reported to
+# TRANSLATE-JUDGE as generated Lean and concatenated into `translation_text`, where their `def`s
+# would enter `_def_blocks` (hence `referenced_defs`, `target_defs`, the hole scan).
+_LINT_TOOL_NAME = "LusternaChecks.lean"
+# The SCHEMA ATTRIBUTES live in their own file, and the split is load-bearing: a spec module
+# `import`s this one to write `@[lusterna_hoare]`, which makes its attribute names a stable public
+# API, while prior campaigns' spec modules are immutable (`pipeline._restore_prior_specs`). Keeping
+# the churn-prone checker logic in LusternaChecks means it can be rewritten freely without risking
+# an old spec module's build. See the append-only rule in spec_schemas.lean's own header.
+_SCHEMA_TOOL_NAME = "LusternaSchemas.lean"
+_HARNESS_OWNED_LEAN = {"lakefile.lean", _LINT_TOOL_NAME, _SCHEMA_TOOL_NAME}
+
+_LINT_TOOL_SRC = (Path(__file__).parent / "docs" / "tools" / "spec_checks.lean").read_text()
+_SCHEMA_TOOL_SRC = (Path(__file__).parent / "docs" / "tools" / "spec_schemas.lean").read_text()
+
+
+def _write_lint_tool(deps: AgentDeps, lean_out_dir: str, lib_name: str) -> None:
+    """Copy the standalone mechanical-checks tool (`docs/tools/spec_checks.lean`) into this
+    crate's own lean tree, at `lean/<lib_name>/LusternaChecks.lean` — module
+    `<lib_name>.LusternaChecks`. It only depends on Aeneas (crate-agnostic), so it compiles
+    unchanged for every crate; placing it under the crate's own lib means `lake build` picks it
+    up automatically via the existing `.andSubmodules` glob, no separate build step. The flip side
+    of that convenience: the harness's own compile gate now typechecks it, so a Lean/Aeneas
+    metaprogramming-API drift surfaces as a build failure — tests/checklean/verify.py is what
+    catches that before a campaign does.
+
+    Writes TWO files. `LusternaSchemas.lean` registers the `@[lusterna_invariant]` /
+    `@[lusterna_hoare]` / `@[lusterna_freeform]` attributes and is what a SPEC MODULE imports;
+    `LusternaChecks.lean` imports it and holds the checks. Schema conformance is the one thing here
+    the harness may itself gate on (`check_schemas`), because a theorem failing the schema it
+    DECLARED is a fact, not a judgement — everything else below stays judge-only.
+
+    The other three checks are NOT a harness gate. They are a TOOL an agent (SPEC-JUDGE, primarily) may invoke itself
+    over Bash — `import <lib_name>.LusternaChecks`, `open Lusterna.Checks`, call
+    `checkAssumedPostcondition`/`checkInvariantTotality`/`checkSchemaConformance` — and interpret the
+    findings with judgment; see docs/skills/mechanical-checks.md. The harness never runs it and
+    never parses its output. HARNESS-OWNED like the lakefile: an agent must not edit or delete it,
+    and (like the lakefile) it is rewritten on every `setup_lake`.
+    """
+    _container_write(deps, f"{lean_out_dir}/{lib_name}/{_SCHEMA_TOOL_NAME}", _SCHEMA_TOOL_SRC)
+    # The checker imports the schemas module, whose path is crate-specific (the lakefile globs
+    # `.andSubmodules <lib_name>`, so a root-level module would never be built). Substituted here
+    # rather than hardcoded, exactly as `_write_lakefile` interpolates the same name.
+    checks = _LINT_TOOL_SRC.replace("LUSTERNA_CRATE", lib_name)
+    _container_write(deps, f"{lean_out_dir}/{lib_name}/{_LINT_TOOL_NAME}", checks)
 
 
 def _def_blocks(text: str) -> dict[str, str]:
@@ -349,6 +415,120 @@ def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
     return {"clean": clean, "assumed": assumed, "tainted": tainted, "raw": text[-3000:]}
 
 
+# The `LUSTERNA_CHECK {...}` line the tool emits. Lean prefixes `#eval` output with a
+# `file:line:col: info:` header, so both are optional — the same shape tests/checklean/verify.py
+# parses, deliberately, so the harness reads exactly what an agent reads.
+_CHECK_LINE_RE = re.compile(
+    r"(?m)^\s*(?:\S+:\d+:\d+:\s*)?(?:info:\s*)?LUSTERNA_CHECK\s+(\{.*\})\s*$")
+
+# A SKIPPED record means one theorem went unanalysed while the finding list still looks complete —
+# the ambiguity the token exists to expose.
+_SKIP_LINE_RE = re.compile(
+    r"(?m)^\s*(?:\S+:\d+:\d+:\s*)?(?:info:\s*)?LUSTERNA_CHECK_SKIPPED\s+(\{.*\})\s*$")
+
+_SCHEMA_DONE = "LUSTERNA_SCHEMA_DONE"
+
+
+def _schema_targets(deps: AgentDeps) -> list[str]:
+    """The functions under verification, as DOTTED names `checkSchemaConformance` can suffix-match.
+    INFER's `target_patterns` use `a::b::c`; the checker compares by dotted suffix (see
+    `nameHasSuffix` in spec_checks.lean), which is the same rewrite `docs/skills/mechanical-checks.md`
+    prescribes to agents.
+
+    WHOLE-CRATE mode (empty `target_patterns`) falls back to every crate `def`, exactly as
+    `target_defs` does for the legitimacy gate. Passing an empty target list instead would make the
+    checker report SKIPPED on every theorem — i.e. "not checked" reading as "nothing to say", which
+    is the one thing a gate must never do."""
+    pats = [p.replace("::", ".").strip(".") for p in deps.progress.get("target_patterns", []) if p]
+    if pats:
+        return pats
+    try:
+        return sorted(target_defs(deps, translation_text(deps)))
+    except Exception as e:                # noqa: BLE001 - reported by the caller, never swallowed
+        # Returning [] here would be a silent pass: the checker would report SKIPPED on every
+        # theorem, the sentinel would still print, and `check_schemas` would hand the gate an empty
+        # failure list — "conforms" without having checked anything. The caller turns an empty target
+        # list into a BLOCKING record instead.
+        log.warning("_schema_targets: could not read the translation to derive targets: %s", e)
+        return []
+
+
+def check_schemas(deps: AgentDeps, spec_rel: str) -> list[dict]:
+    """Verify every spec theorem against the schema IT DECLARED (`@[lusterna_invariant]` /
+    `@[lusterna_hoare]` / `@[lusterna_freeform "why"]`).
+
+    THE ONE MECHANICAL CHECK THE HARNESS MAY GATE ON. The other three in `spec_checks.lean` are
+    judge-only because their findings need judgment — a flagged hypothesis may be a legitimate
+    relational premise. Conformance is different in kind: a theorem that fails the schema its own
+    author declared is a FACT, so there is nothing for a judge to weigh and a retry message can be
+    mechanical. What this does NOT establish is that the declared schema is the RIGHT one for the
+    property — that stays with SPEC-JUDGE.
+
+    Returns a list of failure records `{theorem, schema, rule, detail}`; EMPTY means every theorem
+    conforms. Mechanism mirrors `check_axioms`: import the already-built spec olean and elaborate a
+    throwaway driver (never re-elaborate the spec — that auto-`sorry`s and taints the whole batch),
+    and read the `LUSTERNA_SCHEMA_DONE` sentinel, because silence without it means "the driver died",
+    never "everything conforms"."""
+    original = tools.read_out(deps, spec_rel)
+    if original.startswith("ERROR:"):
+        return [{"theorem": "?", "schema": "?", "rule": "spec_unreadable", "detail": original}]
+    qnames = _theorem_qualified_names(original)
+    if not qnames:
+        return []
+    parts = tools._norm_out(spec_rel).split("/")
+    if len(parts) < 3 or parts[0] != "lean":
+        return [{"theorem": "?", "schema": "?", "rule": "bad_spec_path",
+                 "detail": f"unexpected spec path {spec_rel!r}"}]
+    lib, spec_module = parts[1], ".".join(parts[1:]).removesuffix(".lean")
+    targets = _schema_targets(deps)
+    if not targets:
+        # Without targets the checker cannot identify an execution, so it SKIPS every theorem. That
+        # is "could not check", and it must never reach the gate as an empty failure list.
+        return [{"theorem": "?", "schema": "?", "rule": "could_not_check",
+                 "detail": "no target functions could be determined (empty `target_patterns` and no "
+                           "readable translation), so no theorem could be checked"}]
+    tarr = ", ".join("`" + g for g in targets)
+    body = (f"import {spec_module}\nimport {lib}.{_LINT_TOOL_NAME.removesuffix('.lean')}\n"
+            "open Lusterna.Checks\n"
+            "set_option maxRecDepth 8000 in\n"
+            "#eval show Lean.Meta.MetaM Unit from do\n"
+            + "".join(f"  let _ ← checkSchemaConformance `{n} #[{tarr}]\n" for n in qnames)
+            + f'  IO.println "{_SCHEMA_DONE}"\n')
+    code, text = _run_lean_checker(deps, body, "_schema_check.lean")
+    if text.startswith("ERROR:"):
+        return [{"theorem": "?", "schema": "?", "rule": "could_not_check", "detail": text}]
+    if _SCHEMA_DONE not in text:
+        # NOT "clean". The driver never reached the end, so nothing was established. Conservative
+        # and loud, the same way check_axioms treats an unresolved theorem.
+        log.warning("check_schemas: driver did not finish (rc=%s) — treating as could-not-check, "
+                    "not as conforming. Lean output tail:\n%s", code, text[-1500:])
+        return [{"theorem": "?", "schema": "?", "rule": "could_not_check",
+                 "detail": f"the conformance driver did not finish; last output:\n{text[-800:]}"}]
+    out: list[dict] = []
+    for m in _CHECK_LINE_RE.finditer(text):
+        try:
+            rec = json.loads(m.group(1))
+        except ValueError:
+            continue
+        if rec.get("check") == "schema_conformance":
+            out.append({k: rec.get(k, "?") for k in ("theorem", "schema", "rule", "detail")})
+    # A SKIPPED record names a theorem that went UNCHECKED. Honouring it here is the same rule
+    # tests/checklean/verify.py pins for the judge-facing path: "clean" must never mean "never ran",
+    # so a skip BLOCKS rather than being dropped on the floor.
+    for m in _SKIP_LINE_RE.finditer(text):
+        try:
+            rec = json.loads(m.group(1))
+        except ValueError:
+            continue
+        if rec.get("check") == "schema_conformance":
+            out.append({"theorem": rec.get("theorem", "?"), "schema": rec.get("schema", "?"),
+                        "rule": "could_not_check",
+                        "detail": f"not checked: {rec.get('reason', 'unspecified')}"})
+    log.info("check_schemas: %d/%d theorem(s) do not conform to their declared schema",
+             len(out), len(qnames))
+    return out
+
+
 def _detect_holes(deps: AgentDeps, lean_files: list[str]) -> dict[str, list[str]]:
     """Map each Lean file to the names of functions Aeneas left untranslated (a bare
     `sorry` body). A file with no holes is omitted from the map."""
@@ -398,29 +578,22 @@ def _write_lakefile(deps: AgentDeps, lean_out_dir: str, lib_name: str) -> None:
         f'  globs := #[.andSubmodules `{lib_name}]\n'
     )
 
-    def _exec(cmd_args: list[str]) -> None:
-        subprocess.run(["docker", "exec", deps.container_id] + cmd_args,
-                       capture_output=True, text=True, check=True)
-
-    def _exec_input(cmd_args: list[str], stdin: str) -> None:
-        subprocess.run(["docker", "exec", "--interactive", deps.container_id] + cmd_args,
-                       input=stdin, capture_output=True, text=True, check=True)
-
-    _exec_input(["tee", f"{lean_out_dir}/lakefile.lean"], lakefile)
+    _container_write(deps, f"{lean_out_dir}/lakefile.lean", lakefile)
 
     # Use the pre-resolved manifest and toolchain file from the template so lake
     # knows the pinned package set without any network access.
-    _exec(["cp", f"{LEAN_TEMPLATE}/lake-manifest.json",
-           f"{lean_out_dir}/lake-manifest.json"])
-    _exec(["cp", f"{LEAN_TEMPLATE}/lean-toolchain",
-           f"{lean_out_dir}/lean-toolchain"])
+    _container_exec(deps, ["cp", f"{LEAN_TEMPLATE}/lake-manifest.json",
+                           f"{lean_out_dir}/lake-manifest.json"])
+    _container_exec(deps, ["cp", f"{LEAN_TEMPLATE}/lean-toolchain",
+                           f"{lean_out_dir}/lean-toolchain"])
 
     # Symlink the pre-downloaded package trees (Mathlib, Aeneas runtime, etc.)
-    _exec(["mkdir", "-p", f"{lean_out_dir}/.lake"])
-    _exec(["ln", "-sfn", f"{LEAN_TEMPLATE}/.lake/packages",
-           f"{lean_out_dir}/.lake/packages"])
+    _container_exec(deps, ["mkdir", "-p", f"{lean_out_dir}/.lake"])
+    _container_exec(deps, ["ln", "-sfn", f"{LEAN_TEMPLATE}/.lake/packages",
+                           f"{lean_out_dir}/.lake/packages"])
 
     log.info("Generated lakefile.lean + package symlinks for crate '%s'", crate)
+
 
 
 _BUILD_TAIL = 200  # lines of stderr to keep on failure — errors appear at the end

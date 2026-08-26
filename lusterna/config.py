@@ -57,3 +57,12 @@ STOP_AFTER_TRANSLATE = os.environ.get("LUSTERNA_STOP_AFTER_TRANSLATE", "") not i
 # inferred implementation spec (the judged theorem statements) can be examined without spending
 # a prove pass. Used to iterate on the spec stages in isolation.
 STOP_BEFORE_PROVE = os.environ.get("LUSTERNA_STOP_BEFORE_PROVE", "") not in ("", "0")
+
+# Gate FORMALISE on SPEC SCHEMA CONFORMANCE: every theorem must declare `@[lusterna_invariant]`,
+# `@[lusterna_hoare]` or `@[lusterna_freeform "why"]` and actually conform to it (lean.check_schemas).
+#
+# DEFAULT OFF, deliberately. This is the only mechanical spec check the harness may itself gate on —
+# a theorem failing the schema its own author declared is a fact, not a judgment — but turning it on
+# makes every un-annotated spec a hard stop, so existing campaigns must be migrated first. Flip the
+# default only once the schemas have been validated on a real campaign.
+SCHEMA_GATE = os.environ.get("LUSTERNA_SCHEMA_GATE", "") not in ("", "0")

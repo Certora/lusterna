@@ -98,6 +98,16 @@ def _run_judge(deps: AgentDeps, *, stage: str, briefing: str, prompt: str, verdi
         return {"defects": []}
 
 
+def _format_schema_failures(bad: list) -> str:
+    """One line per conformance failure, naming the RULE that broke. The whole value of gating on
+    conformance rather than judgment is that the retry message is mechanical enough for FORMALISE to
+    act on without a judge interpreting it, so the rule name is not optional decoration."""
+    return "\n".join(
+        f"  - {b.get('theorem', '?')} [declared: {b.get('schema', '?')}] "
+        f"broke rule `{b.get('rule', '?')}`: {b.get('detail', '')}"
+        for b in bad)
+
+
 def _format_defects(defects: list) -> str:
     """One line per defect for the resume-feedback prompt."""
     out = []
@@ -307,6 +317,16 @@ def _stage_formalise(deps: AgentDeps) -> None:
         if not lean.build(deps).get("success"):
             err = deps.progress.get("lean_build", {}).get("stderr", "")
             return False, "the theorem STATEMENTS do not compile (you still write NO proofs):\n" + err[-1500:]
+        # SCHEMA CONFORMANCE — after the compile gate (attributes are read from the built olean) and
+        # before the judge (so SPEC-JUDGE spends its attention on semantics, not on shape). The one
+        # mechanical check the harness runs itself: a theorem failing the schema it DECLARED is a
+        # fact, so the retry is mechanical. Off by default — see config.SCHEMA_GATE.
+        if config.SCHEMA_GATE:
+            bad = lean.check_schemas(deps, impl)
+            if bad:
+                return False, ("these theorems do not conform to the schema they declare "
+                               "(annotate a supporting lemma `@[lusterna_freeform \"why\"]`):\n"
+                               + _format_schema_failures(bad))
         verdict = _run_judge(
             deps, stage="SPEC-JUDGE", briefing=briefings.SPEC_JUDGE,
             prompt=(f"Judge the theorem STATEMENTS in /workspace/out/{impl} against the translation "

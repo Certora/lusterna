@@ -10,6 +10,12 @@ dependencies = [
     "click>=8.0",
 ]
 
+[project.optional-dependencies]
+# Container-free unit tests for the schema-conformance gate's Python half (`pytest tests/`). The
+# Lean-side mechanical checks are validated against the real toolchain by tests/checklean/verify.py,
+# which needs Docker and the lusterna-toolchain image, not pytest.
+dev = ["pytest>=7"]
+
 [tool.setuptools.packages.find]
 include = ["lusterna*"]
 

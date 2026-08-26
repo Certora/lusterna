@@ -320,9 +320,29 @@ SELF-CHECK your STATEMENTS compile before finishing: `cd /workspace/out/lean && 
 useless. NEVER write a real proof (leave every body `:= by sorry`); the harness re-stubs and builds
 regardless, so a smuggled proof is discarded.
 
+DECLARE EACH THEOREM'S SCHEMA. Every theorem carries EXACTLY ONE attribute saying what kind of
+statement it is, and a mechanical check verifies it actually conforms (so this is a claim, not a
+label). `import <Crate>.LusternaSchemas` to use them, each on its own line above the theorem:
+
+  • `@[lusterna_invariant]` — an invariant is PRESERVED:
+        (hinv : Inv s = ok true) (hexec : f args s = ok (y, s')) : Inv s' = ok true
+  • `@[lusterna_hoare]` — a forward Hoare triple. EXACTLY ONE execution of a target; every other
+    hypothesis is `Pre <root inputs> = ok true`; the conclusion is `Post <inputs, outputs> = ok true`
+    and must MENTION the execution's outputs:
+        (hpre : Pre args s = ok true) (hexec : f args s = ok (y, s')) : Post args s y s' = ok true
+  • `@[lusterna_freeform "why"]` — a SUPPORTING lemma, deliberately outside both schemas (a pure
+    arithmetic helper, a relational property like injectivity). The string says why; it is reported,
+    so do not use it to dodge a statement that is really one of the two schemas above.
+
+`Inv`, `Pre` and `Post` are `Result Bool` **defs**, and each must be FAILURE-STRICT: bind every
+fallible measurement with `←` and decide on pure data. A `Result` may be bound or returned, never
+PASSED — `ok (! ok? (total_supply s))` or `match total_supply s with | fail _ => ok true | …` makes
+the property true exactly when the measurement fails, which is the defect these schemas exist to
+prevent. Write `do let t ← total_supply s; ok (t.val == n)`.
+
 In this toolchain the Aeneas postcondition triple `f args ⦃ r => P r ⦄` is TOTAL (f succeeds AND
 P holds), so a triple already carries the ok-ness guarantee; an equality `f args = ok v` is equally
-valid. Choose whichever fits.
+valid — use either inside a `freeform` lemma.
 
 DELIVERABLE: this campaign's spec module (the path the harness gave you) with compiling
 statement-only theorems, and prior campaign modules untouched. STOP once it compiles.
@@ -341,11 +361,51 @@ the implementation does), /workspace/out/infer/campaigns/<Campaign>.json (the pr
 THIS campaign's spec module (the harness names it in your task prompt, `lean/<Crate>/Spec/<Campaign>.lean`)
 — judge only that module's statements, not other campaigns'.
 
+You also have a MECHANICAL TOOL (documented below, `lean/<Crate>/LusternaChecks.lean`) you can run
+yourself over Bash — three checks over a theorem's elaborated type. Nothing runs it for you and no
+finding is a defect by itself; run it, read what it flags, and use your own judgment about whether it
+points at a real problem. A finding worth reporting becomes a normal defect below (most often
+`assumed_postcondition` or `schema_nonconformance`) — a finding you decide is fine (an injectivity
+lemma, a chained call, a triple) is simply not reported. The tool is not exhaustive and not
+authoritative in either direction: it can miss things, and a clean run is not by itself grounds to
+write {"defects": []}.
+
+All three checks must be TOLD which functions are under verification — pass this campaign's
+`target_patterns` from /workspace/out/infer/campaigns/<Campaign>.json, rewriting `a::b::c` as
+`` `a.b.c ``. Without them they report SKIPPED rather than clean, because a precondition stated
+through a measurement of the pre-state is indistinguishable from a cheat until the checker knows
+which call is the subject. `checkAssumedPostcondition` takes a second argument (continuations),
+normally `#[]` — name a function there only when the theorem is deliberately about a COMPOSITION and
+you have decided chaining through it is part of the property, never to silence a finding you have not
+read. A target is not implicitly its own continuation: for a theorem that runs the target twice, pass
+it in both arguments.
+
 The Aeneas triple `f args ⦃ r => P r ⦄` is TOTAL — it is NOT vacuous merely for being a triple.
 Report one defect per concrete problem (name a specific theorem, or "coverage"), with a concrete fix,
 using exactly these kinds:
   • vacuous — trivially true for ANY implementation (a tautology, or a `True` postcondition). A
-    triple with a real postcondition is NOT vacuous.
+    triple with a real postcondition is NOT vacuous. The commonest form is a property guarded behind
+    a MEASUREMENT's success (`∀ t, total_supply s = ok t → φ t`), vacuously true whenever that call
+    fails; use the total form (`total_supply s ⦃ t => φ t ⦄`, `∃ t, … = ok t ∧ φ t`, or a
+    `Result Bool` predicate that binds the measurement). Only the function UNDER TEST may have its
+    failure excused. Check helper `def`s too — this most often hides inside a named predicate, and no
+    mechanical check covers the shape, so it is yours to spot by reading.
+  • assumed_postcondition — a hypothesis constrains a variable that a defining equation already
+    bound to a function's OUTPUT or post-state (`(h : f x s = ok (y, s')) (h2 : s'.var = s.var) …`),
+    so the theorem assumes what it should prove — at the limit, `exact h2` closes it. Naming the
+    result is fine; constraining it in a further hypothesis is not, and neither is doing so one hop
+    away (`(hz : z = s'.var)` then `(hz2 : 0 < z)` — the alias is itself an assumption, not a
+    definition), nor smuggled in as a further fallible call on the post-state
+    (`(hcheat : checkVarPreserved s s' = ok ())` is a predicate wearing an execution's shape; even a
+    contentless `(hok : total s' = ok t)` restricts the theorem to post-states where that call
+    happens to succeed), nor carried by a non-Prop binder (`{ u : Unit // s'.var = s.var }`).
+    The execution hypothesis must also produce FRESH results: `f x s = ok (y, s)` asserts the
+    post-state is the pre-state, `f x s = ok (y, { s with var := 10 })` pins it structurally, and
+    `ok (some y, s')` picks a branch — each decides in the binder what the conclusion should have
+    claimed, and two executions may not bind the SAME result variable (`(h1 : f x = ok y)
+    (h2 : f z = ok y)` states a relation without writing one). Facts about the post-state belong in
+    the CONCLUSION; hypotheses are for inputs and the pre-state — and moving the antecedent into a
+    named postcondition predicate does not help, since those are unfolded.
   • too_weak — true but strictly weaker than the design's intended guarantee (a loose bound where an
     exact value is intended; a narrower input domain than guaranteed).
   • wrong_statement — cannot be right as written (wrong quantifier/bound, a type mismatch like
@@ -353,10 +413,17 @@ using exactly these kinds:
   • missing_coverage — a property in properties.json has no corresponding theorem (theorem =
     "coverage").
   • over_specified — asserts behaviour the translated code does not evidence.
+  • schema_nonconformance — the theorem's declared schema attribute (`@[lusterna_invariant]`,
+    `@[lusterna_hoare]`, `@[lusterna_freeform "why"]`) does not match its actual shape, or no schema
+    is declared at all. `checkSchemaConformance` decides this mechanically and names the rule that
+    broke, so report it verbatim rather than re-deriving it. What the tool CANNOT tell you, and what
+    is yours to judge: whether the schema declared is the RIGHT one for the property — a Hoare
+    triple annotated `invariant` can conform perfectly and still be mislabelled — and whether a
+    `freeform` justification is honest rather than a dodge.
 
 Be strict but concrete — never invent a defect you cannot pin to a specific theorem and reason. When
 the spec faithfully and non-trivially captures the code and the informal spec, write {"defects": []}.
-"""
+""" + docs.FOR_SPEC_JUDGE
 
 
 # ── PROVE ──────────────────────────────────────────────────────────────────────

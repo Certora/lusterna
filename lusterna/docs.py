@@ -2,7 +2,8 @@
 
 Files live under lusterna/docs/ and are committed to the repo so no network call is needed at
 runtime. They are read once at module import and exposed as module-level strings (FOR_TRANSLATE,
-FOR_FORMALISE, FOR_PROVE) that briefings.py concatenates onto the corresponding stage prompt.
+FOR_FORMALISE, FOR_PROVE, FOR_SPEC_JUDGE) that briefings.py concatenates onto the corresponding
+stage prompt.
 """
 from pathlib import Path
 
@@ -53,3 +54,11 @@ FOR_PROVE: str = (
     + _section("Tactics Reference",
                _read("prose", "tactics-reference.md"))
 )
+
+# SPEC-JUDGE alone gets the mechanical-checks tool doc: what the checks catch, the exact
+# invocation, worked examples of what they do and don't flag. It is a TOOL the judge may run, not
+# part of its mandatory checklist — the doc says so explicitly, and the briefing must not
+# contradict that. The spec-WRITING stages (FORMALISE, PROVE) get the underlying RULES instead,
+# in aeneas-lean-core.md, phrased as how to write a statement rather than how to run a checker.
+FOR_SPEC_JUDGE: str = _section("Mechanical Spec Checks (a tool, not a gate)",
+                               _read("skills", "mechanical-checks.md"))
