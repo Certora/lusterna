@@ -29,6 +29,23 @@ authoritative. Two kinds of prior state, both to BUILD ON, never to redo or cont
 If nothing prior is present, proceed from scratch as usual."""
 
 
+# Appended to EVERY stage alongside CONTINUING. Two facts about the environment that cost real rounds
+# when an agent has to rediscover them. The /workspace/out indirection is stated as the IDENTITY only:
+# `analyze_translation` already rejects a symlinked `lean/` with a message that explains itself at the
+# moment it matters, so repeating that consequence here would be dead weight — but the guard covers
+# only that one path, while knowing the two are one directory heads off the whole family (copying
+# between them, linking some other subdirectory). Shell-polling a background task has no guard.
+WORKSPACE = """
+
+THE WORKSPACE, two facts worth knowing before you touch it:
+  • /workspace/out IS /workspace/repo/verification — one directory, two paths (the first is a
+    symlink to the second). They are never two places to copy or link between; writing to either
+    writes to both.
+  • Do NOT poll a background task from a shell loop (`until [ -s …output ]; do sleep …; done`).
+    That burns wall-clock inside one tool call and tells you nothing early. Run the command in the
+    foreground, or do other work and read the output when you next need it."""
+
+
 EXPLORE = """\
 You are the EXPLORE stage of the Lusterna verification pipeline — the orientation of BOTH the code
 and the toolchain. You are a full Claude Code session: you have your own Bash, Read, Write, Edit,
@@ -92,7 +109,7 @@ DELIVERABLE (write both, then STOP):
         }
 Validate the JSON parses (e.g. `python3 -c 'import json,sys;json.load(open(sys.argv[1]))'` or `jq .`)
 before you finish. The stage is done when handoff.json exists and is valid — stop there.
-""" + docs.FOR_TRANSLATE + CONTINUING
+""" + docs.FOR_TRANSLATE + CONTINUING + WORKSPACE
 
 
 # ── INFER ──────────────────────────────────────────────────────────────────────
@@ -149,7 +166,7 @@ TWO JOBS, written to ONE file /workspace/out/infer/campaigns/<Campaign>.json (va
    only if the crate has no identifiable target.
 
 Validate the JSON parses, then STOP.
-""" + CONTINUING
+""" + CONTINUING + WORKSPACE
 
 
 # ── TRANSLATE ──────────────────────────────────────────────────────────────────
@@ -244,7 +261,7 @@ the harness diffs your changes against it automatically. Use git however you fin
 DELIVERABLE: the compiling translation in /workspace/out/lean (target functions as real `def`s),
 plus translate/campaigns/<Campaign>/plan.md and translate/campaigns/<Campaign>/accountability.md. STOP once the target translates and
 `lake env lean` accepts it.
-""" + docs.FOR_TRANSLATE + CONTINUING
+""" + docs.FOR_TRANSLATE + CONTINUING + WORKSPACE
 
 
 # ── TRANSLATE-JUDGE ─────────────────────────────────────────────────────────────
@@ -288,7 +305,7 @@ specific function/edit/opaqued item. STAY IN SCOPE: read the target functions, t
 Aeneas standard library / toolchain internals. When the target is genuinely translated, the
 property-bearing state is modelled (not opaqued), every edit is behaviour-preserving, and it
 compiles, write {"defects": []}.
-"""
+""" + WORKSPACE
 
 
 # ── FORMALISE ──────────────────────────────────────────────────────────────────
@@ -346,7 +363,7 @@ valid — use either inside a `freeform` lemma.
 
 DELIVERABLE: this campaign's spec module (the path the harness gave you) with compiling
 statement-only theorems, and prior campaign modules untouched. STOP once it compiles.
-""" + docs.FOR_FORMALISE + CONTINUING
+""" + docs.FOR_FORMALISE + CONTINUING + WORKSPACE
 
 
 # ── SPEC-JUDGE ─────────────────────────────────────────────────────────────────
@@ -423,7 +440,14 @@ using exactly these kinds:
 
 Be strict but concrete — never invent a defect you cannot pin to a specific theorem and reason. When
 the spec faithfully and non-trivially captures the code and the informal spec, write {"defects": []}.
-""" + docs.FOR_SPEC_JUDGE
+
+STAY A READER OF STATEMENTS. If you come to suspect a statement is actually FALSE, say so as a
+`wrong_statement` defect with your reasoning — do NOT build an evaluator, a value grid, or any other
+numeric search to try to falsify it here. PROVE owns refutation: it can produce a KERNEL-VERIFIED
+counterexample and record it in `prove/refutations.json`, which is evidence this stage cannot
+produce and the harness cannot consume from you. Your leverage is reading the statement against the
+translation, which is cheap; a search is expensive and its result lands nowhere.
+""" + WORKSPACE + docs.FOR_SPEC_JUDGE
 
 
 # ── PROVE ──────────────────────────────────────────────────────────────────────
@@ -506,7 +530,7 @@ IMMUTABLE — statements and prior work:
 DELIVERABLE: your campaign module compiling, with every theorem you could genuinely prove proved and
 committed, its reusable lemmas committed alongside, and any trusted assumption disclosed in
 `prove/assumptions.md`.
-""" + docs.FOR_PROVE + CONTINUING
+""" + docs.FOR_PROVE + CONTINUING + WORKSPACE
 
 
 # ── REPORT ─────────────────────────────────────────────────────────────────────
@@ -579,4 +603,4 @@ Write exactly these files, in order, into the campaign report dir the harness ga
     gaps/limitations, overall verdict paragraph.
 
 Be thorough; do not summarise away detail a reader needs. STOP once the six files exist.
-"""
+""" + WORKSPACE
