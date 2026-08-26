@@ -11,9 +11,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Container-free unit tests for the schema-conformance gate's Python half (`pytest tests/`). The
-# Lean-side mechanical checks are validated against the real toolchain by tests/checklean/verify.py,
-# which needs Docker and the lusterna-toolchain image, not pytest.
+# Container-free unit tests for the harness's own logic (`pytest tests/`): the schema-conformance
+# gate's Python half, stub_proofs' no-smuggle gate, and _DECL_PREFIX across
+# theorem_statement/_def_blocks. The Lean-side mechanical checks are validated against the real
+# toolchain by tests/checklean/verify.py, which needs Docker and the lusterna-toolchain image.
 dev = ["pytest>=7"]
 
 [tool.setuptools.packages.find]

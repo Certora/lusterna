@@ -157,14 +157,24 @@ def _write_lint_tool(deps: AgentDeps, lean_out_dir: str, lib_name: str) -> None:
     _container_write(deps, f"{lean_out_dir}/{lib_name}/{_LINT_TOOL_NAME}", checks)
 
 
+# Attributes and declaration modifiers that may precede a keyword, in any number and either order.
+# Every declaration matcher in this module goes through it: requiring the keyword to be the first
+# token on its line made `@[progress] theorem …` and `private theorem …` invisible to all of them
+# at once, and Aeneas itself emits `@[global_simps, irreducible] def <Crate>.CONST : … := …`.
+_DECL_PREFIX = (r"(?:@\[[^\]]*\]\s*|(?:private|protected|nonrec|scoped|partial|unsafe|noncomputable)\s+)*")
+
+_DEF_DECL_RE = re.compile(r"(?m)^" + _DECL_PREFIX + r"def\s+([\w.]+)")
+_DEF_BLOCK_END_RE = re.compile(r"(?m)^" + _DECL_PREFIX + r"(?:def|end)\b")
+
+
 def _def_blocks(text: str) -> dict[str, str]:
     """Map each `def NAME` to its source block (header through just before the next
-    top-level `def`/`end`)."""
-    import re
+    top-level `def`/`end`). Both the finder and the terminator carry `_DECL_PREFIX`, so an
+    attributed def is found AND closes the previous block instead of being swallowed into it."""
     blocks: dict[str, str] = {}
-    for m in re.finditer(r"(?m)^def\s+([\w.]+)", text):
+    for m in _DEF_DECL_RE.finditer(text):
         rest = text[m.end():]
-        nxt = re.search(r"(?m)^(def|end)\b", rest)
+        nxt = _DEF_BLOCK_END_RE.search(rest)
         end = m.end() + (nxt.start() if nxt else len(rest))
         blocks[m.group(1)] = text[m.start():end].rstrip()
     return blocks
@@ -173,7 +183,6 @@ def _def_blocks(text: str) -> dict[str, str]:
 def _strip_lean_comments(s: str) -> str:
     """Drop Lean block comments (incl. `/-- … -/` docstrings) and line comments, so a
     following def's docstring — swallowed into a block — can't create a false call edge."""
-    import re
     s = re.sub(r"/-.*?-/", " ", s, flags=re.S)
     return re.sub(r"(?m)--.*$", " ", s)
 
@@ -200,23 +209,37 @@ def external_axioms(translation_text: str) -> list[str]:
     return sorted({m.group(1) for m in re.finditer(r"(?m)^axiom\s+([\w.]+)", translation_text)})
 
 
+# `[ \t]*`, not `\s*`: `\s` crosses newlines, which would start a match on a blank line above
+# the declaration. `_DECL_PREFIX` still spans an attribute written on its own line.
+_THEOREM_DECL_RE = re.compile(r"(?m)^[ \t]*" + _DECL_PREFIX + r"(?:theorem|lemma)\s+([\w.]+)")
+
+
 def _theorem_names(spec_text: str) -> list[str]:
-    """Names as written after `theorem`/`lemma` in the implementation spec."""
-    return [m.group(2) for m in re.finditer(r"(?m)^\s*(theorem|lemma)\s+([\w.]+)", spec_text)]
+    """Names as written after `theorem`/`lemma` in the implementation spec. Kept PARALLEL to
+    `_theorem_qualified_names` (same theorems, same order): `check_axioms` zips them."""
+    return [m.group(1) for m in _THEOREM_DECL_RE.finditer(spec_text)]
 
 
 def _qualified_decls(spec_text: str, kind_re: str) -> list[tuple[str, str]]:
     """Single namespace-aware pass: for each top-level declaration whose keyword matches *kind_re*
-    (e.g. r'axiom' or r'(?:theorem|lemma)'), yield (fully-qualified name, source block). The
-    qualified name is what `#print axioms` reports — a decl inside `namespace Foo` is `Foo.bar`, not
+    (e.g. r'axiom' or r'(?:theorem|lemma)' — must be NON-capturing), yield (fully-qualified name,
+    source block). The qualified name is what `#print axioms` reports — a decl inside `namespace Foo` is `Foo.bar`, not
     `bar`, so the bare name would 'unknown constant' and taint everything — and the block runs from
     the decl line to just before the next top-level construct. One walker keeps name and body
     intrinsically paired (no positional zip to drift) and shares the namespace/`section`/`end` scope
     tracking across callers. `section` scopes are tracked (their `end` must not pop a namespace) but
-    do not contribute to the name."""
+    do not contribute to the name.
+
+    LINE-BASED, unlike `_THEOREM_DECL_RE`, which matches across newlines. The two must stay in step
+    — `check_axioms` zips `_theorem_names` against `_theorem_qualified_names` — and they do for
+    every form the stages actually write (attribute on its own line, attribute inline, modifiers
+    stacked). The one shape that would desync them is a MULTI-LINE attribute whose closing bracket
+    shares a line with the keyword (`@[foo\n  bar] theorem baz`): the regex finds it, this walker's
+    per-line gate does not."""
     scopes: list[tuple[bool, str]] = []      # (is_namespace, name), innermost last
     lines = spec_text.splitlines()
-    kind = re.compile(rf"{kind_re}\s+([\w.]+)")
+    # *kind_re* is documented as non-capturing, so group(1) stays the declaration's name.
+    kind = re.compile(_DECL_PREFIX + rf"{kind_re}\s+([\w.]+)")
     out: list[tuple[str, str]] = []
     cur: tuple[str, int] | None = None       # (qualified_name, start line idx) of the open decl
     def flush(end: int) -> None:
@@ -226,7 +249,7 @@ def _qualified_decls(spec_text: str, kind_re: str) -> list[tuple[str, str]]:
             cur = None
     for i, raw in enumerate(lines):
         s = raw.strip()
-        if not re.match(r"(axiom|def|theorem|lemma|namespace|section|end)\b", s):
+        if not re.match(_DECL_PREFIX + r"(axiom|def|theorem|lemma|namespace|section|end)\b", s):
             continue
         flush(i)                             # any top-level construct closes the open block
         if m := re.match(r"(namespace|section)\s+(\S+)", s):
@@ -260,7 +283,7 @@ def sorry_bodied_theorems(spec_text: str) -> set[str]:
     genuinely-open obligations, as opposed to theorems that compile but are tainted by a
     non-standard axiom (native_decide etc.). Used to split the tainted set for PROVE feedback.
     Each declaration spans from its `theorem`/`lemma` keyword to the next declaration or EOF."""
-    decls = list(re.finditer(r"(?m)^\s*(?:theorem|lemma)\s+([\w.]+)", spec_text))
+    decls = list(_THEOREM_DECL_RE.finditer(spec_text))
     out: set[str] = set()
     for i, m in enumerate(decls):
         end = decls[i + 1].start() if i + 1 < len(decls) else len(spec_text)
@@ -276,11 +299,13 @@ def stub_proofs(text: str) -> str:
     so its theorems never carry proofs; this is a safety net for any stray theorem the
     model puts in the free-form `preamble` — keeping proofs (and pathological tactics like
     `native_decide`) out of the spec until the PROVE stage."""
-    import re
     lines = text.split("\n")
-    decl = re.compile(r"^\s*(theorem|lemma)\b")
-    newtop = re.compile(r"^\s*(theorem|lemma|def|abbrev|noncomputable|instance|structure|"
-                        r"inductive|namespace|end|section|open|variable|@\[|/-|--|#|import)")
+    decl = re.compile(r"^\s*" + _DECL_PREFIX + r"(?:theorem|lemma)\b")
+    # `\b` on the KEYWORDS only: the symbolic openers (`@[`, `/-`, `--`, `#`) end in a
+    # non-word character, where `\b` would fail against the space that usually follows.
+    newtop = re.compile(r"^\s*(?:(?:theorem|lemma|def|abbrev|noncomputable|instance|structure|"
+                        r"inductive|namespace|end|section|open|variable|import|"
+                        r"private|protected|nonrec|scoped|partial|unsafe)\b|@\[|/-|--|#)")
     out, i, n = [], 0, len(lines)
     while i < n:
         if decl.match(lines[i]):
@@ -655,8 +680,13 @@ def translation_compiles(deps: AgentDeps, lean_path: str) -> dict:
 def theorem_statement(spec_text: str, name: str) -> str:
     """The statement text of theorem *name* — binders + proposition, up to (not including) the
     proof `:=`. Used to decide whether a theorem references the implementation (referenced_defs on
-    it). Returns '' if not found."""
-    m = re.search(rf"(?m)^theorem\s+{re.escape(name)}\b", spec_text)
+    it). Returns '' if not found.
+
+    Carries `_DECL_PREFIX` and accepts `lemma` like every other declaration matcher here: a name
+    that `_theorem_names` yields must resolve to a statement, or `_verifies_impl` reads '' as "no
+    translated def referenced" and the report's headline count silently drops the theorem."""
+    m = re.search(r"(?m)^[ \t]*" + _DECL_PREFIX + rf"(?:theorem|lemma)\s+{re.escape(name)}\b",
+                  spec_text)
     if not m:
         return ""
     tail = spec_text[m.start():]

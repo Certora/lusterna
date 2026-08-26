@@ -306,6 +306,18 @@ inspects the built environment, it follows predicates referenced from a theorem'
 **imported** modules — a prior campaign's spec or a PROVE helper module — which the harness never
 reads as source.
 
+The same investigation hardened declaration recognition across the harness. Every regex that finds a
+`theorem`/`lemma` once required the keyword to be the first token on its line, so
+`@[progress] theorem foo …` and `private theorem foo …` were invisible to all of them at once —
+including `stub_proofs`, where it meant a real proof could survive the FORMALISE gate untouched and
+go uncounted as an open obligation, and `theorem_statement`, where it meant the headline metric
+below quietly reclassified such a theorem as an abstract helper. A shared `_DECL_PREFIX` pattern now
+covers attributes and modifiers in every one of those places, `def` included — Aeneas itself emits
+`@[global_simps, irreducible] def <Crate>.CONST : … := …` for crate constants, which the def scan
+behind `referenced_defs`, `target_defs` and the hole count had been skipping. This part *is* in the
+trusted spine, since `stub_proofs` is; `tests/` pins the attribute and modifier forms
+against all three.
+
 ## TRANSLATE
 
 TRANSLATE is where the target Rust becomes Lean. The session drives Charon and Aeneas at the shell,
