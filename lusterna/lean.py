@@ -474,6 +474,35 @@ _SKIP_LINE_RE = re.compile(
 _SCHEMA_DONE = "LUSTERNA_SCHEMA_DONE"
 
 
+def _target_name_forms(patterns: list[str]) -> list[str]:
+    """The dotted-suffix forms an INFER `target_patterns` entry can actually match in generated Lean.
+
+    Those patterns are CHARON MATCHERS, not Lean names: `crate::state::reserve::_::total_supply`
+    uses `crate` for the crate root and `_` as a WILDCARD for the impl/type. Aeneas generates
+    `state.reserve.ReserveLiquidity.total_supply` — the wildcard stands for a component that IS
+    present in the Lean name — so rewriting `::`→`.` yields `crate.state.reserve._.total_supply`,
+    which suffix-matches nothing at all. The failure is silent and total: every target lookup comes
+    back EMPTY, and a checker told "no targets" reports `found 0` on every theorem while a gate told
+    the same reports nothing to reject.
+
+    So the BARE FINAL COMPONENT is what reliably matches, and it is a form the dotted-suffix
+    comparison already supports by design. The wildcard-free dotted form is emitted alongside it
+    when it differs: that one is stricter, so it matches exactly when a pattern names a function
+    fully-qualified. A bare component is looser than a full path — a helper ending in the same
+    component answers to it too — which is the accepted cost of patterns that do not name types.
+    """
+    out: list[str] = []
+    for pat in patterns:
+        comps = [c for c in (pat or "").replace("::", ".").strip(".").split(".") if c]
+        if not comps:
+            continue
+        for form in (comps[-1],
+                     ".".join(c for c in comps if c != "crate") if "_" not in comps else ""):
+            if form and form not in out:
+                out.append(form)
+    return out
+
+
 def _schema_targets(deps: AgentDeps) -> list[str]:
     """The functions under verification, as DOTTED names `checkSchemaConformance` can suffix-match.
     INFER's `target_patterns` use `a::b::c`; the checker compares by dotted suffix (see
@@ -484,8 +513,7 @@ def _schema_targets(deps: AgentDeps) -> list[str]:
     `target_defs` does for the legitimacy gate. Passing an empty target list instead would make the
     checker report SKIPPED on every theorem — i.e. "not checked" reading as "nothing to say", which
     is the one thing a gate must never do."""
-    pats = [p.replace("::", ".").strip(".") for p in deps.progress.get("target_patterns", []) if p]
-    if pats:
+    if pats := _target_name_forms(deps.progress.get("target_patterns", [])):
         return pats
     try:
         return sorted(target_defs(deps, translation_text(deps)))
@@ -780,7 +808,7 @@ def target_defs(deps: AgentDeps, translation: str) -> set[str]:
     crate code can pass — only facts about the truly-external substrate (Aeneas emits those as
     `axiom`s, not `def`s, so they are not in this set) remain admissible. Without this the legitimacy
     gate would be VACUOUS exactly when everything is a goal."""
-    pats = [p.replace("::", ".").strip(".") for p in deps.progress.get("target_patterns", []) if p]
+    pats = _target_name_forms(deps.progress.get("target_patterns", []))
     defs = set(_def_blocks(translation))
     if not pats:
         return defs

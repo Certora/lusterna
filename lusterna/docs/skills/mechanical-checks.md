@@ -39,9 +39,15 @@ so one run over the whole module is as readable as many runs over one theorem ea
 
 **All three need the targets, and they take the same first `#[...]`** — so work it out once and reuse
 it. The first `#[...]` is the function(s) under verification for this campaign — take them from `target_patterns` in
-`infer/campaigns/<Campaign>.json` and rewrite `a::b::c` as `` `a.b.c ``. A bare final component
-(`` `transfer ``) matches too, since names are compared by dotted suffix. Pass every target that
-this theorem might be about; passing an extra one that the theorem never calls costs nothing.
+`infer/campaigns/<Campaign>.json` — but they are CHARON MATCHERS, not Lean names, so do not just
+swap `::` for `.`. `crate` is the crate root and `_` is a WILDCARD for the impl/type, while Aeneas
+puts a real component there: `crate::state::reserve::_::total_supply` becomes
+`state.reserve.ReserveLiquidity.total_supply`, and `` `crate.state.reserve._.total_supply `` matches
+nothing. **Pass the bare final component** (`` `total_supply ``) — names are compared by dotted
+suffix, so that matches whatever type the method hangs off. Where a pattern already names the type
+with no `_`, the full dotted path works too and is stricter. Pass every target this theorem might be
+about; an extra one it never calls costs nothing, whereas a target that matches nothing makes the
+checks report `found 0` on every theorem.
 
 The second `#[...]` is **continuations**, and it is normally empty. Name a function there only when
 the theorem is deliberately about a *composition* — `deposit` followed by `rebalance`, or `deposit`

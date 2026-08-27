@@ -388,8 +388,11 @@ authoritative in either direction: it can miss things, and a clean run is not by
 write {"defects": []}.
 
 All three checks must be TOLD which functions are under verification — pass this campaign's
-`target_patterns` from /workspace/out/infer/campaigns/<Campaign>.json, rewriting `a::b::c` as
-`` `a.b.c ``. Without them they report SKIPPED rather than clean, because a precondition stated
+`target_patterns` from /workspace/out/infer/campaigns/<Campaign>.json — as the BARE FINAL COMPONENT
+(`crate::state::reserve::_::total_supply` → `` `total_supply ``), since those are Charon matchers
+where `_` is a wildcard for the impl/type and Aeneas puts a real component there; names are compared
+by dotted suffix, so the tail matches. A literal `::`→`.` rewrite matches NOTHING and makes every
+theorem report `found 0`. Without targets they report SKIPPED rather than clean, because a precondition stated
 through a measurement of the pre-state is indistinguishable from a cheat until the checker knows
 which call is the subject. `checkAssumedPostcondition` takes a second argument (continuations),
 normally `#[]` — name a function there only when the theorem is deliberately about a COMPOSITION and

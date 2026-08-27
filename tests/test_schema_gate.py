@@ -126,10 +126,46 @@ def test_spec_with_no_theorems_is_vacuously_fine(stub):
     assert lean.check_schemas(_deps(), "lean/Foo/Spec.lean") == []
 
 
+def _matches(lean_name: str, forms: list[str]) -> bool:
+    """The checker's own dotted-suffix rule (`nameHasSuffix` in spec_checks.lean)."""
+    return any(lean_name == f or lean_name.endswith("." + f) for f in forms)
+
+
 def test_targets_rewrite_rust_paths_to_dotted():
     deps = _deps()
     deps.progress["target_patterns"] = ["a::b::c", "transfer", ""]
-    assert lean._schema_targets(deps) == ["a.b.c", "transfer"]
+    forms = lean._schema_targets(deps)
+    assert "a.b.c" in forms and "transfer" in forms
+
+
+def test_charon_wildcard_patterns_still_match_generated_lean():
+    """THE REGRESSION. INFER emits Charon matchers, where `_` is a wildcard for the impl/type:
+    `crate::state::reserve::_::total_supply`. Aeneas generates
+    `state.reserve.ReserveLiquidity.total_supply`, so a plain `::`→`.` rewrite produces
+    `crate.state.reserve._.total_supply` and matches NOTHING — every target lookup comes back empty,
+    and the conformance check then reports `found 0` on every theorem. A real klend run stalled on
+    exactly this, for 8 FORMALISE rounds."""
+    deps = _deps()
+    deps.progress["target_patterns"] = [
+        "crate::state::reserve::_::total_supply",
+        "crate::state::reserve::_::deposit",
+        "crate::approximate_compounded_interest",
+    ]
+    forms = lean._schema_targets(deps)
+    for generated in ("state.reserve.ReserveLiquidity.total_supply",
+                      "state.reserve.Reserve.deposit",
+                      "approximate_compounded_interest"):
+        assert _matches(generated, forms), f"{generated} unmatched by {forms}"
+    # and the un-matchable literal must not be emitted at all
+    assert not any("_" in f.split(".") for f in forms)
+
+
+def test_wildcard_free_patterns_keep_their_full_path():
+    """A pattern that names the type fully keeps the stricter dotted form, not just the tail."""
+    deps = _deps()
+    deps.progress["target_patterns"] = ["crate::state::reserve::Reserve::borrow"]
+    forms = lean._schema_targets(deps)
+    assert "state.reserve.Reserve.borrow" in forms and "borrow" in forms
 
 
 def test_format_schema_failures_names_the_rule():
