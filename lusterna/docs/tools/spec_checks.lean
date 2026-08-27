@@ -954,37 +954,38 @@ DECLARED that intent. One rule, two severities, decided by whether anyone claime
 `none` = the conclusion is not an `Inv args = ok true` claim at all, so not even a near miss.
 `.error why` = it looks like one but the shape does not hold. `.ok inv` = the invariant's name. -/
 private def invariantShape? (qn : Name) (targets : Array Name)
-    : MetaM (Option (Except String Name)) := do
+    : MetaM (Option (Except String (Name × Nat × Nat))) := do
   let ci ← getConstInfo qn
   forallTelescope (← instantiateMVars ci.type) fun xs concl => do
     let some (inv, cargs) ← invariantClaim? (← instantiateMVars concl) | return none
     if ← isTrustedDecl inv then
       return some (.error "the conclusion's invariant is library code, not project-local")
     -- the invariant, on some other state, among the hypotheses
-    let mut pre : Option (Nat × Array Expr) := none
-    for x in xs do
-      let bty ← instantiateMVars (← inferType x)
+    let mut pre : Option (Nat × Array Expr × Nat) := none
+    for i in [0:xs.size] do
+      let bty ← instantiateMVars (← inferType xs[i]!)
       if let some (c, hargs) ← invariantClaim? bty then
         if c == inv then
           -- FIRST match wins, so which hypothesis a finding is about does not depend on binder
           -- order.
           if pre.isNone then
-            if let some j ← soleDifference? hargs cargs then pre := some (j, hargs)
-    let some (j, hargs) := pre
+            if let some j ← soleDifference? hargs cargs then pre := some (j, hargs, i)
+    let some (j, hargs, preIdx) := pre
       | return some (.error "no hypothesis applies the same invariant to another state at exactly one differing argument")
     -- an execution of a DECLARED TARGET that consumes the pre-state and produces the post-state.
     -- Both states must be BARE VARIABLES of the telescope: an execution produces a variable, and a
     -- pre-state given as a compound expression is not the shape this check is about.
     let (.fvar preId, .fvar postId) := (hargs[j]!, cargs[j]!)
       | return some (.error "the differing argument is not a bare variable on both sides")
-    for x in xs do
-      let bty ← instantiateMVars (← inferType x)
+    for i in [0:xs.size] do
+      let bty ← instantiateMVars (← inferType xs[i]!)
       if let some (fn, eargs, outs) ← definingEq? bty then
         unless isSubjectCall targets fn do continue
         unless eargs.any (fun a => a.containsFVar preId) do continue
         let mut leaves : Array FVarId := #[]
         for fld in outs do leaves := leaves ++ (← outputLeaves fld)
-        if leaves.contains postId then return some (.ok inv)
+        -- `preIdx`/`i` are what let `schema_conformance` insist NOTHING ELSE propositional is here.
+        if leaves.contains postId then return some (.ok (inv, preIdx, i))
     return some (.error "no execution hypothesis for a named target consumes the pre-state and produces the post-state")
 
 /-- `invariant_not_strict` — an invariant-preservation theorem whose invariant is not certified
@@ -1019,7 +1020,7 @@ def checkInvariantTotality (qn : Name) (targets : Array Name) : MetaM Nat := do
   | some (.error why) =>
     IO.println s!"LUSTERNA_CHECK_SKIPPED \{\"check\": \"invariant_not_strict\", \"theorem\": \"{qn}\", \"reason\": \"{why}\", \"targets\": [{tlist}]}"
     return 0
-  | some (.ok inv) =>
+  | some (.ok (inv, _, _)) =>
     -- SHAPE CONFIRMED. Now the only question that matters.
     let budget ← IO.mkRef maxStrictNodes
     match ← certifiedStrict inv {} budget with
@@ -1117,13 +1118,34 @@ being checked against the laxer of two is not a conformance result"
         "the conclusion is not `Inv args = ok true` for a project-local definition"
       return 1
     | some (.error why) => report schema "invariant_shape" why; return 1
-    | some (.ok inv) =>
+    | some (.ok (inv, preIdx, execIdx)) =>
+      -- NOTHING BUT THE INVARIANT AND THE EXECUTION. The pre-state claim, the execution, and the
+      -- conclusion — that is the whole theorem. A side condition left inline
+      -- (`(hcl : c.val ≤ l.val)`) makes the entering assumption STRONGER than the invariant, so the
+      -- theorem is no longer "this invariant is preserved" but a Hoare triple wearing its clothes,
+      -- and the reader cannot tell which from the annotation. Fold the condition into the invariant,
+      -- or declare `hoare` and name it in `Pre` — where it becomes an inspectable object a later
+      -- campaign can reuse rather than a loose hypothesis. Without this the two schemas held their
+      -- preconditions to different standards, and the choice between them was partly discretionary.
+      let ci ← getConstInfo qn
+      -- The count comes BACK from the telescope: `let mut` does not cross the closure boundary.
+      let mut n ← forallTelescope (← instantiateMVars ci.type) fun xs _ => do
+        let mut k := 0
+        for i in [0:xs.size] do
+          if i == preIdx || i == execIdx then continue
+          let bty ← instantiateMVars (← inferType xs[i]!)
+          if ← isPropSafe bty then
+            report schema "extraneous_hypothesis"
+              s!"an invariant-preservation theorem carries only the invariant on the pre-state and \
+the execution; this is neither: {← ppTrunc bty} — fold it into `{inv}`, or declare `hoare` and name \
+it in `Pre`"
+            k := k + 1
+        return k
       let budget ← IO.mkRef maxStrictNodes
-      match ← certifiedStrict inv {} budget with
-      | none => return 0
-      | some (_, detail) =>
+      if let some (_, detail) ← certifiedStrict inv {} budget then
         report schema "predicate_not_failure_strict" s!"the invariant `{inv}` is not certified: {detail}"
-        return 1
+        n := n + 1
+      return n
   unless schema == "hoare" do return 0
   -- ── the FORWARD HOARE TRIPLE ────────────────────────────────────────────────────────────────
   let ci ← getConstInfo qn

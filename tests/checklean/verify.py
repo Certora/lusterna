@@ -165,6 +165,7 @@ EXPECTED = {
     ("schema_conformance", "Probe.Schemas.s17_ignores_one_of_two_outputs"),
     # precedence: the shape finding, and ONLY it, on a theorem that is also non-strict
     ("schema_conformance", "Probe.Schemas.g1_precedence_shape_first"),
+    ("schema_conformance", "Probe.Schemas.g4_invariant_with_side_condition"),
     # g2/g3 are absent deliberately — `freeform` puts the two documented false positives of
     # `assumed_postcondition` out of scope, which is what lets the shape rules block at all.
 }
@@ -185,6 +186,7 @@ EXPECTED_SCHEMA_RULES = {
     "Probe.Schemas.s15_double_annotated":   "multiple_schemas_declared",
     "Probe.Schemas.s17_ignores_one_of_two_outputs": "postcondition_ignores_output",
     "Probe.Schemas.g1_precedence_shape_first":       "execution_not_unique",
+    "Probe.Schemas.g4_invariant_with_side_condition": "extraneous_hypothesis",
 }
 # Taint.lean's t1/t4/t5/t6a/t6b/t9/t24/t30/t36 are absent on purpose — they are
 # `assumed_postcondition`'s clean controls: the canonical shape, a pre-state measurement
@@ -199,8 +201,8 @@ EXPECTED_SCHEMA_RULES = {
 # input, and an implicit type is reached through the other binders' types; both must stay clean.
 #
 # `PureNat`/`GoodConj`/`GoodTriple`-style controls are likewise absent — clean is correct.
-EXPECTED_FINDING_COUNT = 54   # assumed_postcondition's 32 + invariant_not_strict's 9
-                              # + schema_conformance's 13 (12 + the gate's precedence case)
+EXPECTED_FINDING_COUNT = 55   # assumed_postcondition's 32 + invariant_not_strict's 9
+                              # + schema_conformance's 14 (12 + precedence + extraneous-hypothesis)
 
 # `assumed_postcondition` only — (theorem, subjects, continuations). It must be told which functions
 # are under test, so it runs on the Taint module with an explicit subject.
@@ -308,6 +310,7 @@ SCHEMA_THEOREMS = [(f"Probe.Schemas.{n}", ["Probe.Inv.transfer", "Probe.Schemas.
     "s16_wrapped_outputs_conform", "s17_ignores_one_of_two_outputs",
     # the gate's own composition: precedence, and freeform scoping off the shape rules
     "g1_precedence_shape_first", "g2_injectivity_is_freeform", "g3_intermediate_bound_is_freeform",
+    "g4_invariant_with_side_condition", "g5_invariant_bare_is_clean",
 ]]
 
 

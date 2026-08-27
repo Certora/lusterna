@@ -206,4 +206,23 @@ theorem g3_intermediate_bound_is_freeform (amt : U64) (s s' : St) (y : Unit)
     (hexec : transfer amt s = ok (y, s')) (hb : s'.total.val < 100) :
     s'.total.val < 1000 := by sorry
 
+/-- `extraneous_hypothesis` — the `deposit_liquidity` shape from a real klend spec. Declared
+`invariant`, correct shape, but the extra `hb` makes the ENTERING ASSUMPTION stronger than the
+invariant: the theorem is a Hoare triple wearing an invariant's clothes, and the annotation no longer
+tells the reader which it is. Fold it into the invariant, or declare `hoare` and name it in `Pre`. -/
+@[lusterna_invariant]
+theorem g4_invariant_with_side_condition (amt : U64) (s s' : St) (y : Unit)
+    (hinv  : InvFlat s = ok true)
+    (hb    : amt.val < 100)
+    (hexec : transfer amt s = ok (y, s')) :
+    InvFlat s' = ok true := by sorry
+
+/-- CLEAN control: the same theorem without the side condition — the invariant, the execution, and
+the conclusion, and nothing else. -/
+@[lusterna_invariant]
+theorem g5_invariant_bare_is_clean (amt : U64) (s s' : St) (y : Unit)
+    (hinv  : InvFlat s = ok true)
+    (hexec : transfer amt s = ok (y, s')) :
+    InvFlat s' = ok true := by sorry
+
 end Probe.Schemas

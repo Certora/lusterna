@@ -341,8 +341,12 @@ DECLARE EACH THEOREM'S SCHEMA. Every theorem carries EXACTLY ONE attribute sayin
 statement it is, and a mechanical check verifies it actually conforms (so this is a claim, not a
 label). `import <Crate>.LusternaSchemas` to use them, each on its own line above the theorem:
 
-  • `@[lusterna_invariant]` — an invariant is PRESERVED:
+  • `@[lusterna_invariant]` — an invariant is PRESERVED, and that is the WHOLE theorem: the
+    invariant on the pre-state, the execution, the invariant on the post-state, nothing else:
         (hinv : Inv s = ok true) (hexec : f args s = ok (y, s')) : Inv s' = ok true
+    A side condition left inline (`(hcl : c.val <= l.val)`) makes the entering assumption stronger
+    than the invariant, so the theorem is really a Hoare triple — fold the condition into `Inv`, or
+    declare `hoare` and name it in `Pre`.
   • `@[lusterna_hoare]` — a forward Hoare triple. EXACTLY ONE execution of a target; every other
     hypothesis is `Pre <root inputs> = ok true`; the conclusion is `Post <inputs, outputs> = ok true`
     and must MENTION the execution's outputs:

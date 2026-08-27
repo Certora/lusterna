@@ -13,7 +13,7 @@ The checks live in `lean/<Crate>/LusternaChecks.lean` and the schema attributes 
 
 | annotation | what the gate then enforces |
 | --- | --- |
-| `@[lusterna_invariant]` | `Inv <pre> = ok true` → one declared-target execution → `Inv <post> = ok true`, `Inv` a failure-strict `Result Bool` |
+| `@[lusterna_invariant]` | `Inv <pre> = ok true` → one declared-target execution → `Inv <post> = ok true`, `Inv` a failure-strict `Result Bool`, **and no other hypothesis** |
 | `@[lusterna_hoare]` | `Pre <root inputs> = ok true` → exactly one declared-target execution → `Post <inputs, outputs> = ok true`, both failure-strict |
 | `@[lusterna_freeform "why"]` | nothing but a non-empty reason — a supporting lemma, deliberately out of scope |
 
@@ -333,6 +333,7 @@ name the **rule** that broke, so the fix is mechanical:
 | `predicate_not_failure_strict` | `Inv`/`Pre`/`Post` is not in `invariant_not_strict`'s failure-strict fragment |
 | `postcondition_ignores_output` | conforms otherwise, but says nothing about what the call produced |
 | `invariant_shape` | declared `invariant` without the preservation shape |
+| `extraneous_hypothesis` | an `invariant` theorem carrying anything besides the invariant and the execution |
 | `private_declaration` | a private theorem's annotation may not survive module export |
 
 **Why default-reject is safe here and nowhere else.** Applied to arbitrary theorems this rule would
