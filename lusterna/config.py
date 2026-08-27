@@ -32,6 +32,20 @@ CONTAINER_IMAGE = os.environ.get("LUSTERNA_IMAGE", "lusterna-toolchain:latest")
 # Pre-existing container name/ID to attach to (skips auto-start when set)
 CONTAINER_ID = os.environ.get("LUSTERNA_CONTAINER", "")
 
+# ── Session trail verbosity ──────────────────────────────
+# Each spawned stage's tool calls AND their results are mirrored into the host log, so the trail is
+# auditable rather than merely suggestive: you see what `#print axioms` reported, what the mechanical
+# checks printed, why a build failed. A `lake build` or a Read of a generated module can run to
+# thousands of lines, so results are head+tail bounded to this many lines. 0 mirrors calls only.
+TOOL_RESULT_LINES = int(os.environ.get("LUSTERNA_TOOL_RESULT_LINES", "40"))
+# Per-line cap for mirrored output — one-line JSON payloads are common and unbounded. Set so a whole
+# `LUSTERNA_CHECK {...}` finding fits: its `hypothesis` field alone is capped at 220 by the tool's
+# own pretty-printer, and a clipped finding loses the fields that say what to do about it.
+TOOL_LINE_CHARS = int(os.environ.get("LUSTERNA_TOOL_LINE_CHARS", "500"))
+# Cap on a mirrored tool INPUT. Generous: for a Bash heredoc that writes a Lean driver, the body is
+# the interesting part, and a tight cap cuts it off mid-import.
+TOOL_INPUT_CHARS = int(os.environ.get("LUSTERNA_TOOL_INPUT_CHARS", "800"))
+
 # The ONE knob bounding every stage's gate loop: a stage gives up after this many consecutive
 # rounds that fail to pass its trusted gate (for PROVE, this many rounds with no gain in the
 # axiom-clean established-theorem count). No hard round ceiling beyond it; each round is also
@@ -58,11 +72,3 @@ STOP_AFTER_TRANSLATE = os.environ.get("LUSTERNA_STOP_AFTER_TRANSLATE", "") not i
 # a prove pass. Used to iterate on the spec stages in isolation.
 STOP_BEFORE_PROVE = os.environ.get("LUSTERNA_STOP_BEFORE_PROVE", "") not in ("", "0")
 
-# Gate FORMALISE on SPEC SCHEMA CONFORMANCE: every theorem must declare `@[lusterna_invariant]`,
-# `@[lusterna_hoare]` or `@[lusterna_freeform "why"]` and actually conform to it (lean.check_schemas).
-#
-# DEFAULT OFF, deliberately. This is the only mechanical spec check the harness may itself gate on —
-# a theorem failing the schema its own author declared is a fact, not a judgment — but turning it on
-# makes every un-annotated spec a hard stop, so existing campaigns must be migrated first. Flip the
-# default only once the schemas have been validated on a real campaign.
-SCHEMA_GATE = os.environ.get("LUSTERNA_SCHEMA_GATE", "") not in ("", "0")

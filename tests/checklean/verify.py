@@ -163,6 +163,10 @@ EXPECTED = {
     ("schema_conformance", "Probe.Schemas.s14_unannotated"),
     ("schema_conformance", "Probe.Schemas.s15_double_annotated"),
     ("schema_conformance", "Probe.Schemas.s17_ignores_one_of_two_outputs"),
+    # precedence: the shape finding, and ONLY it, on a theorem that is also non-strict
+    ("schema_conformance", "Probe.Schemas.g1_precedence_shape_first"),
+    # g2/g3 are absent deliberately — `freeform` puts the two documented false positives of
+    # `assumed_postcondition` out of scope, which is what lets the shape rules block at all.
 }
 
 # `schema_conformance`'s `rule` field is the whole point of the check — a finding that fires for the wrong reason
@@ -180,6 +184,7 @@ EXPECTED_SCHEMA_RULES = {
     "Probe.Schemas.s14_unannotated":        "no_schema_declared",
     "Probe.Schemas.s15_double_annotated":   "multiple_schemas_declared",
     "Probe.Schemas.s17_ignores_one_of_two_outputs": "postcondition_ignores_output",
+    "Probe.Schemas.g1_precedence_shape_first":       "execution_not_unique",
 }
 # Taint.lean's t1/t4/t5/t6a/t6b/t9/t24/t30/t36 are absent on purpose — they are
 # `assumed_postcondition`'s clean controls: the canonical shape, a pre-state measurement
@@ -194,8 +199,8 @@ EXPECTED_SCHEMA_RULES = {
 # input, and an implicit type is reached through the other binders' types; both must stay clean.
 #
 # `PureNat`/`GoodConj`/`GoodTriple`-style controls are likewise absent — clean is correct.
-EXPECTED_FINDING_COUNT = 53   # assumed_postcondition's 32 + invariant_not_strict's 9
-                              # + schema_conformance's 12
+EXPECTED_FINDING_COUNT = 54   # assumed_postcondition's 32 + invariant_not_strict's 9
+                              # + schema_conformance's 13 (12 + the gate's precedence case)
 
 # `assumed_postcondition` only — (theorem, subjects, continuations). It must be told which functions
 # are under test, so it runs on the Taint module with an explicit subject.
@@ -301,6 +306,8 @@ SCHEMA_THEOREMS = [(f"Probe.Schemas.{n}", ["Probe.Inv.transfer", "Probe.Schemas.
     "s12_invariant_shape", "s13_invariant_not_strict", "s14_unannotated", "s15_double_annotated",
     # the real Aeneas output shape: two informative outputs, one behind a neutral wrapper
     "s16_wrapped_outputs_conform", "s17_ignores_one_of_two_outputs",
+    # the gate's own composition: precedence, and freeform scoping off the shape rules
+    "g1_precedence_shape_first", "g2_injectivity_is_freeform", "g3_intermediate_bound_is_freeform",
 ]]
 
 
@@ -354,7 +361,9 @@ def run_checks(cid: str, lean_dir: str, import_lines: list[str],
         body_lines.append(f"  let _ ← checkInvariantTotality `{t} #[{arr}]")
     for t, tgts in (schema or []):
         arr = ", ".join("`" + g for g in tgts)
-        body_lines.append(f"  let _ ← checkSchemaConformance `{t} #[{arr}]")
+        # THE GATE, not the bare conformance check: `checkSpecGate` is what the harness runs, and
+        # its precedence (shape finding alone) and freeform scoping only exist in the composition.
+        body_lines.append(f"  let _ ← checkSpecGate `{t} #[{arr}]")
     body_lines.append('  IO.println "LUSTERNA_CHECK_DONE"')
     body = "\n".join(body_lines) + "\n"
     rel = "_verify_driver.lean"

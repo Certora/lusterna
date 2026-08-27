@@ -1,77 +1,37 @@
-# Mechanical spec checks — a tool for your judgment, not a gate
+# The mechanical spec gate — what your spec must clear
 
-Every crate's `lean/<Crate>/LusternaChecks.lean` (harness-owned — do not edit or delete it) offers
-three mechanical checks over a theorem's *elaborated type*. They run identically on a `sorry`-bodied
-FORMALISE statement or a finished PROVE proof, since they never look at the proof term.
+The harness runs three checks over every theorem's *elaborated type* (so they see through notation,
+implicits and coercions a regex cannot) and **rejects the stage** if any fires. You do not invoke
+them; you satisfy them. A rejection comes back naming the theorem, the check and the RULE, and you
+fix it and resubmit.
 
-**Nothing runs these automatically.** No stage is rejected because of a finding. You (SPEC-JUDGE,
-primarily — anyone judging a spec module) invoke them yourself and decide what a finding means. A
-flagged hypothesis is a prompt to read the theorem more closely, not a defect by itself: read what
-follows before you report anything as `defects` in your verdict.
+The checks live in `lean/<Crate>/LusternaChecks.lean` and the schema attributes in
+`lean/<Crate>/LusternaSchemas.lean` — both harness-owned: do not edit or delete either. `import
+<Crate>.LusternaSchemas` in your spec module to write the annotations.
 
-## How to run them
+**Every theorem declares exactly one schema**, each on its own line above the theorem:
 
-**ONE file for the whole module, with the theorem list looped INSIDE the `#eval`.** Compiling the
-driver means elaborating your spec module and its entire import closure — minutes on a real crate —
-while the checks themselves take microseconds. A file per theorem, or per theorem × check, pays that
-elaboration over and over for nothing; it is the single most expensive mistake available here.
+| annotation | what the gate then enforces |
+| --- | --- |
+| `@[lusterna_invariant]` | `Inv <pre> = ok true` → one declared-target execution → `Inv <post> = ok true`, `Inv` a failure-strict `Result Bool` |
+| `@[lusterna_hoare]` | `Pre <root inputs> = ok true` → exactly one declared-target execution → `Post <inputs, outputs> = ok true`, both failure-strict |
+| `@[lusterna_freeform "why"]` | nothing but a non-empty reason — a supporting lemma, deliberately out of scope |
 
-```bash
-cd /workspace/out/lean
-cat > /tmp/_check.lean <<EOF
-import <Crate>.LusternaChecks
-import <Crate>.Spec.<Campaign>
-open Lusterna.Checks
-set_option maxRecDepth 4000 in
-#eval show Lean.Meta.MetaM Unit from do
-  for t in [\`<Crate>.Spec.<Campaign>.<thm1>,
-            \`<Crate>.Spec.<Campaign>.<thm2>] do        -- every theorem you are judging
-    let _ ← checkAssumedPostcondition t #[\`<Crate>.<targetFn>] #[]
-    let _ ← checkInvariantTotality t #[\`<Crate>.<targetFn>]
-    let _ ← checkSchemaConformance t #[\`<Crate>.<targetFn>]
-  IO.println "LUSTERNA_CHECK_DONE"
-EOF
-lake env lean /tmp/_check.lean
-```
+**Precedence, so a rejection stays actionable.** A theorem that does not match its declared schema
+gets that finding *alone*; the provenance and strictness rules are only applied once the shape is
+right, because a taint finding on a mis-shaped theorem buries the one message you can act on.
 
-Each finding prints as one `LUSTERNA_CHECK {...}` JSON line, tagged with the theorem it came from,
-so one run over the whole module is as readable as many runs over one theorem each.
+**`freeform` is the escape hatch, and it is honest, not free.** A relational or two-run property —
+injectivity, determinism, cancellation, non-interference — genuinely needs two executions and cannot
+be a Hoare triple, so it declares `freeform` and the shape rules do not run on it. The reason string
+is reported, so do not use it to smuggle a property that really is one of the two schemas: SPEC-JUDGE
+reads those justifications, and a misdeclared schema is a defect it will name.
 
-**All three need the targets, and they take the same first `#[...]`** — so work it out once and reuse
-it. The first `#[...]` is the function(s) under verification for this campaign — take them from `target_patterns` in
-`infer/campaigns/<Campaign>.json` — but they are CHARON MATCHERS, not Lean names, so do not just
-swap `::` for `.`. `crate` is the crate root and `_` is a WILDCARD for the impl/type, while Aeneas
-puts a real component there: `crate::state::reserve::_::total_supply` becomes
-`state.reserve.ReserveLiquidity.total_supply`, and `` `crate.state.reserve._.total_supply `` matches
-nothing. **Pass the bare final component** (`` `total_supply ``) — names are compared by dotted
-suffix, so that matches whatever type the method hangs off. Where a pattern already names the type
-with no `_`, the full dotted path works too and is stricter. Pass every target this theorem might be
-about; an extra one it never calls costs nothing, whereas a target that matches nothing makes the
-checks report `found 0` on every theorem.
-
-The second `#[...]` is **continuations**, and it is normally empty. Name a function there only when
-the theorem is deliberately about a *composition* — `deposit` followed by `rebalance`, or `deposit`
-run twice — and you have decided that chaining through it is part of the property. A target is not
-implicitly its own continuation; for an iterative theorem, pass it in both lists.
-Declaring a continuation switches off a real check for that function, so add one because the theorem
-is about the composition, never to silence a finding you have not read.
-
-**Read the sentinel before you read the silence.** No output at all is ambiguous: it means "clean"
-ONLY if `LUSTERNA_CHECK_DONE` printed, which is what tells you the `#eval` reached the end. Without
-it the driver died partway — a typo'd name, a missing import, a recursion-depth blowup — and the
-theorems after the failure were never checked. That is "could not check", never "clean", and never
-"flagged" either: fix the driver and re-run. Two more things that are not findings and not silence:
-a `LUSTERNA_CHECK_SKIPPED {...}` line names one thing that went unanalysed — an `opaque` or
-`partial` definition with no body, a taint closure that did not converge, a theorem where no
-execution of any named target was found — and its findings are then incomplete, never clean, while
-everything else in that run still holds; and `maxRecDepth` above is what keeps a deeply-nested
-statement from becoming a driver failure in the first place. A `SKIPPED` line naming a target
-usually means you passed the wrong one, not that the theorem is fine.
-
-`<Crate>` is the crate's own root module name (the same one you already use for every other
-`import` in this campaign). Predicates are followed regardless of what namespace they live in — only
-known-huge trusted libraries (Mathlib, Lean core, Aeneas itself) are excluded, so nothing ever needs
-telling which namespace is "yours".
+**Why the shape rules can block at all.** `assumed_postcondition` has three shapes it cannot tell
+from a cheat — a relational antecedent, a bound on an intermediate, a case split in the conclusion —
+which is why it was once advisory. Each is excluded by `hoare` conformance itself
+(`execution_not_unique`, `hypothesis_not_a_precondition`, `conclusion_not_a_postcondition`), so on a
+conforming theorem a finding is a defect rather than a prompt. The annotation is what buys that.
 
 ## `assumed_postcondition`
 
@@ -358,10 +318,8 @@ to, and this verifies the annotation:
 @[lusterna_freeform "pure arithmetic helper"]   -- a supporting lemma, declared out of scope
 ```
 
-**A theorem that fails the schema its own author declared is a fact, not a judgement.** That is why
-this is the one check the *harness itself* may gate on (`lean.check_schemas`, behind
-`LUSTERNA_SCHEMA_GATE`, default off) while the other two stay judge-only. Findings name the **rule**
-that broke, so the fix is mechanical:
+**A theorem that fails the schema its own author declared is a fact, not a judgement.** Findings
+name the **rule** that broke, so the fix is mechanical:
 
 | rule | what it means |
 | --- | --- |

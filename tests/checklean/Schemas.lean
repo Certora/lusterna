@@ -180,4 +180,30 @@ theorem s17_ignores_one_of_two_outputs (amt : U64) (s s' : St) (eff : Eff)
     (hexec : transferEff amt s = ok (.Ok eff, s')) :
     EffPostIgnoresEff amt s s' = ok true := by sorry
 
+/-! ── THE GATE's own composition: precedence and freeform scoping ─────────────────────────────── -/
+
+/-- PRECEDENCE. Declared `hoare`, shape wrong (two executions) AND its `Post` is fail-open. The gate
+must report the shape finding ALONE — a strictness finding on a theorem whose shape is already wrong
+buries the one message FORMALISE can act on. -/
+@[lusterna_hoare]
+theorem g1_precedence_shape_first (amt amt2 : U64) (s s1 s2 : St) (y y2 : Unit)
+    (hexec  : transfer amt s = ok (y, s1))
+    (hexec2 : transfer amt2 s1 = ok (y2, s2)) :
+    TransferPostOpen amt s s2 = ok true := by sorry
+
+/-- FREEFORM SCOPING. This is injectivity — a relational, two-run property. It is
+`assumed_postcondition`'s documented unavoidable false positive, and it is why the shape rules were
+once advisory. Declared `freeform`, the gate must NOT block it. -/
+@[lusterna_freeform "relational: two executions by construction, not a Hoare triple"]
+theorem g2_injectivity_is_freeform (amt amt2 : U64) (s s1 s2 : St) (y y2 : Unit)
+    (h1 : transfer amt s = ok (y, s1)) (h2 : transfer amt2 s = ok (y2, s2))
+    (heq : s1 = s2) : amt = amt2 := by sorry
+
+/-- FREEFORM SCOPING, second shape: a bound on an intermediate — the other documented false
+positive. Out of scope by declaration, so it must not block either. -/
+@[lusterna_freeform "overflow guard on an intermediate, stated where it is needed"]
+theorem g3_intermediate_bound_is_freeform (amt : U64) (s s' : St) (y : Unit)
+    (hexec : transfer amt s = ok (y, s')) (hb : s'.total.val < 100) :
+    s'.total.val < 1000 := by sorry
+
 end Probe.Schemas

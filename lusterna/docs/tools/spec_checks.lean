@@ -1034,7 +1034,7 @@ The other checks hunt for bad shapes, which is why their SILENCE is ambiguous �
 recognise". This one inverts that. FORMALISE annotates each theorem with the schema it is written
 to (`@[lusterna_invariant]`, `@[lusterna_hoare]`, `@[lusterna_freeform "why"]`), and this verifies
 the annotation. A theorem that fails the schema IT DECLARED is a FACT, not a judgement — which is
-what makes this the one check the harness may itself gate on (`lean.check_schemas`).
+what lets it block rather than merely report (see `checkSpecGate` below).
 
 DEFAULT-REJECT IS ONLY SAFE BECAUSE OF THE ANNOTATION. Applied to arbitrary theorems it would flag
 every honest use of `→`, `∨`, `¬`. Applied to a theorem whose author declared its schema, it is
@@ -1203,5 +1203,56 @@ being checked against the laxer of two is not a conformance result"
 so the theorem claims nothing about what `{fn}` produced"
       n := n + 1
     return n
+
+/-! ══ THE SPEC GATE — what the harness itself enforces ══════════════════════════════════════════
+
+`checkSpecGate` composes all three checks into the one thing FORMALISE must clear. It is not a tool
+an agent invokes and interprets: a finding here BLOCKS the stage and comes back as a concrete
+critique, and FORMALISE runs again.
+
+WHY BLOCKING IS SOUND NOW AND WAS NOT BEFORE. `checkAssumedPostcondition` has three documented,
+unavoidable false positives — a relational antecedent (injectivity, determinism, cancellation,
+non-interference), a bound on an intermediate, and a non-execution case split in the conclusion.
+Blocking on those would make a CORRECT theorem unsubmittable, which is exactly why the checks used
+to be advisory. The schema ANNOTATION retires all three, because each is excluded by the `hoare`
+conformance rules themselves:
+
+  • a relational antecedent needs TWO executions — `execution_not_unique` forbids that;
+  • a bound on an intermediate is not `Pre <root inputs> = ok true` — `hypothesis_not_a_precondition`
+    forbids it, and names the fix (move it into `Pre`);
+  • a case split in the conclusion is not `Post … = ok true` — `conclusion_not_a_postcondition`.
+
+The false positive's own rationale is that "the strict rule is about single-execution Hoare
+properties and these are not". `@[lusterna_hoare]` is the author DECLARING that this one is. So on a
+conforming theorem a finding is a defect rather than a prompt, and blocking is honest.
+
+PRECEDENCE, so the critique stays actionable: a theorem that does not conform to its declared schema
+gets THAT finding and nothing else. Piling taint findings on a theorem whose shape is already wrong
+buries the one message FORMALISE can act on.
+
+SCOPING: `@[lusterna_freeform]` is out of scope by declaration — it is where a relational or
+two-run property lives, so the other two checks do not run on it and cannot block it.
+
+CONTINUATIONS ARE ALWAYS `#[]`, and nothing is lost. A theorem genuinely about a COMPOSITION needs a
+second execution, which `execution_not_unique` rejects — so such a theorem is `freeform`, and never
+reaches the checks that would have needed the exemption. -/
+def checkSpecGate (qn : Name) (targets : Array Name) : MetaM Nat := do
+  let schemas := Lusterna.Schemas.declaredSchemas (← getEnv) qn
+  -- Missing / doubled / freeform are all settled by the conformance check alone.
+  if schemas.size != 1 || schemas[0]! == "freeform" then
+    return ← checkSchemaConformance qn targets
+  let conformance ← checkSchemaConformance qn targets
+  if conformance > 0 then return conformance
+  -- SHAPE IS RIGHT. Only now do the provenance rules mean what they say.
+  let taint ← checkAssumedPostcondition qn targets #[]
+  -- `invariant_not_strict` runs ONLY on a theorem that declared `invariant`. On a `hoare` theorem
+  -- its own shape detection near-misses — the conclusion `Post args = ok true` IS an
+  -- `Inv args = ok true` claim, with no matching pre-state hypothesis — so it emits `SKIPPED`, and a
+  -- skip blocks. A conforming Hoare triple would be rejected for a check that does not apply to it.
+  -- Nothing is lost by scoping it: for a `hoare` theorem the strictness of `Pre`/`Post` is already
+  -- enforced by `schema_conformance`'s `predicate_not_failure_strict`, which calls the same
+  -- `certifiedStrict`.
+  let strict ← if schemas[0]! == "invariant" then checkInvariantTotality qn targets else pure 0
+  return taint + strict
 
 end Lusterna.Checks

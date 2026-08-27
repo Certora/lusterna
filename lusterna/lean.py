@@ -158,16 +158,14 @@ def _write_lint_tool(deps: AgentDeps, lean_out_dir: str, lib_name: str) -> None:
 
     Writes TWO files. `LusternaSchemas.lean` registers the `@[lusterna_invariant]` /
     `@[lusterna_hoare]` / `@[lusterna_freeform]` attributes and is what a SPEC MODULE imports;
-    `LusternaChecks.lean` imports it and holds the checks. Schema conformance is the one thing here
-    the harness may itself gate on (`check_schemas`), because a theorem failing the schema it
-    DECLARED is a fact, not a judgement — everything else below stays judge-only.
+    `LusternaChecks.lean` imports it and holds the checks.
 
-    The other three checks are NOT a harness gate. They are a TOOL an agent (SPEC-JUDGE, primarily) may invoke itself
-    over Bash — `import <lib_name>.LusternaChecks`, `open Lusterna.Checks`, call
-    `checkAssumedPostcondition`/`checkInvariantTotality`/`checkSchemaConformance` — and interpret the
-    findings with judgment; see docs/skills/mechanical-checks.md. The harness never runs it and
-    never parses its output. HARNESS-OWNED like the lakefile: an agent must not edit or delete it,
-    and (like the lakefile) it is rewritten on every `setup_lake`.
+    These are a GATE, not a tool: `check_spec_gate` runs `checkSpecGate` over the campaign's theorems
+    and a finding rejects FORMALISE with a critique naming the check and the rule. Nothing here is
+    interpreted by an agent. That is only sound because each theorem DECLARES its schema, which is
+    what retires the shape rules' documented false positives — see `checkSpecGate` in
+    spec_checks.lean. HARNESS-OWNED like the lakefile: an agent must not edit or delete either file,
+    and (like the lakefile) both are rewritten on every `setup_lake`.
     """
     _container_write(deps, f"{lean_out_dir}/{lib_name}/{_SCHEMA_TOOL_NAME}", _SCHEMA_TOOL_SRC)
     # The checker imports the schemas module, whose path is crate-specific (the lakefile globs
@@ -471,7 +469,12 @@ _CHECK_LINE_RE = re.compile(
 _SKIP_LINE_RE = re.compile(
     r"(?m)^\s*(?:\S+:\d+:\d+:\s*)?(?:info:\s*)?LUSTERNA_CHECK_SKIPPED\s+(\{.*\})\s*$")
 
-_SCHEMA_DONE = "LUSTERNA_SCHEMA_DONE"
+# Every check whose finding BLOCKS the stage. `assumed_postcondition`/`invariant_not_strict` are
+# in here because the schema annotation retires their documented false positives (see
+# `checkSpecGate` in spec_checks.lean); a finding on a conforming theorem is a defect, not a prompt.
+_GATE_CHECKS = {"schema_conformance", "assumed_postcondition", "invariant_not_strict"}
+
+_GATE_DONE = "LUSTERNA_GATE_DONE"
 
 
 def _target_name_forms(patterns: list[str]) -> list[str]:
@@ -519,26 +522,27 @@ def _schema_targets(deps: AgentDeps) -> list[str]:
         return sorted(target_defs(deps, translation_text(deps)))
     except Exception as e:                # noqa: BLE001 - reported by the caller, never swallowed
         # Returning [] here would be a silent pass: the checker would report SKIPPED on every
-        # theorem, the sentinel would still print, and `check_schemas` would hand the gate an empty
+        # theorem, the sentinel would still print, and `check_spec_gate` would hand the gate an empty
         # failure list — "conforms" without having checked anything. The caller turns an empty target
         # list into a BLOCKING record instead.
         log.warning("_schema_targets: could not read the translation to derive targets: %s", e)
         return []
 
 
-def check_schemas(deps: AgentDeps, spec_rel: str) -> list[dict]:
-    """Verify every spec theorem against the schema IT DECLARED (`@[lusterna_invariant]` /
-    `@[lusterna_hoare]` / `@[lusterna_freeform "why"]`).
+def check_spec_gate(deps: AgentDeps, spec_rel: str) -> list[dict]:
+    """THE SPEC GATE. Run every mechanical check over the campaign's theorems and return what BLOCKS.
 
-    THE ONE MECHANICAL CHECK THE HARNESS MAY GATE ON. The other three in `spec_checks.lean` are
-    judge-only because their findings need judgment — a flagged hypothesis may be a legitimate
-    relational premise. Conformance is different in kind: a theorem that fails the schema its own
-    author declared is a FACT, so there is nothing for a judge to weigh and a retry message can be
-    mechanical. What this does NOT establish is that the declared schema is the RIGHT one for the
-    property — that stays with SPEC-JUDGE.
+    These checks are not advisory and no agent interprets them: a finding comes back to FORMALISE as
+    a concrete critique and the stage runs again. `checkSpecGate` (spec_checks.lean) composes the
+    three, and holds the precedence and scoping that make blocking sound — a theorem whose declared
+    schema it does not match gets that finding alone, and `@[lusterna_freeform]` is out of scope by
+    declaration, which is where a relational or two-run property lives.
 
-    Returns a list of failure records `{theorem, schema, rule, detail}`; EMPTY means every theorem
-    conforms. Mechanism mirrors `check_axioms`: import the already-built spec olean and elaborate a
+    What this does NOT establish, and what stays with SPEC-JUDGE: whether the schema a theorem
+    declares is the RIGHT one for the property. A Hoare triple annotated `invariant` can conform
+    perfectly and still be mislabelled — the gate verifies FORM, never fitness.
+
+    Returns a list of blocking records `{check, theorem, schema, rule, detail}`; EMPTY means clear. Mechanism mirrors `check_axioms`: import the already-built spec olean and elaborate a
     throwaway driver (never re-elaborate the spec — that auto-`sorry`s and taints the whole batch),
     and read the `LUSTERNA_SCHEMA_DONE` sentinel, because silence without it means "the driver died",
     never "everything conforms"."""
@@ -565,16 +569,16 @@ def check_schemas(deps: AgentDeps, spec_rel: str) -> list[dict]:
             "open Lusterna.Checks\n"
             "set_option maxRecDepth 8000 in\n"
             "#eval show Lean.Meta.MetaM Unit from do\n"
-            + "".join(f"  let _ ← checkSchemaConformance `{n} #[{tarr}]\n" for n in qnames)
-            + f'  IO.println "{_SCHEMA_DONE}"\n')
-    code, text = _run_lean_checker(deps, body, "_schema_check.lean")
+            + "".join(f"  let _ ← checkSpecGate `{n} #[{tarr}]\n" for n in qnames)
+            + f'  IO.println "{_GATE_DONE}"\n')
+    code, text = _run_lean_checker(deps, body, "_spec_gate.lean")
     if text.startswith("ERROR:"):
         return [{"theorem": "?", "schema": "?", "rule": "could_not_check", "detail": text}]
-    if _SCHEMA_DONE not in text:
+    if _GATE_DONE not in text:
         # NOT "clean". The driver never reached the end, so nothing was established. Conservative
         # and loud, the same way check_axioms treats an unresolved theorem.
-        log.warning("check_schemas: driver did not finish (rc=%s) — treating as could-not-check, "
-                    "not as conforming. Lean output tail:\n%s", code, text[-1500:])
+        log.warning("check_spec_gate: driver did not finish (rc=%s) — treating as could-not-check, "
+                    "not as clear. Lean output tail:\n%s", code, text[-1500:])
         return [{"theorem": "?", "schema": "?", "rule": "could_not_check",
                  "detail": f"the conformance driver did not finish; last output:\n{text[-800:]}"}]
     out: list[dict] = []
@@ -583,8 +587,9 @@ def check_schemas(deps: AgentDeps, spec_rel: str) -> list[dict]:
             rec = json.loads(m.group(1))
         except ValueError:
             continue
-        if rec.get("check") == "schema_conformance":
-            out.append({k: rec.get(k, "?") for k in ("theorem", "schema", "rule", "detail")})
+        if rec.get("check") in _GATE_CHECKS:
+            out.append({"check": rec.get("check", "?"),
+                        **{k: rec.get(k, "?") for k in ("theorem", "schema", "rule", "detail")}})
     # A SKIPPED record names a theorem that went UNCHECKED. Honouring it here is the same rule
     # tests/checklean/verify.py pins for the judge-facing path: "clean" must never mean "never ran",
     # so a skip BLOCKS rather than being dropped on the floor.
@@ -593,12 +598,11 @@ def check_schemas(deps: AgentDeps, spec_rel: str) -> list[dict]:
             rec = json.loads(m.group(1))
         except ValueError:
             continue
-        if rec.get("check") == "schema_conformance":
-            out.append({"theorem": rec.get("theorem", "?"), "schema": rec.get("schema", "?"),
-                        "rule": "could_not_check",
+        if rec.get("check") in _GATE_CHECKS:
+            out.append({"check": rec.get("check", "?"), "theorem": rec.get("theorem", "?"),
+                        "schema": rec.get("schema", "?"), "rule": "could_not_check",
                         "detail": f"not checked: {rec.get('reason', 'unspecified')}"})
-    log.info("check_schemas: %d/%d theorem(s) do not conform to their declared schema",
-             len(out), len(qnames))
+    log.info("check_spec_gate: %d blocking finding(s) over %d theorem(s)", len(out), len(qnames))
     return out
 
 

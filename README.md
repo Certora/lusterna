@@ -176,14 +176,18 @@ tell which binder is a function *output*; that needs notation, implicits and coe
 
 So the harness ships a small Lean tool — `lean._write_lint_tool` copies
 `docs/tools/spec_checks.lean` into every crate's own tree, once, at
-`lean/<Crate>/LusternaChecks.lean` — offering three checks over a theorem's *elaborated* type, invoked
-by `import`-ing it and calling into it directly, e.g. via a throwaway `#eval`. **The harness never
-runs it and never parses its output.** SPEC-JUDGE (documented via `docs/skills/mechanical-checks.md`,
-appended to its briefing) invokes it itself and decides what a finding means — a flagged hypothesis
-is read, not auto-rejected. This is the point: not every legitimate theorem is a forward-reasoning
-Hoare triple (injectivity, chained calls, and relational properties all need hypotheses a naive
-"any hypothesis mentioning an output is suspicious" rule would flag), so the judgment call belongs to
-the agent reading the theorem, not to a fixed hurdle FORMALISE must clear before the pipeline proceeds.
+`lean/<Crate>/LusternaChecks.lean` — offering three checks over a theorem's *elaborated* type. **The
+harness runs them itself and rejects FORMALISE on a finding** (`lean.check_spec_gate`), returning a
+critique that names the theorem, the check and the rule; FORMALISE fixes it and resubmits.
+
+That is only honest because of the SCHEMAS. Not every legitimate theorem is a forward-reasoning Hoare
+triple — injectivity, determinism and other relational properties genuinely need hypotheses about
+outputs — so a shape rule applied blind would reject correct work, which is why these checks were
+once advisory and interpreted by SPEC-JUDGE. Now every theorem DECLARES what it is
+(`@[lusterna_invariant]` / `@[lusterna_hoare]` / `@[lusterna_freeform "why"]`), and `freeform` is
+where the relational properties live, out of scope by declaration. A finding on a theorem that
+declared a checked schema is a fact about its own claim, so it can block. What the gate cannot see —
+whether the schema declared is the RIGHT one — is what SPEC-JUDGE now spends its whole attention on.
 
 > **The subject may revert; a measurement may not.** The function under verification may fail — if it
 > reverts, nothing happened and there is nothing to prove, so its equation belongs in the binder list
@@ -277,10 +281,11 @@ applied to a theorem whose author *declared* its schema, it is exact. The annota
 strictness, and it generalises a doctrine already present in the continuation list — declaring
 something switches off a real check, so you declare because the property demands it.
 
-Conformance is also **the one mechanical check the harness may itself gate on** (`lean.check_schemas`,
-behind `LUSTERNA_SCHEMA_GATE`, default off pending migration). The others are judge-only because their
-findings need judgment; a theorem that fails the schema its own author declared is a fact, so the retry
-message can be mechanical — each finding names the rule that broke. Two of those rules earn their
+All three are gated, unconditionally: `checkSpecGate` composes them, applying a theorem's declared
+schema first and the provenance/strictness rules only once its shape is right, so a rejection carries
+the one message that can be acted on rather than a pile of consequences. `freeform` theorems are
+exempt from the shape rules by declaration. Each finding names the rule that broke. Two of those
+rules earn their
 keep beyond bookkeeping. `postcondition_ignores_output` is what stops a conforming theorem from being
 vacuous: the data binders that name outputs in advance (`ok (.Ok eff, vfinal)`) are not propositions,
 so the precondition rule never sees them, and nothing else would force `Post` to mention them — with

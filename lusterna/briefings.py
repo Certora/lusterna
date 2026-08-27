@@ -363,7 +363,7 @@ valid — use either inside a `freeform` lemma.
 
 DELIVERABLE: this campaign's spec module (the path the harness gave you) with compiling
 statement-only theorems, and prior campaign modules untouched. STOP once it compiles.
-""" + docs.FOR_FORMALISE + CONTINUING + WORKSPACE
+""" + docs.FOR_FORMALISE + docs.FOR_SPEC_GATE + CONTINUING + WORKSPACE
 
 
 # ── SPEC-JUDGE ─────────────────────────────────────────────────────────────────
@@ -378,27 +378,18 @@ the implementation does), /workspace/out/infer/campaigns/<Campaign>.json (the pr
 THIS campaign's spec module (the harness names it in your task prompt, `lean/<Crate>/Spec/<Campaign>.lean`)
 — judge only that module's statements, not other campaigns'.
 
-You also have a MECHANICAL TOOL (documented below, `lean/<Crate>/LusternaChecks.lean`) you can run
-yourself over Bash — three checks over a theorem's elaborated type. Nothing runs it for you and no
-finding is a defect by itself; run it, read what it flags, and use your own judgment about whether it
-points at a real problem. A finding worth reporting becomes a normal defect below (most often
-`assumed_postcondition` or `schema_nonconformance`) — a finding you decide is fine (an injectivity
-lemma, a chained call, a triple) is simply not reported. The tool is not exhaustive and not
-authoritative in either direction: it can miss things, and a clean run is not by itself grounds to
-write {"defects": []}.
+THE MECHANICAL SPEC GATE HAS ALREADY RUN, and the spec in front of you PASSED it. The harness
+enforces the declared-schema rules itself (`@[lusterna_invariant]` / `@[lusterna_hoare]` /
+`@[lusterna_freeform "why"]`), blocking FORMALISE with a concrete critique until they hold. You do
+not run it, and shape defects it owns — a hypothesis constraining an output, a non-strict
+invariant, a theorem that does not match its annotation — are not yours to re-report.
 
-All three checks must be TOLD which functions are under verification — pass this campaign's
-`target_patterns` from /workspace/out/infer/campaigns/<Campaign>.json — as the BARE FINAL COMPONENT
-(`crate::state::reserve::_::total_supply` → `` `total_supply ``), since those are Charon matchers
-where `_` is a wildcard for the impl/type and Aeneas puts a real component there; names are compared
-by dotted suffix, so the tail matches. A literal `::`→`.` rewrite matches NOTHING and makes every
-theorem report `found 0`. Without targets they report SKIPPED rather than clean, because a precondition stated
-through a measurement of the pre-state is indistinguishable from a cheat until the checker knows
-which call is the subject. `checkAssumedPostcondition` takes a second argument (continuations),
-normally `#[]` — name a function there only when the theorem is deliberately about a COMPOSITION and
-you have decided chaining through it is part of the property, never to silence a finding you have not
-read. A target is not implicitly its own continuation: for a theorem that runs the target twice, pass
-it in both arguments.
+What the gate CANNOT see, and what is therefore the whole of your job: whether each theorem MEANS
+the right thing. It verifies form, never fitness. Two things to look for specifically:
+  • a MISDECLARED schema — a Hoare triple annotated `invariant`, or a real property hidden under
+    `@[lusterna_freeform "…"]` with a justification that does not hold up. Both conform perfectly.
+  • a spec that is conforming and still wrong: trivial, too weak, not what the design says, or not
+    about the code.
 
 The Aeneas triple `f args ⦃ r => P r ⦄` is TOTAL — it is NOT vacuous merely for being a triple.
 Report one defect per concrete problem (name a specific theorem, or "coverage"), with a concrete fix,
@@ -410,22 +401,6 @@ using exactly these kinds:
     `Result Bool` predicate that binds the measurement). Only the function UNDER TEST may have its
     failure excused. Check helper `def`s too — this most often hides inside a named predicate, and no
     mechanical check covers the shape, so it is yours to spot by reading.
-  • assumed_postcondition — a hypothesis constrains a variable that a defining equation already
-    bound to a function's OUTPUT or post-state (`(h : f x s = ok (y, s')) (h2 : s'.var = s.var) …`),
-    so the theorem assumes what it should prove — at the limit, `exact h2` closes it. Naming the
-    result is fine; constraining it in a further hypothesis is not, and neither is doing so one hop
-    away (`(hz : z = s'.var)` then `(hz2 : 0 < z)` — the alias is itself an assumption, not a
-    definition), nor smuggled in as a further fallible call on the post-state
-    (`(hcheat : checkVarPreserved s s' = ok ())` is a predicate wearing an execution's shape; even a
-    contentless `(hok : total s' = ok t)` restricts the theorem to post-states where that call
-    happens to succeed), nor carried by a non-Prop binder (`{ u : Unit // s'.var = s.var }`).
-    The execution hypothesis must also produce FRESH results: `f x s = ok (y, s)` asserts the
-    post-state is the pre-state, `f x s = ok (y, { s with var := 10 })` pins it structurally, and
-    `ok (some y, s')` picks a branch — each decides in the binder what the conclusion should have
-    claimed, and two executions may not bind the SAME result variable (`(h1 : f x = ok y)
-    (h2 : f z = ok y)` states a relation without writing one). Facts about the post-state belong in
-    the CONCLUSION; hypotheses are for inputs and the pre-state — and moving the antecedent into a
-    named postcondition predicate does not help, since those are unfolded.
   • too_weak — true but strictly weaker than the design's intended guarantee (a loose bound where an
     exact value is intended; a narrower input domain than guaranteed).
   • wrong_statement — cannot be right as written (wrong quantifier/bound, a type mismatch like
@@ -433,13 +408,6 @@ using exactly these kinds:
   • missing_coverage — a property in properties.json has no corresponding theorem (theorem =
     "coverage").
   • over_specified — asserts behaviour the translated code does not evidence.
-  • schema_nonconformance — the theorem's declared schema attribute (`@[lusterna_invariant]`,
-    `@[lusterna_hoare]`, `@[lusterna_freeform "why"]`) does not match its actual shape, or no schema
-    is declared at all. `checkSchemaConformance` decides this mechanically and names the rule that
-    broke, so report it verbatim rather than re-deriving it. What the tool CANNOT tell you, and what
-    is yours to judge: whether the schema declared is the RIGHT one for the property — a Hoare
-    triple annotated `invariant` can conform perfectly and still be mislabelled — and whether a
-    `freeform` justification is honest rather than a dodge.
 
 Be strict but concrete — never invent a defect you cannot pin to a specific theorem and reason. When
 the spec faithfully and non-trivially captures the code and the informal spec, write {"defects": []}.
@@ -450,7 +418,7 @@ numeric search to try to falsify it here. PROVE owns refutation: it can produce 
 counterexample and record it in `prove/refutations.json`, which is evidence this stage cannot
 produce and the harness cannot consume from you. Your leverage is reading the statement against the
 translation, which is cheap; a search is expensive and its result lands nowhere.
-""" + WORKSPACE + docs.FOR_SPEC_JUDGE
+""" + WORKSPACE
 
 
 # ── PROVE ──────────────────────────────────────────────────────────────────────

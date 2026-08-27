@@ -98,13 +98,13 @@ def _run_judge(deps: AgentDeps, *, stage: str, briefing: str, prompt: str, verdi
         return {"defects": []}
 
 
-def _format_schema_failures(bad: list) -> str:
-    """One line per conformance failure, naming the RULE that broke. The whole value of gating on
-    conformance rather than judgment is that the retry message is mechanical enough for FORMALISE to
-    act on without a judge interpreting it, so the rule name is not optional decoration."""
+def _format_gate_findings(bad: list) -> str:
+    """One line per blocking finding, naming the CHECK and the RULE. The whole value of gating
+    mechanically rather than through a judge is that the critique is specific enough for FORMALISE to
+    act on unaided, so neither name is optional decoration."""
     return "\n".join(
-        f"  - {b.get('theorem', '?')} [declared: {b.get('schema', '?')}] "
-        f"broke rule `{b.get('rule', '?')}`: {b.get('detail', '')}"
+        f"  - {b.get('theorem', '?')} [{b.get('check', '?')}, declared: {b.get('schema', '?')}] "
+        f"{b.get('rule', '?')}: {b.get('detail', '')}"
         for b in bad)
 
 
@@ -319,16 +319,15 @@ def _stage_formalise(deps: AgentDeps) -> None:
         if not lean.build(deps).get("success"):
             err = deps.progress.get("lean_build", {}).get("stderr", "")
             return False, "the theorem STATEMENTS do not compile (you still write NO proofs):\n" + err[-1500:]
-        # SCHEMA CONFORMANCE — after the compile gate (attributes are read from the built olean) and
-        # before the judge (so SPEC-JUDGE spends its attention on semantics, not on shape). The one
-        # mechanical check the harness runs itself: a theorem failing the schema it DECLARED is a
-        # fact, so the retry is mechanical. Off by default — see config.SCHEMA_GATE.
-        if config.SCHEMA_GATE:
-            bad = lean.check_schemas(deps, impl)
-            if bad:
-                return False, ("these theorems do not conform to the schema they declare "
-                               "(annotate a supporting lemma `@[lusterna_freeform \"why\"]`):\n"
-                               + _format_schema_failures(bad))
+        # THE SPEC GATE — after the compile gate (attributes are read from the built olean) and
+        # before the judge, which is then free to spend its attention on semantics rather than shape.
+        # Unconditional: these are facts about a theorem's declared form, so there is nothing for a
+        # judge to weigh, and a gate an agent can discover is optional is not a gate.
+        if bad := lean.check_spec_gate(deps, impl):
+            return False, ("the mechanical spec gate rejected these theorems — fix them and "
+                           "resubmit (a supporting lemma declares `@[lusterna_freeform \"why\"]`, "
+                           "which is out of scope for the shape rules):\n"
+                           + _format_gate_findings(bad))
         verdict = _run_judge(
             deps, stage="SPEC-JUDGE", briefing=briefings.SPEC_JUDGE,
             prompt=(f"Judge the theorem STATEMENTS in /workspace/out/{impl} against the translation "
