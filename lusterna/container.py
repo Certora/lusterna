@@ -34,9 +34,28 @@ def run_branch(session_id: str) -> str:
 
 
 def _link_out(container_id: str) -> None:
-    """Point the stable /workspace/out path at verification/ inside the one repo (the image does not
-    pre-create /workspace/out, so this is the sole thing that establishes the path)."""
-    exec_in(container_id, ["ln", "-s", VERIF_IN, OUT_IN])
+    """Point the stable /workspace/out path at verification/ inside the one repo.
+
+    OUT_IN MUST END UP A SYMLINK, and it is verified here rather than assumed. The image DOES
+    pre-create it (`RUN mkdir -p /workspace/repo /workspace/out`), so a bare `ln -s VERIF_IN OUT_IN`
+    silently lands the link INSIDE the existing directory as `/workspace/out/verification` — leaving
+    OUT_IN a real directory that is not the repo. Everything then still works, which is what makes
+    it dangerous: `write_out`/`read_out`/`setup_lake`/`analyze_translation` all agree on OUT_IN, so a
+    whole run translates, specs and judges normally while `git add -A` in REPO_IN sees none of it and
+    the exported branch carries an EMPTY verification/ — a complete run delivering nothing.
+
+    `ln -sfn` alone is not the fix: `-n` only stops it descending into a path that is itself a
+    SYMLINK to a directory, and here OUT_IN is a real one. So clear it first (`rm -f` for a
+    symlink/file, `rmdir` for the empty directory the image ships) and then assert the result."""
+    exec_in(container_id, ["sh", "-c",
+                           f"rm -f {OUT_IN} 2>/dev/null; rmdir {OUT_IN} 2>/dev/null; "
+                           f"ln -sfn {VERIF_IN} {OUT_IN}"])
+    # "clean must mean checked": a nested link leaves no error behind, so read the result back.
+    code, out, _ = exec_in(container_id, ["readlink", OUT_IN])
+    if code != 0 or out.strip() != VERIF_IN:
+        raise RuntimeError(
+            f"{OUT_IN} is not a symlink to {VERIF_IN} (readlink gave {out.strip()!r}). Every "
+            f"artefact the harness writes would land outside the git repo and be lost on export.")
 
 
 def _write_excludes(container_id: str) -> None:
