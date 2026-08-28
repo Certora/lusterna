@@ -28,6 +28,7 @@ import json
 import re
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -69,8 +70,8 @@ EXPECTED = {
     # t2 is the motivating case: nothing local separates it from the honest version, since the
     # execution is real and `Pre x s` genuine. The finding must carry "is_conclusion": true.
     ("assumed_postcondition", "Probe.Taint.t2_assumes_its_own_conclusion"),
-    # taint closes through the alias `hz : z = s'.var`, and the finding lands on `hz2 : 0 < z` —
-    # ONE finding, not two: the alias only carries the taint, it is not itself the cheat.
+    # taint closes through the alias `hz : z = s'.var`, and it fires on BOTH the alias (which carries
+    # the taint) and `hz2 : 0 < z` (what it enables) — TWO findings, pinned in EXPECTED_COUNTS.
     ("assumed_postcondition", "Probe.Taint.t3_closed_taint"),
     # KNOWN FALSE POSITIVES, both accepted and pinned. Injectivity's `hab : sa = sb` is a
     # hypothesis about two runs' outputs by construction; a bound on
@@ -194,8 +195,9 @@ EXPECTED_SCHEMA_RULES = {
 # measurement in the conclusion (the prescribed fix for t6), the triple, and a target re-run with
 # the target DECLARED as its own continuation.
 #
-# Several Taint theorems fire more than once (t3's alias plus what it enables, t19's two aliases),
-# so the finding COUNT exceeds the number of EXPECTED rows.
+# Several Taint theorems fire more than once (t3's alias plus what it enables, t19's two aliases,
+# t26's two subjects producing the same output), so the finding COUNT exceeds the number of EXPECTED
+# rows. The exact multiplicities are pinned per theorem in EXPECTED_COUNTS.
 #
 # b16/b17/b18 (proof and implicit-type arguments) are absent on purpose — a proof term is not an
 # input, and an implicit type is reached through the other binders' types; both must stay clean.
@@ -203,6 +205,55 @@ EXPECTED_SCHEMA_RULES = {
 # `PureNat`/`GoodConj`/`GoodTriple`-style controls are likewise absent — clean is correct.
 EXPECTED_FINDING_COUNT = 55   # assumed_postcondition's 32 + invariant_not_strict's 9
                               # + schema_conformance's 14 (12 + precedence + extraneous-hypothesis)
+
+# ── Attribute-level expectations (beyond membership) ─────────────────────────────────────────────
+# Membership pins WHICH theorems fire; these pin the rest. A regression that keeps the same theorems
+# firing but changes WHY/HOW — a real fail-open defect silently downgraded to "cannot certify", a
+# finding migrated to the wrong hypothesis, or two findings collapsing into one — passes a
+# membership-only check. These close that gap.
+
+# `invariant_not_strict` carries its severity in the `reason` field: `fail_open` = a Result value is
+# genuinely handed to something that can drop its failure (a real defect); `not_certified` = the walk
+# could not certify (no evidence of a defect). Silently swapping one for the other is a verdict change.
+EXPECTED_INVARIANT_SEVERITY = {
+    "Probe.Inv.Spec.i11_sum_open":  "fail_open",
+    "Probe.Inv.Spec.i12_match_res": "fail_open",
+    "Probe.Inv.Spec.i13_ite_okq":   "fail_open",
+    "Probe.Inv.Spec.i14_let_res":   "fail_open",
+    "Probe.Inv.Spec.i15_deep":      "fail_open",
+    "Probe.Inv.Spec.i16_cap_bad":   "fail_open",
+    "Probe.Inv.Spec.i17_opaque":    "not_certified",
+    "Probe.Inv.Spec.i18_partial":   "not_certified",
+    "Probe.Inv.Spec.i19_foldm":     "not_certified",
+}
+
+# `assumed_postcondition`'s `is_conclusion: true` marks the strongest form — a hypothesis that
+# restates the CONCLUSION itself (closed by `exact hvar`). Only t2 and t18 qualify; every other
+# finding is hypothesis-side. Pinned both ways (a control `false`) so a mis-classification in either
+# direction is caught.
+EXPECTED_IS_CONCLUSION = {
+    "Probe.Taint.t2_assumes_its_own_conclusion": True,
+    "Probe.Taint.t18_alias_is_the_cheat":        True,
+    "Probe.Taint.t15_success_on_post_state":     False,
+    "Probe.Taint.t28_predicate_hides_antecedent": False,
+}
+
+# Per-(check, theorem) finding counts. Any EXPECTED key not listed here must fire EXACTLY once; the
+# ones below fire more. This pins the COMPOSITION of the total, so a finding migrating between two
+# EXPECTED theorems (which leaves the scalar total unchanged) is caught.
+EXPECTED_COUNTS = {
+    ("assumed_postcondition", "Probe.Taint.t3_closed_taint"):                2,
+    ("assumed_postcondition", "Probe.Taint.t19_two_alias_reconstruction"):   2,
+    ("assumed_postcondition", "Probe.Taint.t26_shared_output_between_subjects"): 2,
+}
+
+# For the twice-firing taint theorems, the DISTINCT hypotheses each fires on (substring match, robust
+# to pretty-printer spacing). Pins that the two findings land on the two right binders — so a collapse
+# to one, or a shift onto the wrong binder, is caught at the attribute level, not just by the count.
+EXPECTED_HYPOTHESES = {
+    ("assumed_postcondition", "Probe.Taint.t3_closed_taint"):              {"z = s'.var", "0 < z"},
+    ("assumed_postcondition", "Probe.Taint.t19_two_alias_reconstruction"): {"z = s'.var", "z = s.var"},
+}
 
 # `assumed_postcondition` only — (theorem, subjects, continuations). It must be told which functions
 # are under test, so it runs on the Taint module with an explicit subject.
@@ -439,11 +490,52 @@ def run_fixture() -> int:
             print("\nWRONG RULE (theorem: got, expected):")
             for k, (got, exp) in sorted(rule_bad.items()):
                 print(f"  {k}: {got!r} != {exp!r}")
+
+        # ── attribute-level assertions (severity / is_conclusion / per-theorem count / hypothesis) ──
+        sev = {f["theorem"]: f.get("reason") for f in findings if f["check"] == "invariant_not_strict"}
+        sev_bad = {k: (sev.get(k), v) for k, v in EXPECTED_INVARIANT_SEVERITY.items() if sev.get(k) != v}
+        if sev_bad:
+            print("\nWRONG SEVERITY (theorem: got, expected):")
+            for k, (got, exp) in sorted(sev_bad.items()):
+                print(f"  {k}: {got!r} != {exp!r}")
+
+        isc_bad = {}
+        for f in findings:
+            if f["check"] == "assumed_postcondition" and f["theorem"] in EXPECTED_IS_CONCLUSION:
+                exp = EXPECTED_IS_CONCLUSION[f["theorem"]]
+                if f.get("is_conclusion") != exp:
+                    isc_bad[f["theorem"]] = (f.get("is_conclusion"), exp)
+        if isc_bad:
+            print("\nWRONG is_conclusion (theorem: got, expected):")
+            for k, (got, exp) in sorted(isc_bad.items()):
+                print(f"  {k}: {got!r} != {exp!r}")
+
+        counts = Counter((f["check"], f.get("theorem") or f.get("predicate", "?")) for f in findings)
+        count_bad = {k: (counts.get(k, 0), EXPECTED_COUNTS.get(k, 1))
+                     for k in EXPECTED if counts.get(k, 0) != EXPECTED_COUNTS.get(k, 1)}
+        if count_bad:
+            print("\nWRONG per-theorem count (key: got, expected):")
+            for k, (got, exp) in sorted(count_bad.items()):
+                print(f"  {k}: {got} != {exp}")
+
+        hyp_bad = {}
+        for k, subs in EXPECTED_HYPOTHESES.items():
+            hyps = [f.get("hypothesis", "") for f in findings
+                    if (f["check"], f.get("theorem")) == k]
+            missing_subs = [s for s in subs if not any(s in h for h in hyps)]
+            if missing_subs:
+                hyp_bad[k] = (missing_subs, hyps)
+        if hyp_bad:
+            print("\nMISSING HYPOTHESIS (key: expected-substrings not found, got):")
+            for k, (subs, hyps) in sorted(hyp_bad.items()):
+                print(f"  {k}: {subs} not in {hyps}")
+
         skip_ok = got_skipped == EXPECTED_SKIPPED and len(skipped) == len(EXPECTED_SKIPPED)
         count_ok = len(findings) == EXPECTED_FINDING_COUNT
         if not count_ok:
             print(f"\nCOUNT MISMATCH: got {len(findings)}, expected {EXPECTED_FINDING_COUNT}")
-        ok = not (missing or spurious or rule_bad) and skip_ok and count_ok
+        ok = (not (missing or spurious or rule_bad or sev_bad or isc_bad or count_bad or hyp_bad)
+              and skip_ok and count_ok)
         print("\nPASS" if ok else "\nFAIL")
         return 0 if ok else 1
     finally:
