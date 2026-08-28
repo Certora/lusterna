@@ -339,8 +339,6 @@ def stub_proofs(text: str) -> str:
     return "\n".join(out)
 
 
-_STD_AXIOMS = {"propext", "Classical.choice", "Quot.sound"}  # the standard, trusted Lean axioms
-
 
 def _run_lean_checker(deps: AgentDeps, body: str, rel: str) -> tuple[int, str]:
     """Elaborate a THROWAWAY top-level Lean file (BODY) with `lake env lean`, against the already-built
@@ -401,12 +399,12 @@ def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
         `assumed`. With no assumptions module present, `assumed` is empty and this reduces exactly to
         the prior binary clean/tainted gate.
 
-    Mechanism: write a throwaway checker that IMPORTS the already-built `Spec.olean` and
-    runs `#print axioms` against it, then elaborate just that checker with `lake env lean`.
-    The spec is never re-elaborated — no proofs (or `native_decide`) rerun, and imports
-    resolve from the compiled artifacts the pipeline already built. The checker is deleted
-    afterwards. (Re-elaborating the spec from source instead is fragile: one import or
-    proof failure auto-`sorry`s every declaration and taints the whole batch.)
+    Mechanism (MetaM): a throwaway driver IMPORTS the already-built `Spec.olean` + the checker and
+    calls `checkAxioms`, which runs `Lean.collectAxioms` — the EXACT function `#print axioms` calls —
+    over each theorem and classifies it in Lean, emitting one record per theorem. The spec is never
+    re-elaborated (no proofs or `native_decide` rerun), and there is no text-parse layer: the verdict
+    is the kernel's own axiom set, not a parse of its pretty-printed output. A theorem the driver
+    never reaches leaves no record and is conservatively tainted (unresolved).
     """
     original = tools.read_out(deps, spec_rel)
     if original.startswith("ERROR:"):
@@ -414,38 +412,47 @@ def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
     names = _theorem_names(original)
     if not names:
         return _empty_axioms()
-    # Query `#print axioms` by the NAMESPACE-QUALIFIED name (parallel to `names`) — a bare name
-    # inside `namespace Foo` is `Unknown constant` and would taint every theorem.
+    # Query by the NAMESPACE-QUALIFIED name (parallel to `names`) — the constant name `collectAxioms`
+    # needs; a bare name inside `namespace Foo` would not resolve.
     qnames = _theorem_qualified_names(original)
 
     # spec_rel = lean/<Lib>/Spec.lean  →  spec module <Lib>.Spec (matches the lean_lib root)
     parts = tools._norm_out(spec_rel).split("/")
     if len(parts) < 3 or parts[0] != "lean":
         return _empty_axioms(f"ERROR: unexpected spec path {spec_rel!r}")
-    spec_module = ".".join(parts[1:]).removesuffix(".lean")
+    lib, spec_module = parts[1], ".".join(parts[1:]).removesuffix(".lean")
 
-    # Query `#print axioms` by qualified name, parse the verdicts keyed by that full qname, then map
-    # back to theorems (see _run_lean_checker / _parse_axiom_verdicts). A qname absent from the parse
-    # (`verdict.get` → None) is UNRESOLVED — the checker couldn't read it back — conservatively tainted.
-    body = f"import {spec_module}\n\n" + "\n".join(f"#print axioms {n}" for n in qnames) + "\n"
-    _, text = _run_lean_checker(deps, body, "_axiom_check.lean")
-    if text.startswith("ERROR:"):
-        return _empty_axioms(text)
-    verdict = _parse_axiom_verdicts(text)
     declared = declared_assumptions(deps)   # the trusted base — declared `axiom`s in the module
+    qlist = ", ".join("`" + q for q in qnames)
+    dlist = ", ".join("`" + d for d in sorted(declared))
+    body = (f"import {spec_module}\nimport {lib}.{_LINT_TOOL_NAME.removesuffix('.lean')}\n"
+            "open Lusterna.Checks\n"
+            "#eval show Lean.Meta.MetaM Unit from do\n"
+            f"  checkAxioms #[{qlist}] #[{dlist}]\n"
+            f'  IO.println "{_GATE_DONE}"\n')
+    code, text = _run_lean_checker(deps, body, "_axiom_check.lean")
+    if text.startswith("ERROR:") or not _driver_ran(text):
+        # The driver died — nothing was established. Conservative + loud: every theorem is tainted
+        # (unresolved), never silently reported clean.
+        log.warning("check_axioms: driver did not finish (rc=%s) — every theorem conservatively "
+                    "tainted. Lean output tail:\n%s", code, text[-1200:])
+        return {"clean": [], "assumed": {}, "tainted": list(names), "raw": text[-3000:]}
+    # Records keyed by the qualified name the checker classified; a qname with no record is UNRESOLVED
+    # (the driver never reached it) — conservatively tainted.
+    recs = {r.get("theorem"): r for r in _parse_check_records(text) if r.get("check") == "axioms"}
     clean, assumed, tainted, unresolved = [], {}, [], []
     for written, qual in zip(names, qnames):    # parallel lists, same order
-        axset = verdict.get(qual)
-        if axset is None:                        # the checker couldn't read this one back
+        r = recs.get(qual)
+        if r is None:                            # the checker never classified this one
             tainted.append(written)
             unresolved.append(written)
             continue
-        non_std = axset - _STD_AXIOMS
-        if not non_std:                          # standard axioms only
+        status = r.get("status")
+        if status == "clean":
             clean.append(written)
-        elif non_std <= declared:                # rests only on declared trusted assumptions
-            assumed[written] = sorted(non_std)
-        else:                                    # sorryAx / native_decide / an UNdeclared axiom
+        elif status == "assumed":                # rests only on declared trusted assumptions
+            assumed[written] = sorted(r.get("used", []))
+        else:                                    # tainted: sorryAx / native_decide / undeclared axiom
             tainted.append(written)
     if unresolved:
         # Not a soundness signal — the checker couldn't read these back. Surface it loudly

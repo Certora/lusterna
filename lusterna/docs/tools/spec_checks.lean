@@ -39,6 +39,7 @@ hypothesis constraining the post-state are not — while injectivity is a known 
 `@[lusterna_freeform]` instead).
 -/
 import Aeneas
+import Lean.Util.CollectAxioms   -- `Lean.collectAxioms`, the exact function `#print axioms` uses
 -- `LUSTERNA_CRATE` is substituted with the crate's lib name by `lean._write_lint_tool`. The
 -- schemas file is a SUBMODULE of the crate lib (the lakefile globs `.andSubmodules <lib>` and
 -- nothing else), so its module path is necessarily crate-specific and cannot be hardcoded in
@@ -1293,6 +1294,32 @@ what an assumption MAY mention) AND, when explicit target patterns are given, it
 a dotted suffix. Empty *targets* is WHOLE-CRATE mode: every crate `def` is a target, so no assumption
 about crate code passes. This mirrors `lean.target_defs` per mode, so the verdict matches the text
 gate it replaces while catching the references that gate could not see. -/
+/-! ══ `axioms` — the AUTHORITATIVE established-vs-tainted verdict ═════════════════════════════════
+
+`Lean.collectAxioms` is the EXACT function `#print axioms` calls (`Lean.Elab.Print`:
+`let axioms ← collectAxioms constName`), so this is the canonical kernel result, not a parse of its
+pretty-printed text. For each theorem it returns the sorted axioms the proof transitively depends on;
+we classify:
+  • `clean`   — only the standard trusted axioms (`propext`, `Classical.choice`, `Quot.sound`);
+  • `assumed` — only standard + DECLARED trusted assumptions (the axioms passed in `declared`), whose
+    names are listed in `used` so the caller can bind each result to its trusted base;
+  • `tainted` — anything else: a `sorryAx` (an open `sorry` or an untranslated Aeneas hole),
+    native_decide's compiler-trust axioms, or an UNdeclared axiom.
+Emits one `LUSTERNA_CHECK {check:"axioms", …}` record per theorem; a theorem the driver never reaches
+leaves no record, which the caller treats as unresolved → tainted (fail-closed). -/
+def stdAxioms : Array Name := #[``propext, ``Classical.choice, ``Quot.sound]
+
+def checkAxioms (thms : Array Name) (declared : Array Name) : MetaM Unit := do
+  for t in thms do
+    let axs ← Lean.collectAxioms t
+    let nonStd := axs.filter (fun a => !stdAxioms.contains a)
+    let status :=
+      if nonStd.isEmpty then "clean"
+      else if nonStd.all (fun a => declared.contains a) then "assumed"
+      else "tainted"
+    let used := String.intercalate ", " (nonStd.toList.map (fun a => "\"" ++ toString a ++ "\""))
+    emit s!"\{\"check\": \"axioms\", \"theorem\": \"{t}\", \"status\": \"{status}\", \"used\": [{used}]}"
+
 def checkAssumptionLegitimacy (axioms : Array Name) (targets : Array Name) : MetaM Unit := do
   let env ← getEnv
   let isCrateDef (c : Name) : MetaM Bool := do
