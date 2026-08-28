@@ -142,12 +142,12 @@ _LINT_TOOL_NAME = "LusternaChecks.lean"
 _SCHEMA_TOOL_NAME = "LusternaSchemas.lean"
 _HARNESS_OWNED_LEAN = {"lakefile.lean", _LINT_TOOL_NAME, _SCHEMA_TOOL_NAME}
 
-_LINT_TOOL_SRC = (Path(__file__).parent / "docs" / "tools" / "spec_checks.lean").read_text()
-_SCHEMA_TOOL_SRC = (Path(__file__).parent / "docs" / "tools" / "spec_schemas.lean").read_text()
+_LINT_TOOL_SRC = (Path(__file__).parent / "checks" / "spec_checks.lean").read_text()
+_SCHEMA_TOOL_SRC = (Path(__file__).parent / "checks" / "spec_schemas.lean").read_text()
 
 
 def _write_lint_tool(deps: AgentDeps, lean_out_dir: str, lib_name: str) -> None:
-    """Copy the standalone mechanical-checks tool (`docs/tools/spec_checks.lean`) into this
+    """Copy the standalone mechanical-checks tool (`checks/spec_checks.lean`) into this
     crate's own lean tree, at `lean/<lib_name>/LusternaChecks.lean` — module
     `<lib_name>.LusternaChecks`. It only depends on Aeneas (crate-agnostic), so it compiles
     unchanged for every crate; placing it under the crate's own lib means `lake build` picks it
