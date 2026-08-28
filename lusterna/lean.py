@@ -357,21 +357,6 @@ def _run_lean_checker(deps: AgentDeps, body: str, rel: str) -> tuple[int, str]:
     return code, f"{out}\n{err}"
 
 
-_AXIOM_VERDICT_RE = re.compile(
-    r"'([\w.]+)' (?:(does not depend on any axioms)|depends on axioms: \[(.*?)\])", re.DOTALL)
-
-
-def _parse_axiom_verdicts(text: str) -> dict[str, set[str]]:
-    """Parse `#print axioms` output into {fully-qualified name → its axiom-name set} (empty set = "does
-    not depend on any axioms"). Keyed by the FULL qualified name the checker printed, NEVER the last
-    dotted component: dotted theorem names (`mint_shares.spec`, `deposit.spec`, …) collide on their
-    tail (`spec`) and would silently inherit one another's verdict. Lean wraps a long axiom list across
-    lines, so the regex is DOTALL and the list is re-joined before splitting."""
-    return {m.group(1): (set() if m.group(2)
-                         else {a.strip() for a in m.group(3).replace("\n", " ").split(",") if a.strip()})
-            for m in _AXIOM_VERDICT_RE.finditer(text)}
-
-
 def _empty_axioms(raw: str = "") -> dict:
     """The empty check_axioms result — the canonical 3-way shape every early return and every caller
     relies on (nothing clean/assumed/tainted). Keeping it in one place stops an early return from
@@ -966,21 +951,29 @@ def verify_refutations(deps: AgentDeps) -> list[str]:
         log.warning("verify_refutations: project does not compile with %s — no refutation honored", rmod)
         return []
     rmodule, smodule = _module_of(rmod), _module_of(spec)
-    if not rmodule or not smodule:
+    lib = _crate_stem(deps)
+    if not rmodule or not smodule or not lib:
         return []
-    # One checker does both gates: a type-tie `example : False := <ref> <orig>` per refutation (forces
-    # the negation to the EXACT statement) plus a `#print axioms` on each (purity — no `sorryAx`).
+    # Two gates in one driver: the TYPE-TIE `example : False := <ref> <orig>` per refutation is
+    # enforced by the driver COMPILING (it forces the negation to the EXACT statement — all-or-nothing,
+    # so any tie failure fails the file and honours nothing), and PURITY (no `sorryAx`) is decided by
+    # `refutationPurity` via `collectAxioms`, emitted as records.
     ties = "\n".join(f"example : False := {ref_q} {orig_q}" for _, ref_q, orig_q in checks)
-    prints = "\n".join(f"#print axioms {ref_q}" for _, ref_q, _ in checks)
-    body = f"import {smodule}\nimport {rmodule}\n\n{ties}\n\n{prints}\n"
+    reflist = ", ".join(f"`{ref_q}" for _, ref_q, _ in checks)
+    body = (f"import {smodule}\nimport {rmodule}\nimport {lib}.{_LINT_TOOL_NAME.removesuffix('.lean')}\n"
+            "open Lusterna.Checks\n\n"
+            f"{ties}\n\n"
+            "#eval show Lean.Meta.MetaM Unit from do\n"
+            f"  refutationPurity #[{reflist}]\n"
+            f'  IO.println "{_GATE_DONE}"\n')
     code, text = _run_lean_checker(deps, body, "_refutation_check.lean")
-    if code != 0 or "error:" in text:
+    if code != 0 or not _driver_ran(text):
         log.warning("verify_refutations: type-tie/checker did not compile — no refutation honored "
                     "(a refutation must prove ¬ the EXACT statement). Lean tail:\n%s", text[-1200:])
         return []
-    axset = _parse_axiom_verdicts(text)
-    refuted = [target for target, ref_q, _ in checks
-               if ref_q in axset and "sorryAx" not in axset[ref_q]]
+    pure_lemmas = {r.get("lemma") for r in _parse_check_records(text)
+                   if r.get("check") == "refutation" and r.get("pure") is True}
+    refuted = [target for target, ref_q, _ in checks if ref_q in pure_lemmas]
     if refuted:
         log.info("verify_refutations: %d theorem(s) mechanically REFUTED (false as stated): %s",
                  len(refuted), refuted)

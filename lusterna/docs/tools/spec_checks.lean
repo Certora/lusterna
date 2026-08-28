@@ -1320,6 +1320,16 @@ def checkAxioms (thms : Array Name) (declared : Array Name) : MetaM Unit := do
     let used := String.intercalate ", " (nonStd.toList.map (fun a => "\"" ++ toString a ++ "\""))
     emit s!"\{\"check\": \"axioms\", \"theorem\": \"{t}\", \"status\": \"{status}\", \"used\": [{used}]}"
 
+/-- Purity half of the refutation gate: a `<name>__refuted` lemma is a real proof of the negation
+only if `collectAxioms` shows NO `sorryAx` (`native_decide`'s trust IS allowed — a refutation is a
+concrete finite counterexample, not a general proof). The type-tie half (`example : False := ref
+orig`, forcing the negation to the EXACT statement) is enforced by the driver COMPILING, so this only
+reports purity. Emits `{check:"refutation", lemma, pure}` per lemma. -/
+def refutationPurity (refs : Array Name) : MetaM Unit := do
+  for r in refs do
+    let axs ← Lean.collectAxioms r
+    emit s!"\{\"check\": \"refutation\", \"lemma\": \"{r}\", \"pure\": {!axs.contains ``sorryAx}}"
+
 def checkAssumptionLegitimacy (axioms : Array Name) (targets : Array Name) : MetaM Unit := do
   let env ← getEnv
   let isCrateDef (c : Name) : MetaM Bool := do
