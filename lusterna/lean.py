@@ -477,6 +477,42 @@ _GATE_CHECKS = {"schema_conformance", "assumed_postcondition", "invariant_not_st
 _GATE_DONE = "LUSTERNA_GATE_DONE"
 
 
+# ── ONE record protocol, ONE parser ──────────────────────────────────────────────────────────────
+# Every MetaM check emits `LUSTERNA_CHECK {json}` / `LUSTERNA_CHECK_SKIPPED {json}` and the driver
+# prints the `_GATE_DONE` sentinel last. These three helpers are the SOLE reader every gate uses, so
+# the fail-closed convention lives in one place: a driver that did not reach the sentinel established
+# NOTHING, which is never "clean".
+def _driver_ran(text: str) -> bool:
+    """The driver reached its end (printed `_GATE_DONE`). `False` means it died mid-run — the
+    conservative, blocking case: silence without the sentinel is "could not check", never "clean"."""
+    return _GATE_DONE in text
+
+
+def _parse_check_records(text: str) -> list[dict]:
+    """Every `LUSTERNA_CHECK {json}` record the driver emitted. A line that will not parse is dropped
+    — a record the harness cannot read is not a finding it can act on (and `_driver_ran` already
+    guards the case where the driver produced nothing at all)."""
+    out: list[dict] = []
+    for m in _CHECK_LINE_RE.finditer(text):
+        try:
+            out.append(json.loads(m.group(1)))
+        except ValueError:
+            continue
+    return out
+
+
+def _parse_skip_records(text: str) -> list[dict]:
+    """Every `LUSTERNA_CHECK_SKIPPED {json}` record — a declaration a check did NOT run on while the
+    finding list still looks complete. Honoured as blocking by callers, never dropped on the floor."""
+    out: list[dict] = []
+    for m in _SKIP_LINE_RE.finditer(text):
+        try:
+            out.append(json.loads(m.group(1)))
+        except ValueError:
+            continue
+    return out
+
+
 def _target_name_forms(patterns: list[str]) -> list[str]:
     """The dotted-suffix forms an INFER `target_patterns` entry can actually match in generated Lean.
 
@@ -574,7 +610,7 @@ def check_spec_gate(deps: AgentDeps, spec_rel: str) -> list[dict]:
     code, text = _run_lean_checker(deps, body, "_spec_gate.lean")
     if text.startswith("ERROR:"):
         return [{"theorem": "?", "schema": "?", "rule": "could_not_check", "detail": text}]
-    if _GATE_DONE not in text:
+    if not _driver_ran(text):
         # NOT "clean". The driver never reached the end, so nothing was established. Conservative
         # and loud, the same way check_axioms treats an unresolved theorem.
         log.warning("check_spec_gate: driver did not finish (rc=%s) — treating as could-not-check, "
@@ -582,22 +618,14 @@ def check_spec_gate(deps: AgentDeps, spec_rel: str) -> list[dict]:
         return [{"theorem": "?", "schema": "?", "rule": "could_not_check",
                  "detail": f"the conformance driver did not finish; last output:\n{text[-800:]}"}]
     out: list[dict] = []
-    for m in _CHECK_LINE_RE.finditer(text):
-        try:
-            rec = json.loads(m.group(1))
-        except ValueError:
-            continue
+    for rec in _parse_check_records(text):
         if rec.get("check") in _GATE_CHECKS:
             out.append({"check": rec.get("check", "?"),
                         **{k: rec.get(k, "?") for k in ("theorem", "schema", "rule", "detail")}})
     # A SKIPPED record names a theorem that went UNCHECKED. Honouring it here is the same rule
     # tests/checklean/verify.py pins for the judge-facing path: "clean" must never mean "never ran",
     # so a skip BLOCKS rather than being dropped on the floor.
-    for m in _SKIP_LINE_RE.finditer(text):
-        try:
-            rec = json.loads(m.group(1))
-        except ValueError:
-            continue
+    for rec in _parse_skip_records(text):
         if rec.get("check") in _GATE_CHECKS:
             out.append({"check": rec.get("check", "?"), "theorem": rec.get("theorem", "?"),
                         "schema": rec.get("schema", "?"), "rule": "could_not_check",
@@ -862,18 +890,14 @@ def legitimacy_check(deps: AgentDeps, translation: str) -> list[dict]:
             f"  checkAssumptionLegitimacy #[{axlist}] #[{tlist}]\n"
             f'  IO.println "{_GATE_DONE}"\n')
     code, text = _run_lean_checker(deps, body, "_legitimacy_check.lean")
-    if text.startswith("ERROR:") or _GATE_DONE not in text:
+    if text.startswith("ERROR:") or not _driver_ran(text):
         log.warning("legitimacy_check: driver did not finish (rc=%s) — FAILING CLOSED, the whole "
                     "trusted base is rejected. Lean tail:\n%s", code, text[-1200:])
         return [{"axiom": _LEGIT_TAINT_ALL, "targets": [],
                  "reason": "the legitimacy driver did not finish; the trusted base could not be "
                            "certified admissible, so it is rejected"}]
     out: list[dict] = []
-    for m in _CHECK_LINE_RE.finditer(text):
-        try:
-            rec = json.loads(m.group(1))
-        except ValueError:
-            continue
+    for rec in _parse_check_records(text):
         if rec.get("check") == "assumption_legitimacy":
             out.append({"axiom": rec.get("axiom", "?"), "targets": rec.get("targets", []),
                         "reason": rec.get("reason", "")})
