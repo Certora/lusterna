@@ -1277,4 +1277,34 @@ def checkSpecGate (qn : Name) (targets : Array Name) : MetaM Nat := do
   let strict ← if schemas[0]! == "invariant" then checkInvariantTotality qn targets else pure 0
   return taint + strict
 
+/-! ══ `assumption_legitimacy` — the trusted base may not relax a goal ═════════════════════════════
+
+The declared trusted base (`axiom`s in `lean/<Crate>/Assumptions.lean`) may hold facts ONLY about the
+SUBSTRATE, never a property of a TARGET function under verification: a GOAL is a property OF a target,
+so an axiom that references a target could BE a goal, and admitting it would relax what must be proved.
+
+This walks each axiom's ELABORATED type for target references — robust where a text scan is not: a
+target reached through notation, a coercion, an `abbrev`, or a re-export is a real `.const` occurrence
+in the type and is caught, whereas the surface spelling need not contain the target's name at all.
+
+A referenced constant is a TARGET iff it is a project-local `def` (`isCrateDef` — a crate function,
+NOT a trusted-library constant and NOT an Aeneas-emitted `axiom`; the external substrate is exactly
+what an assumption MAY mention) AND, when explicit target patterns are given, its name carries one as
+a dotted suffix. Empty *targets* is WHOLE-CRATE mode: every crate `def` is a target, so no assumption
+about crate code passes. This mirrors `lean.target_defs` per mode, so the verdict matches the text
+gate it replaces while catching the references that gate could not see. -/
+def checkAssumptionLegitimacy (axioms : Array Name) (targets : Array Name) : MetaM Unit := do
+  let env ← getEnv
+  let isCrateDef (c : Name) : MetaM Bool := do
+    if ← isTrustedDecl c then return false
+    return match env.find? c with | some (.defnInfo _) => true | _ => false
+  for ax in axioms do
+    let some (.axiomInfo av) := env.find? ax | continue
+    let hits ← av.type.getUsedConstants.filterM fun c => do
+      if ← isCrateDef c then return targets.isEmpty || targets.any (nameHasSuffix c)
+      else return false
+    unless hits.isEmpty do
+      let tl := String.intercalate ", " (hits.toList.map (fun t => "\"" ++ toString t ++ "\""))
+      emit s!"\{\"check\": \"assumption_legitimacy\", \"axiom\": \"{ax}\", \"targets\": [{tl}], \"reason\": \"axiom `{ax}` references target function(s) it may not — the trusted base may hold facts only about the substrate, never a property of a target (that would relax a goal); prove it, do not assume it\"}"
+
 end Lusterna.Checks

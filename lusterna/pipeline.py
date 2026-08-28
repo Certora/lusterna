@@ -379,6 +379,10 @@ def _record_axioms(deps: AgentDeps) -> None:
     from pathlib import Path as _P
     translation = lean.translation_text(deps)
     bad = {v["axiom"] for v in lean.legitimacy_check(deps, translation)}   # fail-closed set
+    # `_LEGIT_TAINT_ALL` ("*") means legitimacy could not be certified at all (a driver failure): the
+    # trusted base is rejected wholesale, so EVERY assumed theorem is demoted to tainted, never
+    # honoured on faith. A specific axiom name means only theorems leaning on it are demoted.
+    taint_all_assumed = lean._LEGIT_TAINT_ALL in bad
     clean, assumed, tainted = [], {}, []
     impl_verified, impl_verified_assumed, abstract_only = [], [], []
     for mod in lean.spec_modules(deps):
@@ -391,7 +395,7 @@ def _record_axioms(deps: AgentDeps) -> None:
             dst.append(f"{camp}::{n}")
         for n, used in ax["assumed"].items():
             q = f"{camp}::{n}"
-            if set(used) & bad:                          # leans on an inadmissible axiom → fail-closed
+            if taint_all_assumed or (set(used) & bad):   # leans on an inadmissible axiom → fail-closed
                 tainted.append(q)
                 continue
             assumed[q] = used

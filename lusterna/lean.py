@@ -819,35 +819,65 @@ def target_defs(deps: AgentDeps, translation: str) -> set[str]:
     return {d for d in defs if any(d == p or d.endswith("." + p) for p in pats)}
 
 
+_LEGIT_TAINT_ALL = "*"   # sentinel axiom name: could-not-check ⇒ the whole trusted base is rejected
+
+
 def legitimacy_check(deps: AgentDeps, translation: str) -> list[dict]:
     """Mechanical admissibility of the declared trusted base — NOT a proof-quality judgement. Returns
     one violation record `{"axiom": <qualified name>, "targets": [...], "reason": <str>}` per
-    illegitimate `axiom`; empty ⇒ the base is admissible. An axiom is illegitimate iff its statement
-    references a target function (`target_defs`): the trusted base may only ever hold facts about the
-    substrate, never a property of the code under verification — so a GOAL (a property OF a target)
-    can never be admitted. Keyed by the fully-qualified name, so callers can fail-closed by matching
-    it against the `assumed` dependency lists from `check_axioms`. (A rogue `axiom` declared OUTSIDE
-    this module is not in `declared_assumptions`, so `check_axioms` already taints anything leaning on
-    it — this checker guards the in-module declarations.)"""
+    illegitimate `axiom`; empty ⇒ the base is admissible. An axiom is illegitimate iff its type
+    references a target function: the trusted base may only ever hold facts about the substrate, never
+    a property of the code under verification — so a GOAL (a property OF a target) can never be
+    admitted. Keyed by the fully-qualified name, so callers fail-closed by matching it against the
+    `assumed` dependency lists from `check_axioms`. (A rogue `axiom` declared OUTSIDE this module is
+    not in `declared_assumptions`, so `check_axioms` already taints anything leaning on it.)
+
+    Mechanism (MetaM, replacing the former text scan): a throwaway driver imports the built assumptions
+    olean and calls `checkAssumptionLegitimacy` over EXACTLY the axioms `check_axioms` honours
+    (`declared_assumptions`), which walks each axiom's ELABORATED type — so a target reached through
+    notation, a coercion, an `abbrev`, or a re-export is caught, which the surface-text scan missed.
+    FAIL-CLOSED: if the driver does not finish (no sentinel), the base could not be certified
+    admissible, so the whole base is rejected via the `_LEGIT_TAINT_ALL` sentinel record — a caller
+    that fails open here would let an unchecked assumption relax a goal."""
     mod = assumptions_module(deps)
     if not mod:
         return []
-    text = tools.read_out(deps, mod)
-    if text.startswith("ERROR:"):
+    axioms = sorted(declared_assumptions(deps))
+    if not axioms:
         return []
-    targets = target_defs(deps, translation)
-    violations = []
-    # One walker yields (qualified name, statement block) already paired — no positional zip that a
-    # duplicate bare axiom name across namespaces could misalign.
-    for qual, block in _qualified_decls(text, r"axiom"):
-        hit = sorted(set(referenced_defs(block, translation)) & targets)
-        if hit:
-            violations.append({
-                "axiom": qual, "targets": hit,
-                "reason": (f"axiom `{qual}` references target function(s) {hit} — the trusted base "
-                           f"may not contain a property of the code under verification (that would "
-                           f"relax a GOAL); prove it, do not assume it")})
-    return violations
+    parts = tools._norm_out(mod).split("/")
+    if len(parts) < 3 or parts[0] != "lean":
+        return [{"axiom": _LEGIT_TAINT_ALL, "targets": [],
+                 "reason": f"unexpected assumptions path {mod!r}; base rejected fail-closed"}]
+    lib, assum_module = parts[1], ".".join(parts[1:]).removesuffix(".lean")
+    # Same target forms as `target_defs`: pattern suffixes, or EMPTY = whole-crate mode (every crate
+    # def is a target). The MetaM check applies the identical rule per mode, so the verdict matches.
+    targets = _target_name_forms(deps.progress.get("target_patterns", []))
+    axlist = ", ".join("`" + a for a in axioms)
+    tlist = ", ".join("`" + t for t in targets)
+    body = (f"import {assum_module}\nimport {lib}.{_LINT_TOOL_NAME.removesuffix('.lean')}\n"
+            "open Lusterna.Checks\n"
+            "set_option maxRecDepth 8000 in\n"
+            "#eval show Lean.Meta.MetaM Unit from do\n"
+            f"  checkAssumptionLegitimacy #[{axlist}] #[{tlist}]\n"
+            f'  IO.println "{_GATE_DONE}"\n')
+    code, text = _run_lean_checker(deps, body, "_legitimacy_check.lean")
+    if text.startswith("ERROR:") or _GATE_DONE not in text:
+        log.warning("legitimacy_check: driver did not finish (rc=%s) — FAILING CLOSED, the whole "
+                    "trusted base is rejected. Lean tail:\n%s", code, text[-1200:])
+        return [{"axiom": _LEGIT_TAINT_ALL, "targets": [],
+                 "reason": "the legitimacy driver did not finish; the trusted base could not be "
+                           "certified admissible, so it is rejected"}]
+    out: list[dict] = []
+    for m in _CHECK_LINE_RE.finditer(text):
+        try:
+            rec = json.loads(m.group(1))
+        except ValueError:
+            continue
+        if rec.get("check") == "assumption_legitimacy":
+            out.append({"axiom": rec.get("axiom", "?"), "targets": rec.get("targets", []),
+                        "reason": rec.get("reason", "")})
+    return out
 
 
 _REFUTATION_SUFFIX = "__refuted"

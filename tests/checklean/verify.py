@@ -169,6 +169,11 @@ EXPECTED = {
     ("schema_conformance", "Probe.Schemas.g4_invariant_with_side_condition"),
     # g2/g3 are absent deliberately — `freeform` puts the two documented false positives of
     # `assumed_postcondition` out of scope, which is what lets the shape rules block at all.
+
+    # ── Legit.lean: `assumption_legitimacy` ────────────────────────────────────────────────────
+    # deposit_monotone's type references the target `deposit` → flagged; limbMul_spec (substrate) is
+    # the clean control, absent here.
+    ("assumption_legitimacy", "Probe.Legit.deposit_monotone"),
 }
 
 # `schema_conformance`'s `rule` field is the whole point of the check — a finding that fires for the wrong reason
@@ -203,8 +208,9 @@ EXPECTED_SCHEMA_RULES = {
 # input, and an implicit type is reached through the other binders' types; both must stay clean.
 #
 # `PureNat`/`GoodConj`/`GoodTriple`-style controls are likewise absent — clean is correct.
-EXPECTED_FINDING_COUNT = 55   # assumed_postcondition's 32 + invariant_not_strict's 9
+EXPECTED_FINDING_COUNT = 56   # assumed_postcondition's 32 + invariant_not_strict's 9
                               # + schema_conformance's 14 (12 + precedence + extraneous-hypothesis)
+                              # + assumption_legitimacy's 1 (deposit_monotone)
 
 # ── Attribute-level expectations (beyond membership) ─────────────────────────────────────────────
 # Membership pins WHICH theorems fire; these pin the rest. A regression that keeps the same theorems
@@ -364,6 +370,10 @@ SCHEMA_THEOREMS = [(f"Probe.Schemas.{n}", ["Probe.Inv.transfer", "Probe.Schemas.
     "g4_invariant_with_side_condition", "g5_invariant_bare_is_clean",
 ]]
 
+# `assumption_legitimacy` — (assumption-module axioms to check, target patterns). `limbMul_spec` is
+# the substrate control (must stay clean); `deposit_monotone` references the target `deposit` and must
+# be flagged. See Legit.lean.
+LEGIT_CHECK = (["Probe.Legit.limbMul_spec", "Probe.Legit.deposit_monotone"], ["deposit"])
 
 
 
@@ -390,6 +400,7 @@ def run_checks(cid: str, lean_dir: str, import_lines: list[str],
                taint: list[tuple[str, list[str], list[str]]] | None = None,
                invariant: list[tuple[str, list[str]]] | None = None,
                schema: list[tuple[str, list[str]]] | None = None,
+               legitimacy: tuple[list[str], list[str]] | None = None,
                ) -> tuple[list[dict], list[dict], dict | None, str]:
     """The exact invocation documented in docs/skills/mechanical-checks.md: write a tiny driver
     that imports the checker plus the target module(s), call the `check*` functions per theorem,
@@ -418,6 +429,13 @@ def run_checks(cid: str, lean_dir: str, import_lines: list[str],
         # THE GATE, not the bare conformance check: `checkSpecGate` is what the harness runs, and
         # its precedence (shape finding alone) and freeform scoping only exist in the composition.
         body_lines.append(f"  let _ ← checkSpecGate `{t} #[{arr}]")
+    if legitimacy is not None:
+        axioms, tgts = legitimacy
+        aarr = ", ".join("`" + a for a in axioms)
+        tarr = ", ".join("`" + g for g in tgts)
+        # `assumption_legitimacy` takes (axioms, targets), not (theorem, targets) — it is consumed by
+        # the harness's `_record_axioms`, not the FORMALISE gate, but shares the record protocol.
+        body_lines.append(f"  checkAssumptionLegitimacy #[{aarr}] #[{tarr}]")
     body_lines.append('  IO.println "LUSTERNA_CHECK_DONE"')
     body = "\n".join(body_lines) + "\n"
     rel = "_verify_driver.lean"
@@ -445,7 +463,8 @@ def run_fixture() -> int:
                          (HERE / "Fixture.lean", "lean/Probe/Spec/Fixture.lean"),
                          (HERE / "Taint.lean", "lean/Probe/Taint.lean"),
                          (HERE / "Invariant.lean", "lean/Probe/Invariant.lean"),
-                         (HERE / "Schemas.lean", "lean/Probe/Schemas.lean")]:
+                         (HERE / "Schemas.lean", "lean/Probe/Schemas.lean"),
+                         (HERE / "Legit.lean", "lean/Probe/Legit.lean")]:
             assert not tools.write_out(deps, dst, src.read_text()).startswith("ERROR:")
         lean.setup_lake(deps)   # writes the lakefile AND LusternaChecks.lean, exactly as in prod
 
@@ -457,21 +476,25 @@ def run_fixture() -> int:
         findings, skipped, done, _ = run_checks(
             cid, lean_dir,
             ["import Probe.LusternaChecks", "import Probe.Spec.Fixture",
-             "import Probe.Taint", "import Probe.Invariant", "import Probe.Schemas"],
-            taint=TAINT_THEOREMS, invariant=INVARIANT_THEOREMS, schema=SCHEMA_THEOREMS)
+             "import Probe.Taint", "import Probe.Invariant", "import Probe.Schemas",
+             "import Probe.Legit"],
+            taint=TAINT_THEOREMS, invariant=INVARIANT_THEOREMS, schema=SCHEMA_THEOREMS,
+            legitimacy=LEGIT_CHECK)
         if done is None:
             return sys.exit("the driver file never completed — see raw output above")
 
         # A SKIPPED record means part of the run never happened while the finding set still looks
         # complete — the ambiguity the token exists to expose. Only the ones pinned in
         # EXPECTED_SKIPPED may appear, and each of those must actually appear.
-        got_skipped = {(k.get("check", "?"), k.get("theorem") or k.get("predicate", "?"))
+        got_skipped = {(k.get("check", "?"), k.get("theorem") or k.get("predicate") or k.get("axiom", "?"))
                        for k in skipped}
-        got = {(f["check"], f.get("theorem") or f.get("predicate", "?")) for f in findings}
+        got = {(f["check"], f.get("theorem") or f.get("predicate") or f.get("axiom", "?"))
+               for f in findings}
         print(f"\n{len(findings)} finding(s) (expected {EXPECTED_FINDING_COUNT}):")
-        for f in sorted(findings, key=lambda d: (d["check"], str(d.get("theorem") or d.get("predicate")))):
-            who = f.get("theorem") or f.get("predicate")
-            what = f.get("hypothesis") or f.get("guard") or f.get("detail")
+        for f in sorted(findings, key=lambda d: (d["check"],
+                        str(d.get("theorem") or d.get("predicate") or d.get("axiom")))):
+            who = f.get("theorem") or f.get("predicate") or f.get("axiom")
+            what = f.get("hypothesis") or f.get("guard") or f.get("detail") or f.get("reason")
             print(f"  [{f['check']}] {who}: {what}")
 
         missing = EXPECTED - got
@@ -510,7 +533,8 @@ def run_fixture() -> int:
             for k, (got, exp) in sorted(isc_bad.items()):
                 print(f"  {k}: {got!r} != {exp!r}")
 
-        counts = Counter((f["check"], f.get("theorem") or f.get("predicate", "?")) for f in findings)
+        counts = Counter((f["check"], f.get("theorem") or f.get("predicate") or f.get("axiom", "?"))
+                         for f in findings)
         count_bad = {k: (counts.get(k, 0), EXPECTED_COUNTS.get(k, 1))
                      for k in EXPECTED if counts.get(k, 0) != EXPECTED_COUNTS.get(k, 1)}
         if count_bad:
