@@ -296,47 +296,6 @@ def _qualified_axiom_names(spec_text: str) -> list[str]:
     return [q for q, _ in _qualified_decls(spec_text, r"axiom")]
 
 
-def sorry_bodied_theorems(spec_text: str) -> set[str]:
-    """Short names of theorems/lemmas whose proof BODY still contains a literal `sorry` — i.e.
-    genuinely-open obligations, as opposed to theorems that compile but are tainted by a
-    non-standard axiom (native_decide etc.). Used to split the tainted set for PROVE feedback.
-    Each declaration spans from its `theorem`/`lemma` keyword to the next declaration or EOF."""
-    decls = list(_THEOREM_DECL_RE.finditer(spec_text))
-    out: set[str] = set()
-    for i, m in enumerate(decls):
-        end = decls[i + 1].start() if i + 1 < len(decls) else len(spec_text)
-        body = _strip_lean_comments(spec_text[m.end():end])   # a `sorry` in a comment is not an obligation
-        if re.search(r"\bsorry\b", body):
-            out.add(m.group(1).split(".")[-1])
-    return out
-
-
-def stub_proofs(text: str) -> str:
-    """Force every `theorem`/`lemma` proof body to `:= by sorry`, preserving statements,
-    definitions, imports and docstrings. FORMALISE emits statement-only structured output,
-    so its theorems never carry proofs; this is a safety net for any stray theorem the
-    model puts in the free-form `preamble` — keeping proofs (and pathological tactics like
-    `native_decide`) out of the spec until the PROVE stage."""
-    lines = text.split("\n")
-    decl = re.compile(r"^\s*" + _DECL_PREFIX + r"(?:theorem|lemma)\b")
-    # `\b` on the KEYWORDS only: the symbolic openers (`@[`, `/-`, `--`, `#`) end in a
-    # non-word character, where `\b` would fail against the space that usually follows.
-    newtop = re.compile(r"^\s*(?:(?:theorem|lemma|def|abbrev|noncomputable|instance|structure|"
-                        r"inductive|namespace|end|section|open|variable|import|"
-                        r"private|protected|nonrec|scoped|partial|unsafe)\b|@\[|/-|--|#)")
-    out, i, n = [], 0, len(lines)
-    while i < n:
-        if decl.match(lines[i]):
-            block = [lines[i]]
-            i += 1
-            while i < n and not newtop.match(lines[i]):
-                block.append(lines[i]); i += 1
-            joined = "\n".join(block)
-            m = re.search(r":=", joined)
-            out.append((joined[:m.start()].rstrip() + " := by sorry") if m else joined)
-        else:
-            out.append(lines[i]); i += 1
-    return "\n".join(out)
 
 
 
@@ -361,7 +320,7 @@ def _empty_axioms(raw: str = "") -> dict:
     """The empty check_axioms result — the canonical 3-way shape every early return and every caller
     relies on (nothing clean/assumed/tainted). Keeping it in one place stops an early return from
     silently omitting a key (e.g. `assumed`) that downstream code indexes."""
-    return {"clean": [], "assumed": {}, "tainted": [], "raw": raw}
+    return {"clean": [], "assumed": {}, "tainted": [], "sorry": [], "raw": raw}
 
 
 def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
@@ -421,11 +380,12 @@ def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
         # (unresolved), never silently reported clean.
         log.warning("check_axioms: driver did not finish (rc=%s) — every theorem conservatively "
                     "tainted. Lean output tail:\n%s", code, text[-1200:])
-        return {"clean": [], "assumed": {}, "tainted": list(names), "raw": text[-3000:]}
+        return {"clean": [], "assumed": {}, "tainted": list(names), "sorry": list(names),
+                "raw": text[-3000:]}
     # Records keyed by the qualified name the checker classified; a qname with no record is UNRESOLVED
     # (the driver never reached it) — conservatively tainted.
     recs = {r.get("theorem"): r for r in _parse_check_records(text) if r.get("check") == "axioms"}
-    clean, assumed, tainted, unresolved = [], {}, [], []
+    clean, assumed, tainted, unresolved, sorry = [], {}, [], [], []
     for written, qual in zip(names, qnames):    # parallel lists, same order
         r = recs.get(qual)
         if r is None:                            # the checker never classified this one
@@ -439,6 +399,10 @@ def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
             assumed[written] = sorted(r.get("used", []))
         else:                                    # tainted: sorryAx / native_decide / undeclared axiom
             tainted.append(written)
+            # An OPEN obligation is a theorem still resting on `sorryAx` (a literal `sorry` or an
+            # untranslated Aeneas hole) — the collectAxioms replacement for the old `sorry`-text scan.
+            if "sorryAx" in r.get("used", []):
+                sorry.append(written)
     if unresolved:
         # Not a soundness signal — the checker couldn't read these back. Surface it loudly
         # instead of silently reporting them as tainted.
@@ -447,7 +411,8 @@ def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
                     len(unresolved), len(names), unresolved, text[-1200:])
     log.info("check_axioms: %d clean, %d assumed (modulo %d declared), %d tainted, of %d theorem(s)",
              len(clean), len(assumed), len(declared), len(tainted), len(names))
-    return {"clean": clean, "assumed": assumed, "tainted": tainted, "raw": text[-3000:]}
+    return {"clean": clean, "assumed": assumed, "tainted": tainted, "sorry": sorry,
+            "raw": text[-3000:]}
 
 
 # The `LUSTERNA_CHECK {...}` line the tool emits. Lean prefixes `#eval` output with a
@@ -1005,15 +970,6 @@ def build(deps: AgentDeps) -> dict:
     deps.progress["build_seq"] = deps.progress.get("build_seq", 0) + 1
     checkpoint.snapshot(deps)
     return result
-
-
-def sorry_count(deps: AgentDeps) -> int:
-    """Number of theorems in the implementation spec still bodied by `sorry` — the genuinely-open
-    obligations, and PROVE's progress metric. Counts per-theorem (not raw text occurrences), so a
-    stray `sorry` in a header/proof comment is not miscounted. Returns -1 if the file can't be
-    read, so the caller never mistakes it for done."""
-    content = tools.read_out(deps, campaign_spec(deps))
-    return -1 if content.startswith("ERROR:") else len(sorry_bodied_theorems(content))
 
 
 def translation_text(deps: AgentDeps, lean_files: list[str] | None = None) -> str:

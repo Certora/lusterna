@@ -5,8 +5,9 @@ gates to the files the session produces. The agents own the labor; this module o
 Stages: EXPLORE → INFER → TRANSLATE (+ TRANSLATE-JUDGE) → FORMALISE (+ SPEC-JUDGE) → PROVE → REPORT.
 Each stage's deliverable is FILES under /workspace/out; the harness reads them and gates:
   • the compile gate — `lake build` (lean.build / lean.translation_compiles),
-  • the soundness gate — `#print axioms` (lean.check_axioms), the authoritative established verdict,
-  • no proof smuggling — lean.stub_proofs re-stubs FORMALISE's theorem bodies before acceptance,
+  • the soundness gate — `collectAxioms` (lean.check_axioms), the authoritative established verdict:
+    it classifies every theorem by its real kernel axioms, so a FORMALISE-authored proof needs no
+    special guard — a genuine one counts, one resting on `sorryAx`/native_decide is tainted,
   • the audit trail — the source-edit git diff vs the pristine root (tools.repo_diff).
 These never move and are never delegated. Everything else (iteration, judging) is the CC session's
 job; the harness re-invokes a stage (resume) with the gate's feedback until it passes or STALL_ROUNDS
@@ -311,14 +312,15 @@ def _stage_formalise(deps: AgentDeps) -> None:
         _restore_prior_specs(deps)   # prior campaigns' modules are immutable — revert any edits
         raw = tools.read_out(deps, impl)
         if raw.startswith("ERROR:"):
-            return False, f"the spec {impl} is missing — write the statement-only spec there."
-        # TRUSTED no-smuggle gate: force every theorem body in THIS campaign's module to `:= by sorry`
-        # before acceptance, so FORMALISE cannot sneak a proof past PROVE. Then the compile gate.
-        tools.write_out(deps, impl, lean.stub_proofs(raw))
+            return False, f"the spec {impl} is missing — write the spec module there."
+        # NO stub_proofs: FORMALISE may leave a proof if it has one — `#print axioms` (collectAxioms)
+        # is the sole arbiter of what is established, and it classifies a FORMALISE-authored proof by
+        # its real axioms exactly as it does a PROVE-authored one (clean if genuine, tainted if it
+        # rests on `sorryAx`/native_decide). Nothing is smuggled past a gate that reads the kernel.
         deps.progress["formal_spec"] = True
         if not lean.build(deps).get("success"):
             err = deps.progress.get("lean_build", {}).get("stderr", "")
-            return False, "the theorem STATEMENTS do not compile (you still write NO proofs):\n" + err[-1500:]
+            return False, "the spec module does not compile:\n" + err[-1500:]
         # THE SPEC GATE — after the compile gate (attributes are read from the built olean) and
         # before the judge, which is then free to spend its attention on semantics rather than shape.
         # Unconditional: these are facts about a theorem's declared form, so there is nothing for a
@@ -385,10 +387,12 @@ def _record_axioms(deps: AgentDeps) -> None:
     taint_all_assumed = lean._LEGIT_TAINT_ALL in bad
     clean, assumed, tainted = [], {}, []
     impl_verified, impl_verified_assumed, abstract_only = [], [], []
+    sorry_remaining = 0
     for mod in lean.spec_modules(deps):
         camp = _P(mod).stem
         ax = lean.check_axioms(deps, mod)
         spec_text = tools.read_out(deps, mod)
+        sorry_remaining += len(ax["sorry"])   # open obligations: theorems still resting on `sorryAx`
         clean += [f"{camp}::{n}" for n in ax["clean"]]
         for n in ax["clean"]:
             dst = impl_verified if _verifies_impl(spec_text, translation, n) else abstract_only
@@ -414,6 +418,7 @@ def _record_axioms(deps: AgentDeps) -> None:
         "declared_assumptions": sorted(lean.declared_assumptions(deps)),
         "illegitimate_assumptions": sorted(bad),
         "refutations": refuted,
+        "sorry_remaining": sorry_remaining,
     }
     if refuted:
         log.warning("PROVE: ⚑ %d theorem(s) REFUTED — a kernel-verified counterexample shows the "
@@ -431,7 +436,7 @@ def _record_axioms(deps: AgentDeps) -> None:
                     established, abstract_only)
     log.info("PROVE complete — %d sorry remaining; established %d (%d clean + %d assumed) of %d; "
              "impl-verified %d clean + %d modulo-base; abstract-only %d; tainted %d",
-             max(lean.sorry_count(deps), 0), established, len(clean), len(assumed),
+             sorry_remaining, established, len(clean), len(assumed),
              established + len(tainted), len(impl_verified), len(impl_verified_assumed),
              len(abstract_only), len(tainted))
 
@@ -597,7 +602,7 @@ def _stage_report(deps: AgentDeps) -> str:
         "holes": deps.progress.get("aeneas", {}).get("holes", []),
         "lean_path": deps.progress.get("aeneas", {}).get("lean_path", ""),
         "lean_build_success": deps.progress.get("lean_build", {}).get("success"),
-        "sorry_remaining": max(lean.sorry_count(deps), 0),
+        "sorry_remaining": deps.progress.get("axioms", {}).get("sorry_remaining", 0),
     }
     tools.write_out(deps, "report/axioms.json", json.dumps(facts, indent=2))
     secdir = f"report/campaigns/{deps.campaign}"

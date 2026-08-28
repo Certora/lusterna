@@ -74,4 +74,4 @@ def test_driver_failure_taints_everything(monkeypatch):
 def test_empty_spec_is_empty(monkeypatch):
     monkeypatch.setattr(lean.tools, "read_out", lambda *a, **k: "namespace Foo.Spec\nend Foo.Spec\n")
     res = lean.check_axioms(_deps(), "lean/Foo/Spec.lean")
-    assert res == {"clean": [], "assumed": {}, "tainted": [], "raw": ""}
+    assert res == {"clean": [], "assumed": {}, "tainted": [], "sorry": [], "raw": ""}

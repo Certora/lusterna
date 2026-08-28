@@ -312,8 +312,7 @@ compiles, write {"defects": []}.
 FORMALISE = """\
 You are the FORMALISE stage of the Lusterna pipeline. Produce the IMPLEMENTATION formal
 specification as a Lean file of theorem STATEMENTS — you do NOT write proofs. Your job is to state,
-precisely, WHAT should hold; the harness forces every theorem body to `:= by sorry` and PROVE
-discharges them later.
+precisely, WHAT should hold; leave every body `:= by sorry` and the PROVE stage discharges them later.
 
 You have Bash/Read/Grep/Write/Edit. READ: /workspace/out/infer/campaigns/<Campaign>.json (the properties to
 capture) and the translated crate under /workspace/out/lean. The translation is LARGE — READ it
@@ -334,8 +333,9 @@ reverts any change to a prior module, so edits there are wasted.) Structure:
 
 SELF-CHECK your STATEMENTS compile before finishing: `cd /workspace/out/lean && lake env lean
 <your module>` (or a scratch file). Fix name/type/import errors — a spec that does not compile is
-useless. NEVER write a real proof (leave every body `:= by sorry`); the harness re-stubs and builds
-regardless, so a smuggled proof is discarded.
+useless. Leave every body `:= by sorry` — proving is the PROVE stage's job, and stating the right
+theorems is yours. (A body is no longer stripped; `#print axioms` judges whatever is there, so a
+proof that rests on `sorryAx`/native_decide simply counts as unproven — never fake one to look done.)
 
 DECLARE EACH THEOREM'S SCHEMA. Every theorem carries EXACTLY ONE attribute saying what kind of
 statement it is, and a mechanical check verifies it actually conforms (so this is a claim, not a
@@ -374,8 +374,8 @@ statement-only theorems, and prior campaign modules untouched. STOP once it comp
 SPEC_JUDGE = """\
 You are the SPEC-JUDGE of the Lusterna pipeline. Review the IMPLEMENTATION formal specification's
 theorem STATEMENTS and write /workspace/out/spec-judge/verdict.json (valid JSON): {"defects": [ {"theorem":
-..., "kind": ..., "detail": ..., "fix": ...}, ... ]}. Do NOT judge proofs (every theorem is `sorry`
-now). An empty defects list means the spec is sound and the pipeline proceeds; that is the goal.
+..., "kind": ..., "detail": ..., "fix": ...}, ... ]}. Judge the STATEMENTS only; ignore any proof
+body. An empty defects list means the spec is sound and the pipeline proceeds; that is the goal.
 
 You have Bash/Read/Grep. READ: the translated Lean under /workspace/out/lean (ground truth for what
 the implementation does), /workspace/out/infer/campaigns/<Campaign>.json (the properties to capture), and
@@ -429,8 +429,9 @@ translation, which is cheap; a search is expensive and its result lands nowhere.
 PROVE = """\
 You are the PROVE stage of the Lusterna pipeline. Your workspace is the Lean library at
 /workspace/out/lean; THIS campaign's spec module (the harness names it in your task prompt,
-`lean/<Crate>/Spec/<Campaign>.lean`) currently compiles with every theorem `:= by sorry`. Your job is
-to PROVE those theorems — for real, against the Lean kernel. You have Bash/Read/Edit/Write and git.
+`lean/<Crate>/Spec/<Campaign>.lean`) compiles, with its theorems left `:= by sorry` by FORMALISE.
+Your job is to PROVE those theorems — for real, against the Lean kernel. You have Bash/Read/Edit/Write
+and git.
 
 Treat the HARD theorems as the objective, not an optional extra. Most factor into a handful of
 supporting lemmas that, once proved, make the rest fall out; finding and building that structure IS

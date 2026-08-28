@@ -1,7 +1,6 @@
-"""Regression tests for `_DECL_PREFIX` — declaration recognition outside `stub_proofs`.
+"""Regression tests for `_DECL_PREFIX` — declaration recognition in the remaining regex helpers.
 
-`stub_proofs` has its own suite (test_stub_proofs.py); these cover the two other places the
-keyword-must-be-first-token rule silently dropped a declaration:
+These cover the places the keyword-must-be-first-token rule silently dropped a declaration:
 
   • `theorem_statement`, which `_verifies_impl` calls to decide whether an established theorem
     references the implementation. Returning '' for `@[progress] theorem …` does not error — it
