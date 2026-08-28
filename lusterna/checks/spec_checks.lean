@@ -1,42 +1,55 @@
 /-
-Lusterna mechanical spec checks — a TOOL, not a gate.
+Lusterna mechanical checks — harness-run GATES over a declaration's ELABORATED type (never its proof
+text; they run on FORMALISE's `sorry`-bodied statements and PROVE's finished ones alike). The harness
+materialises this file into every crate's lean tree (`lean/<Crate>/LusternaChecks.lean`, see
+`lean._write_lint_tool`) — harness-owned like the lakefile, so do not edit or delete it — then drives
+each check ITSELF with a throwaway `#eval` and gates on the emitted `LUSTERNA_CHECK {json}` records.
+NO agent invokes or interprets these: a finding is a fact the harness acts on, not a prompt for a
+judge to weigh. Each check is named by the `"check"` field its records carry (no numbering, so a
+reference cannot go stale as the set grows).
 
-Three heuristics over a theorem's ELABORATED type (never its proof — these run on FORMALISE's
-`sorry`-bodied statements just as well as on PROVE's finished ones). Each is named after the
-`"check"` field its findings carry; there is deliberately no numbering, so a reference cannot go
-stale when the set changes:
+THE SPEC GATE — `checkSpecGate` (run by `lean.check_spec_gate`) BLOCKS FORMALISE, composing three
+checks. Blocking is sound ONLY because each theorem DECLARES its schema (see `spec_schemas.lean`): the
+shape rules run only where a checked schema was claimed, which retires their documented false
+positives (injectivity and the like declare `@[lusterna_freeform]`, out of scope). A finding returns
+to FORMALISE as a concrete critique naming the rule, and the stage re-runs.
 
-  • `checkAssumedPostcondition` (`assumed_postcondition`) — an INFORMATION-FLOW rule, and one of
-    the checks that needs telling which functions are the TARGETS. Target patterns are matched by dotted SUFFIX so a bare
-    `deposit` resolves against `crate.vault.deposit`, which also means a helper named `….deposit`
-    can answer to it; pass fully-qualified names where the campaign has them. A fact about the
-    subject's output or post-state may enter only through the subject's own execution relation: `f x s = ok (y, s')` taints `y`/`s'`,
-    taint closes over chained calls and aliases (`z = s'.var`), and any OTHER hypothesis mentioning
-    a tainted variable is reported — including a further fallible call on the post-state, unless it
-    is a declared CONTINUATION. Catches a theorem that satisfies every local reading — its inputs
-    reach a genuine precondition, its execution is real — but which also hands itself its own
-    conclusion.
+  • `schema_conformance` — verify the theorem's declared `@[lusterna_*]` schema matches its shape.
 
-  • `checkInvariantTotality` — recognises the INVARIANT-PRESERVATION theorem
+  • `checkAssumedPostcondition` (`assumed_postcondition`) — an INFORMATION-FLOW rule, and one of the
+    checks that needs telling which functions are the TARGETS. Target patterns are matched by dotted
+    SUFFIX so a bare `deposit` resolves against `crate.vault.deposit`, which also means a helper named
+    `….deposit` can answer to it; pass fully-qualified names where the campaign has them. A fact about
+    the subject's output or post-state may enter only through the subject's own execution relation:
+    `f x s = ok (y, s')` taints `y`/`s'`, taint closes over chained calls and aliases (`z = s'.var`),
+    and any OTHER hypothesis mentioning a tainted variable is reported — including a further fallible
+    call on the post-state, unless it is a declared CONTINUATION. Catches a theorem that satisfies
+    every local reading — its inputs reach a genuine precondition, its execution is real — but which
+    also hands itself its own conclusion.
+
+  • `checkInvariantTotality` (`invariant_not_strict`) — recognises the INVARIANT-PRESERVATION theorem
     (`Inv s = ok true` → target execution → `Inv s' = ok true`, targets matched as for
-    `checkAssumedPostcondition`) and asks whether `Inv` is FAILURE-STRICT: does a failing
-    measurement inside it make the invariant FALSE? The certified form is a `Result Bool` `def`
-    whose every fallible call is BOUND — sound because `bind (fail e) k = fail e` and `ok true` is
-    not `fail`, so no failure can reach `ok true`. One rule does the work: a `Result` may be bound
-    or returned, NEVER PASSED, which is why it stays closed instead of blocklisting Aeneas's helper
-    set. Reads equation lemmas rather than `dv.value`, so a RECURSIVE invariant (a fold over
-    accounts — the realistic case) certifies instead of being unreadable.
+    `checkAssumedPostcondition`) and asks whether `Inv` is FAILURE-STRICT: does a failing measurement
+    inside it make the invariant FALSE? The certified form is a `Result Bool` `def` whose every
+    fallible call is BOUND — sound because `bind (fail e) k = fail e` and `ok true` is not `fail`, so
+    no failure can reach `ok true`. One rule does the work: a `Result` may be bound or returned, NEVER
+    PASSED, which is why it stays closed instead of blocklisting Aeneas's helper set. Reads equation
+    lemmas rather than `dv.value`, so a RECURSIVE invariant (a fold over accounts — the realistic
+    case) certifies instead of being unreadable.
 
-THIS FILE RUNS NOTHING AUTOMATICALLY. The harness copies it into every crate's own lean tree, once,
-at `lean/<Crate>/LusternaChecks.lean` (see `lean._write_lint_tool`) — harness-owned, like the
-lakefile: do not edit or delete it. An agent (SPEC-JUDGE, primarily) invokes it ITSELF over Bash
-when judging a spec module, and DECIDES what a finding means — a flagged hypothesis is a prompt to
-read the theorem more closely, not an automatic defect. See docs/skills/mechanical-checks.md for
-the exact invocation and worked examples of what each check does and does not catch (chained calls
-and triples are clean everywhere; a hypothesis that merely restates its own defining equation and a
-hypothesis constraining the post-state are not — while injectivity is a known false positive of
-`checkAssumedPostcondition`, which `schema_conformance` supersedes by having such a theorem declare
-`@[lusterna_freeform]` instead).
+THE STANDALONE CHECKS — each driven by its own `lean.py` counterpart, NOT part of the FORMALISE gate:
+
+  • `checkAxioms` (`lean.check_axioms`) — the AUTHORITATIVE established-vs-tainted verdict, via
+    `Lean.collectAxioms` (the exact function `#print axioms` calls). Classifies each theorem
+    clean / assumed (rests only on declared trusted axioms) / tainted, plus the impl-vs-abstract flag.
+  • `checkAssumptionLegitimacy` (`lean.legitimacy_check`) — an axiom in the trusted base may not
+    reference a TARGET function under verification (that would relax a goal); walks the axiom's type.
+  • `refutationPurity` (`lean.verify_refutations`) — a `<name>__refuted` counterexample is honoured
+    only if it rests on no `sorryAx` (the type-tie half is enforced by the driver compiling).
+
+See docs/skills/mechanical-checks.md for the spec-gate rules and worked examples (chained calls and
+triples are clean; a hypothesis restating its own defining equation, or constraining the post-state,
+is not).
 -/
 import Aeneas
 import Lean.Util.CollectAxioms   -- `Lean.collectAxioms`, the exact function `#print axioms` uses
@@ -105,7 +118,7 @@ private def isTripleLike (e : Expr) : Bool :=
   | _ => false
 
 /-- Trusted by SOURCE MODULE, never by declaration name. A name-prefix blocklist is not a trust
-boundary for a tool reading generated code — a spec module can write `namespace Aeneas … end Aeneas`
+boundary for a checker reading generated code — a spec module can write `namespace Aeneas … end Aeneas`
 around anything and be skipped for free. The module a declaration was compiled into cannot be picked
 that way: the harness's lakefile builds `lean/<Crate>/**` and nothing else, so generated code always
 lands in a `<Crate>.…` module however its namespaces are spelled.

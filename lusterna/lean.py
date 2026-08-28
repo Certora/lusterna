@@ -16,7 +16,7 @@ log = logging.getLogger(__name__)
 
 def _container_exec(deps: AgentDeps, cmd_args: list[str]) -> None:
     """Run a provisioning command in the container, raising on failure. For the harness's own
-    file wiring (the lakefile, the checks tool) — `container.exec_in` is for commands whose
+    file wiring (the lakefile, the checks module) — `container.exec_in` is for commands whose
     output or exit code the caller reasons about."""
     subprocess.run(["docker", "exec", deps.container_id] + cmd_args,
                    capture_output=True, text=True, check=True)
@@ -147,7 +147,7 @@ _SCHEMA_TOOL_SRC = (Path(__file__).parent / "checks" / "spec_schemas.lean").read
 
 
 def _write_lint_tool(deps: AgentDeps, lean_out_dir: str, lib_name: str) -> None:
-    """Copy the standalone mechanical-checks tool (`checks/spec_checks.lean`) into this
+    """Copy the harness-owned mechanical-checks module (`checks/spec_checks.lean`) into this
     crate's own lean tree, at `lean/<lib_name>/LusternaChecks.lean` — module
     `<lib_name>.LusternaChecks`. It only depends on Aeneas (crate-agnostic), so it compiles
     unchanged for every crate; placing it under the crate's own lib means `lake build` picks it
@@ -415,7 +415,7 @@ def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
             "raw": text[-3000:]}
 
 
-# The `LUSTERNA_CHECK {...}` line the tool emits. Lean prefixes `#eval` output with a
+# The `LUSTERNA_CHECK {...}` line a check emits. Lean prefixes `#eval` output with a
 # `file:line:col: info:` header, so both are optional — the same shape tests/checklean/verify.py
 # parses, deliberately, so the harness reads exactly what an agent reads.
 _CHECK_LINE_RE = re.compile(
