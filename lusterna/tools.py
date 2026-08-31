@@ -8,7 +8,7 @@ import logging
 import subprocess
 from pathlib import Path
 
-from .container import REPO_IN, OUT_IN, exec_in
+from .container import REPO_IN, OUT_IN, PRISTINE_REF, exec_in
 from .schemas import AgentDeps
 
 log = logging.getLogger(__name__)
@@ -79,8 +79,20 @@ def write_out(deps: AgentDeps, path: str, content: str) -> str:
 #    from REPO_IN's git for the accountability trail) ──────────────────────────
 
 def _repo_baseline(container_id: str) -> str:
-    """SHA of the pristine root — the source exactly as handed to us, before any edit. The source
-    diff is taken against this; build-env prep and TRANSLATE edits alike show up (all narrated)."""
+    """SHA of the PRISTINE baseline — the source exactly as handed to us (the seed tree), before any
+    edit. The source diff is taken against this; build-env prep and TRANSLATE edits alike show up.
+
+    `refs/lusterna/pristine` is the ref every setup path pins to that tree (init_repo_git for a
+    synthesised baseline, seed_from_ref for a branch seed, import_repo on dead-container resume), so
+    it is the authoritative baseline. It is NOT the repo's root commit: seeding from a real repo's
+    branch brings full history (a bundle carries the ancestry), so `rev-list --max-parents=0` would be
+    the project's genesis commit — diffing against which yields the entire repo history as "changed",
+    burying the agent's actual edits (this was a real bug). Fall back to the root commit only if the
+    ref is somehow absent."""
+    code, out, _ = exec_in(container_id, ["git", "rev-parse", "--verify", "-q", PRISTINE_REF],
+                           workdir=REPO_IN)
+    if code == 0 and out.strip():
+        return out.strip()
     _, out, _ = exec_in(container_id, ["git", "rev-list", "--max-parents=0", "HEAD"],
                         workdir=REPO_IN)
     lines = [l.strip() for l in out.splitlines() if l.strip()]
@@ -91,19 +103,33 @@ def _repo_baseline(container_id: str) -> str:
 _SRC_PATHSPEC = ["--", ".", ":(exclude)verification"]
 
 
+def _stage_untracked_source(container_id: str) -> None:
+    """Intent-to-add (`git add -N`) untracked SOURCE files in the diff scope, so `git diff` renders a
+    brand-new file as an addition instead of omitting it. Without this, a TRANSLATE agent that creates
+    a whole new crate (e.g. a scoped-extraction `klend-verification/` when the real crate cannot build
+    on the image) would have its entire rung-3 model INVISIBLE to the diff the TRANSLATE-JUDGE reviews
+    — untracked files never appear in `git diff <base>`. Respects `.gitignore` (so `target/`, `.lake/`,
+    `*.llbc` stay out) and the same `verification/` exclusion. Intent-to-add is reversible and
+    superseded by the harness's own `git add -A` stage commit, so it does not change what gets
+    committed."""
+    exec_in(container_id, ["git", "add", "-N", *_SRC_PATHSPEC], workdir=REPO_IN)
+
+
 def repo_diff(container_id: str) -> str:
-    """Combined diff of the Rust SOURCE since the pristine root (working tree vs the root, so it
-    captures edits whether or not committed; the generated `verification/` tree is excluded).
-    Empty if the agent made no source edits. The authoritative record of every source modification,
-    for human review and the TRANSLATE accountability trail."""
+    """Combined diff of the Rust SOURCE since the pristine baseline (working tree vs the baseline, so
+    it captures edits whether or not committed, INCLUDING brand-new untracked files; the generated
+    `verification/` tree is excluded). Empty if the agent made no source edits. The authoritative
+    record of every source modification, for human review and the TRANSLATE accountability trail."""
+    _stage_untracked_source(container_id)
     _, out, _ = exec_in(container_id, ["git", "diff", _repo_baseline(container_id),
                                        "--stat", "--patch", *_SRC_PATHSPEC], workdir=REPO_IN)
     return out
 
 
 def repo_changed_files(container_id: str) -> list[str]:
-    """Repo-relative paths of Rust-SOURCE files changed since the pristine root (the generated
-    `verification/` tree excluded)."""
+    """Repo-relative paths of Rust-SOURCE files changed since the pristine baseline (new untracked
+    files included; the generated `verification/` tree excluded)."""
+    _stage_untracked_source(container_id)
     _, out, _ = exec_in(container_id, ["git", "diff", _repo_baseline(container_id),
                                        "--name-only", *_SRC_PATHSPEC], workdir=REPO_IN)
     return sorted({l.strip() for l in out.splitlines() if l.strip()})

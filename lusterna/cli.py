@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import re
+import signal
 import sys
 import uuid
 from pathlib import Path
@@ -13,6 +14,23 @@ from . import checkpoint, config
 from .schemas import AgentDeps
 
 log = logging.getLogger(__name__)
+
+
+def _install_sigterm_handler() -> None:
+    """Make SIGTERM unwind like Ctrl-C (SIGINT). Python's DEFAULT SIGTERM disposition terminates the
+    process WITHOUT running `finally` blocks, so a `docker stop` / orchestrator / `kill` would skip
+    run()'s finally — the branch export AND the container keep-alive — and lose the run's state.
+    Re-raising KeyboardInterrupt routes SIGTERM through the SAME tested graceful path as Ctrl-C: the
+    partial branch is exported to the host repo and the container is kept alive for `--session-id`
+    resume. (SIGKILL and power-loss cannot be caught; the detached `sleep infinity` container is the
+    net there — resume re-attaches via the checkpoint's container_id.)"""
+    def _graceful(signum, frame):  # noqa: ARG001
+        log.warning("SIGTERM received — exporting partial state and keeping the container alive for resume")
+        raise KeyboardInterrupt
+    try:
+        signal.signal(signal.SIGTERM, _graceful)
+    except ValueError:
+        pass  # not the main thread (programmatic use) — leave the default disposition
 
 _DOCKERFILE_DIR = Path(__file__).parent.parent
 
@@ -144,6 +162,9 @@ def run(
         from . import lean
         lean.setup_lake(deps)
 
+    # SIGTERM (docker stop / orchestrator / kill) must run the finally below — export + keep-alive —
+    # not terminate silently. Routes it through the same graceful path as Ctrl-C.
+    _install_sigterm_handler()
     try:
         summary = asyncio.run(pipeline.run_session(deps))
     finally:
