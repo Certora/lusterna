@@ -1333,16 +1333,15 @@ def checkAxioms (thms : Array Name) (declared : Array Name) : MetaM Unit := do
     let used := String.intercalate ", " (nonStd.toList.map (fun a => "\"" ++ toString a ++ "\""))
     emit s!"\{\"check\": \"axioms\", \"theorem\": \"{t}\", \"status\": \"{status}\", \"used\": [{used}]}"
 
-/-! ══ `def_axioms` — TRANSLATE-time opaque-footprint disclosure ═══════════════════════════════════
+/-! ══ `def_axioms` — the TRANSLATE-time TAINT gate ═══════════════════════════════════════════════
 
 The same `collectAxioms` machinery `checkAxioms` runs, pointed at the TARGET `def`s at translate time
 instead of at theorems at prove time. For each target function's translated `def` it reports the
-NON-standard axioms its body transitively depends on — the opaque substrate the target rests on. This
-is a DISCLOSURE, not a gate: a non-empty footprint means every theorem later proved about that target
-will be TAINTED by those axioms unless PROVE declares each as a trusted-base value-contract (a legit
-opaque leaf) — so it distinguishes an INTENDED trusted leaf from an ACCIDENTAL leak (a modelled type
-whose `Display`/`serde` was delegated back to the opaque original, dragging it into the footprint).
-Surfacing it at translate time catches such a leak in seconds instead of after a full PROVE.
+NON-standard axioms its body transitively depends on — the opaque substrate the target rests on. Any
+such axiom taints every theorem later proved about that target, so a clean (sanctioned) translation has
+an EMPTY footprint; the harness (`lean.target_footprint_gate`) BLOCKS on a non-empty one, catching in
+seconds a leak — e.g. a modelled type whose `Display`/`serde` was delegated back to the opaque original
+— that would otherwise only surface after a full PROVE.
 
 Takes INFER's target patterns as dotted-SUFFIX forms and DISCOVERS the matching crate defs in the
 environment itself (`nameHasSuffix`, filtered to non-trusted `defnInfo` — the same machinery

@@ -2,7 +2,7 @@
 Claude Code session (runner.run_cc_stage) and applies the TRUSTED, agent-inaccessible mechanical
 gates to the files the session produces. The agents own the labor; this module owns the trust.
 
-Stages: EXPLORE → INFER → TRANSLATE (+ TRANSLATE-JUDGE) → FORMALISE (+ SPEC-JUDGE) → PROVE → REPORT.
+Stages: INFER → TRANSLATE (+ TRANSLATE-JUDGE) → FORMALISE (+ SPEC-JUDGE) → PROVE → REPORT.
 Each stage's deliverable is FILES under /workspace/out; the harness reads them and gates:
   • the compile gate — `lake build` (lean.build / lean.translation_compiles),
   • the soundness gate — `collectAxioms` (lean.check_axioms), the authoritative established verdict:
@@ -124,9 +124,6 @@ def _format_defects(defects: list) -> str:
 # overwrite a prior campaign's. Only the TRANSLATION itself (lean/<Crate>.lean + submodules, and
 # translate/probe/) is shared substrate, reused/extended across campaigns.
 
-def _explore_dir(deps: AgentDeps) -> str:
-    return f"explore/campaigns/{deps.campaign}"
-
 def _infer_spec(deps: AgentDeps) -> str:
     return f"infer/campaigns/{deps.campaign}.json"
 
@@ -134,35 +131,9 @@ def _translate_dir(deps: AgentDeps) -> str:
     return f"translate/campaigns/{deps.campaign}"
 
 
-# ── EXPLORE ─────────────────────────────────────────────────────────────────────
-
-def _stage_explore(deps: AgentDeps) -> None:
-    if "explore" in deps.progress:
-        return
-    hint = (f"\n\nDesign focus hint (optional, non-authoritative — which code matters):\n"
-            f"{deps.design_doc.rstrip()}" if deps.design_doc.strip() else "")
-    xdir = _explore_dir(deps)
-    run_cc_stage(
-        deps, stage="EXPLORE", briefing=briefings.EXPLORE,
-        prompt=(f"Orient to the code at /workspace/repo and run the toolchain reality-check, then "
-                f"write /workspace/out/{xdir}/assessment.md and the machine-readable "
-                f"/workspace/out/{xdir}/handoff.json per your briefing. Stop once handoff.json "
-                f"exists and is valid." + hint),
-        **_cc_common(),
-    )
-    handoff = tools.read_out(deps, f"{xdir}/handoff.json")
-    if handoff.startswith("ERROR:"):
-        raise _PipelineAborted(f"EXPLORE produced no /workspace/out/{xdir}/handoff.json")
-    try:
-        deps.progress["explore"] = json.loads(handoff)
-    except json.JSONDecodeError as e:
-        raise _PipelineAborted(f"EXPLORE handoff.json is not valid JSON: {e}")
-    # Snapshot EXPLORE's output + any build-env prep as the branch's first stage commit.
-    tools.commit(deps.container_id, "chore(explore): assessment + build-env prep")
-    checkpoint.snapshot(deps)
-
-
 # ── INFER ───────────────────────────────────────────────────────────────────────
+# The first stage: on pristine source, orient to the code and infer the behaviour spec, the target
+# scope, and the minimal state the properties constrain. TRANSLATE owns the toolchain from here.
 
 def _stage_infer(deps: AgentDeps) -> None:
     if "informal_spec" in deps.progress:
@@ -184,6 +155,9 @@ def _stage_infer(deps: AgentDeps) -> None:
             return False, f"{ispec} is missing the required key `target_patterns`."
         deps.progress["informal_spec"] = spec
         deps.progress["target_patterns"] = list(spec.get("target_patterns") or [])
+        # The crate root of the target code — a SUGGESTION for TRANSLATE's charon build. Soft:
+        # `target_patterns` is the only required key.
+        deps.progress["entry_file"] = spec.get("entry_file") or "src/lib.rs"
         # The minimal core the properties constrain (struct fields + value-types). TRANSLATE projects
         # to it; the TRANSLATE-JUDGE flags anything outside it as irrelevant surface. Absent ⇒ the
         # judge falls back to its own semantic call (degraded, not broken), so do not hard-block here.
@@ -195,9 +169,9 @@ def _stage_infer(deps: AgentDeps) -> None:
 
     _cc_gate_loop(
         deps, stage="INFER", briefing=briefings.INFER,
-        base_prompt=(f"Proceed to INFER. Read the pristine Rust at /workspace/repo and "
-                     f"/workspace/out/{_explore_dir(deps)}/handoff.json, then write "
-                     f"/workspace/out/{ispec} per your briefing." + hint),
+        base_prompt=(f"Proceed to INFER. You are the FIRST stage — read the pristine Rust at "
+                     f"/workspace/repo directly, then write /workspace/out/{ispec} per your "
+                     f"briefing." + hint),
         check=check,
     )
     tools.commit(deps.container_id, "feat(spec): informal specification (pre-translate)")
@@ -236,7 +210,7 @@ def _stage_translate(deps: AgentDeps) -> None:
         return
     targets = deps.progress.get("target_patterns") or []
     relevant = deps.progress.get("relevant_state") or []
-    entry = deps.progress.get("explore", {}).get("entry_file", "src/lib.rs")
+    entry = deps.progress.get("entry_file", "src/lib.rs")
 
     def check(deps: AgentDeps):
         facts = _translate_facts(deps)
@@ -297,9 +271,10 @@ def _stage_translate(deps: AgentDeps) -> None:
         base_prompt=(f"Proceed to TRANSLATE. Target patterns (each MUST become a real `def`, never "
                      f"opaqued): {targets or '(whole crate)'}. Minimal core to project to / model "
                      f"(relevant_state — translate ONLY this, drop the rest): {relevant or '(see infer json)'}. "
-                     f"Suggested entry file: {entry}. Read "
-                     f"/workspace/out/{_infer_spec(deps)} and /workspace/out/{_explore_dir(deps)}/handoff.json, "
-                     f"then drive Charon + Aeneas into /workspace/out/lean (the SHARED translation — "
+                     f"Suggested entry file: {entry}. You OWN the toolchain end-to-end (build-vs-extract "
+                     f"strategy, build-env fixes) — there is no prior assessment. Read "
+                     f"/workspace/out/{_infer_spec(deps)}, then drive Charon + Aeneas into "
+                     f"/workspace/out/lean (the SHARED translation — "
                      f"reuse/extend it, do not restart from scratch). Record THIS campaign's decision "
                      f"(reused verbatim / extended with <defs> / any source edit) in "
                      f"/workspace/out/{_translate_dir(deps)}/accountability.md per your briefing."),
@@ -472,7 +447,7 @@ def _record_axioms(deps: AgentDeps) -> None:
 def _stage_prove(deps: AgentDeps) -> None:
     """One budgeted, resume-aware PROVE session — the agent, not the harness, drives the proof.
 
-    Like EXPLORE/INFER/REPORT (and unlike the old scored, stall-detected, rollback loop this
+    Like INFER/REPORT (and unlike the old scored, stall-detected, rollback loop this
     replaces), PROVE runs the agent ONCE and lets it work: it develops a cumulative Lean library —
     helper lemmas, `@[progress]` loop-spec lemmas, trusted assumptions, target proofs — and COMMITS
     as it goes. The per-stage `--max-budget-usd` is the hard stop; the session ends when the agent is
@@ -672,8 +647,7 @@ def _write_abort_notes(deps: AgentDeps, reason: str) -> None:
     aborted run leaves something actionable rather than empty output."""
     p = deps.progress
     stages = [
-        ("explore",       "EXPLORE — orientation + toolchain assessment"),
-        ("informal_spec", "INFER — behaviour spec + target scope (pristine source)"),
+        ("informal_spec", "INFER — orientation + behaviour spec + target scope (pristine source)"),
         ("aeneas",        "TRANSLATE — Aeneas translation of the target"),
         ("spec_ok",       "FORMALISE + SPEC-JUDGE — implementation spec (statements)"),
         ("proofs_done",   "PROVE — proofs attempted"),
@@ -718,10 +692,9 @@ async def run_session(deps: AgentDeps) -> str:
     if deps.progress:
         log.info("Resuming session — completed markers: %s", sorted(deps.progress.keys()))
     try:
-        _stage_explore(deps)
-        if config.STOP_AFTER_EXPLORE:
-            return "Stopped after EXPLORE (LUSTERNA_STOP_AFTER_EXPLORE)."
         _stage_infer(deps)
+        if config.STOP_AFTER_INFER:
+            return "Stopped after INFER (LUSTERNA_STOP_AFTER_INFER)."
         _stage_translate(deps)
         if config.STOP_AFTER_TRANSLATE:
             return "Stopped after TRANSLATE (LUSTERNA_STOP_AFTER_TRANSLATE)."

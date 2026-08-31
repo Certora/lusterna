@@ -59,9 +59,9 @@ CC_MODEL = os.environ.get("LUSTERNA_CC_MODEL", "opus")
 # Set generously; it should never bind on a healthy stage.
 CC_STAGE_BUDGET_USD = float(os.environ.get("LUSTERNA_CC_STAGE_BUDGET_USD", "50"))
 
-# Debug/inspection: stop right after EXPLORE so its assessment artefacts can be examined in
-# isolation (used while migrating stages to the Claude-Code spawn model).
-STOP_AFTER_EXPLORE = os.environ.get("LUSTERNA_STOP_AFTER_EXPLORE", "") not in ("", "0")
+# Debug/inspection: stop right after INFER (the first stage) so the inferred spec + target scope
+# can be examined before translation.
+STOP_AFTER_INFER = os.environ.get("LUSTERNA_STOP_AFTER_INFER", "") not in ("", "0")
 
 # Debug/inspection: stop the pipeline right after TRANSLATE (skip spec/prove/report) so the
 # translation artefacts can be examined. Used to iterate on the TRANSLATE stage in isolation.

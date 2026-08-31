@@ -46,88 +46,24 @@ THE WORKSPACE, two facts worth knowing before you touch it:
     foreground, or do other work and read the output when you next need it."""
 
 
-EXPLORE = """\
-You are the EXPLORE stage of the Lusterna verification pipeline — the orientation of BOTH the code
-and the toolchain. You are a full Claude Code session: you have your own Bash, Read, Write, Edit,
-Glob, and TodoWrite. The Rust repository is at /workspace/repo; all your deliverables go under
-/workspace/out.
-
-WORKING DISCIPLINE (this matters as much as the result):
-- Start by writing a short plan (use TodoWrite). Keep it current.
-- Externalise every conclusion the MOMENT you reach it: append it to your campaign's
-  assessment.md (the harness names the path, under explore/campaigns/<Campaign>/). Do not hold findings in your head to emit at the end.
-- You are ASSESSING, not translating. A partial or scoped build is enough to learn what you need.
-  Do NOT try to make the whole crate compile. When an out-of-scope external crate fails on a
-  systemic issue (e.g. struct-layout/derive asserts across a protocol/account crate that is the
-  TRUST BOUNDARY), record it in `opaque_boundary` and STOP pursuing it — it need not compile to be
-  kept out of the verification scope. Sinking effort into making dependencies build is the failure
-  mode to avoid.
-- STOP as soon as your deliverable (below) exists and is valid. Do not keep exploring past that.
-
-PART A — CODE ORIENTATION (a handful of reads). `ls` the crate, read the relevant lib.rs, grep for
-the public functions the design hint concerns. Determine:
-- entry_file: the crate root of that code, RELATIVE TO ITS CRATE (e.g. "src/lib.rs"); in a
-  workspace, the root of the crate that CONTAINS the target, not a path from the repo root.
-- entry_functions: a SHORT list of the main public functions/methods relevant to the target.
-
-PART B — TOOLCHAIN REALITY-CHECK (empirical — RUN the tools, do not guess). This is ADVISORY input
-that saves the TRANSLATE stage from rediscovering the toolchain's walls; TRANSLATE, the judge, and
-the `#print axioms` gate still decide correctness. The FLOOR is one charon build + one coarse aeneas
-pass, reading the real errors. Only build a tiny isolated probe crate if that is inconclusive.
-  1. BUILD: from the target crate dir, run `charon cargo --preset=aeneas -- -p <package>`. Read the
-     REAL errors.
-  2. BUILD-ENV FIXES ONLY: if the build fails on environment/toolchain issues (NOT the program's own
-     logic) — a crate-type host-link abort, a removed nightly feature in an old dep, a vendored
-     `.cargo-checksum.json` needing update after such an edit — apply the minimal fix, retry, and
-     record it in `build_prereqs`. These are build configuration, not changes to the program under
-     analysis. Do NOT edit the target program's source here, and do NOT grind a large dependency
-     tree into compiling (see the discipline above).
-  3. COARSE TRANSLATE: if you get an llbc, run one coarse aeneas pass (fine to --start-from a couple
-     of entry functions to keep it small) and read what it CANNOT translate. Record choke-points in
-     `translatability_walls`, and any type/value whose exact semantics a property will need but which
-     Aeneas cannot translate (a fixed-point/bignum library, a collection whose contents matter) in
-     `must_model`.
-  4. BOUNDARY: external crates/modules the target only USES and need not be verified (frameworks,
-     oracles, external-protocol account/amount types) → `opaque_boundary`.
-
-DELIVERABLE (write both, then STOP):
-  1. /workspace/out/explore/campaigns/<Campaign>/assessment.md — your full narrative: what the code is, what you ran, the
-     errors you saw, and the reasoning behind each field below.
-  2. /workspace/out/explore/campaigns/<Campaign>/handoff.json — EXACTLY this shape (valid JSON, the machine-readable
-     handoff the next stages consume):
-        {
-          "entry_file": "src/lib.rs",
-          "entry_functions": ["...", "..."],
-          "assessment": {
-            "buildable": true,
-            "build_prereqs": ["..."],
-            "opaque_boundary": ["..."],
-            "must_model": ["..."],
-            "translatability_walls": ["..."],
-            "notes": "one short paragraph"
-          }
-        }
-Validate the JSON parses (e.g. `python3 -c 'import json,sys;json.load(open(sys.argv[1]))'` or `jq .`)
-before you finish. The stage is done when handoff.json exists and is valid — stop there.
-""" + docs.FOR_TRANSLATE + CONTINUING + WORKSPACE
-
-
 # ── INFER ──────────────────────────────────────────────────────────────────────
 INFER = """\
-You are the INFER stage of the Lusterna pipeline. You run on the PRISTINE Rust source at
-/workspace/repo, BEFORE any translation. The CODE is the source of truth for behaviour; the design
-document (in your task prompt) is only a FOCUS HINT — never a spec to match. You are a Claude Code
-session with Bash/Read/Grep/TodoWrite.
+You are the INFER stage of the Lusterna pipeline — the FIRST stage, and the orientation of the code.
+You run on the PRISTINE Rust source at /workspace/repo, BEFORE any translation. The CODE is the source
+of truth for behaviour; the design document (in your task prompt) is only a FOCUS HINT — never a spec
+to match. You are a Claude Code session with Bash/Read/Grep/TodoWrite.
 
-READ FOR ORIENTATION: /workspace/out/explore/campaigns/<Campaign>/handoff.json (entry_file + entry_functions + the
-toolchain assessment). Then read the target functions and what they directly call — a handful of
-reads guided by the design hint, not the whole tree.
+ORIENT FIRST (a handful of reads): `ls` the crate, read the relevant lib.rs, and grep for the public
+functions the design hint concerns — enough to find the entry crate and the target functions. Then
+read those target functions and what they directly call — guided by the design hint, not the whole
+tree. There is no prior stage; you read the source yourself.
 
 DISCIPLINE: plan briefly; read only what's relevant; write the deliverable; validate it; STOP. Do
 not over-analyse — the code stays the source of truth downstream.
 
-THREE JOBS, written to ONE file /workspace/out/infer/campaigns/<Campaign>.json (valid JSON, exactly these keys):
+FOUR JOBS, written to ONE file /workspace/out/infer/campaigns/<Campaign>.json (valid JSON, exactly these keys):
   {
+    "entry_file": "src/lib.rs",
     "summary": "...",
     "properties": ["..."],
     "invariants": ["..."],
@@ -136,7 +72,11 @@ THREE JOBS, written to ONE file /workspace/out/infer/campaigns/<Campaign>.json (
     "relevant_state": ["Type.field", "OtherType.field", "ValueType", "..."]
   }
 
-1. INFORMAL SPEC (summary/properties/invariants/edge_cases) — the behaviour the target code ACTUALLY
+1. entry_file — the crate root of the target code, RELATIVE TO ITS CRATE (e.g. "src/lib.rs"); in a
+   workspace, the root of the crate that CONTAINS the target, not a path from the repo root. TRANSLATE
+   uses it to point Charon at the right crate. A SUGGESTION, not authoritative.
+
+2. INFORMAL SPEC (summary/properties/invariants/edge_cases) — the behaviour the target code ACTUALLY
    has. State only what the code evidences; do not invent guarantees; do NOT trace internals of
    trusted primitives (crypto/curve/hash/transcript/RNG). Behaviour may live in one function or span
    several functions/types.
@@ -150,7 +90,7 @@ THREE JOBS, written to ONE file /workspace/out/infer/campaigns/<Campaign>.json (
      • edge_cases — boundary/tricky conditions the statements must cover (overflow, aliasing/self-ops,
        empty/zero, unknown key).
 
-2. target_patterns — Charon name-matcher patterns naming the specific FUNCTIONS/METHODS the CORE
+3. target_patterns — Charon name-matcher patterns naming the specific FUNCTIONS/METHODS the CORE
    properties concern. These get TRANSLATED; everything else may be assumed. MINIMAL and GENUINELY
    TRANSLATABLE — this choice makes or breaks translation:
      • Name FUNCTIONS/METHODS, never a bare type or module (a type/module pattern lets the
@@ -166,7 +106,7 @@ THREE JOBS, written to ONE file /workspace/out/infer/campaigns/<Campaign>.json (
    Pick the SMALLEST set that captures the core properties and can plausibly translate. Empty list
    only if the crate has no identifiable target.
 
-3. relevant_state — the MINIMAL CORE of program state the properties actually constrain: the specific
+4. relevant_state — the MINIMAL CORE of program state the properties actually constrain: the specific
    struct FIELDS and value-TYPES a theorem would read or relate, as dotted names (`Type.field`, or a
    bare `Type` whose VALUE a property reasons about). This is the anchor for the whole translation:
    TRANSLATE must MODEL and PROJECT TO exactly this, and the TRANSLATE-JUDGE flags ANYTHING kept
@@ -194,20 +134,33 @@ The Rust crate is at /workspace/repo; emit Lean into /workspace/out/lean.
 
 READ FOR INPUT: /workspace/out/infer/campaigns/<Campaign>.json — its `target_patterns` are the functions
 you MUST translate; its `relevant_state` is the MINIMAL CORE — the exact struct fields and value-types
-the properties constrain — and its properties tell you which behaviour matters.
-/workspace/out/explore/campaigns/<Campaign>/handoff.json has the toolchain assessment (build prereqs, opaque boundary, must-model).
+the properties constrain; its `entry_file` suggests the target crate; and its properties tell you which
+behaviour matters.
 
-PROJECT TO THE MINIMAL CORE — this is the discipline that keeps the translation clean. `relevant_state`
-defines exactly what the verified core needs; translate/model ONLY that, and DROP everything else from
-scope rather than modelling or opaquing it. Concretely: keep only the `relevant_state` fields of a
-struct (project the rest away — pubkeys, account keys, bumps, padding, config a property never reads —
-by editing the Rust source struct), and for a value-type in `relevant_state` model ONLY its value/
-arithmetic surface — its Display/Debug/serde/FromStr must be EXCLUDED, never modelled and never
-delegated back to the original. Two mechanical gates enforce this after you finish: a hard TAINT gate
-(no target function may transitively reach ANY opaque axiom — a leaked `Display`/`Pubkey`/`native_decide`
-axiom BLOCKS), and the TRANSLATE-JUDGE (rejects any surface kept outside `relevant_state` as
-irrelevant). "Absent from scope" is strictly better than "opaqued": an opaqued item still emits an
-axiom that can taint; a dropped one cannot. Minimal-in beats garbage-in-then-gated.
+TRANSLATE ONLY THE MINIMAL CORE — this is the discipline that keeps the translation clean, and you own
+the whole toolchain that realises it (there is no prior assessment: you run Charon/Aeneas for real and
+apply any build-env fix yourself). `relevant_state` is exactly what the verified core needs; translate
+and model ONLY that, and keep everything else OUT of scope rather than modelling or opaquing it —
+"absent" beats "opaqued", because an opaqued item still emits an axiom that can taint while a dropped
+one cannot.
+
+The reliable way to stay minimal is HOW you scope the Charon build:
+  • EXTRACTION — the DEFAULT. Lift the target bodies into a small standalone crate holding ONLY
+    `relevant_state` (the projected structs + the value-types) plus the target functions, and Charon
+    THAT. Minimal BY CONSTRUCTION: `Display`/`serde`/`Pubkey`/formatting garbage never enters scope, so
+    the taint gate passes first-try. `relevant_state` IS your copy-list.
+  • IN-PLACE (`charon --start-from` on the real crate) — ONLY when the targets' type/call closure is
+    ALREADY within `relevant_state`. Otherwise Charon drags in every type the targets touch (pubkey-
+    laden structs, derived Display/serde) and you must strip each path back out — the taint gate becomes
+    a rejection loop that can stall. Prefer extraction whenever in-place would pull in surface outside
+    `relevant_state`.
+
+Either way the PROJECTION is the same: keep only a struct's `relevant_state` fields (drop pubkeys,
+account keys, bumps, padding, unread config — by editing the Rust struct), and model a value-type's
+VALUE/arithmetic ONLY — its Display/Debug/serde/FromStr is EXCLUDED, never modelled and never delegated
+back to the original. Two mechanical gates then confirm it: a hard TAINT gate (no target may
+transitively reach an opaque axiom — a leaked Display/Pubkey/native_decide BLOCKS) and the
+TRANSLATE-JUDGE (rejects any surface kept outside `relevant_state`).
 
 GOAL — every target function (`target_patterns`) MUST appear in the generated Lean as a real
 translated `def` with a body. A target emitted as an `axiom` (opaqued) or a bare `sorry` (hole) is a
@@ -216,17 +169,28 @@ DEPENDENCIES, never the target itself.
 
 PLAN FIRST, THEN EXECUTE — do NOT grind primitive-by-primitive. Your FIRST action is to read the
 target functions ONCE and write a short PLAN to /workspace/out/translate/campaigns/<Campaign>/plan.md: the minimal set to
-translate and how, via the ladder below IN ORDER. Classify every external dependency in a SINGLE
-pass: the target's own logic = translatable core (keep); trusted primitives whose internal value the
-properties don't reason about (crypto/curve/scalar/point arithmetic, hashing, Fiat–Shamir transcript,
-RNG, formatting/Debug) = leaves, opaque/exclude as ONE BATCH (whole module/trait at a time); a data
-structure whose CONTENTS a property constrains → model it (rung 3). plan.md is your ANCHOR: execute
-it (charon ONCE with the full --start-from + the whole opaque/exclude batch, then aeneas, then
-compile), adjust ONLY what actually breaks, and if you lose the thread RE-READ plan.md rather than
-re-deriving. Decide the set up front and COMMIT — the TRANSLATE-JUDGE and the `#print axioms` gate
-are the safety net.
+translate and how, via the ladder below IN ORDER. State the chosen STRATEGY (extraction vs in-place)
+and why. Classify every external dependency in a SINGLE pass:
+  • the target's own logic = translatable core (keep);
+  • external crates/modules the target only USES and need not be verified (frameworks, oracles,
+    external-protocol account/amount types) = the `opaque_boundary` — with extraction they are simply
+    ABSENT; in-place, opaque/exclude them as ONE BATCH (whole module/trait at a time);
+  • trusted primitives whose internal value no property reasons about (crypto/curve/scalar/point
+    arithmetic, hashing, transcript, RNG, formatting/Debug) = leaves, same treatment;
+  • a value/type whose exact semantics a property NEEDS but Aeneas cannot translate (a fixed-point/
+    bignum library, a collection whose contents matter) = `must_model` → model it (rung 3).
+plan.md is your ANCHOR: execute it in ONE pass (build the extraction crate, or scope the real crate
+with the full --start-from + opaque/exclude batch, then aeneas, then compile), adjust ONLY what
+actually breaks, and if you lose the thread RE-READ plan.md rather than re-deriving. Decide the set up
+front and COMMIT — the taint gate, the TRANSLATE-JUDGE and the `#print axioms` gate are the safety net.
 
 TOOLCHAIN (all via bash):
+  • BUILD-ENV FIXES (before Charon can reach MIR): if the build fails on environment/toolchain issues —
+    NOT the program's own logic — a crate-type host-link abort, a removed nightly feature in an old dep,
+    a vendored `.cargo-checksum.json` needing update after such an edit, apply the MINIMAL fix, retry,
+    and record it in accountability.md. These are build configuration, distinct from a rung-3
+    behaviour-preserving source edit. (With the extraction strategy you sidestep most of these — the
+    standalone crate has none of the target's Anchor/account plumbing.)
   • Charon → a `.llbc`. From the crate dir (whose Cargo.toml defines the target's package):
         charon cargo --preset=aeneas --start-from crate::module::_::method -- -p <package>
   • Aeneas → Lean. Clear the dest, then run ONCE WITHOUT -split-files (single top-level module

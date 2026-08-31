@@ -9,25 +9,24 @@ runs the soundness gates that the agents are not allowed to touch.
 
 Given a Rust repository and a design document, Lusterna:
 
-1. **Explores** the source (entry file + public functions) and empirically reality-checks the
-   toolchain — building with Charon and a coarse Aeneas pass to record what is buildable, the
-   external trust boundary, and which types must be modelled — as an advisory assessment
-2. **Infers**, from the code, the behavioural properties the target functions satisfy — and which
-   functions the verification targets (the design document is only a focus hint; the code is the
-   source of truth)
-3. **Translates** the target to Lean 4 via [Charon](https://github.com/AeneasVerif/charon) +
-   [Aeneas](https://github.com/AeneasVerif/aeneas), driving the toolchain to translate the target's
-   own logic (never mocking it away)
-4. **Formalises** the properties as Lean 4 theorem statements and builds them with `lake build`,
+1. **Infers**, from the pristine code, the behavioural properties the target functions satisfy, which
+   functions the verification targets, and the minimal state the properties constrain (the design
+   document is only a focus hint; the code is the source of truth). This is the first stage — it also
+   orients: the entry crate and the functions that matter.
+2. **Translates** the target to Lean 4 via [Charon](https://github.com/AeneasVerif/charon) +
+   [Aeneas](https://github.com/AeneasVerif/aeneas), running the toolchain reality-check itself and
+   owning the build-vs-extract strategy — by default lifting only the minimal core into a scoped
+   extraction crate (never mocking the target away)
+3. **Formalises** the properties as Lean 4 theorem statements and builds them with `lake build`,
    iterating until they compile
-5. Has a **spec-judge** list concrete defects in the theorem statements (checked against the
+4. Has a **spec-judge** list concrete defects in the theorem statements (checked against the
    translation and the inferred properties); revises until the list is empty
-6. **Proves** as many statements as it can with Lean 4 tactics against the `lake build` oracle
-7. Runs **`#print axioms`** — the authoritative gate: a theorem is *established* only if its proof
+5. **Proves** as many statements as it can with Lean 4 tactics against the `lake build` oracle
+6. Runs **`#print axioms`** — the authoritative gate: a theorem is *established* only if its proof
    depends on nothing beyond the standard axioms (so an untranslated hole, a leftover `sorry`,
    `native_decide`'s compiler trust, or an assumed axiom all leave it reported as *tainted*, not
    verified)
-8. Writes a **verification report** — led by a harness-generated verdict block that no agent
+7. Writes a **verification report** — led by a harness-generated verdict block that no agent
    narrative can override.
 
 Each stage is one AI-agent session with its own tools; its **deliverable is files** under
@@ -122,9 +121,8 @@ flowchart TD
   DESIGN["📄 DESIGN.md — focus hint"]:::src
   RUST["🦀 Rust crate — source of truth"]:::src
 
-  EXPLORE["EXPLORE — entry file + fns + toolchain assessment"]:::impl
-  INFER["INFER — behaviour spec + target_patterns (pristine source)"]:::impl
-  TRANSLATE["TRANSLATE — agent drives Charon → Aeneas → Lean"]:::impl
+  INFER["INFER — orientation + behaviour spec + target_patterns + relevant_state (pristine source)"]:::impl
+  TRANSLATE["TRANSLATE — owns toolchain + build/extract strategy; Charon → Aeneas → Lean"]:::impl
   TJUDGE{"TRANSLATE-JUDGE — target translated & faithful?"}:::gate
   FORMALISE["FORMALISE — theorem statements"]:::impl
   FBUILD{"lake build + spec checks — compiles & conforms?"}:::gate
@@ -133,7 +131,7 @@ flowchart TD
   AXIOMS["#print axioms — established-theorem gate"]:::verify
   REPORT["REPORT"]:::report
 
-  RUST --> EXPLORE --> INFER --> TRANSLATE --> TJUDGE
+  RUST --> INFER --> TRANSLATE --> TJUDGE
   TJUDGE -- "defects (mock / hole / unfaithful)" --> TRANSLATE
   TJUDGE -- "approved" --> FORMALISE --> FBUILD
   FBUILD -- "✗ fix" --> FORMALISE
@@ -155,8 +153,7 @@ not via message history.
 
 | Stage | Deliverable (files) | Harness gate |
 |---|---|---|
-| EXPLORE | `explore/{assessment.md, handoff.json}` | valid handoff JSON |
-| INFER | `specs/informal_spec.json` (properties + `target_patterns`) | valid JSON with `target_patterns` |
+| INFER | `infer/campaigns/<Campaign>.json` (`entry_file` + properties + `target_patterns` + `relevant_state`) | valid JSON with `target_patterns` |
 | TRANSLATE | `lean/<Crate>.lean` + `translate/{plan,accountability}.md` | compiles · target is a real `def` (not opaqued/holed) · single top-level module |
 | TRANSLATE-JUDGE | `translate/verdict.json` | empty defect list (semantic screen; independent session) |
 | FORMALISE | `lean/<Crate>/Spec.lean` (statements, bodies `:= by sorry`) | `lake build` compiles · mechanical spec checks conform (`check_spec_gate`) |
@@ -544,7 +541,7 @@ added. **What to reuse vs. redo is driven by the instruction document, not by fl
 is told a prior artefact may already be present and reconciles it against the new instruction
 (reuse / extend / revise). Two motivating cases:
 
-- **Grow a campaign** — a new instruction that adds properties: EXPLORE + TRANSLATE are reused, INFER
+- **Grow a campaign** — a new instruction that adds properties: the TRANSLATION is reused, INFER
   adds the new properties, FORMALISE/PROVE handle the delta, and prior proofs carry over.
 - **Close remaining `sorry`s** — an instruction to finish the open obligations: everything upstream
   is reused and PROVE re-attacks just the unproven theorems (with more budget/effort).
@@ -626,7 +623,7 @@ lusterna show-checkpoint SESSION_ID [--number N]   # a checkpoint's state (JSON)
 | `LUSTERNA_SESSIONS_DIR` | `~/.local/share/lusterna/sessions` | Root for per-session checkpoints |
 | `LUSTERNA_IMAGE` | `lusterna-toolchain:latest` | Default Docker image |
 | `LUSTERNA_CONTAINER` | — | Pre-existing container to attach to (skips auto-start) |
-| `LUSTERNA_STOP_AFTER_EXPLORE` | (off) | Stop after EXPLORE so its assessment can be inspected |
+| `LUSTERNA_STOP_AFTER_INFER` | (off) | Stop after INFER so the inferred spec + target scope can be inspected |
 | `LUSTERNA_STOP_AFTER_TRANSLATE` | (off) | Stop after TRANSLATE so the translation can be inspected |
 | `LUSTERNA_STOP_BEFORE_PROVE` | (off) | Stop after SPEC-JUDGE so the inferred spec can be inspected |
 | `LUSTERNA_LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
@@ -650,10 +647,7 @@ The mental model: `lean/` is the verified artifact; every other dir is one stage
     │   ├── <Crate>.lean           — Aeneas translation (root module)
     │   ├── <Crate>/…              — translation submodules + <Crate>/Spec.lean (the theorem spec)
     │   └── lakefile.lean          — Lake project file
-    ├── explore/
-    │   ├── assessment.md          — EXPLORE's narrative
-    │   └── handoff.json           — entry file/functions + the toolchain assessment
-    ├── infer/properties.json      — the inferred behavioural properties/invariants + target_patterns
+    ├── infer/campaigns/<Campaign>.json — entry_file + properties/invariants + target_patterns + relevant_state
     ├── translate/                 — plan.md, accountability.md, source.diff, facts.json, verdict.json
     ├── spec-judge/verdict.json    — the spec-judge verdict
     ├── report/                    — axioms.json (authoritative verdicts) + the report sections
