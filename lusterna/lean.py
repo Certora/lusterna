@@ -415,6 +415,125 @@ def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
             "raw": text[-3000:]}
 
 
+def _axiom_fix_hint(ax: str) -> str:
+    """The category of an opaque axiom a target reached, and how to remove it. `collectAxioms` reports
+    the qualified name, so we match on substrings of it. Domain-agnostic: it names Rust/Lean surface
+    kinds (formatting, serialization, native_decide), never a target's own types."""
+    a = ax.lower()
+    if "native.decide" in a or "reducebool" in a or "trustcompiler" in a:
+        return ("native_decide compiler-trust — a modelled op/helper used `native_decide`/`decide` on "
+                "a non-trivial term; replace it with a real proof or a plain `def` so no compiler-trust "
+                "axiom remains")
+    if "sorryax" in a:
+        return "a `sorry` hole — the target reaches an un-translated body; translate it fully"
+    if any(k in a for k in ("fmt", "display", "debug", "tostring")):
+        return ("a formatting/`Display`/`Debug` surface — DROP it (exclude `core::fmt`) or give the "
+                "modelled type a self-contained body; NEVER delegate a modelled type's Display back to "
+                "the original")
+    if any(k in a for k in ("serialize", "deserialize", "serde", "borsh", "fromstr")):
+        return ("a serialization/parsing surface — DROP it; it is irrelevant to the value the "
+                "properties constrain")
+    return ("an opaque type/primitive — if a property constrains its VALUE, MODEL it concretely; "
+            "otherwise PROJECT it out of the target-reachable struct (drop the field — a Pubkey, "
+            "account key, or padding no property reads)")
+
+
+def _summarize_footprint(axioms: list[str]) -> str:
+    """One compact line describing a target's opaque axioms, grouped by fix-category so a target that
+    reaches 100 `…native.decide.ax_N` axioms reads as one line, not 100."""
+    groups: dict[str, list[str]] = {}
+    for ax in axioms:
+        groups.setdefault(_axiom_fix_hint(ax), []).append(ax)
+    parts = []
+    for hint, axs in groups.items():
+        more = f" (+{len(axs) - 1} more)" if len(axs) > 1 else ""
+        parts.append(f"`{axs[0]}`{more} — {hint}")
+    return "; ".join(parts)
+
+
+def target_footprint_gate(deps: AgentDeps, translation: str, lean_files: list[str],
+                          lean_path: str) -> dict:
+    """THE TAINT GATE — a HARD, FAIL-CLOSED TRANSLATE gate. No target function may transitively rest on
+    an opaque axiom, because `collectAxioms` closes over its whole body: one opaque axiom in a target's
+    footprint TAINTS every theorem about it (the exact `#print axioms` verdict, moved from PROVE to
+    TRANSLATE so a doomed translation is blocked in seconds, not after a $100 PROVE). A clean
+    translation — the sanctioned design — has an EMPTY target footprint: the substrate is MODELLED as
+    real defs and irrelevant surface is DROPPED, so nothing opaque is reachable from a goal.
+
+    Returns `{"ok": bool, "footprint": {def: [axioms]}, "feedback": str}`. `ok` is True ONLY when the
+    check RAN and every target's footprint is empty. It is FALSE — blocking — when any target reaches an
+    opaque axiom (feedback categorises each leak and its fix) OR the check could not run (build/driver
+    failure, or ZERO targets matched — the false-clean a name mismatch produces). Fail-closed: silence
+    is never 'clean'. This is a soundness gate; the semantic 'is this surface even relevant' call is the
+    TRANSLATE-JUDGE's (`irrelevant_surface`), against INFER's declared relevant-state.
+
+    Pass INFER's target patterns as dotted-SUFFIX forms; `checkDefAxioms` DISCOVERS the matching crate
+    defs in the built environment (via `nameHasSuffix`, like the legitimacy/schema checks), so the
+    harness never reconstructs a namespace-qualified constant name in Python."""
+    patterns = _target_name_forms(deps.progress.get("target_patterns", []))
+    modules = [m for m in (_module_of(f) for f in lean_files) if m]
+    lib = _module_of(lean_path)
+    if not patterns:
+        # Whole-crate mode (no explicit targets): nothing to point the gate at. Not a soundness hole —
+        # `#print axioms` at PROVE still gates every theorem — so do not block here.
+        log.info("target_footprint_gate: no target patterns (whole-crate mode) — gate skipped; "
+                 "`#print axioms` at PROVE remains authoritative")
+        return {"ok": True, "footprint": {}, "feedback": ""}
+    if not modules or not lib:
+        return {"ok": False, "footprint": {},
+                "feedback": "the harness could not locate the translated modules to verify the target "
+                            "axiom footprint — ensure the translation is a single top-level lean/<Crate>.lean."}
+    if not build(deps).get("success"):
+        return {"ok": False, "footprint": {},
+                "feedback": "the harness could not verify the target axiom footprint because the "
+                            "project did not `lake build`. Fix the build so the taint check can run."}
+    imports = "\n".join(f"import {m}" for m in modules)
+    plist = ", ".join("`" + p for p in patterns)
+    body = (f"{imports}\nimport {lib}.{_LINT_TOOL_NAME.removesuffix('.lean')}\n"
+            "open Lusterna.Checks\n"
+            "set_option maxRecDepth 8000 in\n"
+            "#eval show Lean.Meta.MetaM Unit from do\n"
+            f"  checkDefAxioms #[{plist}]\n"
+            f'  IO.println "{_GATE_DONE}"\n')
+    code, text = _run_lean_checker(deps, body, "_def_axioms.lean")
+    if text.startswith("ERROR:") or not _driver_ran(text):
+        log.warning("target_footprint_gate: driver did not finish (rc=%s) — BLOCKING (fail-closed). "
+                    "Lean tail:\n%s", code, text[-800:])
+        return {"ok": False, "footprint": {},
+                "feedback": "the harness could not verify the target axiom footprint (the checker "
+                            "driver did not finish). This blocks fail-closed; the translation must "
+                            "build cleanly so the taint check can run."}
+    recs = {r.get("def"): sorted(r.get("opaque"))
+            for r in _parse_check_records(text) if r.get("check") == "def_axioms"}
+    # ZERO matched defs while there ARE target patterns is the catastrophic false-clean — the check
+    # analysed nothing. BLOCK (never read as 'footprint empty ⇒ clean'): a name/namespace mismatch, or
+    # every target left un-translated.
+    if not recs:
+        log.warning("target_footprint_gate: matched NO target def — VACUOUS, BLOCKING (fail-closed). "
+                    "patterns=%s", patterns)
+        return {"ok": False, "footprint": {},
+                "feedback": (f"the taint check matched NO target function in the built translation "
+                             f"(patterns {patterns}). Every target must be a real translated `def` — a "
+                             f"name mismatch or an un-translated target makes the check vacuous, which "
+                             f"blocks fail-closed.")}
+    foot = {d: ax for d, ax in recs.items() if ax}
+    if not foot:
+        log.info("target_footprint_gate: %d target(s) clean — empty opaque footprint", len(recs))
+        return {"ok": True, "footprint": {}, "feedback": ""}
+    log.warning("TRANSLATE: ⚑ TAINT GATE BLOCKED — %d target def(s) rest on OPAQUE axioms: %s",
+                len(foot), foot)
+    lines = [f"  - `{d}` reaches {_summarize_footprint(ax)}" for d, ax in sorted(foot.items())]
+    feedback = (
+        f"TAINT GATE: {len(foot)} target function(s) transitively rest on an OPAQUE axiom. Axiom taint "
+        "is TRANSITIVE over a function's whole body (error/panic/formatting branches included), so each "
+        "of these will taint EVERY theorem about it at PROVE — a verified target must reach ONLY Lean's "
+        "standard axioms (propext, Classical.choice, Quot.sound). This is irrelevant surface that leaked "
+        "into the verified core. Remove each so the target's footprint is EMPTY (drop the surface, or "
+        "model the value concretely — never delegate a modelled type's Display/serde back to the "
+        "original):\n" + "\n".join(lines))
+    return {"ok": False, "footprint": foot, "feedback": feedback}
+
+
 # The `LUSTERNA_CHECK {...}` line a check emits. Lean prefixes `#eval` output with a
 # `file:line:col: info:` header, so both are optional — the same shape tests/checklean/verify.py
 # parses, deliberately, so the harness reads exactly what an agent reads.

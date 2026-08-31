@@ -18,6 +18,14 @@ abstract token: a curve point, hash, transcript, RNG draw). If a target function
 property depends on the outcome, you MUST **model** it (rung 3), not opaque it — otherwise the
 translation compiles but the properties are unprovable, and TRANSLATE has achieved nothing.
 
+⚠ **"Irrelevant" is TRANSITIVE, and you cannot eyeball it.** `#print axioms` (the downstream gate)
+takes the axiom closure over a proof term, which runs through a function's ENTIRE body — every error,
+panic, and formatting branch, not just the value path. So an opaque axiom a target reaches through
+*any* path — a `Display`/`Debug` call on an error branch, a `?`-propagated parse, a serialization
+helper — taints EVERY theorem about that function, even one that never exercises that branch. Do NOT
+reason your way to "this path is inert, no value flows through it": that reasoning is exactly what a
+transitive closure ignores. A leaf is irrelevant only if NO target's body can reach it at all.
+
 ## Verdict table (measured on this toolchain)
 
 `def` = translated (use freely) · `axiom` = opaque, no Lean model (model it if a property depends on it)
@@ -74,6 +82,17 @@ re-translate. You cannot add Aeneas builtins — the source is the only lever.
 - **Early `return` / labeled `break`/`continue` inside loops → single-exit form.** Introduce a mutable
   result and a boolean/`while cond && !done` guard; set the result and let the loop fall through to one
   exit. No early `return`, no labeled jumps.
+- **A MODELLED substrate type → translate its VALUE surface only; never delegate a non-value surface
+  back to the original.** When you replace an external type with your own model (rung 3), you own it —
+  so model only its value-carrying operations. Its non-value trait impls — `Display`/`Debug`/
+  formatting, `serde`/serialization, `FromStr`/parsing, `Hash` — must be EXCLUDED (`--exclude`/
+  `--opaque` them) or given a trivial self-contained body, **never delegated back to the original
+  external type** (`impl Display for MyModel { … OriginalType::from_bits(self.0).fmt(f) }`). Delegation
+  re-imports the opaque original, and by the transitive rule above one such "inert formatting" path
+  taints every theorem about every function that can reach it — the whole point of modelling the type
+  was to keep the original out. Rendering fidelity is worthless for verification; an empty axiom
+  footprint is essential. (The one exception: a property that is genuinely ABOUT that surface — then
+  model the surface fully too, don't delegate it.)
 
 ## Charon / Aeneas mechanics
 

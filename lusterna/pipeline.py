@@ -184,6 +184,13 @@ def _stage_infer(deps: AgentDeps) -> None:
             return False, f"{ispec} is missing the required key `target_patterns`."
         deps.progress["informal_spec"] = spec
         deps.progress["target_patterns"] = list(spec.get("target_patterns") or [])
+        # The minimal core the properties constrain (struct fields + value-types). TRANSLATE projects
+        # to it; the TRANSLATE-JUDGE flags anything outside it as irrelevant surface. Absent ⇒ the
+        # judge falls back to its own semantic call (degraded, not broken), so do not hard-block here.
+        deps.progress["relevant_state"] = list(spec.get("relevant_state") or [])
+        if not deps.progress["relevant_state"]:
+            log.warning("INFER produced no `relevant_state` — the TRANSLATE-JUDGE's relevance check "
+                        "loses its objective referent (will fall back to a semantic guess)")
         return True, ""
 
     _cc_gate_loop(
@@ -196,6 +203,8 @@ def _stage_infer(deps: AgentDeps) -> None:
     tools.commit(deps.container_id, "feat(spec): informal specification (pre-translate)")
     checkpoint.snapshot(deps)   # commit-then-snapshot: git_head must track this stage's own commit
     log.info("INFER target patterns: %s", deps.progress.get("target_patterns") or "(whole crate)")
+    log.info("INFER relevant state (minimal core): %s",
+             deps.progress.get("relevant_state") or "(none declared)")
 
 
 # ── TRANSLATE (+ TRANSLATE-JUDGE) ─────────────────────────────────────────────────
@@ -226,6 +235,7 @@ def _stage_translate(deps: AgentDeps) -> None:
     if "aeneas" in deps.progress:
         return
     targets = deps.progress.get("target_patterns") or []
+    relevant = deps.progress.get("relevant_state") or []
     entry = deps.progress.get("explore", {}).get("entry_file", "src/lib.rs")
 
     def check(deps: AgentDeps):
@@ -239,13 +249,26 @@ def _stage_translate(deps: AgentDeps) -> None:
                            f"`rm -rf /workspace/out/lean/*` and re-run aeneas WITHOUT -split-files")
         if not facts["compiles"]:
             return False, "the translation does not compile:\n" + facts["build_errors"]
-        # Mechanical hard gate passed (it compiles). Whether the TARGET is genuinely translated (a
-        # real def, not opaqued/holed) and behaviour-preserving is the TRANSLATE-JUDGE's semantic
-        # call — it inspects the translation itself — with `#print axioms` the final backstop.
+        # Compile gate passed. THE TAINT GATE next — a hard, fail-closed mechanical gate: no target
+        # function may transitively rest on an opaque axiom (that would taint every theorem about it).
+        # It runs BEFORE the judge — no point spending a judge session on a tainted translation — and
+        # is the `#print axioms` verdict moved from PROVE to TRANSLATE. A clean (sanctioned) translation
+        # has an empty target footprint; a non-empty one is irrelevant surface that leaked into the core.
+        translation = lean.translation_text(deps, facts["lean_files"])
+        taint = lean.target_footprint_gate(deps, translation, facts["lean_files"], facts["lean_path"])
+        if not taint["ok"]:
+            return False, taint["feedback"]
+        # Taint-clean. Whether the target is genuinely translated (a real def, not mocked) and carries
+        # ONLY the minimal relevant core — no irrelevant modelled/opaqued surface, even the non-tainting
+        # kind the taint gate cannot see — is the TRANSLATE-JUDGE's semantic call, against the
+        # relevant-state INFER declared.
         tdir = _translate_dir(deps)
         judge_facts = {
             "compiles": True,
-            "emitted_axioms": lean.external_axioms(lean.translation_text(deps, facts["lean_files"])),
+            "emitted_axioms": lean.external_axioms(translation),
+            # The minimal core the properties constrain (INFER). The judge flags anything modelled or
+            # kept OUTSIDE it as `irrelevant_surface` — the objective referent for "irrelevant".
+            "relevant_state": deps.progress.get("relevant_state", []),
             "generated_lean_files": facts["lean_files"],
             "source_files_changed": tools.repo_changed_files(deps.container_id),
             "source_git_diff": tools.repo_diff(deps.container_id),
@@ -254,9 +277,12 @@ def _stage_translate(deps: AgentDeps) -> None:
         verdict = _run_judge(
             deps, stage="TRANSLATE-JUDGE", briefing=briefings.TRANSLATE_JUDGE,
             prompt=(f"Judge the translation in /workspace/out/lean against the target source in "
-                    f"/workspace/repo. The target functions are: {targets or '(whole crate)'}. Read "
-                    f"the facts at /workspace/out/{tdir}/facts.json and this campaign's accountability "
-                    f"at /workspace/out/{tdir}/accountability.md, then write your verdict to "
+                    f"/workspace/repo. The target functions are: {targets or '(whole crate)'}. The "
+                    f"minimal core (relevant_state) is: {relevant or '(see infer json)'} — anything "
+                    f"modelled or kept OUTSIDE it is irrelevant_surface to be dropped. The harness has "
+                    f"already gated that it compiles AND is taint-clean. Read the facts at "
+                    f"/workspace/out/{tdir}/facts.json and this campaign's accountability at "
+                    f"/workspace/out/{tdir}/accountability.md, then write your verdict to "
                     f"/workspace/out/{tdir}/verdict.json per your briefing."),
             verdict_rel=f"{tdir}/verdict.json")
         defects = verdict.get("defects", [])
@@ -269,7 +295,9 @@ def _stage_translate(deps: AgentDeps) -> None:
     _cc_gate_loop(
         deps, stage="TRANSLATE", briefing=briefings.TRANSLATE,
         base_prompt=(f"Proceed to TRANSLATE. Target patterns (each MUST become a real `def`, never "
-                     f"opaqued): {targets or '(whole crate)'}. Suggested entry file: {entry}. Read "
+                     f"opaqued): {targets or '(whole crate)'}. Minimal core to project to / model "
+                     f"(relevant_state — translate ONLY this, drop the rest): {relevant or '(see infer json)'}. "
+                     f"Suggested entry file: {entry}. Read "
                      f"/workspace/out/{_infer_spec(deps)} and /workspace/out/{_explore_dir(deps)}/handoff.json, "
                      f"then drive Charon + Aeneas into /workspace/out/lean (the SHARED translation — "
                      f"reuse/extend it, do not restart from scratch). Record THIS campaign's decision "

@@ -126,13 +126,14 @@ reads guided by the design hint, not the whole tree.
 DISCIPLINE: plan briefly; read only what's relevant; write the deliverable; validate it; STOP. Do
 not over-analyse — the code stays the source of truth downstream.
 
-TWO JOBS, written to ONE file /workspace/out/infer/campaigns/<Campaign>.json (valid JSON, exactly these keys):
+THREE JOBS, written to ONE file /workspace/out/infer/campaigns/<Campaign>.json (valid JSON, exactly these keys):
   {
     "summary": "...",
     "properties": ["..."],
     "invariants": ["..."],
     "edge_cases": ["..."],
-    "target_patterns": ["crate::module::_::method", "..."]
+    "target_patterns": ["crate::module::_::method", "..."],
+    "relevant_state": ["Type.field", "OtherType.field", "ValueType", "..."]
   }
 
 1. INFORMAL SPEC (summary/properties/invariants/edge_cases) — the behaviour the target code ACTUALLY
@@ -165,6 +166,22 @@ TWO JOBS, written to ONE file /workspace/out/infer/campaigns/<Campaign>.json (va
    Pick the SMALLEST set that captures the core properties and can plausibly translate. Empty list
    only if the crate has no identifiable target.
 
+3. relevant_state — the MINIMAL CORE of program state the properties actually constrain: the specific
+   struct FIELDS and value-TYPES a theorem would read or relate, as dotted names (`Type.field`, or a
+   bare `Type` whose VALUE a property reasons about). This is the anchor for the whole translation:
+   TRANSLATE must MODEL and PROJECT TO exactly this, and the TRANSLATE-JUDGE flags ANYTHING kept
+   outside it as irrelevant surface to be dropped. Derive it mechanically from your properties/
+   invariants — an invariant `total_supply() >= mint_total_supply` constrains exactly the fields those
+   two measurements read, and no others. Include:
+     • every struct FIELD a property/invariant reads or writes (e.g. `ReserveLiquidity.borrowed_amount_sf`);
+     • every value-TYPE whose VALUE a property reasons about (a fixed-point `Fraction`, a bignum `U256`) —
+       its VALUE/arithmetic is in-core; its Display/Debug/serde/FromStr is NOT and must be excluded.
+   EXCLUDE everything else, and be TIGHT — it is the definition of "minimal", so nothing carried "just
+   in case": other struct fields (pubkeys, account keys, bumps, padding, config a property never reads),
+   whole plumbing types, and the non-value surfaces (formatting/serialization/parsing) of even the
+   in-core types. If a field is not named here, TRANSLATE is entitled to drop it. Empty only if there
+   is genuinely no stateful core (a pure computation).
+
 Validate the JSON parses, then STOP.
 """ + CONTINUING + WORKSPACE
 
@@ -176,8 +193,21 @@ VERIFICATION TARGET by driving Charon and Aeneas yourself (you have Bash/Read/Wr
 The Rust crate is at /workspace/repo; emit Lean into /workspace/out/lean.
 
 READ FOR INPUT: /workspace/out/infer/campaigns/<Campaign>.json — its `target_patterns` are the functions
-you MUST translate, and its properties tell you which state matters.
+you MUST translate; its `relevant_state` is the MINIMAL CORE — the exact struct fields and value-types
+the properties constrain — and its properties tell you which behaviour matters.
 /workspace/out/explore/campaigns/<Campaign>/handoff.json has the toolchain assessment (build prereqs, opaque boundary, must-model).
+
+PROJECT TO THE MINIMAL CORE — this is the discipline that keeps the translation clean. `relevant_state`
+defines exactly what the verified core needs; translate/model ONLY that, and DROP everything else from
+scope rather than modelling or opaquing it. Concretely: keep only the `relevant_state` fields of a
+struct (project the rest away — pubkeys, account keys, bumps, padding, config a property never reads —
+by editing the Rust source struct), and for a value-type in `relevant_state` model ONLY its value/
+arithmetic surface — its Display/Debug/serde/FromStr must be EXCLUDED, never modelled and never
+delegated back to the original. Two mechanical gates enforce this after you finish: a hard TAINT gate
+(no target function may transitively reach ANY opaque axiom — a leaked `Display`/`Pubkey`/`native_decide`
+axiom BLOCKS), and the TRANSLATE-JUDGE (rejects any surface kept outside `relevant_state` as
+irrelevant). "Absent from scope" is strictly better than "opaqued": an opaqued item still emits an
+axiom that can taint; a dropped one cannot. Minimal-in beats garbage-in-then-gated.
 
 GOAL — every target function (`target_patterns`) MUST appear in the generated Lean as a real
 translated `def` with a body. A target emitted as an `axiom` (opaqued) or a bare `sorry` (hole) is a
@@ -274,21 +304,38 @@ proceeds (that is the goal).
 You have Bash/Read/Grep. READ: the ORIGINAL Rust at /workspace/repo (targets = target_patterns in
 /workspace/out/infer/campaigns/<Campaign>.json), the GENERATED Lean at /workspace/out/lean, the
 accountability at /workspace/out/translate/campaigns/<Campaign>/accountability.md, and /workspace/out/translate/campaigns/<Campaign>/facts.json
-(it compiles; the emitted `axiom`s; changed source files + the git diff). The harness has ALREADY
-gated that it compiles — your job is the semantic screen it can't do. INSPECT the translation
-yourself: for each target function, `grep`/`sed` its translated form in the Lean and confirm it is a
-real `def` with a faithful body — NOT an `axiom` (opaqued) and NOT a bare `sorry` (hole).
+(it compiles; the emitted `axiom`s; `relevant_state` — the minimal core; changed source files + the
+git diff). The harness has ALREADY gated TWO things mechanically: it COMPILES, and it is TAINT-CLEAN
+(a hard gate already proved NO target function transitively reaches any opaque axiom — so you never
+re-derive taint; that is settled). Your job is the semantic screen the harness cannot do. INSPECT the
+translation yourself: for each target function, `grep`/`sed` its translated form in the Lean and
+confirm it is a real `def` with a faithful body — NOT an `axiom` (opaqued) and NOT a bare `sorry` (hole).
 
 Judge exactly these (one entry per problem: kind, detail, concrete fix):
   • target_mocked — a target function emitted as an `axiom` instead of translated. (Opaquing a
     target's trusted DEPENDENCY is fine — do not flag.)
   • holes_in_target — a target function's own body is a bare `sorry`.
-  • over_opaqued — NO mocks/stubs unless IRRELEVANT to the target. An `--opaque` dependency is a mock
-    (bare `axiom`, no relating equations); acceptable ONLY when its behaviour is irrelevant to every
-    inferred property. RELEVANCE, not stdlib-ness, is the test: a stdlib collection whose
-    `get`/`insert` DETERMINE the target's results is relevant and must be MODELLED. Read each target's
-    body; for any `axiom` it calls whose behaviour an inferred property depends on, flag over_opaqued
-    and require it be MODELLED so its ops become real `def`s.
+  • over_opaqued — a dependency whose behaviour an inferred PROPERTY depends on was `--opaque`d (a bare
+    `axiom`, no relating equations) instead of modelled, so the property becomes unprovable. RELEVANCE,
+    not stdlib-ness, is the test: a stdlib collection whose `get`/`insert` DETERMINE a target's results
+    must be MODELLED. This is the UNDER-modelling failure (the taint gate already caught the case where
+    such an axiom reaches a target; this catches the case where it makes a property vacuous/unstatable).
+  • irrelevant_surface — the OPPOSITE failure, and the one you most own: a type, field, method, or
+    trait impl that was MODELLED or KEPT in the translation but lies OUTSIDE the minimal core. The
+    minimal core is not a judgement call you make from scratch — it is `relevant_state` in the infer
+    json (the exact struct fields and value-types the properties constrain) plus the target functions.
+    ANYTHING outside it is irrelevant and MUST be dropped from scope, no matter that it compiles and is
+    taint-clean:
+      – a struct FIELD no property reads that survived into the translated type (a pubkey, account key,
+        bump, padding, unrelated config) — require it be PROJECTED AWAY (dropped from the Rust struct);
+      – a modelled/kept non-value surface of an in-core type — a `Display`/`Debug`/`ToString` impl, a
+        `serde`/`borsh` (de)serialiser, a `FromStr`/parser — require it be EXCLUDED (a value-type's
+        VALUE is in-core; its rendering/serialisation is not);
+      – a `native_decide`-backed or otherwise heavyweight helper for something no property needs.
+    "Irrelevant" means, precisely: NOT in `relevant_state`, and NOT needed to state or preserve a
+    property. Garbage that is merely taint-clean is still garbage — it wastes effort and bloats the
+    shared translation. For each piece, name it and say to drop/exclude/project it. (If `relevant_state`
+    is absent, fall back to the properties themselves as the definition of the core.)
   • semantics_changed — a source/Lean edit changes OBSERVABLE behaviour (not just representation).
     Representation swaps are OK; a change to WHAT is computed is a defect. Judge each edit in the diff.
     Behaviour-preservation must be EVIDENCED, not asserted: for every rung-3 edit, check that
@@ -300,11 +347,12 @@ Judge exactly these (one entry per problem: kind, detail, concrete fix):
     a branch or computation silently dropped).
 
 Do NOT judge proofs (none yet). Be strict but concrete — never invent a defect you cannot pin to a
-specific function/edit/opaqued item. STAY IN SCOPE: read the target functions, their translated
-`def`s, and (if the diff is non-empty) the edited lines — that is enough. Do NOT investigate the
-Aeneas standard library / toolchain internals. When the target is genuinely translated, the
-property-bearing state is modelled (not opaqued), every edit is behaviour-preserving, and it
-compiles, write {"defects": []}.
+specific function/edit/opaqued/kept item. STAY IN SCOPE: read the target functions and their
+translated `def`s; the modelled types/structs against `relevant_state` (to catch irrelevant_surface);
+and (if the diff is non-empty) the edited lines. That is enough — do NOT investigate the Aeneas
+standard library / toolchain internals. When every target is genuinely translated, the
+property-bearing state is modelled (not opaqued), the translation carries ONLY the minimal core (no
+surface outside `relevant_state`), and every edit is behaviour-preserving, write {"defects": []}.
 """ + WORKSPACE
 
 

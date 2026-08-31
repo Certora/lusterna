@@ -1333,6 +1333,40 @@ def checkAxioms (thms : Array Name) (declared : Array Name) : MetaM Unit := do
     let used := String.intercalate ", " (nonStd.toList.map (fun a => "\"" ++ toString a ++ "\""))
     emit s!"\{\"check\": \"axioms\", \"theorem\": \"{t}\", \"status\": \"{status}\", \"used\": [{used}]}"
 
+/-! ══ `def_axioms` — TRANSLATE-time opaque-footprint disclosure ═══════════════════════════════════
+
+The same `collectAxioms` machinery `checkAxioms` runs, pointed at the TARGET `def`s at translate time
+instead of at theorems at prove time. For each target function's translated `def` it reports the
+NON-standard axioms its body transitively depends on — the opaque substrate the target rests on. This
+is a DISCLOSURE, not a gate: a non-empty footprint means every theorem later proved about that target
+will be TAINTED by those axioms unless PROVE declares each as a trusted-base value-contract (a legit
+opaque leaf) — so it distinguishes an INTENDED trusted leaf from an ACCIDENTAL leak (a modelled type
+whose `Display`/`serde` was delegated back to the opaque original, dragging it into the footprint).
+Surfacing it at translate time catches such a leak in seconds instead of after a full PROVE.
+
+Takes INFER's target patterns as dotted-SUFFIX forms and DISCOVERS the matching crate defs in the
+environment itself (`nameHasSuffix`, filtered to non-trusted `defnInfo` — the same machinery
+`checkAssumptionLegitimacy`/`checkSchemaConformance` use), rather than being handed reconstructed
+constant names. This is deliberate: Aeneas wraps the crate in `namespace <crate>`, so the name a
+regex scrapes off `def state.reserve.…` is NOT the constant `<crate>.state.reserve.…` — resolving by
+exact lookup silently found nothing and emptied the footprint. Resolving IN the environment is robust
+to whatever namespace Aeneas emits. Emits one `{check:"def_axioms", def, opaque:[…]}` per matched def;
+the caller treats ZERO matches (patterns present, nothing found) as VACUOUS, never as clean. -/
+def checkDefAxioms (targets : Array Name) : MetaM Unit := do
+  let env ← getEnv
+  for (n, info) in env.constants.toList do
+    match info with
+    | .defnInfo _ =>
+      -- a non-trusted crate def whose name ends in a target pattern (cheap suffix test first, the
+      -- module lookup only on the few hits)
+      if targets.any (nameHasSuffix n) then
+        unless (← isTrustedDecl n) do
+          let axs ← Lean.collectAxioms n
+          let nonStd := axs.filter (fun a => !stdAxioms.contains a)
+          let op := String.intercalate ", " (nonStd.toList.map (fun a => "\"" ++ toString a ++ "\""))
+          emit s!"\{\"check\": \"def_axioms\", \"def\": \"{n}\", \"opaque\": [{op}]}"
+    | _ => pure ()
+
 /-- Purity half of the refutation gate: a `<name>__refuted` lemma is a real proof of the negation
 only if `collectAxioms` shows NO `sorryAx` (`native_decide`'s trust IS allowed — a refutation is a
 concrete finite counterexample, not a general proof). The type-tie half (`example : False := ref

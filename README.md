@@ -344,11 +344,35 @@ translate. The session handles each by the least-degrading option that works:
   depend on has no Lean model (e.g. a `BTreeMap` ledger → an association list); confirmed against the
   crate's own `cargo test` and recorded, with the diff, in `translate/accountability.md`.
 
-A **TRANSLATE-JUDGE** (a separate, independent session) gates the result: it rejects a translation
-that mocks the target (opaques a target function, or opaques a data structure whose contents a
-property constrains) or that changes observable behaviour. Every alteration is disclosed for human
-review; if the target cannot be translated without mocking it, the run aborts rather than emitting a
-hollow translation.
+The translation is then held to three things, in order — two mechanical gates and one semantic judge:
+
+1. **Compile gate** — `lake build` accepts it (a single top-level module, no split files).
+2. **The taint gate** (`lean.target_footprint_gate`, the `checkDefAxioms` MetaM check) — a **hard,
+   fail-closed** gate: no target function may transitively rest on an opaque axiom. It runs
+   `collectAxioms` — the *same* closure the PROVE `#print axioms` gate takes — over each target `def`
+   at translate time, so a leak is caught in seconds rather than after a $100 PROVE. Because that
+   closure covers a function's whole body (error, panic, and formatting branches included), it catches
+   an opaque leaf reached through a "harmless" path — a modelled type whose `Display`/`serde` was
+   delegated back to the opaque original, a `Pubkey` field that rode along in a struct, a
+   `native_decide` helper — every one of which would taint every downstream theorem. A *clean*
+   translation (the sanctioned design — substrate modelled as real defs, irrelevant surface dropped)
+   has an **empty** target footprint; a non-empty one blocks the round with a categorised, actionable
+   critique (drop the formatting surface, project the field away, replace the `native_decide`). It
+   fails **closed**: a build/driver failure, or zero targets matched (the false-clean a name mismatch
+   produces), blocks — silence is never "clean".
+3. **TRANSLATE-JUDGE** (a separate, independent session) — the *semantic* screen the machine cannot
+   do. It rejects a translation that mocks the target (`target_mocked`/`holes_in_target`), under-models
+   a property-bearing dependency (`over_opaqued`), changes observable behaviour (`semantics_changed`/
+   `not_faithful`), or — the relevance check — **keeps surface outside the minimal core**
+   (`irrelevant_surface`). "Irrelevant" is not a free judgement: INFER declares `relevant_state`, the
+   exact struct fields and value-types the properties constrain, and anything modelled or kept outside
+   it — a field no property reads, a modelled `Display`/serde, a heavyweight helper for something
+   unused — must be dropped, *even though it compiles and is taint-clean*. The taint gate owns
+   soundness (goals not tainted); the judge owns minimality (no garbage in), against INFER's declared
+   core.
+
+If the target cannot be translated without mocking it, the run aborts rather than emitting a hollow
+translation.
 
 To make the session recognise-and-apply rather than rediscover Aeneas's fragment every run, the
 translatability playbook (`docs/skills/aeneas-translate.md`) is appended to the TRANSLATE briefing —

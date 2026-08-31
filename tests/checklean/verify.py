@@ -375,6 +375,16 @@ SCHEMA_THEOREMS = [(f"Probe.Schemas.{n}", ["Probe.Inv.transfer", "Probe.Schemas.
 # be flagged. See Legit.lean.
 LEGIT_CHECK = (["Probe.Legit.limbMul_spec", "Probe.Legit.deposit_monotone"], ["deposit"])
 
+# `checkDefAxioms` — the TRANSLATE-time opaque-footprint disclosure. Per target def, the NON-standard
+# axioms its body TRANSITIVELY depends on. `leakyIndirect` never names `Op` itself — it reaches it
+# through `leakyDirect` — so its presence here is the transitive-closure assertion (the Fraction/
+# Display leak in miniature). See DefAx.lean.
+EXPECTED_DEF_AXIOMS = {
+    "Probe.DefAx.cleanDef":      [],
+    "Probe.DefAx.leakyDirect":   ["Probe.DefAx.Op"],
+    "Probe.DefAx.leakyIndirect": ["Probe.DefAx.Op"],
+}
+
 
 
 def sh(*args: str, check: bool = True) -> str:
@@ -464,6 +474,7 @@ def run_fixture() -> int:
                          (HERE / "Taint.lean", "lean/Probe/Taint.lean"),
                          (HERE / "Invariant.lean", "lean/Probe/Invariant.lean"),
                          (HERE / "Schemas.lean", "lean/Probe/Schemas.lean"),
+                         (HERE / "DefAx.lean", "lean/Probe/DefAx.lean"),
                          (HERE / "Legit.lean", "lean/Probe/Legit.lean")]:
             assert not tools.write_out(deps, dst, src.read_text()).startswith("ERROR:")
         lean.setup_lake(deps)   # writes the lakefile AND LusternaChecks.lean, exactly as in prod
@@ -554,12 +565,35 @@ def run_fixture() -> int:
             for k, (subs, hyps) in sorted(hyp_bad.items()):
                 print(f"  {k}: {subs} not in {hyps}")
 
+        # ── checkDefAxioms: the TRANSLATE-time opaque-footprint disclosure ──────────────────────────
+        # Its own driver (run_checks is spec-gate-shaped); asserts the exact transitive footprint.
+        # checkDefAxioms takes dotted-SUFFIX patterns and discovers the matching crate defs in the
+        # environment (like the legitimacy/schema checks) — pass the bare method names, not the
+        # reconstructed constant names, so this exercises the same resolution path production uses.
+        da_pats = ", ".join("`" + d.rsplit(".", 1)[-1] for d in EXPECTED_DEF_AXIOMS)
+        da_body = ("import Probe.DefAx\nimport Probe.LusternaChecks\nopen Lusterna.Checks\n"
+                   "set_option maxRecDepth 8000 in\n"
+                   "#eval show Lean.Meta.MetaM Unit from do\n"
+                   f"  checkDefAxioms #[{da_pats}]\n"
+                   '  IO.println "LUSTERNA_CHECK_DONE"\n')
+        assert not tools.write_out(deps, "lean/_defax_driver.lean", da_body).startswith("ERROR:")
+        _, dout, derr = container.exec_in(cid, ["lake", "env", "lean", "_defax_driver.lean"],
+                                          workdir=lean_dir, timeout=300)
+        da_find, _, da_done = parse_findings(dout + "\n" + derr)
+        got_footprint = {f["def"]: sorted(f.get("opaque", []))
+                         for f in da_find if f.get("check") == "def_axioms"}
+        footprint_ok = da_done is not None and got_footprint == EXPECTED_DEF_AXIOMS
+        if not footprint_ok:
+            print(f"\ncheckDefAxioms MISMATCH: got {got_footprint}, expected {EXPECTED_DEF_AXIOMS}")
+        else:
+            print(f"\ncheckDefAxioms OK: {got_footprint}")
+
         skip_ok = got_skipped == EXPECTED_SKIPPED and len(skipped) == len(EXPECTED_SKIPPED)
         count_ok = len(findings) == EXPECTED_FINDING_COUNT
         if not count_ok:
             print(f"\nCOUNT MISMATCH: got {len(findings)}, expected {EXPECTED_FINDING_COUNT}")
         ok = (not (missing or spurious or rule_bad or sev_bad or isc_bad or count_bad or hyp_bad)
-              and skip_ok and count_ok)
+              and skip_ok and count_ok and footprint_ok)
         print("\nPASS" if ok else "\nFAIL")
         return 0 if ok else 1
     finally:
@@ -615,6 +649,62 @@ def run_arbitrary(file: Path, targets: list[str], deps_files: list[Path],
         sh("docker", "rm", "-f", CONTAINER_NAME, check=False)
 
 
+GATE_CONTAINER = "lusterna-checklean-gate"
+
+
+def run_gate_fixture() -> int:
+    """Drive the REAL taint gate — `lean.target_footprint_gate` (build + `checkDefAxioms` + the
+    block/pass decision + its categorised feedback + fail-closed handling) — over the Klendish
+    fixture: a klend-shaped translation with a CLEAN target and a target that transitively reaches a
+    `Display`/`fmt` opaque. The DefAx fixture covers the Lean checker; THIS covers the Python gate
+    WRAPPER (the trusted verdict the TRANSLATE stage blocks on). Asserts BLOCK / PASS / fail-closed."""
+    sh("docker", "rm", "-f", GATE_CONTAINER, check=False)
+    cid = sh("docker", "run", "--rm", "--detach", "--name", GATE_CONTAINER,
+             "lusterna-toolchain:latest", "sleep", "infinity").strip()
+    print(f"\n[gate fixture] container {cid[:12]}")
+    try:
+        deps = AgentDeps(container_id=cid, repo_path=HERE, session_id="gate",
+                         design_doc="", campaign="Solvency")
+        lean_dir = f"{container.OUT_IN}/lean"
+        sh("docker", "exec", cid, "mkdir", "-p", lean_dir)
+        translation = (HERE / "Klendish.lean").read_text()
+        assert not tools.write_out(deps, "lean/KlendishModel.lean", translation).startswith("ERROR:")
+        lean.setup_lake(deps)
+        code, out, err = container.exec_in(cid, ["lake", "build"], workdir=lean_dir, timeout=1800)
+        if code != 0:
+            print(f"gate fixture did not build:\n{out}\n{err}")
+            return 1
+        files, lp = ["lean/KlendishModel.lean"], "lean/KlendishModel.lean"
+        deps.progress["aeneas"] = {"lean_path": lp, "lean_files": files, "holes": []}
+
+        def gate(patterns: list[str]) -> dict:
+            deps.progress["target_patterns"] = patterns
+            return lean.target_footprint_gate(deps, translation, files, lp)
+
+        # leaky+clean → BLOCK: only `repay` flagged, feedback categorises the Display leak.
+        g1 = gate(["crate::_::total_supply", "crate::_::repay"])
+        case1 = (not g1["ok"] and any("repay" in d for d in g1["footprint"])
+                 and all("total_supply" not in d for d in g1["footprint"])
+                 and "Display" in g1["feedback"])
+        # clean-only → PASS (empty footprint).
+        g2 = gate(["crate::_::total_supply"])
+        case2 = g2["ok"] and not g2["footprint"]
+        # nonexistent target → BLOCK, fail-closed (the vacuous false-clean a name mismatch produces).
+        g3 = gate(["crate::_::does_not_exist"])
+        case3 = (not g3["ok"]) and "matched NO target" in g3["feedback"]
+
+        ok = True
+        for name, passed in [("leaky → BLOCK", case1), ("clean → PASS", case2),
+                             ("vacuous → fail-closed BLOCK", case3)]:
+            print(f"  taint gate: {name}: {'PASS' if passed else 'FAIL'}")
+            ok = ok and passed
+        if not case1:
+            print(f"    (leaky footprint={g1['footprint']}, ok={g1['ok']})")
+        return 0 if ok else 1
+    finally:
+        sh("docker", "rm", "-f", GATE_CONTAINER, check=False)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--file", type=Path, help="an arbitrary .lean file to check (root module)")
@@ -633,7 +723,11 @@ def main() -> int:
         return run_arbitrary(args.file, [t.strip() for t in args.targets.split(",")], args.deps,
                              [g.strip() for g in (args.subjects or "").split(",") if g.strip()],
                              [g.strip() for g in args.continuations.split(",") if g.strip()])
-    return run_fixture()
+    # Two independent fixtures (separate containers — each wires its own lake lib): the spec-gate /
+    # checker regression, and the taint-gate wrapper. Both must pass.
+    rc = run_fixture()
+    rc = run_gate_fixture() or rc
+    return rc
 
 
 def shutil_which(name: str) -> str | None:
