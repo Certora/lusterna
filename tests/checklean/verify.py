@@ -657,7 +657,9 @@ def run_gate_fixture() -> int:
     block/pass decision + its categorised feedback + fail-closed handling) — over the Klendish
     fixture: a klend-shaped translation with a CLEAN target and a target that transitively reaches a
     `Display`/`fmt` opaque. The DefAx fixture covers the Lean checker; THIS covers the Python gate
-    WRAPPER (the trusted verdict the TRANSLATE stage blocks on). Asserts BLOCK / PASS / fail-closed."""
+    WRAPPER (the trusted verdict the TRANSLATE stage blocks on). Asserts BLOCK / PASS / fail-closed.
+    Also validates `lean.impl_references` (the impl-verified partition) on the open'd-short-name case
+    that a text scan got wrong."""
     sh("docker", "rm", "-f", GATE_CONTAINER, check=False)
     cid = sh("docker", "run", "--rm", "--detach", "--name", GATE_CONTAINER,
              "lusterna-toolchain:latest", "sleep", "infinity").strip()
@@ -700,6 +702,29 @@ def run_gate_fixture() -> int:
             ok = ok and passed
         if not case1:
             print(f"    (leaky footprint={g1['footprint']}, ok={g1['ok']})")
+
+        # ── impl_references: does a theorem VERIFY THE IMPLEMENTATION? ─────────────────────────────
+        # The exact bug this replaced: `ts_uses_impl` references the translated `total_supply` via the
+        # OPENED short name (`open klendish`), which a text scan of the full in-namespace def name
+        # missed → every theorem wrongly "abstract". `pure_lemma` is genuinely abstract (Nat only).
+        spec = ("import KlendishModel\nopen klendish\n"
+                "namespace KlendishModel.Spec.Solvency\n"
+                "theorem ts_uses_impl (x : Nat) (h : total_supply x = 1) : True := trivial\n"
+                "theorem pure_lemma (a b : Nat) : a + b = b + a := Nat.add_comm a b\n"
+                "end KlendishModel.Spec.Solvency\n")
+        assert not tools.write_out(deps, "lean/KlendishModel/Spec/Solvency.lean", spec).startswith("ERROR:")
+        code, out, err = container.exec_in(cid, ["lake", "build"], workdir=lean_dir, timeout=1800)
+        if code != 0:
+            print(f"  impl_references: spec did not build:\n{out}\n{err}")
+            ok = False
+        else:
+            refs = lean.impl_references(deps, "lean/KlendishModel/Spec/Solvency.lean")
+            case4 = refs.get("ts_uses_impl") is True and refs.get("pure_lemma") is False
+            print(f"  impl_references (open'd name → impl-verified, abstract → not): "
+                  f"{'PASS' if case4 else 'FAIL'}")
+            if not case4:
+                print(f"    (got {refs})")
+            ok = ok and case4
         return 0 if ok else 1
     finally:
         sh("docker", "rm", "-f", GATE_CONTAINER, check=False)

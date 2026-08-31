@@ -1366,6 +1366,26 @@ def checkDefAxioms (targets : Array Name) : MetaM Unit := do
           emit s!"\{\"check\": \"def_axioms\", \"def\": \"{n}\", \"opaque\": [{op}]}"
     | _ => pure ()
 
+/-! ══ `impl_ref` — does a theorem VERIFY THE IMPLEMENTATION? ═══════════════════════════════════════
+
+A theorem verifies the implementation iff its STATEMENT references a `def` from the Aeneas
+TRANSLATION, as opposed to being a purely abstract helper lemma over the spec's own predicates +
+trusted libraries. Decided from the elaborated TYPE's used constants and the module each was compiled
+into (`getModuleFor?` ∈ the translation's modules) — robust to `open`/namespacing, unlike a text scan
+of the statement, which missed a def referenced by its opened short name (`ReserveLiquidity.total_supply`
+under `open kamino_lending.state.reserve`) and wrongly reported every theorem "abstract-only". Emits
+`{check:"impl_ref", theorem, refs_impl}` per theorem; a theorem the driver never reaches leaves no
+record and the caller treats it conservatively as abstract. -/
+def checkImplReference (thms : Array Name) (translationModules : Array Name) : MetaM Unit := do
+  let env ← getEnv
+  for t in thms do
+    let some ci := env.find? t | continue
+    let refsImpl := ci.type.getUsedConstants.any fun c =>
+      match env.getModuleFor? c with
+      | some m => translationModules.contains m
+      | none   => false
+    emit s!"\{\"check\": \"impl_ref\", \"theorem\": \"{t}\", \"refs_impl\": {refsImpl}}"
+
 /-- Purity half of the refutation gate: a `<name>__refuted` lemma is a real proof of the negation
 only if `collectAxioms` shows NO `sorryAx` (`native_decide`'s trust IS allowed — a refutation is a
 concrete finite counterexample, not a general proof). The type-tie half (`example : False := ref

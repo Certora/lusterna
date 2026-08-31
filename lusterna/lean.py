@@ -66,8 +66,8 @@ def analyze_translation(deps: AgentDeps, *, do_commit: bool = True) -> dict:
     # EXCLUDE `.lake/` — it holds the built lake project's DEPENDENCY source (Aeneas runtime, and,
     # once a stage runs `lake build`/`lake exe cache get`, the entire Mathlib+Qq source tree — 9000+
     # files). Those are not the translation; enumerating and reading them would be pathologically
-    # slow (one `cat` per file) AND pollute translation_text/external_axioms/referenced_defs with all
-    # of Mathlib. The translation is only lean/<Crate>.lean + lean/<Crate>/**.
+    # slow (one `cat` per file) AND pollute translation_text/external_axioms with all of Mathlib.
+    # The translation is only lean/<Crate>.lean + lean/<Crate>/**.
     _, lean_list, _ = exec_in(
         deps.container_id,
         ["find", lean_out_dir, "-name", "*.lean", "-not", "-path", "*/.lake/*"], workdir=OUT_IN)
@@ -132,7 +132,7 @@ def setup_lake(deps: AgentDeps) -> str:
 # Files the HARNESS writes into `lean/`. They are build/tooling infrastructure, not the agent's
 # translation, so `analyze_translation` filters them out — otherwise they would be reported to
 # TRANSLATE-JUDGE as generated Lean and concatenated into `translation_text`, where their `def`s
-# would enter `_def_blocks` (hence `referenced_defs`, `target_defs`, the hole scan).
+# would enter `_def_blocks` (hence `target_defs`, the hole scan).
 _LINT_TOOL_NAME = "LusternaChecks.lean"
 # The SCHEMA ATTRIBUTES live in their own file, and the split is load-bearing: a spec module
 # `import`s this one to write `@[lusterna_hoare]`, which makes its attribute names a stable public
@@ -196,27 +196,6 @@ def _def_blocks(text: str) -> dict[str, str]:
         end = m.end() + (nxt.start() if nxt else len(rest))
         blocks[m.group(1)] = text[m.start():end].rstrip()
     return blocks
-
-
-def _strip_lean_comments(s: str) -> str:
-    """Drop Lean block comments (incl. `/-- … -/` docstrings) and line comments, so a
-    following def's docstring — swallowed into a block — can't create a false call edge."""
-    s = re.sub(r"/-.*?-/", " ", s, flags=re.S)
-    return re.sub(r"(?m)--.*$", " ", s)
-
-
-def _mentions(name: str, text: str) -> bool:
-    """True if *name* occurs in *text* as a whole token (Lean identifier boundary)."""
-    return bool(re.search(r"(?<![\w])" + re.escape(name) + r"(?![\w])", text))
-
-
-def referenced_defs(spec_text: str, translation_text: str) -> list[str]:
-    """Translation def names that *spec_text* mentions by name (comments stripped). Used to
-    decide whether a theorem statement references the implementation at all (so `_record_axioms`
-    can split established theorems into implementation-verified vs abstract-only lemmas).
-    Approximate (token-boundary match)."""
-    body = _strip_lean_comments(spec_text)
-    return [name for name in _def_blocks(translation_text) if _mentions(name, body)]
 
 
 def external_axioms(translation_text: str) -> list[str]:
@@ -413,6 +392,51 @@ def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
              len(clean), len(assumed), len(declared), len(tainted), len(names))
     return {"clean": clean, "assumed": assumed, "tainted": tainted, "sorry": sorry,
             "raw": text[-3000:]}
+
+
+def impl_references(deps: AgentDeps, spec_rel: str) -> dict[str, bool]:
+    """Which of a spec module's theorems VERIFY THE IMPLEMENTATION — i.e. their STATEMENT references a
+    `def` from the Aeneas TRANSLATION (a real translated def), vs a purely abstract helper lemma over
+    the spec's own predicates + trusted libraries. Returns `{written_theorem_name: bool}`.
+
+    Decided in the built environment by `checkImplReference` (`getUsedConstants` on each theorem's
+    elaborated TYPE, matched to the translation's own modules via `getModuleFor?`) — robust to
+    `open`/namespacing, unlike the former text scan, which matched the full in-namespace def name
+    (`state.reserve.ReserveLiquidity.total_supply`) against a statement that referenced it by its opened
+    short name (`ReserveLiquidity.total_supply`) and so wrongly reported every theorem abstract-only. A
+    theorem the driver never reaches is conservatively False (abstract), never a false impl-verified."""
+    original = tools.read_out(deps, spec_rel)
+    if original.startswith("ERROR:"):
+        return {}
+    names = _theorem_names(original)
+    if not names:
+        return {}
+    qnames = _theorem_qualified_names(original)
+    parts = tools._norm_out(spec_rel).split("/")
+    if len(parts) < 3 or parts[0] != "lean":
+        return {n: False for n in names}
+    lib, spec_module = parts[1], ".".join(parts[1:]).removesuffix(".lean")
+    # The modules a translated `def` lives in — the Aeneas output files recorded at TRANSLATE.
+    trans_mods = sorted({m for f in deps.progress.get("aeneas", {}).get("lean_files", [])
+                         for m in [_module_of(f)] if m})
+    if not trans_mods:
+        return {n: False for n in names}
+    qlist = ", ".join("`" + q for q in qnames)
+    mlist = ", ".join("`" + m for m in trans_mods)
+    body = (f"import {spec_module}\nimport {lib}.{_LINT_TOOL_NAME.removesuffix('.lean')}\n"
+            "open Lusterna.Checks\n"
+            "#eval show Lean.Meta.MetaM Unit from do\n"
+            f"  checkImplReference #[{qlist}] #[{mlist}]\n"
+            f'  IO.println "{_GATE_DONE}"\n')
+    code, text = _run_lean_checker(deps, body, "_impl_ref.lean")
+    if text.startswith("ERROR:") or not _driver_ran(text):
+        log.warning("impl_references: driver did not finish (rc=%s) — treating every theorem as "
+                    "abstract (conservative, never a false impl-verified). Lean tail:\n%s", code,
+                    text[-800:])
+        return {n: False for n in names}
+    recs = {r.get("theorem"): bool(r.get("refs_impl"))
+            for r in _parse_check_records(text) if r.get("check") == "impl_ref"}
+    return {written: recs.get(qual, False) for written, qual in zip(names, qnames)}
 
 
 def _axiom_fix_hint(ax: str) -> str:
@@ -834,26 +858,6 @@ def translation_compiles(deps: AgentDeps, lean_path: str) -> dict:
                      timeout_msg=f"lake env lean exceeded {_BUILD_TIMEOUT}s")
 
 
-def theorem_statement(spec_text: str, name: str) -> str:
-    """The statement text of theorem *name* — binders + proposition, up to (not including) the
-    proof `:=`. Used to decide whether a theorem references the implementation (referenced_defs on
-    it). Returns '' if not found.
-
-    Carries `_DECL_PREFIX` and accepts `lemma` like every other declaration matcher here: a name
-    that `_theorem_names` yields must resolve to a statement, or `_verifies_impl` reads '' as "no
-    translated def referenced" and the report's headline count silently drops the theorem."""
-    m = re.search(r"(?m)^[ \t]*" + _DECL_PREFIX + rf"(?:theorem|lemma)\s+{re.escape(name)}\b",
-                  spec_text)
-    if not m:
-        return ""
-    tail = spec_text[m.start():]
-    # Cut at this theorem's proof `:=` via the bracket-aware splitter, so a nested record-update
-    # `:=` survives (a naive find(':=') would truncate the statement mid-expression). If there is
-    # no top-level `:=` at all, stop at the blank line so we don't run into the next theorem.
-    stmt = _proposition_only(tail)
-    return stmt if stmt != tail.rstrip() else tail.split("\n\n", 1)[0]
-
-
 # ── implementation-spec operations ─────────────────────────────────────────────
 
 def _crate_stem(deps: AgentDeps) -> str:
@@ -1062,24 +1066,6 @@ def verify_refutations(deps: AgentDeps) -> list[str]:
         log.info("verify_refutations: %d theorem(s) mechanically REFUTED (false as stated): %s",
                  len(refuted), refuted)
     return refuted
-
-
-def _proposition_only(signature: str) -> str:
-    """The proposition part of a theorem signature, dropping only an accidental trailing proof.
-
-    Splits at the first `:=` that is NOT nested inside (), [], or {} — so Lean statement syntax
-    that legitimately contains `:=` (a record update `{ x with f := v }`, a `let … := …`) is
-    PRESERVED (depth > 0), while a stray top-level `:= <proof>` the model shouldn't have included
-    is stripped. A naive `split(':=')[0]` truncated record-update statements mid-expression."""
-    depth = 0
-    for i, c in enumerate(signature):
-        if c in "([{":
-            depth += 1
-        elif c in ")]}":
-            depth -= 1
-        elif depth == 0 and c == ":" and signature[i + 1:i + 2] == "=":
-            return signature[:i].rstrip()
-    return signature.rstrip()
 
 
 def build(deps: AgentDeps) -> dict:

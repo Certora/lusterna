@@ -1,19 +1,17 @@
-"""Regression tests for `_DECL_PREFIX` — declaration recognition in the remaining regex helpers.
+"""Regression tests for `_DECL_PREFIX` — declaration recognition in the regex helpers.
 
-These cover the places the keyword-must-be-first-token rule silently dropped a declaration:
+`_DECL_PREFIX` lets a declaration matcher see a keyword that is not the first token on its line
+(`@[progress] theorem …`, `private theorem …`, and Aeneas's `@[global_simps, irreducible] def …`).
+Two helpers rely on it and would silently drop a declaration if it regressed:
 
-  • `theorem_statement`, which `_verifies_impl` calls to decide whether an established theorem
-    references the implementation. Returning '' for `@[progress] theorem …` does not error — it
-    just moves that theorem from the report's headline "verifies the implementation" count into
-    "abstract helper", which is the wrong answer stated confidently.
-
-  • `_def_blocks`, the def scan behind `referenced_defs`, `target_defs` (the legitimacy gate's
-    whole-crate mode) and the hole count. Aeneas emits crate constants as
-    `@[global_simps, irreducible] def <Crate>.CONST : … := …`.
+  • `_theorem_names` / `_theorem_qualified_names` — the theorem enumeration `check_axioms`,
+    `impl_references` and the spec gate zip; a missed theorem is silently unchecked.
+  • `_def_blocks` — the def scan behind `target_defs` (the legitimacy gate's whole-crate mode) and
+    the hole count. Aeneas emits crate constants as `@[global_simps, irreducible] def <Crate>.CONST …`.
 """
 import pytest
 
-from lusterna.lean import _def_blocks, _theorem_names, referenced_defs, theorem_statement
+from lusterna.lean import _def_blocks, _theorem_names
 
 TRANSLATION = """def transfer (x : Nat) : Result Nat := ok x
 @[global_simps, irreducible] def Pubkey.ZERO : Pubkey := 0#u64
@@ -36,13 +34,9 @@ def _module(body: str) -> str:
 
 
 @pytest.mark.parametrize("name,form", DECL_FORMS)
-def test_theorem_statement_finds_every_declaration_form(name, form):
+def test_theorem_names_finds_every_declaration_form(name, form):
     spec = _module(form)
-    assert name in _theorem_names(spec), f"{name}: not even enumerated"
-    stmt = theorem_statement(spec, name)
-    assert stmt, f"{name}: enumerated but has no statement — counts as an abstract helper"
-    assert "sorry" not in stmt, f"{name}: the proof leaked into the statement"
-    assert referenced_defs(stmt, TRANSLATION) == ["transfer"]
+    assert name in _theorem_names(spec), f"{name}: not enumerated — would be silently unchecked"
 
 
 def test_attributed_defs_are_found_and_bound():
@@ -52,12 +46,3 @@ def test_attributed_defs_are_found_and_bound():
     assert blocks["transfer"] == "def transfer (x : Nat) : Result Nat := ok x"
     assert blocks["Pubkey.ZERO"].startswith("@[global_simps, irreducible] def Pubkey.ZERO")
     assert blocks["widget"] == "@[reducible]\ndef widget (x : Nat) : Nat := x"
-
-
-def test_theorem_referencing_only_an_attributed_def_counts():
-    """The failure this pairs with: a theorem about a crate CONSTANT was invisible on both
-    sides at once — the constant missing from the def scan, the theorem missing from the
-    statement scan."""
-    spec = _module("@[progress] theorem zero_is_zero : Pubkey.ZERO = 0#u64")
-    stmt = theorem_statement(spec, "zero_is_zero")
-    assert referenced_defs(stmt, TRANSLATION) == ["Pubkey.ZERO"]

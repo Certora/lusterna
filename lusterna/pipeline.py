@@ -363,13 +363,6 @@ def _stage_formalise(deps: AgentDeps) -> None:
 # ── PROVE ─────────────────────────────────────────────────────────────────────────
 
 
-def _verifies_impl(spec_text: str, translation: str, name: str) -> bool:
-    """True if theorem *name*'s statement references a translated def — i.e. it is about the
-    implementation (a candidate goal), not an abstract helper lemma."""
-    stmt = lean.theorem_statement(spec_text, name)
-    return bool(stmt and lean.referenced_defs(stmt, translation))
-
-
 def _record_axioms(deps: AgentDeps) -> None:
     """`#print axioms` (standard-axioms-only) + partition established theorems into those that VERIFY
     THE IMPLEMENTATION (reference a real Aeneas def) vs abstract helper lemmas.
@@ -394,11 +387,11 @@ def _record_axioms(deps: AgentDeps) -> None:
     for mod in lean.spec_modules(deps):
         camp = _P(mod).stem
         ax = lean.check_axioms(deps, mod)
-        spec_text = tools.read_out(deps, mod)
+        impl_ref = lean.impl_references(deps, mod)   # {written_name: statement references a translated def}
         sorry_remaining += len(ax["sorry"])   # open obligations: theorems still resting on `sorryAx`
         clean += [f"{camp}::{n}" for n in ax["clean"]]
         for n in ax["clean"]:
-            dst = impl_verified if _verifies_impl(spec_text, translation, n) else abstract_only
+            dst = impl_verified if impl_ref.get(n, False) else abstract_only
             dst.append(f"{camp}::{n}")
         for n, used in ax["assumed"].items():
             q = f"{camp}::{n}"
@@ -406,7 +399,7 @@ def _record_axioms(deps: AgentDeps) -> None:
                 tainted.append(q)
                 continue
             assumed[q] = used
-            dst = impl_verified_assumed if _verifies_impl(spec_text, translation, n) else abstract_only
+            dst = impl_verified_assumed if impl_ref.get(n, False) else abstract_only
             dst.append(q)
         tainted += [f"{camp}::{n}" for n in ax["tainted"]]
 
@@ -453,35 +446,46 @@ def _stage_prove(deps: AgentDeps) -> None:
     as it goes. The per-stage `--max-budget-usd` is the hard stop; the session ends when the agent is
     done (leftover `sorry` is honest) or the budget backstop trips. The harness does not referee: git
     is both the persistence AND the safety net (a red tree falls back to the agent's own last commit),
-    and `#print axioms` over the committed library is the sole, mechanical arbiter."""
-    if "proofs_done" in deps.progress:
-        return
-    if not lean.build(deps).get("success"):
-        raise _PipelineAborted("PROVE not started — the implementation spec does not compile")
+    and `#print axioms` over the committed library is the sole, mechanical arbiter.
 
-    sid = deps.progress.get("cc_sessions", {}).get("PROVE")
-    prompt = ("Proceed to PROVE. Prove the `sorry` theorems in this campaign's spec module — the hard "
-              "ones are the objective, not optional — WITHOUT changing any statement. Decompose them, "
-              "build and COMMIT the supporting lemmas (and `@[progress]` specs for the functions/loops "
-              "you step through), reuse by import, and iterate against `lake build`. Do not stop at the "
-              "easy theorems; a `sorry` is a last resort after real effort, and if a theorem is FALSE "
-              "as stated, refute it instead. Follow your briefing.")
-    try:
-        run_cc_stage(deps, stage="PROVE", prompt=prompt,
-                     briefing=(None if sid else briefings.PROVE), resume_sid=sid, **_cc_common())
-    except StageFailed as e:
-        log.warning("PROVE session produced no result (%s) — gating on-disk regardless", e)
-    checkpoint.snapshot(deps)
+    The `#print axioms` accounting (`_record_axioms`) re-derives ENTIRELY from the committed proofs, so
+    it runs EVERY time this stage is reached — not just on the fresh proving pass. A resume therefore
+    regenerates the verdict with the current gate code (a fresh container has the proofs committed but
+    not built, so it is rebuilt first)."""
+    if "proofs_done" not in deps.progress:
+        if not lean.build(deps).get("success"):
+            raise _PipelineAborted("PROVE not started — the implementation spec does not compile")
 
-    # Git is the net: if the agent left the tree non-compiling, fall back to its own last commit (by
-    # discipline a green state) rather than a harness-tracked snapshot. A green tree is committed as-is.
-    if not lean.build(deps).get("success"):
-        log.warning("PROVE left a non-compiling tree — resetting to the agent's last commit")
+        sid = deps.progress.get("cc_sessions", {}).get("PROVE")
+        prompt = ("Proceed to PROVE. Prove the `sorry` theorems in this campaign's spec module — the "
+                  "hard ones are the objective, not optional — WITHOUT changing any statement. Decompose "
+                  "them, build and COMMIT the supporting lemmas (and `@[progress]` specs for the "
+                  "functions/loops you step through), reuse by import, and iterate against `lake build`. "
+                  "Do not stop at the easy theorems; a `sorry` is a last resort after real effort, and "
+                  "if a theorem is FALSE as stated, refute it instead. Follow your briefing.")
+        try:
+            run_cc_stage(deps, stage="PROVE", prompt=prompt,
+                         briefing=(None if sid else briefings.PROVE), resume_sid=sid, **_cc_common())
+        except StageFailed as e:
+            log.warning("PROVE session produced no result (%s) — gating on-disk regardless", e)
+        checkpoint.snapshot(deps)
+
+        # Git is the net: if the agent left the tree non-compiling, fall back to its own last commit (by
+        # discipline a green state) rather than a harness-tracked snapshot. A green tree is committed as-is.
+        if not lean.build(deps).get("success"):
+            log.warning("PROVE left a non-compiling tree — resetting to the agent's last commit")
+            container.exec_in(deps.container_id, ["git", "reset", "--hard", "HEAD"],
+                              workdir=container.REPO_IN)
+            lean.build(deps)
+        tools.commit(deps.container_id, "stage/prove: proof attempts")
+        deps.progress["proofs_done"] = True
+    elif not lean.build(deps).get("success"):
+        # RESUME with proofs already committed: the accounting needs the built oleans, which this fresh
+        # container has not produced. Rebuild the committed proofs; fall back to the last green commit.
+        log.warning("PROVE resume — committed tree did not build; resetting to the last commit")
         container.exec_in(deps.container_id, ["git", "reset", "--hard", "HEAD"],
                           workdir=container.REPO_IN)
         lean.build(deps)
-    tools.commit(deps.container_id, "stage/prove: proof attempts")
-    deps.progress["proofs_done"] = True
     _record_axioms(deps)
 
 
