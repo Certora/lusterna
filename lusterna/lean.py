@@ -135,7 +135,7 @@ def setup_lake(deps: AgentDeps) -> str:
 # would enter `_def_blocks` (hence `target_defs`, the hole scan).
 _LINT_TOOL_NAME = "LusternaChecks.lean"
 # The SCHEMA ATTRIBUTES live in their own file, and the split is load-bearing: a spec module
-# `import`s this one to write `@[lusterna_hoare]`, which makes its attribute names a stable public
+# `import`s this one to write `@[lusterna]`, which makes its attribute names a stable public
 # API, while prior campaigns' spec modules are immutable (`pipeline._restore_prior_specs`). Keeping
 # the churn-prone checker logic in LusternaChecks means it can be rewritten freely without risking
 # an old spec module's build. See the append-only rule in spec_schemas.lean's own header.
@@ -156,9 +156,9 @@ def _write_lint_tool(deps: AgentDeps, lean_out_dir: str, lib_name: str) -> None:
     metaprogramming-API drift surfaces as a build failure — tests/checklean/verify.py is what
     catches that before a campaign does.
 
-    Writes TWO files. `LusternaSchemas.lean` registers the `@[lusterna_invariant]` /
-    `@[lusterna_hoare]` / `@[lusterna_freeform]` attributes and is what a SPEC MODULE imports;
-    `LusternaChecks.lean` imports it and holds the checks.
+    Writes TWO files. `LusternaSchemas.lean` registers the two family attributes `@[lusterna]` /
+    `@[lusterna_lemma]` and is what a SPEC MODULE imports; `LusternaChecks.lean` imports it and holds
+    the checks.
 
     These are a GATE, not a tool: `check_spec_gate` runs `checkSpecGate` over the campaign's theorems
     and a finding rejects FORMALISE with a critique naming the check and the rule. Nothing here is
@@ -569,10 +569,11 @@ _CHECK_LINE_RE = re.compile(
 _SKIP_LINE_RE = re.compile(
     r"(?m)^\s*(?:\S+:\d+:\d+:\s*)?(?:info:\s*)?LUSTERNA_CHECK_SKIPPED\s+(\{.*\})\s*$")
 
-# Every check whose finding BLOCKS the stage. `assumed_postcondition`/`invariant_not_strict` are
-# in here because the schema annotation retires their documented false positives (see
-# `checkSpecGate` in spec_checks.lean); a finding on a conforming theorem is a defect, not a prompt.
-_GATE_CHECKS = {"schema_conformance", "assumed_postcondition", "invariant_not_strict"}
+# Every check whose finding BLOCKS the stage. `assumed_postcondition` is in here because the schema
+# annotation retires its documented false positives (see `checkSpecGate` in spec_checks.lean); a
+# finding on a conforming theorem is a defect, not a prompt. (Failure-strictness is no longer a
+# separate check — `schema_conformance`'s `claimFailSafe?` folds it in.)
+_GATE_CHECKS = {"schema_conformance", "assumed_postcondition"}
 
 _GATE_DONE = "LUSTERNA_GATE_DONE"
 
@@ -669,14 +670,14 @@ def check_spec_gate(deps: AgentDeps, spec_rel: str) -> list[dict]:
     """THE SPEC GATE. Run every mechanical check over the campaign's theorems and return what BLOCKS.
 
     These checks are not advisory and no agent interprets them: a finding comes back to FORMALISE as
-    a concrete critique and the stage runs again. `checkSpecGate` (spec_checks.lean) composes the
-    three, and holds the precedence and scoping that make blocking sound — a theorem whose declared
-    schema it does not match gets that finding alone, and `@[lusterna_freeform]` is out of scope by
-    declaration, which is where a relational or two-run property lives.
+    a concrete critique and the stage runs again. `checkSpecGate` (spec_checks.lean) composes
+    conformance and provenance, and holds the precedence and scoping that make blocking sound — a
+    theorem whose checked shape it does not match gets that finding alone, and `@[lusterna_lemma]` is
+    out of scope by declaration, which is where a relational or two-run property lives.
 
-    What this does NOT establish, and what stays with SPEC-JUDGE: whether the schema a theorem
-    declares is the RIGHT one for the property. A Hoare triple annotated `invariant` can conform
-    perfectly and still be mislabelled — the gate verifies FORM, never fitness.
+    What this does NOT establish, and what stays with SPEC-JUDGE: whether a theorem MEANS the right
+    thing. A checked property whose projection does not faithfully mirror the code, or a real property
+    hidden under `@[lusterna_lemma]`, can conform perfectly — the gate verifies FORM, never fitness.
 
     Returns a list of blocking records `{check, theorem, schema, rule, detail}`; EMPTY means clear. Mechanism mirrors `check_axioms`: import the already-built spec olean and elaborate a
     throwaway driver (never re-elaborate the spec — that auto-`sorry`s and taints the whole batch),
@@ -701,11 +702,19 @@ def check_spec_gate(deps: AgentDeps, spec_rel: str) -> list[dict]:
                  "detail": "no target functions could be determined (empty `target_patterns` and no "
                            "readable translation), so no theorem could be checked"}]
     tarr = ", ".join("`" + g for g in targets)
+    # ANCHOR BRIDGE (fidelity): each real measurement INFER names must be referenced by at least one
+    # theorem, so a reconstructed projection is tied to the real function somewhere. Fail-safe: no
+    # anchors declared → the check does not run and blocks nothing.
+    anchors = _target_name_forms(deps.progress.get("anchor_functions", []))
+    qall = ", ".join("`" + q for q in qnames)
+    anchor_line = (f"  checkAnchorReference #[{qall}] #[{', '.join('`' + a for a in anchors)}]\n"
+                   if anchors else "")
     body = (f"import {spec_module}\nimport {lib}.{_LINT_TOOL_NAME.removesuffix('.lean')}\n"
             "open Lusterna.Checks\n"
             "set_option maxRecDepth 8000 in\n"
             "#eval show Lean.Meta.MetaM Unit from do\n"
             + "".join(f"  let _ ← checkSpecGate `{n} #[{tarr}]\n" for n in qnames)
+            + anchor_line
             + f'  IO.println "{_GATE_DONE}"\n')
     code, text = _run_lean_checker(deps, body, "_spec_gate.lean")
     if text.startswith("ERROR:"):
@@ -730,6 +739,17 @@ def check_spec_gate(deps: AgentDeps, spec_rel: str) -> list[dict]:
             out.append({"check": rec.get("check", "?"), "theorem": rec.get("theorem", "?"),
                         "schema": rec.get("schema", "?"), "rule": "could_not_check",
                         "detail": f"not checked: {rec.get('reason', 'unspecified')}"})
+    # An anchor referenced by NO theorem is an ungrounded core: the property reconstructs a real
+    # measurement but ties it to the real function nowhere. Blocking, so FORMALISE adds the bridge.
+    for rec in _parse_check_records(text):
+        if rec.get("check") == "anchor_bridge" and not rec.get("referenced", True):
+            anchor = rec.get("anchor", "?")
+            out.append({"check": "anchor_bridge", "theorem": "(module)", "schema": "checked",
+                        "rule": "unbridged_anchor",
+                        "detail": f"no theorem references the measurement `{anchor}` the properties "
+                                  f"are stated in terms of — add a checked bridge theorem tying your "
+                                  f"projection to `{anchor}` (e.g. `{anchor} … = ok t → <projection> "
+                                  f"= t…`), or the core is ungrounded"})
     log.info("check_spec_gate: %d blocking finding(s) over %d theorem(s)", len(out), len(qnames))
     return out
 

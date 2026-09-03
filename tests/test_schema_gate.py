@@ -1,8 +1,8 @@
 """Regression tests for THE SPEC GATE (`lean.check_spec_gate`).
 
-All three checks in `spec_checks.lean` block FORMALISE now — no stage interprets them. That is sound
-only because each theorem DECLARES its schema, which retires the shape rules' documented false
-positives (a relational antecedent needs two executions, which `hoare` forbids; and so on).
+Both checks in `spec_checks.lean` block FORMALISE now — no stage interprets them. That is sound only
+because each theorem DECLARES its family, which retires the shape rules' documented false positives
+(a relational antecedent needs two executions, which the one checked shape forbids; and so on).
 
 Two properties carry the weight here:
 
@@ -22,7 +22,7 @@ from lusterna.schemas import AgentDeps
 
 SPEC = """import Foo.LusternaSchemas
 namespace Foo.Spec
-@[lusterna_hoare]
+@[lusterna]
 theorem good (x : Nat) : x = x := by sorry
 theorem bare (x : Nat) : x = x := by sorry
 end Foo.Spec
@@ -30,13 +30,13 @@ end Foo.Spec
 
 FINDING = ('x.lean:6:0: info: LUSTERNA_CHECK {"check": "schema_conformance", '
            '"theorem": "Foo.Spec.bare", "schema": "none", "rule": "no_schema_declared", '
-           '"detail": "every spec theorem must declare exactly one schema"}')
+           '"detail": "every spec theorem must declare a family"}')
 TAINT = ('LUSTERNA_CHECK {"check": "assumed_postcondition", "theorem": "Foo.Spec.good", '
          '"fn": "f", "tainted": ["r"], "hypothesis": "h", "rule": "constrains tainted variable", '
-         '"detail": "d", "schema": "hoare", "is_conclusion": false}')
-UNRELATED = 'LUSTERNA_CHECK {"check": "some_future_check", "theorem": "Foo.Spec.good"}' 
+         '"detail": "d", "schema": "checked", "is_conclusion": false}')
+UNRELATED = 'LUSTERNA_CHECK {"check": "some_future_check", "theorem": "Foo.Spec.good"}'
 SKIPPED = ('LUSTERNA_CHECK_SKIPPED {"check": "schema_conformance", '
-           '"theorem": "Foo.Spec.good", "schema": "hoare", "reason": "no targets given"}')
+           '"theorem": "Foo.Spec.good", "schema": "checked", "reason": "no targets given"}')
 
 
 def _deps():
@@ -181,9 +181,9 @@ def test_wildcard_free_patterns_keep_their_full_path():
 def test_format_gate_findings_names_the_check_and_rule():
     """FORMALISE acts on this message unaided, so it must carry both names."""
     msg = pipeline._format_gate_findings(
-        [{"check": "schema_conformance", "theorem": "Foo.Spec.bare", "schema": "hoare",
+        [{"check": "schema_conformance", "theorem": "Foo.Spec.bare", "schema": "checked",
           "rule": "execution_not_unique", "detail": "found 2"}])
-    for expect in ("Foo.Spec.bare", "schema_conformance", "execution_not_unique", "hoare", "found 2"):
+    for expect in ("Foo.Spec.bare", "schema_conformance", "execution_not_unique", "checked", "found 2"):
         assert expect in msg, expect
 
 

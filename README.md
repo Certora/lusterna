@@ -50,8 +50,8 @@ agent, never inferred from "it compiled"):
 - **`collectAxioms`** (`lean.check_axioms`) — the authoritative established-vs-tainted verdict, the
   exact kernel axiom set `#print axioms` reports, classified in a harness-owned Lean metaprogram;
 - **the mechanical spec checks** (`lean.check_spec_gate`, `lean.legitimacy_check`) — MetaM checks over
-  each theorem's *elaborated type* (a spec that assumes its own postcondition; a non-strict invariant;
-  a trusted assumption that references a target);
+  each theorem's *elaborated type* (a spec that assumes its own postcondition; a claim that can fail
+  open; a trusted assumption that references a target);
 - **`lake build`** — the compile gate;
 - **the pristine-baseline git diff** — the audit trail of every source edit.
 
@@ -207,21 +207,24 @@ can't follow at all.
 #### Why this is safe: every theorem says what kind it is
 
 A blind shape rule would reject honest work — some real properties (injectivity, determinism)
-genuinely *do* need hypotheses about outputs. So FORMALISE labels every theorem with one of three
-kinds:
+genuinely *do* need hypotheses about outputs. So FORMALISE labels every theorem with one of two
+families:
 
-- `@[lusterna_hoare]` — "given this input, the operation produces that result";
-- `@[lusterna_invariant]` — "this property is preserved by the operation";
-- `@[lusterna_freeform "why"]` — a supporting lemma that is deliberately neither (a relational
-  property, a pure arithmetic helper), with a stated reason.
+- `@[lusterna]` — a **checked property**: the operation runs once, and the theorem makes a claim
+  about what it produced (a postcondition, or a property preserved across the call);
+- `@[lusterna_lemma "why"]` — a supporting lemma deliberately outside that shape (a relational
+  property, a bridge, a pure arithmetic helper), with a stated reason.
 
-The gate checks that the label is *honest* — that the theorem really has the shape it claims — and
-`freeform` puts the genuinely-relational properties out of scope by declaration. A finding on a
-theorem that claimed a checked kind is thus a fact about its own claim, which is what lets it block.
-The one thing the gate can't judge — whether the label is the *right* one for the property — is
-exactly what SPEC-JUDGE looks at next.
+The gate checks that the label is *honest* — that a `@[lusterna]` theorem really has the checked
+shape — and `@[lusterna_lemma]` puts the genuinely-relational properties out of scope by declaration.
+A finding on a theorem that claimed to be checked is thus a fact about its own claim, which is what
+lets it block. One thing to note about the vocabulary: whether a *preserved* property is, across the
+whole campaign, an **invariant** of the system is a conclusion the PROVE stage reaches (a base case
+plus a preservation for every operation) — it is never a label on a single theorem. The gate checks
+properties; invariance is proved. And the one thing the gate can't judge — whether a theorem *means*
+the right thing — is exactly what SPEC-JUDGE looks at next.
 
-#### The three checks
+#### The two checks
 
 **1. Don't assume your own output** (`assumed_postcondition`). A fact about what the operation
 *produced* may only enter a theorem through the operation's own execution; every other hypothesis may
@@ -235,36 +238,30 @@ restriction). The check has to be *told* which functions are the ones under test
 legitimate precondition measured on the starting state looks identical to a cheat — so if it isn't
 told, it reports "skipped" rather than a misleading "clean".
 
-**2. A preserved invariant must actually break when its measurement fails** (`invariant_not_strict`).
-An invariant is written as a small function that returns a yes/no answer — and, like any real code, a
-measurement inside it can *fail* (an overflow, a missing key). If it quietly answers "yes" on such a
-failure, then a preservation theorem about it holds for free on states nobody meant to allow, and it
-guarantees nothing. The check confirms the opposite: when a measurement fails, the invariant comes out
-**false**. It does this structurally rather than by running anything — the rule is simply *a failable
-value may be used to continue a computation or returned, but never passed as an argument to something
-that could look at it and ignore the failure* — and it follows the invariant through its own helper
-functions and even recursion (folding over a list of accounts, say). A finding says either that a
-failure genuinely can be dropped, or, more cautiously, that the check couldn't be sure (an opaque
-helper) and is flagging it rather than assuming the best.
+**2. The theorem has the checked shape, and its claim can't cheat by failing** (`schema_conformance`).
+The first check hunts for a *bad* shape, so its silence is a little ambiguous ("clean — or nothing I
+recognised"). This one inverts that: it takes a theorem the author declared `@[lusterna]` and verifies
+it really is a checked property — one operation, every other hypothesis a legitimate precondition, a
+conclusion that actually says something about an output. This is the one check safe to *default to
+rejecting*, precisely because it only ever runs against a family the author chose (applied to
+arbitrary theorems it would flag every honest use of "and"/"or"/"implies"). It also carries the
+**fail-safe** rule, the subtle one: a claim must not be quietly satisfiable by a *measurement that
+fails*. A property is often stated through a small function that returns a yes/no answer, and — like
+any real code — a measurement inside it can fail (an overflow, a missing key); if it quietly answers
+"yes" on such a failure, the theorem holds for free on states nobody meant to allow and guarantees
+nothing. The readable way to avoid this is to make no fallible measurement at all — state the property
+on the raw integer fields — and the check accepts that directly; where a measurement genuinely is
+needed, the rule is *a failable value may be used to continue a computation or returned, but never
+passed to something that could look at it and ignore the failure*, followed through helper functions
+and recursion alike.
 
-**3. The label matches the actual shape** (`schema_conformance`). The first two checks hunt for *bad*
-shapes, so their silence is a little ambiguous ("clean — or nothing I recognised"). This one inverts
-that: it takes the kind FORMALISE declared and verifies the theorem really is that — a `hoare` triple
-actually constrains the output it names and its hypotheses speak only about inputs; an `invariant`
-theorem has the preservation shape. This is the one check that is safe to *default to rejecting*,
-precisely because it only ever runs against a kind the author chose (applied to arbitrary theorems it
-would flag every honest use of "and"/"or"/"implies"). It's also where two otherwise-awkward cases get
-a clean home: a `hoare` theorem that names an output but never says anything about it is caught as
-vacuous, and a bound on an intermediate value is asked to move into the precondition, where it becomes
-a named, inspectable thing.
+The harness runs both together (`checkSpecGate`): it checks the declared shape first, then applies the
+provenance rule only once the shape is right, so a rejection carries the *one* actionable message
+rather than a pile of downstream consequences. What neither can establish is whether the theorem
+*means* the right thing — whether a plain-integer projection faithfully mirrors the real code, whether
+the property is the one that matters — so that judgment of fitness (versus form) stays with SPEC-JUDGE.
 
-The harness runs all three together (`checkSpecGate`): it checks the declared kind first, then applies
-the deeper rules only once the shape is right, so a rejection carries the *one* actionable message
-rather than a pile of downstream consequences. What none of them can establish is whether the declared
-kind is the *right* one for the property — the label is written by the same agent whose work is being
-checked — so that judgment of fitness (versus form) stays with SPEC-JUDGE.
-
-`tests/checklean/` is the regression suite for all three checks: a fixture crate of theorems that must
+`tests/checklean/` is the regression suite for both checks: a fixture crate of theorems that must
 fire and controls that must not (including the pinned false positive and the accepted misses), run
 against the real toolchain by `python tests/checklean/verify.py`, which drives the checker through
 the exact same invocation the harness uses in a real run. Cases the check deliberately *skips* are

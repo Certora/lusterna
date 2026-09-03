@@ -17,7 +17,7 @@ import json
 import logging
 import re
 
-from . import briefings, checkpoint, config, container, lean, tools
+from . import briefings, checkpoint, config, container, docs, lean, tools
 from .runner import run_cc_stage, StageFailed
 from .schemas import AgentDeps
 
@@ -131,6 +131,36 @@ def _translate_dir(deps: AgentDeps) -> str:
     return f"translate/campaigns/{deps.campaign}"
 
 
+# The runtime vocabulary a Solana program uses whatever its framework — the account model, the program
+# error type, the loader entrypoint, cross-program invocation. Every framework (native, Anchor,
+# Pinocchio, …) re-implements these under the SAME names, so matching the ABI vocabulary is
+# framework-agnostic where matching a crate (`solana-program`, `anchor-lang`) would miss Pinocchio.
+_PLATFORM_MARKERS: dict[str, str] = {
+    "solana": r"\b(AccountInfo|ProgramResult|ProgramError|invoke_signed|declare_id|sol_log|entrypoint|Pubkey)\b",
+}
+
+
+def _detect_platform(deps: AgentDeps) -> str | None:
+    """Which execution PLATFORM the target runs on, or None — detected STRUCTURALLY from the runtime
+    ABI in the `.rs` source, not from a framework crate. TWO distinct markers is a program; one lone
+    generic token is not. Fail-safe: any error, or too few markers, → None (no platform doc appended),
+    never a crash. A false positive only appends off-platform notes a stage can ignore; a false
+    negative degrades to the general skills — both non-fatal."""
+    for platform, pattern in _PLATFORM_MARKERS.items():
+        try:
+            _, out, _ = container.exec_in(
+                deps.container_id,
+                ["sh", "-c",
+                 f"grep -rhoE '{pattern}' --include='*.rs' {container.REPO_IN} 2>/dev/null | sort -u"])
+            found = {m for m in out.split() if m}
+            if len(found) >= 2:
+                log.info("platform: detected %s (runtime markers: %s)", platform, sorted(found))
+                return platform
+        except Exception as e:  # noqa: BLE001 — detection is best-effort, never fatal
+            log.warning("_detect_platform(%s): failed (%s) — no platform doc appended", platform, e)
+    return None
+
+
 # ── INFER ───────────────────────────────────────────────────────────────────────
 # The first stage: on pristine source, orient to the code and infer the behaviour spec, the target
 # scope, and the minimal state the properties constrain. TRANSLATE owns the toolchain from here.
@@ -165,6 +195,10 @@ def _stage_infer(deps: AgentDeps) -> None:
         if not deps.progress["relevant_state"]:
             log.warning("INFER produced no `relevant_state` — the TRANSLATE-JUDGE's relevance check "
                         "loses its objective referent (will fall back to a semantic guess)")
+        # The real measurement functions the properties are stated in terms of. The spec gate requires
+        # at least one theorem to reference each, so a reconstructed projection stays tied to the real
+        # function (`anchor_bridge`). Absent ⇒ the check does not run (fail-safe).
+        deps.progress["anchor_functions"] = list(spec.get("anchor_functions") or [])
         return True, ""
 
     _cc_gate_loop(
@@ -330,7 +364,7 @@ def _stage_formalise(deps: AgentDeps) -> None:
         # judge to weigh, and a gate an agent can discover is optional is not a gate.
         if bad := lean.check_spec_gate(deps, impl):
             return False, ("the mechanical spec gate rejected these theorems — fix them and "
-                           "resubmit (a supporting lemma declares `@[lusterna_freeform \"why\"]`, "
+                           "resubmit (a supporting lemma declares `@[lusterna_lemma \"why\"]`, "
                            "which is out of scope for the shape rules):\n"
                            + _format_gate_findings(bad))
         verdict = _run_judge(
@@ -347,7 +381,8 @@ def _stage_formalise(deps: AgentDeps) -> None:
         return True, ""
 
     _cc_gate_loop(
-        deps, stage="FORMALISE", briefing=briefings.FORMALISE,
+        deps, stage="FORMALISE",
+        briefing=briefings.FORMALISE + docs.platform_addendum(deps.progress.get("platform")),
         base_prompt=(f"Proceed to FORMALISE. Read /workspace/out/{_infer_spec(deps)} and the "
                      f"translation under /workspace/out/lean, then write the statement-only spec "
                      f"(theorem bodies `:= by sorry`) for THIS campaign to /workspace/out/{impl} "
@@ -695,6 +730,10 @@ async def run_session(deps: AgentDeps) -> str:
     incomplete stage. All failure modes degrade to a graceful stop + keep-alive."""
     if deps.progress:
         log.info("Resuming session — completed markers: %s", sorted(deps.progress.keys()))
+    # Detect the execution platform once (structurally, from the source); a per-platform doc is then
+    # appended to the stages that need its semantics. Kept in progress so a resume reuses it.
+    if "platform" not in deps.progress:
+        deps.progress["platform"] = _detect_platform(deps)
     try:
         _stage_infer(deps)
         if config.STOP_AFTER_INFER:

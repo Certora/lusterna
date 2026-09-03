@@ -1,14 +1,21 @@
 /-
 Lusterna SPEC SCHEMAS — the attributes FORMALISE uses to DECLARE what each theorem IS.
 
-The three mechanical checks in `spec_checks.lean` hunt for bad shapes, which makes their SILENCE
-ambiguous ("clean, or nothing I recognise"). These attributes invert that: the author declares the
-schema, and `checkSchemaConformance` verifies the declaration. A conformance failure on a DECLARED
-schema is a fact rather than a judgement, which is what lets the harness gate on it.
+`assumed_postcondition` in `spec_checks.lean` hunts for a bad shape, which makes its SILENCE ambiguous
+("clean, or nothing I recognise"). These attributes invert that: the author declares the family, and
+`checkSchemaConformance` verifies the declaration. A conformance failure on a DECLARED family is a
+fact rather than a judgement, which is what lets the harness gate on it.
 
-  @[lusterna_invariant]              -- Inv pre = ok true → target execution → Inv post = ok true
-  @[lusterna_hoare]                  -- Pre inputs = ok true → target execution → Post … = ok true
-  @[lusterna_freeform "why"]         -- a supporting lemma, deliberately outside every schema
+  @[lusterna]                        -- a CHECKED property: one target execution → a fail-safe claim
+  @[lusterna_lemma "why"]            -- a supporting lemma, deliberately outside the checked shape
+
+These TWO families are the whole taxonomy — there is no third, and no invariant/hoare distinction. A
+CHECKED property (`@[lusterna]`) runs one declared-target execution and states a claim about what it
+produced; the claim is a plain proposition (`Prop`) over the produced values, or the failure-strict
+`Result Bool` used as `P args = ok true` — either way `schema_conformance` verifies it cannot fail
+OPEN (a measurement's failure can never make the claim vacuously true). Whether that one checked
+property is, on its own or with others, an INVARIANT of the system is a PROVE/REPORT question, never a
+per-theorem label: the gate checks properties, not invariance.
 
 ╔══════════════════════════════════════════════════════════════════════════════════════════════╗
 ║ HARNESS-OWNED, and the attribute set is APPEND-ONLY. Do not edit or delete this file.         ║
@@ -17,7 +24,9 @@ schema is a fact rather than a judgement, which is what lets the harness gate on
 ║ modules are restored immutable from `refs/lusterna/pristine` and reference these attributes   ║
 ║ by name. So an old spec module is always rebuilt against a NEWLY WRITTEN copy of this file:   ║
 ║ renaming or removing an attribute breaks every prior campaign, and the pipeline cannot repair ║
-║ them, because editing them is exactly what `_restore_prior_specs` forbids.                    ║
+║ them, because editing them is exactly what `_restore_prior_specs` forbids. A campaign written  ║
+║ before these two families existed (with `@[lusterna_invariant]`/`_hoare`/`_freeform`) must be  ║
+║ RE-TAGGED to `@[lusterna]`/`@[lusterna_lemma]` in its pristine baseline before it can rebuild. ║
 ║                                                                                              ║
 ║ Attributes may be ADDED. They may never be renamed or removed.                                ║
 ╚══════════════════════════════════════════════════════════════════════════════════════════════╝
@@ -29,56 +38,51 @@ import Lean
 
 open Lean
 
-/-- `@[lusterna_freeform "reason"]`. Parametric because a supporting lemma opts OUT of every checked
-schema, and an opt-out should have to say why — the reason is reported, so a spec cannot quietly
-become all-freeform. -/
-syntax (name := lusterna_freeform) "lusterna_freeform " str : attr
+/-- `@[lusterna_lemma "reason"]`. Parametric because a supporting lemma opts OUT of the checked
+shape, and an opt-out should have to say why — the reason is reported, so a spec cannot quietly
+become all-lemma. -/
+syntax (name := lusterna_lemma) "lusterna_lemma " str : attr
 
 namespace Lusterna.Schemas
 
-/-- An INVARIANT-PRESERVATION theorem: `Inv <pre> = ok true`, one declared-target execution
-producing `<post>`, concluding `Inv <post> = ok true`, with `Inv` a failure-strict `Result Bool`. -/
-initialize invariantAttr : TagAttribute ←
-  registerTagAttribute `lusterna_invariant
-    "this theorem is an invariant-preservation theorem (see Lusterna `schema_conformance`)"
-
-/-- A FORWARD HOARE TRIPLE: `Pre <root inputs> = ok true`, exactly one declared-target execution
-binding fresh outputs, concluding `Post <inputs, outputs> = ok true`, with both `Pre` and `Post`
-failure-strict `Result Bool` definitions. -/
-initialize hoareAttr : TagAttribute ←
-  registerTagAttribute `lusterna_hoare
-    "this theorem is a forward Hoare triple (see Lusterna `schema_conformance`)"
+/-- A CHECKED property: one declared-target execution binding fresh outputs, and a fail-safe claim
+about what it produced (a plain `Prop`, or a failure-strict `Result Bool` used as `P args = ok true`)
+— see Lusterna `schema_conformance`. Whether the property is an INVARIANT is a PROVE/REPORT question,
+not this label. -/
+initialize checkedAttr : TagAttribute ←
+  registerTagAttribute `lusterna
+    "this theorem is a Lusterna-checked property (see Lusterna `schema_conformance`)"
 
 /-- A SUPPORTING lemma, declared out of scope. The payload is the justification. -/
-initialize freeformAttr : ParametricAttribute String ←
+initialize lemmaAttr : ParametricAttribute String ←
   registerParametricAttribute {
-    name := `lusterna_freeform
-    descr := "a supporting lemma, deliberately outside every checked schema; the string says why"
+    name := `lusterna_lemma
+    descr := "a supporting lemma, deliberately outside the checked shape; the string says why"
     getParam := fun _ stx => do
       match stx with
-      | `(attr| lusterna_freeform $s:str) =>
+      | `(attr| lusterna_lemma $s:str) =>
         let r := s.getString
-        -- `String.trim` is mid-transition to `String.Slice` in this toolchain and warns on use;
-        -- "no non-whitespace character" says the same thing without the deprecation noise, which
-        -- would otherwise surface in every crate's build.
+        -- `String.trim` is mid-transition to `String.Slice` in this toolchain and warns on use; "no
+        -- non-whitespace character" says the same thing without the deprecation noise, which would
+        -- otherwise surface in every crate's build.
         if !r.any (fun c => !c.isWhitespace) then
-          throwError "@[lusterna_freeform] needs a non-empty reason for opting out of the schemas"
+          throwError "@[lusterna_lemma] needs a non-empty reason for opting out of the checked shape"
         return r
       | _ => Elab.throwUnsupportedSyntax
   }
 
-/-- Every schema `decl` declares, as surface names. MORE THAN ONE is a conformance failure the
-caller reports — this returns what is there rather than picking a winner, because silently
-preferring one would let a theorem declare two and be checked against the laxer. -/
+/-- The family `decl` declares: "checked" (`@[lusterna]`) or "lemma" (`@[lusterna_lemma]`). MORE THAN
+ONE is a conformance failure the caller reports — this returns what is there rather than picking a
+winner, because silently preferring one would let a theorem declare two and be checked against the
+laxer. -/
 def declaredSchemas (env : Environment) (decl : Name) : Array String := Id.run do
   let mut out : Array String := #[]
-  if invariantAttr.hasTag env decl then out := out.push "invariant"
-  if hoareAttr.hasTag env decl then out := out.push "hoare"
-  if (freeformAttr.getParam? env decl).isSome then out := out.push "freeform"
+  if checkedAttr.hasTag env decl then out := out.push "checked"
+  if (lemmaAttr.getParam? env decl).isSome then out := out.push "lemma"
   return out
 
-/-- The `@[lusterna_freeform]` justification, if any. -/
-def freeformReason (env : Environment) (decl : Name) : Option String :=
-  freeformAttr.getParam? env decl
+/-- The `@[lusterna_lemma]` justification, if any. -/
+def lemmaReason (env : Environment) (decl : Name) : Option String :=
+  lemmaAttr.getParam? env decl
 
 end Lusterna.Schemas

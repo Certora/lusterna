@@ -176,8 +176,7 @@ theorem t3_closed_taint (x z : Nat) (s s' : State) (y : Out)
 
 -- T7: INJECTIVITY -- the accepted false positive. `hab` is a hypothesis about two runs' outputs by
 -- construction; there is no shape that separates it from a cheat. Declare such a theorem
--- `@[lusterna_freeform]`,
--- flagged here, pinned so the trade-off stays a deliberate one.
+-- `@[lusterna_lemma "why"]`, out of scope; flagged here, pinned so the trade-off stays deliberate.
 theorem t7_injectivity_known_fp (x x' : Nat) (s sa sb : State) (a b : Out)
     (h1 : transfer x s = ok (a, sa)) (h2 : transfer x' s = ok (b, sb)) (hab : sa = sb) :
     x = x' := by sorry

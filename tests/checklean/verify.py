@@ -138,37 +138,43 @@ EXPECTED = {
     # is bypassable — `∀ i, (i = i → P s') → P s'` satisfies it and is still a free assumption.
     ("assumed_postcondition", "Probe.Taint.t29_quantifier_guard_is_not_an_antecedent"),
 
-    # ── Invariant.lean: `invariant_not_strict` ─────────────────────────────────────────────────
-    # fail_open — a Result value is handed to something that can discard its failure.
-    ("invariant_not_strict", "Probe.Inv.Spec.i11_sum_open"),    # `ok (! ok? (sum_bals …))`
-    ("invariant_not_strict", "Probe.Inv.Spec.i12_match_res"),   # match ON a Result
-    ("invariant_not_strict", "Probe.Inv.Spec.i13_ite_okq"),     # Result in an `ite` condition
-    ("invariant_not_strict", "Probe.Inv.Spec.i14_let_res"),     # non-monadic `let` of a Result
-    ("invariant_not_strict", "Probe.Inv.Spec.i15_deep"),        # 4 wrappers above a fail-open leaf
-    ("invariant_not_strict", "Probe.Inv.Spec.i16_cap_bad"),     # same, with an extra argument
-    # not_certified — no evidence of a defect, only that the walk cannot certify.
-    ("invariant_not_strict", "Probe.Inv.Spec.i17_opaque"),
-    ("invariant_not_strict", "Probe.Inv.Spec.i18_partial"),
-    ("invariant_not_strict", "Probe.Inv.Spec.i19_foldm"),       # `List.foldlM`, see the fixture
+    # ── Invariant.lean: failure-strictness, now via `schema_conformance` (`claimFailSafe?`) ─────
+    # A preservation stated on a FAIL-OPEN predicate: BOTH the pre-state hypothesis and the
+    # conclusion rest on it, so each is a non-fail-safe claim — 2 findings, pinned in EXPECTED_COUNTS.
+    ("schema_conformance", "Probe.Inv.Spec.i11_sum_open"),    # `ok (! ok? (sum_bals …))`
+    ("schema_conformance", "Probe.Inv.Spec.i12_match_res"),   # match ON a Result
+    ("schema_conformance", "Probe.Inv.Spec.i13_ite_okq"),     # Result in an `ite` condition
+    ("schema_conformance", "Probe.Inv.Spec.i14_let_res"),     # non-monadic `let` of a Result
+    ("schema_conformance", "Probe.Inv.Spec.i15_deep"),        # 4 wrappers above a fail-open leaf
+    ("schema_conformance", "Probe.Inv.Spec.i16_cap_bad"),     # same, with an extra argument
+    # NOT CERTIFIED — no evidence of a defect, only that the walk cannot certify (same `rule`).
+    ("schema_conformance", "Probe.Inv.Spec.i17_opaque"),
+    ("schema_conformance", "Probe.Inv.Spec.i18_partial"),
+    ("schema_conformance", "Probe.Inv.Spec.i19_foldm"),       # `List.foldlM`, see the fixture
+    # `claim_not_failsafe` — a measurement stated as an inline existential (i21) or an inline
+    # `do`-block over library `Bind.bind` (i22): neither pure nor `P args = ok true`. 2 each.
+    ("schema_conformance", "Probe.Inv.Spec.i21_existential_measurement"),
+    ("schema_conformance", "Probe.Inv.Spec.i22_inline_measurement"),
+    # `execution_not_unique` — the execution is not a declared target (a wrong `--subjects`).
+    ("schema_conformance", "Probe.Inv.Spec.i25_not_a_target"),
+    # i1..i10, i20_plain_prop, i27, i28 are absent: the strict / plain-Prop controls draw nothing.
 
     # ── Schemas.lean: `schema_conformance` — one broken rule per theorem ───────────────────────
     ("schema_conformance", "Probe.Schemas.s5_two_executions"),
     ("schema_conformance", "Probe.Schemas.s6_pinned_output"),
-    ("schema_conformance", "Probe.Schemas.s7_pre_mentions_output"),
-    ("schema_conformance", "Probe.Schemas.s8_bare_hypothesis"),
-    ("schema_conformance", "Probe.Schemas.s9_conclusion_not_post"),
+    # s7 is PROVENANCE, not shape: a fail-safe precondition that mentions the post-state conforms,
+    # then `assumed_postcondition` catches it. So its finding is that check's, not schema's.
+    ("assumed_postcondition", "Probe.Schemas.s7_pre_mentions_output"),
     ("schema_conformance", "Probe.Schemas.s10_post_not_strict"),
-    ("schema_conformance", "Probe.Schemas.s11_post_ignores_output"),
-    ("schema_conformance", "Probe.Schemas.s12_invariant_shape"),
-    ("schema_conformance", "Probe.Schemas.s13_invariant_not_strict"),
+    ("schema_conformance", "Probe.Schemas.s11_conclusion_ignores_output"),
     ("schema_conformance", "Probe.Schemas.s14_unannotated"),
     ("schema_conformance", "Probe.Schemas.s15_double_annotated"),
-    ("schema_conformance", "Probe.Schemas.s17_ignores_one_of_two_outputs"),
     # precedence: the shape finding, and ONLY it, on a theorem that is also non-strict
     ("schema_conformance", "Probe.Schemas.g1_precedence_shape_first"),
-    ("schema_conformance", "Probe.Schemas.g4_invariant_with_side_condition"),
-    # g2/g3 are absent deliberately — `freeform` puts the two documented false positives of
-    # `assumed_postcondition` out of scope, which is what lets the shape rules block at all.
+    # ABSENT deliberately (the intended loosening, pinned CLEAN as regression guards): s8 (a pure
+    # precondition over a root), s9 (a plain-Prop conclusion), s17 (mentions one of two outputs),
+    # g4 (a preservation with a side condition — the exact case the invariant/hoare split forced
+    # apart). g2/g3 are `@[lusterna_lemma]`, out of scope.
 
     # ── Legit.lean: `assumption_legitimacy` ────────────────────────────────────────────────────
     # deposit_monotone's type references the target `deposit` → flagged; limbMul_spec (substrate) is
@@ -179,20 +185,27 @@ EXPECTED = {
 # `schema_conformance`'s `rule` field is the whole point of the check — a finding that fires for the wrong reason
 # is not a pass. Pinned per theorem, so a rule that starts mis-attributing shows up here.
 EXPECTED_SCHEMA_RULES = {
+    # Invariant.lean — failure-strictness and the two other checked-shape rules it exercises
+    "Probe.Inv.Spec.i11_sum_open":  "predicate_not_failure_strict",
+    "Probe.Inv.Spec.i12_match_res": "predicate_not_failure_strict",
+    "Probe.Inv.Spec.i13_ite_okq":   "predicate_not_failure_strict",
+    "Probe.Inv.Spec.i14_let_res":   "predicate_not_failure_strict",
+    "Probe.Inv.Spec.i15_deep":      "predicate_not_failure_strict",
+    "Probe.Inv.Spec.i16_cap_bad":   "predicate_not_failure_strict",
+    "Probe.Inv.Spec.i17_opaque":    "predicate_not_failure_strict",
+    "Probe.Inv.Spec.i18_partial":   "predicate_not_failure_strict",
+    "Probe.Inv.Spec.i19_foldm":     "predicate_not_failure_strict",
+    "Probe.Inv.Spec.i21_existential_measurement": "claim_not_failsafe",
+    "Probe.Inv.Spec.i22_inline_measurement":      "claim_not_failsafe",
+    "Probe.Inv.Spec.i25_not_a_target":            "execution_not_unique",
+    # Schemas.lean
     "Probe.Schemas.s5_two_executions":      "execution_not_unique",
     "Probe.Schemas.s6_pinned_output":       "execution_output_not_fresh",
-    "Probe.Schemas.s7_pre_mentions_output": "precondition_mentions_output",
-    "Probe.Schemas.s8_bare_hypothesis":     "hypothesis_not_a_precondition",
-    "Probe.Schemas.s9_conclusion_not_post": "conclusion_not_a_postcondition",
     "Probe.Schemas.s10_post_not_strict":    "predicate_not_failure_strict",
-    "Probe.Schemas.s11_post_ignores_output": "postcondition_ignores_output",
-    "Probe.Schemas.s12_invariant_shape":    "invariant_shape",
-    "Probe.Schemas.s13_invariant_not_strict": "predicate_not_failure_strict",
+    "Probe.Schemas.s11_conclusion_ignores_output": "conclusion_ignores_output",
     "Probe.Schemas.s14_unannotated":        "no_schema_declared",
     "Probe.Schemas.s15_double_annotated":   "multiple_schemas_declared",
-    "Probe.Schemas.s17_ignores_one_of_two_outputs": "postcondition_ignores_output",
     "Probe.Schemas.g1_precedence_shape_first":       "execution_not_unique",
-    "Probe.Schemas.g4_invariant_with_side_condition": "extraneous_hypothesis",
 }
 # Taint.lean's t1/t4/t5/t6a/t6b/t9/t24/t30/t36 are absent on purpose — they are
 # `assumed_postcondition`'s clean controls: the canonical shape, a pre-state measurement
@@ -208,30 +221,16 @@ EXPECTED_SCHEMA_RULES = {
 # input, and an implicit type is reached through the other binders' types; both must stay clean.
 #
 # `PureNat`/`GoodConj`/`GoodTriple`-style controls are likewise absent — clean is correct.
-EXPECTED_FINDING_COUNT = 56   # assumed_postcondition's 32 + invariant_not_strict's 9
-                              # + schema_conformance's 14 (12 + precedence + extraneous-hypothesis)
+EXPECTED_FINDING_COUNT = 64   # assumed_postcondition's 32 (Taint) + 1 (Schemas.s7)
+                              # + schema_conformance's 30: Invariant's 11×2 fail-safe + i25,
+                              #   Schemas' s5/s6/s10/s11/s14/s15/g1
                               # + assumption_legitimacy's 1 (deposit_monotone)
 
 # ── Attribute-level expectations (beyond membership) ─────────────────────────────────────────────
 # Membership pins WHICH theorems fire; these pin the rest. A regression that keeps the same theorems
-# firing but changes WHY/HOW — a real fail-open defect silently downgraded to "cannot certify", a
-# finding migrated to the wrong hypothesis, or two findings collapsing into one — passes a
-# membership-only check. These close that gap.
-
-# `invariant_not_strict` carries its severity in the `reason` field: `fail_open` = a Result value is
-# genuinely handed to something that can drop its failure (a real defect); `not_certified` = the walk
-# could not certify (no evidence of a defect). Silently swapping one for the other is a verdict change.
-EXPECTED_INVARIANT_SEVERITY = {
-    "Probe.Inv.Spec.i11_sum_open":  "fail_open",
-    "Probe.Inv.Spec.i12_match_res": "fail_open",
-    "Probe.Inv.Spec.i13_ite_okq":   "fail_open",
-    "Probe.Inv.Spec.i14_let_res":   "fail_open",
-    "Probe.Inv.Spec.i15_deep":      "fail_open",
-    "Probe.Inv.Spec.i16_cap_bad":   "fail_open",
-    "Probe.Inv.Spec.i17_opaque":    "not_certified",
-    "Probe.Inv.Spec.i18_partial":   "not_certified",
-    "Probe.Inv.Spec.i19_foldm":     "not_certified",
-}
+# firing but changes WHY/HOW — a finding migrated to the wrong hypothesis, or two findings collapsing
+# into one — passes a membership-only check. These close that gap. (The fail-open-vs-not-certified
+# severity distinction now lives in a `schema_conformance` finding's `detail`, not a `reason` field.)
 
 # `assumed_postcondition`'s `is_conclusion: true` marks the strongest form — a hypothesis that
 # restates the CONCLUSION itself (closed by `exact hvar`). Only t2 and t18 qualify; every other
@@ -251,6 +250,19 @@ EXPECTED_COUNTS = {
     ("assumed_postcondition", "Probe.Taint.t3_closed_taint"):                2,
     ("assumed_postcondition", "Probe.Taint.t19_two_alias_reconstruction"):   2,
     ("assumed_postcondition", "Probe.Taint.t26_shared_output_between_subjects"): 2,
+    # A preservation on a non-fail-safe predicate fires on BOTH the pre-state hypothesis and the
+    # conclusion — the two claims that rest on it.
+    ("schema_conformance", "Probe.Inv.Spec.i11_sum_open"):  2,
+    ("schema_conformance", "Probe.Inv.Spec.i12_match_res"): 2,
+    ("schema_conformance", "Probe.Inv.Spec.i13_ite_okq"):   2,
+    ("schema_conformance", "Probe.Inv.Spec.i14_let_res"):   2,
+    ("schema_conformance", "Probe.Inv.Spec.i15_deep"):      2,
+    ("schema_conformance", "Probe.Inv.Spec.i16_cap_bad"):   2,
+    ("schema_conformance", "Probe.Inv.Spec.i17_opaque"):    2,
+    ("schema_conformance", "Probe.Inv.Spec.i18_partial"):   2,
+    ("schema_conformance", "Probe.Inv.Spec.i19_foldm"):     2,
+    ("schema_conformance", "Probe.Inv.Spec.i21_existential_measurement"): 2,
+    ("schema_conformance", "Probe.Inv.Spec.i22_inline_measurement"):      2,
 }
 
 # For the twice-firing taint theorems, the DISTINCT hypotheses each fires on (substring match, robust
@@ -320,54 +332,40 @@ TAINT_THEOREMS = [
 # run: "clean" has to mean "checked", and a skip means part of the run never happened.
 EXPECTED_SKIPPED = {
     ("assumed_postcondition", "Probe.Taint.t12_no_subject_execution"),
-    # `invariant_not_strict`'s three NEAR MISSES: the conclusion is `Inv args = ok true` but the rest of the
-    # invariant-preservation shape is absent. Pinned as SKIPPED rather than silent because this is
-    # exactly the case where a judge believes the check ran on their invariant and it did not.
-    ("invariant_not_strict", "Probe.Inv.Spec.i23_no_pre_hypothesis"),
-    ("invariant_not_strict", "Probe.Inv.Spec.i24_two_differences"),
-    ("invariant_not_strict", "Probe.Inv.Spec.i25_not_a_target"),
-    # An INLINE invariant lands here too, and usefully so: the conclusion `(do …) = ok true` does
-    # match the claim shape, but its head is `Bind.bind` — library code, nothing project-local to
-    # walk. So the judge is told "name your invariant as a `def`" instead of reading silence.
-    ("invariant_not_strict", "Probe.Inv.Spec.i22_inline_invariant"),
-    ("invariant_not_strict", "Probe.Inv.Spec.i26_compound_pre_state"),
 }
 
-# `invariant_not_strict` only — (theorem, targets). Every theorem in Invariant.lean, so the clean controls are
-# exercised by the same run as the findings: a check that silently stopped firing would otherwise
-# still "pass".
+# The checked-property fixtures — (theorem, targets), all run through `checkSpecGate` (the `schema`
+# param). Invariant.lean and Schemas.lean both hold `@[lusterna]` / `@[lusterna_lemma]` theorems now;
+# the clean controls are exercised by the same run as the findings, so a check that silently stopped
+# firing cannot still "pass".
 INVARIANT_THEOREMS = [(f"Probe.Inv.Spec.{n}", ["Probe.Inv.transfer", "Probe.Inv.transferArr"])
                       for n in [
-    # certified strict — must draw nothing
+    # certified strict / plain-Prop — must draw nothing
     "i1_flat", "i2_assert", "i3_fold", "i4_wf", "i5_ite", "i6_dite", "i7_match_pure",
     "i8_of_option", "i9_cap_agrees", "i10_sum", "i27_array_deep_chain",
-    "i28_partial_fixpoint_loop",
-    # fail_open
+    "i28_partial_fixpoint_loop", "i20_plain_prop",
+    # predicate_not_failure_strict (fail-open)
     "i11_sum_open", "i12_match_res", "i13_ite_okq", "i14_let_res", "i15_deep", "i16_cap_bad",
-    # not_certified
+    # predicate_not_failure_strict (not certified)
     "i17_opaque", "i18_partial", "i19_foldm",
-    # shape gate — silent
-    "i20_ordinary_theorem", "i21_prop_invariant",
-    # shape gate — near miss, SKIPPED
-    "i22_inline_invariant", "i23_no_pre_hypothesis", "i24_two_differences", "i25_not_a_target",
-    "i26_compound_pre_state",
+    # claim_not_failsafe / execution_not_unique
+    "i21_existential_measurement", "i22_inline_measurement", "i25_not_a_target",
 ]]
 
-# `schema_conformance` only — (theorem, targets). Every theorem in Schemas.lean, conforming ones included, so a
-# check that silently stopped firing cannot still "pass".
 SCHEMA_THEOREMS = [(f"Probe.Schemas.{n}", ["Probe.Inv.transfer", "Probe.Schemas.transferEff"])
                    for n in [
     # conforming — must draw nothing
-    "s1_hoare_conforms", "s2_hoare_no_precondition", "s3_invariant_conforms", "s4_freeform",
+    "s1_conforms", "s2_no_precondition", "s3_preservation", "s4_lemma",
+    # the intended loosening, pinned CLEAN
+    "s8_pure_precondition_clean", "s9_plain_prop_conclusion_clean", "s17_mentions_one_of_two_clean",
+    "g4_preservation_with_side_condition_clean",
     # one broken rule each
-    "s5_two_executions", "s6_pinned_output", "s7_pre_mentions_output", "s8_bare_hypothesis",
-    "s9_conclusion_not_post", "s10_post_not_strict", "s11_post_ignores_output",
-    "s12_invariant_shape", "s13_invariant_not_strict", "s14_unannotated", "s15_double_annotated",
+    "s5_two_executions", "s6_pinned_output", "s7_pre_mentions_output", "s10_post_not_strict",
+    "s11_conclusion_ignores_output", "s14_unannotated", "s15_double_annotated",
     # the real Aeneas output shape: two informative outputs, one behind a neutral wrapper
-    "s16_wrapped_outputs_conform", "s17_ignores_one_of_two_outputs",
-    # the gate's own composition: precedence, and freeform scoping off the shape rules
-    "g1_precedence_shape_first", "g2_injectivity_is_freeform", "g3_intermediate_bound_is_freeform",
-    "g4_invariant_with_side_condition", "g5_invariant_bare_is_clean",
+    "s16_wrapped_outputs_conform",
+    # the gate's own composition: precedence, and lemma scoping off the shape rules
+    "g1_precedence_shape_first", "g2_injectivity_is_lemma", "g3_intermediate_bound_is_lemma",
 ]]
 
 # `assumption_legitimacy` — (assumption-module axioms to check, target patterns). `limbMul_spec` is
@@ -408,7 +406,6 @@ def parse_findings(out: str) -> tuple[list[dict], list[dict], dict | None]:
 
 def run_checks(cid: str, lean_dir: str, import_lines: list[str],
                taint: list[tuple[str, list[str], list[str]]] | None = None,
-               invariant: list[tuple[str, list[str]]] | None = None,
                schema: list[tuple[str, list[str]]] | None = None,
                legitimacy: tuple[list[str], list[str]] | None = None,
                ) -> tuple[list[dict], list[dict], dict | None, str]:
@@ -416,12 +413,12 @@ def run_checks(cid: str, lean_dir: str, import_lines: list[str],
     that imports the checker plus the target module(s), call the `check*` functions per theorem,
     run it with `lake env lean`. *taint* pairs a theorem with the SUBJECT functions
     `assumed_postcondition` needs told, plus any CONTINUATION functions it may legitimately chain
-    through; *invariant* pairs a theorem with the TARGET functions `invariant_not_strict` needs told;
-    *schema* likewise for `schema_conformance`. Every check now takes its own explicit theorem list —
-    there is no longer a check that runs on "every theorem" with no configuration. Returns
-    (findings, skipped-records,
-    done-record-or-None, raw combined output) — `done is None` means the driver never finished (a
-    real compile error), which the caller must treat as "could not check", never as clean."""
+    through; *schema* pairs a theorem with the TARGET functions `checkSpecGate` needs told (which
+    composes conformance and provenance — failure-strictness is checked inside conformance). Every
+    check now takes its own explicit theorem list — there is no longer a check that runs on "every
+    theorem" with no configuration. Returns (findings, skipped-records, done-record-or-None, raw
+    combined output) — `done is None` means the driver never finished (a real compile error), which
+    the caller must treat as "could not check", never as clean."""
     body_lines = import_lines + [
         "open Lusterna.Checks",
         "set_option maxRecDepth 4000 in",
@@ -431,9 +428,6 @@ def run_checks(cid: str, lean_dir: str, import_lines: list[str],
         arr = ", ".join("`" + g for g in subjects)
         carr = ", ".join("`" + g for g in conts)
         body_lines.append(f"  let _ ← checkAssumedPostcondition `{t} #[{arr}] #[{carr}]")
-    for t, tgts in (invariant or []):
-        arr = ", ".join("`" + g for g in tgts)
-        body_lines.append(f"  let _ ← checkInvariantTotality `{t} #[{arr}]")
     for t, tgts in (schema or []):
         arr = ", ".join("`" + g for g in tgts)
         # THE GATE, not the bare conformance check: `checkSpecGate` is what the harness runs, and
@@ -489,7 +483,7 @@ def run_fixture() -> int:
             ["import Probe.LusternaChecks", "import Probe.Spec.Fixture",
              "import Probe.Taint", "import Probe.Invariant", "import Probe.Schemas",
              "import Probe.Legit"],
-            taint=TAINT_THEOREMS, invariant=INVARIANT_THEOREMS, schema=SCHEMA_THEOREMS,
+            taint=TAINT_THEOREMS, schema=INVARIANT_THEOREMS + SCHEMA_THEOREMS,
             legitimacy=LEGIT_CHECK)
         if done is None:
             return sys.exit("the driver file never completed — see raw output above")
@@ -525,14 +519,7 @@ def run_fixture() -> int:
             for k, (got, exp) in sorted(rule_bad.items()):
                 print(f"  {k}: {got!r} != {exp!r}")
 
-        # ── attribute-level assertions (severity / is_conclusion / per-theorem count / hypothesis) ──
-        sev = {f["theorem"]: f.get("reason") for f in findings if f["check"] == "invariant_not_strict"}
-        sev_bad = {k: (sev.get(k), v) for k, v in EXPECTED_INVARIANT_SEVERITY.items() if sev.get(k) != v}
-        if sev_bad:
-            print("\nWRONG SEVERITY (theorem: got, expected):")
-            for k, (got, exp) in sorted(sev_bad.items()):
-                print(f"  {k}: {got!r} != {exp!r}")
-
+        # ── attribute-level assertions (is_conclusion / per-theorem count / hypothesis) ──
         isc_bad = {}
         for f in findings:
             if f["check"] == "assumed_postcondition" and f["theorem"] in EXPECTED_IS_CONCLUSION:
@@ -588,12 +575,34 @@ def run_fixture() -> int:
         else:
             print(f"\ncheckDefAxioms OK: {got_footprint}")
 
+        # ── checkAnchorReference: the fidelity bridge ───────────────────────────────────────────────
+        # `total_supply` is named directly in `total_supply_reads`'s TYPE → referenced; a measurement
+        # no theorem names → not referenced (the ungrounded-core case `check_spec_gate` blocks on).
+        an_body = ("import Probe.Schemas\nimport Probe.LusternaChecks\nopen Lusterna.Checks\n"
+                   "set_option maxRecDepth 8000 in\n"
+                   "#eval show Lean.Meta.MetaM Unit from do\n"
+                   "  checkAnchorReference #[`Probe.Schemas.total_supply_reads, "
+                   "`Probe.Schemas.s1_conforms] #[`total_supply, `nonexistent_measurement]\n"
+                   '  IO.println "LUSTERNA_CHECK_DONE"\n')
+        assert not tools.write_out(deps, "lean/_anchor_driver.lean", an_body).startswith("ERROR:")
+        _, aout, aerr = container.exec_in(cid, ["lake", "env", "lean", "_anchor_driver.lean"],
+                                          workdir=lean_dir, timeout=300)
+        an_find, _, an_done = parse_findings(aout + "\n" + aerr)
+        got_anchors = {f["anchor"]: bool(f.get("referenced"))
+                       for f in an_find if f.get("check") == "anchor_bridge"}
+        anchor_ok = an_done is not None and got_anchors == {"total_supply": True,
+                                                            "nonexistent_measurement": False}
+        if not anchor_ok:
+            print(f"\ncheckAnchorReference MISMATCH: got {got_anchors}")
+        else:
+            print(f"\ncheckAnchorReference OK: {got_anchors}")
+
         skip_ok = got_skipped == EXPECTED_SKIPPED and len(skipped) == len(EXPECTED_SKIPPED)
         count_ok = len(findings) == EXPECTED_FINDING_COUNT
         if not count_ok:
             print(f"\nCOUNT MISMATCH: got {len(findings)}, expected {EXPECTED_FINDING_COUNT}")
-        ok = (not (missing or spurious or rule_bad or sev_bad or isc_bad or count_bad or hyp_bad)
-              and skip_ok and count_ok and footprint_ok)
+        ok = (not (missing or spurious or rule_bad or isc_bad or count_bad or hyp_bad)
+              and skip_ok and count_ok and footprint_ok and anchor_ok)
         print("\nPASS" if ok else "\nFAIL")
         return 0 if ok else 1
     finally:
@@ -628,11 +637,9 @@ def run_arbitrary(file: Path, targets: list[str], deps_files: list[Path],
         # `assumed_postcondition` has no taint source and the others no target, and all would report SKIPPED on every
         # theorem rather than anything useful.
         taint = [(t, subjects, conts) for t in targets] if subjects else None
-        # The invariant and schema checks need the same "functions under test" list, so --subjects
-        # enables them too.
+        # The schema gate needs the same "functions under test" list, so --subjects enables it too.
         inv = [(t, subjects) for t in targets] if subjects else None
-        findings, skipped, done, raw = run_checks(cid, lean_dir, imports, taint=taint,
-                                                  invariant=inv, schema=inv)
+        findings, skipped, done, raw = run_checks(cid, lean_dir, imports, taint=taint, schema=inv)
         if done is None:
             print("\nDRIVER DID NOT COMPLETE — could not check (not evidence either way):")
             print(raw[-2000:])

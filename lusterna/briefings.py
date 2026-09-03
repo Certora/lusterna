@@ -85,8 +85,8 @@ FOUR JOBS, written to ONE file /workspace/out/infer/campaigns/<Campaign>.json (v
        with allowance ≥ n and balance ≥ n succeeds, moves n, and decrements the allowance by n; on
        failure the state is unchanged"). Do NOT split a claim into detached precondition/postcondition
        fragments — a guard means nothing apart from the effect it guards.
-     • invariants — cross-cutting properties preserved by EVERY operation (e.g. "the sum of all
-       balances always equals total_supply"); kept separate because they formalise as preservation.
+     • invariants — cross-cutting properties preserved by EVERY operation (e.g. "a derived total
+       always equals the sum of its parts"); kept separate because they formalise as preservation.
      • edge_cases — boundary/tricky conditions the statements must cover (overflow, aliasing/self-ops,
        empty/zero, unknown key).
 
@@ -111,16 +111,27 @@ FOUR JOBS, written to ONE file /workspace/out/infer/campaigns/<Campaign>.json (v
    bare `Type` whose VALUE a property reasons about). This is the anchor for the whole translation:
    TRANSLATE must MODEL and PROJECT TO exactly this, and the TRANSLATE-JUDGE flags ANYTHING kept
    outside it as irrelevant surface to be dropped. Derive it mechanically from your properties/
-   invariants — an invariant `total_supply() >= mint_total_supply` constrains exactly the fields those
-   two measurements read, and no others. Include:
-     • every struct FIELD a property/invariant reads or writes (e.g. `ReserveLiquidity.borrowed_amount_sf`);
-     • every value-TYPE whose VALUE a property reasons about (a fixed-point `Fraction`, a bignum `U256`) —
+   invariants — an invariant relating two derived readings constrains exactly the fields those
+   measurements read, and no others. Include:
+     • every struct FIELD a property/invariant reads or writes (e.g. `Account.balance`);
+     • every value-TYPE whose VALUE a property reasons about (a fixed-point or bignum value-type) —
        its VALUE/arithmetic is in-core; its Display/Debug/serde/FromStr is NOT and must be excluded.
    EXCLUDE everything else, and be TIGHT — it is the definition of "minimal", so nothing carried "just
    in case": other struct fields (pubkeys, account keys, bumps, padding, config a property never reads),
    whole plumbing types, and the non-value surfaces (formatting/serialization/parsing) of even the
    in-core types. If a field is not named here, TRANSLATE is entitled to drop it. Empty only if there
    is genuinely no stateful core (a pure computation).
+
+5. anchor_functions — the real MEASUREMENT functions the properties are literally stated IN TERMS OF,
+   as dotted suffixes (a getter's method path, or its bare final name). These are the fallible
+   getters/measurements a property NAMES — when a property is phrased through a computed reading of the
+   state rather than the raw fields, the function that computes that reading is an anchor — NOT the
+   operations under test (those are target_patterns). The gate will REQUIRE at least one theorem to
+   measure each (run it and constrain its result) — so if FORMALISE reconstructs the measurement as a
+   projection over raw fields, it must also write a BRIDGE theorem tying the projection back to the
+   real function, which is what keeps the verified core grounded in the code. Be CONSERVATIVE: name a
+   function here ONLY if a property is genuinely phrased through it. Empty when the properties are
+   stated directly on fields with no named measurement in the informal spec.
 
 Validate the JSON parses, then STOP.
 """ + CONTINUING + WORKSPACE
@@ -349,33 +360,43 @@ useless. Leave every body `:= by sorry` — proving is the PROVE stage's job, an
 theorems is yours. (A body is no longer stripped; `#print axioms` judges whatever is there, so a
 proof that rests on `sorryAx`/native_decide simply counts as unproven — never fake one to look done.)
 
-DECLARE EACH THEOREM'S SCHEMA. Every theorem carries EXACTLY ONE attribute saying what kind of
-statement it is, and a mechanical check verifies it actually conforms (so this is a claim, not a
-label). `import <Crate>.LusternaSchemas` to use them, each on its own line above the theorem:
+DECLARE EACH THEOREM'S FAMILY. Every theorem carries EXACTLY ONE attribute, and a mechanical check
+verifies it actually conforms (so this is a claim, not a label). `import <Crate>.LusternaSchemas` to
+use them, each on its own line above the theorem. There are TWO families:
 
-  • `@[lusterna_invariant]` — an invariant is PRESERVED, and that is the WHOLE theorem: the
-    invariant on the pre-state, the execution, the invariant on the post-state, nothing else:
-        (hinv : Inv s = ok true) (hexec : f args s = ok (y, s')) : Inv s' = ok true
-    A side condition left inline (`(hcl : c.val <= l.val)`) makes the entering assumption stronger
-    than the invariant, so the theorem is really a Hoare triple — fold the condition into `Inv`, or
-    declare `hoare` and name it in `Pre`.
-  • `@[lusterna_hoare]` — a forward Hoare triple. EXACTLY ONE execution of a target; every other
-    hypothesis is `Pre <root inputs> = ok true`; the conclusion is `Post <inputs, outputs> = ok true`
-    and must MENTION the execution's outputs:
-        (hpre : Pre args s = ok true) (hexec : f args s = ok (y, s')) : Post args s y s' = ok true
-  • `@[lusterna_freeform "why"]` — a SUPPORTING lemma, deliberately outside both schemas (a pure
-    arithmetic helper, a relational property like injectivity). The string says why; it is reported,
-    so do not use it to dodge a statement that is really one of the two schemas above.
+  • `@[lusterna]` — a CHECKED PROPERTY: EXACTLY ONE execution of a target function, and a claim about
+    what it produced. Every other hypothesis is a PRECONDITION, and the conclusion is the property.
+    Both a preservation and a postcondition are the same family — there is no separate "invariant":
+        (hexec : f args s = ok (y, s'))                : <claim about y, s'>            -- postcondition
+        (hpre : P args s) (hexec : f args s = ok (y, s')) : <claim about y, s'>          -- with a precondition
+        (hinv : Inv s) (hexec : f args s = ok (y, s')) : Inv s'                          -- a preservation
+    The conclusion must MENTION at least one of the execution's outputs (or it claims nothing about
+    `f`). Whether a preserved property is, across the whole campaign, an INVARIANT of the system is
+    the PROVE stage's conclusion (a base case plus a preservation for every operation) — NOT a label
+    you attach to one theorem.
+  • `@[lusterna_lemma "why"]` — a SUPPORTING lemma, deliberately outside the checked shape: a pure
+    arithmetic helper, a relational/two-run property (injectivity, determinism), a bridge lemma, or
+    any statement with no single target execution. The string says why; it is reported, so do not use
+    it to dodge a statement that is really a checked property.
 
-`Inv`, `Pre` and `Post` are `Result Bool` **defs**, and each must be FAILURE-STRICT: bind every
-fallible measurement with `←` and decide on pure data. A `Result` may be bound or returned, never
-PASSED — `ok (! ok? (total_supply s))` or `match total_supply s with | fail _ => ok true | …` makes
-the property true exactly when the measurement fails, which is the defect these schemas exist to
-prevent. Write `do let t ← total_supply s; ok (t.val == n)`.
+STATE THE CLAIM SO IT CANNOT FAIL OPEN. A checked property's precondition and conclusion may each be:
+  • a PLAIN PROPOSITION over the values the execution produced (PREFERRED — this is the readable
+    form): project state to its `.val` fields and state the property as ordinary `Nat`/arithmetic,
+    e.g. `s'.field.val = s.field.val + amt.val`, or `Lhs s' ≤ Rhs s'` for `def`s over `.val` fields.
+    A pure proposition names no fallible measurement, so nothing in it can fail open.
+  • OR `P args = ok true` for a `Result Bool` **def** `P` that is FAILURE-STRICT: bind every fallible
+    measurement with `←` and decide on pure data. A `Result` may be bound or returned, never PASSED —
+    `ok (! ok? (measure s))` or `match measure s with | fail _ => ok true | …` makes the claim true
+    exactly when the measurement fails, the defect the check exists to prevent. Write
+    `do let t ← measure s; ok (t.val == n)`.
+A fallible measurement's result reaches a checked property ONLY as the execution hypothesis or a
+bound value — NEVER as a hypothesis `g s' = ok v` guarding on its success, nor an implication
+`measure s = ok t → …` (both fail open). If a property is genuinely about a measurement of the
+post-state, either project through it (the plain-proposition form) or bind it in a `Result Bool`.
 
-In this toolchain the Aeneas postcondition triple `f args ⦃ r => P r ⦄` is TOTAL (f succeeds AND
-P holds), so a triple already carries the ok-ness guarantee; an equality `f args = ok v` is equally
-valid — use either inside a `freeform` lemma.
+The Aeneas postcondition triple `f args ⦃ r => P r ⦄` and the existential `∃ t, g s' = ok t ∧ …` are
+TOTAL and legitimate, but they are for PROOF machinery and bridges — use them inside a
+`@[lusterna_lemma]`, not as a checked property's own shape.
 
 DELIVERABLE: this campaign's spec module (the path the harness gave you) with compiling
 statement-only theorems, and prior campaign modules untouched. STOP once it compiles.
@@ -395,28 +416,36 @@ THIS campaign's spec module (the harness names it in your task prompt, `lean/<Cr
 — judge only that module's statements, not other campaigns'.
 
 THE MECHANICAL SPEC GATE HAS ALREADY RUN, and the spec in front of you PASSED it. The harness
-enforces the declared-schema rules itself (`@[lusterna_invariant]` / `@[lusterna_hoare]` /
-`@[lusterna_freeform "why"]`), blocking FORMALISE with a concrete critique until they hold. You do
-not run it, and shape defects it owns — a hypothesis constraining an output, a non-strict
-invariant, a theorem that does not match its annotation — are not yours to re-report.
+enforces the checked-shape rules itself (a `@[lusterna]` property runs one target and states a
+FAIL-SAFE claim; `@[lusterna_lemma "why"]` opts out), blocking FORMALISE with a concrete critique
+until they hold. You do not run it, and shape defects it owns — a hypothesis constraining an output,
+a claim that can fail open, a conclusion that ignores every output — are not yours to re-report.
 
 What the gate CANNOT see, and what is therefore the whole of your job: whether each theorem MEANS
-the right thing. It verifies form, never fitness. Two things to look for specifically:
-  • a MISDECLARED schema — a Hoare triple annotated `invariant`, or a real property hidden under
-    `@[lusterna_freeform "…"]` with a justification that does not hold up. Both conform perfectly.
+the right thing. It verifies form, never fitness. Three things to look for specifically:
+  • a MISDECLARED family — a real checked property hidden under `@[lusterna_lemma "…"]` with a
+    justification that does not hold up (a property dressed as a lemma to skip the checks). It
+    conforms perfectly.
+  • an UNFAITHFUL RECONSTRUCTION — the gate lets a `@[lusterna]` property project state to `.val`
+    fields and reason in pure `Nat`, which is the sound and readable form. But NOTHING mechanical
+    checks that such a projection actually mirrors the real code's semantics. When a predicate stands
+    in for a real named measurement (the property is "about" a getter, but the predicate is a raw
+    formula over the fields), READ the translated function and confirm the reconstruction is faithful,
+    AND require a CHECKED bridge theorem tying the projection back to the real function (of the form
+    `getter args = ok t → t.val = <the projection>`). A campaign that reconstructs a measurement but
+    references the real function NOWHERE has an ungrounded core — report it.
   • a spec that is conforming and still wrong: trivial, too weak, not what the design says, or not
     about the code.
 
-The Aeneas triple `f args ⦃ r => P r ⦄` is TOTAL — it is NOT vacuous merely for being a triple.
 Report one defect per concrete problem (name a specific theorem, or "coverage"), with a concrete fix,
 using exactly these kinds:
-  • vacuous — trivially true for ANY implementation (a tautology, or a `True` postcondition). A
-    triple with a real postcondition is NOT vacuous. The commonest form is a property guarded behind
-    a MEASUREMENT's success (`∀ t, total_supply s = ok t → φ t`), vacuously true whenever that call
-    fails; use the total form (`total_supply s ⦃ t => φ t ⦄`, `∃ t, … = ok t ∧ φ t`, or a
-    `Result Bool` predicate that binds the measurement). Only the function UNDER TEST may have its
-    failure excused. Check helper `def`s too — this most often hides inside a named predicate, and no
-    mechanical check covers the shape, so it is yours to spot by reading.
+  • vacuous — trivially true for ANY implementation (a tautology, or a `True` postcondition). The
+    commonest form is a property guarded behind a MEASUREMENT's success (`∀ t, measure s = ok t →
+    φ t`), vacuously true whenever that call fails; the fix for a checked property is a PLAIN
+    proposition over the projected values, or a `Result Bool` predicate that BINDS the measurement.
+    Only the function UNDER TEST may have its failure excused. Check helper `def`s too — this most
+    often hides inside a named predicate, and no mechanical check covers the shape, so it is yours to
+    spot by reading.
   • too_weak — true but strictly weaker than the design's intended guarantee (a loose bound where an
     exact value is intended; a narrower input domain than guaranteed).
   • wrong_statement — cannot be right as written (wrong quantifier/bound, a type mismatch like

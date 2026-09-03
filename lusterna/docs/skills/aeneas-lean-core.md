@@ -279,6 +279,29 @@ may enter only through the subject's own execution relation, and it follows the 
 aliases. A hypothesis that is defeq to the goal — the theorem closed by `exact` — is reported at its
 strongest. Get it right the first time.
 
+### The two `Result` layers: execution vs Rust outcome
+
+A Rust function returning `Result<T, E>` that can also panic translates to
+`… → Aeneas.Std.Result (core.result.Result T E × State)` — TWO `Result`s, and they mean different
+things:
+
+- **`Aeneas.Std.Result`** (`ok | fail | div`) is the **abort monad** — "did this computation run
+  without panicking or diverging" (this is the "Result monad" the rest of these docs refer to).
+  Unrecoverable: `bind (fail e) k = fail e`, a failure swallows the continuation. You surface it only
+  as the **execution** hypothesis `f args = ok (res, s')`, and partial correctness EXCUSES it (a panic
+  means nothing ran).
+- **`core::result::Result T E`** (`.Ok | .Err`) is the **Rust outcome** — an ordinary VALUE living
+  inside that monad, which the program itself branches on (`?`, `match`, `unwrap_or`). Recoverable:
+  `bind (ok (.Err e)) k = k (.Err e)`, the `.Err` flows to the continuation. This is `res`, and you
+  `match .Ok / .Err` on it.
+
+Name them apart — **execution** (the `= ok` hypothesis) vs **Rust outcome** (`res`) — and never write
+as if `.Err` were `fail`: an `.Err` is a value the caller can recover from, a `fail` aborts. The
+checks encode exactly this: a `fail`-monad call must be BOUND, never passed, but a `match res with
+.Ok | .Err` on a `core::result::Result` is ordinary branching, not a fail-open. Where a *platform*
+turns a propagated `.Err` into an abort — a blockchain runtime reverting a transaction, say — that is
+a THIRD layer, and the platform doc (when one applies) tells you how to model it.
+
 ### A measurement's failure must not excuse the property
 
 The rule above concerns the function under test. This one concerns the functions you call to *state*
@@ -287,25 +310,25 @@ a property, and it points the other way. Two `Result`-returning calls appear in 
 - the **subject** — the function under verification. Its failure is *excused*: if it reverts, nothing
   happened and there is nothing to prove. Name its result in the binder list,
   `(hrun : transfer s amt = ok s')`. This is partial correctness, and it is correct here.
-- a **measurement** — `total_supply`, a balance accessor, an invariant projection. Its failure must
+- a **measurement** — a getter `measure`, a field accessor, an invariant projection. Its failure must
   **not** excuse the property, because it is not the behaviour under test; it is *how the claim is
   stated*.
 
 So never guard a property behind a measurement's success:
 
 ```lean
--- BAD: vacuously TRUE whenever `total_supply s` fails. A state whose total cannot even be
--- computed counts as solvent.
-def Solvent (k : U64) (s : State) : Prop :=
-  ∀ t, total_supply s = ok t → k.val ≤ t.val
+-- BAD: vacuously TRUE whenever `measure s` fails. A state whose reading cannot even be
+-- computed counts as satisfying the property.
+def Inv (k : U64) (s : State) : Prop :=
+  ∀ t, measure s = ok t → k.val ≤ t.val
 
 -- GOOD: the triple is TOTAL — "succeeds AND the property holds".
-def Solvent (k : U64) (s : State) : Prop :=
-  total_supply s ⦃ t => k.val ≤ t.val ⦄
+def Inv (k : U64) (s : State) : Prop :=
+  measure s ⦃ t => k.val ≤ t.val ⦄
 
 -- GOOD: the same thing written by hand.
-def Solvent (k : U64) (s : State) : Prop :=
-  ∃ t, total_supply s = ok t ∧ k.val ≤ t.val
+def Inv (k : U64) (s : State) : Prop :=
+  ∃ t, measure s = ok t ∧ k.val ≤ t.val
 ```
 
 Why the triple is exactly right, from `Aeneas/Std/WP.lean` — this is not folklore:
@@ -326,91 +349,95 @@ Both failure modes are wrong, in opposite directions, and it is worth knowing wh
 | **postcondition** | a pure **weakening** — satisfy the conclusion by making the measurement fail |
 | **precondition** | admits states you never meant to allow — unprovable goals, and counterexamples that are artefacts of the spec rather than bugs in the code |
 
-A preservation theorem (`Solvent k s → … → Solvent k s'`) uses the predicate in *both* positions, so
+A preservation theorem (`Inv k s → … → Inv k s'`) uses the predicate in *both* positions, so
 one broken definition breaks it at both ends. SPEC-JUDGE's mechanical checks follow the predicates
 your statements reference into their definitions — including ones imported from a prior campaign —
 so a guard hidden inside a helper `def` is no safer than one written inline.
 
-#### A preservation theorem may instead state its invariant in the `Result` monad
+#### State the property so it cannot fail open — prefer a plain proposition
 
-For an invariant used by a **preservation** theorem specifically, there is a second correct form,
-and it is often the easier one to get right:
+The readable, and preferred, way to keep a claim total is to **avoid the fallible measurement
+altogether**: project state to its `.val` fields and state the property as ordinary `Nat`
+arithmetic. There is no `Result` in the claim, so there is nothing that can fail, hence nothing that
+can fail open. This is what the successful campaigns do.
 
 ```lean
-def Solvent (s : State) : Result Bool := do
-  let t ← total_supply s
-  let b ← sum_balances s
-  ok (t == b)
+-- `Inv` as a pure proposition on the fields the property tracks — no measurement to fail.
+def Lhs (s : State) : Nat := s.a.val * 2 ^ 60 + s.b.val
+def Rhs (s : State) : Nat := s.c.val * 2 ^ 60
+def Inv (s : State) : Prop := Rhs s ≤ Lhs s
 
-theorem transfer_preserves_solvency (amt : U64) (s s' : State) (y : Unit)
-    (hinv  : Solvent s = ok true)
-    (hexec : transfer amt s = ok (y, s'))
-    : Solvent s' = ok true := by sorry
+theorem op_preserves_inv (amt : U64) (s s' : State) (y : Unit)
+    (hinv  : Inv s)
+    (hexec : op amt s = ok (y, s')) :
+    Inv s' := by sorry
 ```
 
-This is total for the same reason the triple is, one step earlier: `bind (fail e) k = fail e` and
-`bind div k = div`, and `ok true` is neither — so if any bound measurement fails, the claim is
-`False`, never vacuously true. It scales to invariants the `Prop` forms make awkward: a fold over
-accounts is an ordinary recursive `def` here, whereas `∃ t, … ∧ ∃ b, … ∧ …` over a list is not.
+If the property is genuinely *about* a fallible measurement (a getter `measure`), do NOT phrase the
+invariant through it — a measurement that reverts would let "the invariant holds" for free, and it
+bundles representability into the property. State the invariant on the projected fields as above, and
+tie it back to the real getter with a **checked bridge lemma** (`measure s = ok t → t.val = <the
+projection>`) so the projection is provably about the real function.
 
-Two things to get right, both mechanical:
+#### The `Result Bool` form, when you must bind a measurement
 
-- **Bind every measurement.** Never let a `Result` be *passed* to anything — not to `ok`, not as a
-  `match` scrutinee, not into an `if` condition. `ok (! ok? (total_supply s))` and
-  `match total_supply s with | fail _ => ok true | …` are the same fail-open bug the `∀ … → …` form
-  above has, wearing Boolean clothes. `checkInvariantTotality` (and `checkSchemaConformance`, via the
-  same failure-strictness fragment) is what finds them; nothing else will.
-- **Only the conclusion may talk about the post-state.** `Inv s' = ok true` belongs in the
-  conclusion; putting it in a hypothesis hands the theorem its own postcondition, which is what
-  `checkAssumedPostcondition` reports. `Inv s = ok true` as a hypothesis is fine — it constrains the
-  pre-state, which is what a precondition is for.
+When you genuinely need a fallible call inside the predicate, the second correct form is a
+`Result Bool` `def` used as `= ok true`, written the **failure-strict** way:
 
-Which form to use: the `⦃ ⦄` triple or `∃ … ∧ …` for a property stated inline in a theorem, and for
-anything quantified over an infinite domain; the `Result Bool` `def` for a named invariant a
-preservation theorem carries through a state change, especially one that recurses over a collection.
+```lean
+def Inv (s : State) : Result Bool := do
+  let t ← measure s               -- bind every measurement, never PASS a Result
+  let b ← other s
+  ok (t == b)
+```
 
-#### Declare each theorem's schema
+This is total because `bind (fail e) k = fail e` and `ok true` is neither `fail` nor `div` — so if
+any bound measurement fails, the claim is `False`, never vacuously true. Never let a `Result` be
+*passed* to anything: `ok (! ok? (measure s))` and `match measure s with | fail _ => ok true | …` are
+the same fail-open bug wearing Boolean clothes, and `checkSchemaConformance`'s failure-strictness
+fragment finds them. A fold over a collection is an ordinary recursive `def` here, which the check
+reads through its equation lemmas.
 
-Every theorem in a spec module carries **exactly one** schema attribute, and a mechanical check
-verifies it conforms — so it is a claim about the statement, not a label on it. `import
+The `⦃ ⦄` triple and `∃ … ∧ …` are also total and legitimate — but they are for **proof machinery**
+(the `progress` tactic, `@[progress]` lemmas, loop invariants) and for bridge lemmas, NOT for a
+checked property's own shape. Keep them inside a `@[lusterna_lemma]`.
+
+#### Declare each theorem's family
+
+Every theorem in a spec module carries **exactly one** attribute, and a mechanical check verifies it
+conforms — so it is a claim about the statement, not a label on it. There are TWO families. `import
 <Crate>.LusternaSchemas` to use them.
 
 ```lean
--- an invariant is PRESERVED across the call
-@[lusterna_invariant]
-theorem transfer_preserves_solvency (amt : U64) (s s' : State) (y : Unit)
-    (hinv  : Solvent s = ok true)
-    (hexec : transfer amt s = ok (y, s')) :
-    Solvent s' = ok true := by sorry
+-- a CHECKED PROPERTY: one target execution, and a fail-safe claim about what it produced. A
+-- preservation and a postcondition are the SAME family — there is no separate "invariant" label.
+@[lusterna]
+theorem op_preserves_inv (amt : U64) (s s' : State) (y : Unit)
+    (hinv  : Inv s)
+    (hexec : op amt s = ok (y, s')) :
+    Inv s' := by sorry
 
--- a FORWARD HOARE TRIPLE: one execution, preconditions about inputs, everything about the
--- post-state in the conclusion
-@[lusterna_hoare]
-theorem transfer_spec (amt : U64) (s s' : State) (y : Unit)
-    (hpre  : TransferPre amt s = ok true)
-    (hexec : transfer amt s = ok (y, s')) :
-    TransferPost amt s s' = ok true := by sorry
+@[lusterna]
+theorem op_effect (amt : U64) (s s' : State) (y : Unit)
+    (hexec : op amt s = ok (y, s')) :
+    s'.field.val = s.field.val + amt.val := by sorry     -- a plain-Prop postcondition
 
 -- a SUPPORTING lemma, declared out of scope, with its reason
-@[lusterna_freeform "pure arithmetic over the ledger model; no target execution"]
-theorem sum_balances_monotone … := by sorry
+@[lusterna_lemma "pure arithmetic over the state model; no target execution"]
+theorem aux_monotone … := by sorry
 ```
 
-`Solvent`, `TransferPre` and `TransferPost` are `Result Bool` defs written the failure-strict way
-described just above — bind every measurement, decide on pure data.
+Whether a preserved property is, across the whole campaign, an **invariant** of the system is the
+PROVE stage's conclusion (a base case plus a preservation for every operation) — never a per-theorem
+label. Four things the conformance check will hold you to, all ordinary good practice:
 
-Four things the conformance check will hold you to, all of which are ordinary good practice:
-
-- **One execution per Hoare triple.** Two calls is a composition, not a triple. If the property is
-  genuinely about a composition, that is a `freeform` lemma.
-- **Preconditions speak only about inputs and the pre-state.** A loose `(hb : amt.val < 100)` is
-  rejected — put the bound inside `Pre`, where it becomes a named object a reader can inspect and
-  a later campaign can reuse.
-- **The conclusion must mention what the call produced.** `Post` that ignores `s'` conforms to
-  everything else and claims nothing.
-- **Relational properties are `freeform`.** Injectivity, determinism and non-interference need two
-  executions by construction, so they are outside the triple schema — say so rather than bending
-  the annotation.
+- **One execution per checked property.** Two calls is a composition — a `@[lusterna_lemma]`.
+- **Every hypothesis is a fail-safe claim** (a pure proposition over inputs, or `P args = ok true`
+  with `P` failure-strict), and none may constrain the execution's own output — that is provenance's
+  job to catch.
+- **The conclusion must mention what the call produced** — at least one output, or it claims nothing.
+- **Relational properties are `@[lusterna_lemma]`.** Injectivity, determinism and non-interference
+  need two executions by construction — say so rather than bending the annotation.
 
 ### Recursive loop proofs: `unfold` + `step`, never `partial_fixpoint_induct`
 

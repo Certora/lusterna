@@ -8,13 +8,21 @@ NO agent invokes or interprets these: a finding is a fact the harness acts on, n
 judge to weigh. Each check is named by the `"check"` field its records carry (no numbering, so a
 reference cannot go stale as the set grows).
 
-THE SPEC GATE — `checkSpecGate` (run by `lean.check_spec_gate`) BLOCKS FORMALISE, composing three
-checks. Blocking is sound ONLY because each theorem DECLARES its schema (see `spec_schemas.lean`): the
-shape rules run only where a checked schema was claimed, which retires their documented false
-positives (injectivity and the like declare `@[lusterna_freeform]`, out of scope). A finding returns
-to FORMALISE as a concrete critique naming the rule, and the stage re-runs.
+THE SPEC GATE — `checkSpecGate` (run by `lean.check_spec_gate`) BLOCKS FORMALISE, composing two
+checks. Blocking is sound ONLY because each theorem DECLARES its family (see `spec_schemas.lean`): the
+shape rules run only where a CHECKED property was claimed (`@[lusterna]`), which retires their
+documented false positives (injectivity and the like declare `@[lusterna_lemma]`, out of scope). A
+finding returns to FORMALISE as a concrete critique naming the rule, and the stage re-runs.
 
-  • `schema_conformance` — verify the theorem's declared `@[lusterna_*]` schema matches its shape.
+  • `schema_conformance` — verify a `@[lusterna]` theorem has the ONE CHECKED SHAPE: exactly one
+    declared-target execution binding fresh outputs, every other hypothesis a FAIL-SAFE claim (a pure
+    proposition over inputs, or `Pre args = ok true` with `Pre` failure-strict), a FAIL-SAFE
+    conclusion, and the conclusion mentioning at least one of the outputs. "Fail-safe" (`claimFailSafe?`)
+    is the load-bearing soundness half: a measurement's failure can never make the claim vacuously
+    true — either because the claim names no measurement (a pure `Prop`), or because it binds it in a
+    failure-strict `Result Bool` (`certifiedStrict`: a `Result` may be bound or returned, never
+    PASSED, so `bind (fail e) k = fail e ≠ ok true`). There is no invariant/hoare split: preservation
+    with or without a precondition is one shape. Whether the property is an INVARIANT is PROVE's call.
 
   • `checkAssumedPostcondition` (`assumed_postcondition`) — an INFORMATION-FLOW rule, and one of the
     checks that needs telling which functions are the TARGETS. Target patterns are matched by dotted
@@ -26,16 +34,6 @@ to FORMALISE as a concrete critique naming the rule, and the stage re-runs.
     call on the post-state, unless it is a declared CONTINUATION. Catches a theorem that satisfies
     every local reading — its inputs reach a genuine precondition, its execution is real — but which
     also hands itself its own conclusion.
-
-  • `checkInvariantTotality` (`invariant_not_strict`) — recognises the INVARIANT-PRESERVATION theorem
-    (`Inv s = ok true` → target execution → `Inv s' = ok true`, targets matched as for
-    `checkAssumedPostcondition`) and asks whether `Inv` is FAILURE-STRICT: does a failing measurement
-    inside it make the invariant FALSE? The certified form is a `Result Bool` `def` whose every
-    fallible call is BOUND — sound because `bind (fail e) k = fail e` and `ok true` is not `fail`, so
-    no failure can reach `ok true`. One rule does the work: a `Result` may be bound or returned, NEVER
-    PASSED, which is why it stays closed instead of blocklisting Aeneas's helper set. Reads equation
-    lemmas rather than `dv.value`, so a RECURSIVE invariant (a fold over accounts — the realistic
-    case) certifies instead of being unreadable.
 
 THE STANDALONE CHECKS — each driven by its own `lean.py` counterpart, NOT part of the FORMALISE gate:
 
@@ -471,9 +469,11 @@ Three exemptions that look reasonable and are not — each one is a bypass:
 The cost of that strictness is that a post-state measurement named in a hypothesis
 (`(hafter : total s' = ok t)`, or `… : ∀ m, total s' = ok m → k ≤ m`) is reported. That is the right
 answer by this project's own doctrine — a measurement's failure must not excuse the property — and
-the fix is the total form: the `⦃ ⦄` triple, or `∃ t, total s' = ok t ∧ φ t` — and in a schema-
-conforming spec, a `Result Bool` `Pre`/`Post` that binds the measurement, which
-`certifiedStrict` verifies directly.
+the fix is the total form. For a CHECKED property (`@[lusterna]`) that is exactly the two forms
+`claimFailSafe?` accepts: state the claim as a PURE proposition over the values the execution already
+produced (the readable, total-projection form the campaigns favour), or bind the measurement inside a
+FAILURE-STRICT `Result Bool` predicate used as `P args = ok true`, which `certifiedStrict` verifies
+directly.
 
 CONTINUATIONS are opt-in, and default to none: a theorem about `deposit` composed with `rebalance`
 passes `#[`crate.rebalance]` and gets the chaining exemption for exactly that function, while every
@@ -684,18 +684,21 @@ def checkAssumedPostcondition (qn : Name) (targets : Array Name)
       IO.println s!"LUSTERNA_CHECK_SKIPPED \{\"check\": \"assumed_postcondition\", \"theorem\": \"{qn}\", \"reason\": \"conclusion traversal did not finish; its antecedents are only partly checked\"}"
     return n
 
-/-! ══ `invariant_not_strict` — invariant preservation, and whether the invariant is FAILURE-STRICT ══
+/-! ══ FAILURE-STRICTNESS — the machinery `schema_conformance` uses to keep a claim from failing OPEN ══
 
-An invariant-preservation theorem is only worth what its invariant is worth. If a measurement
-inside the invariant can FAIL and the invariant still comes out true, the theorem admits
-pre-states that cannot even be described — `total_supply` reverts, so "the invariant holds" for
-free — and a counterexample is then an artefact of the spec rather than a bug in the code.
+A checked property is only worth what its claim is worth. If a measurement inside the claim can FAIL
+and the claim still comes out true, the theorem admits states that cannot even be described —
+`total_supply` reverts, so "the property holds" for free — and a counterexample is then an artefact
+of the spec rather than a bug in the code.
 
-This check recognises that theorem shape restrictively and asks one question about the invariant:
-is it FAILURE-STRICT — does any failing call inside it make the invariant FALSE?
+`claimFailSafe?` (below) accepts a claim two ways. A PURE proposition — one that names no measurement
+at all (`resultMeasurement?`) — is fail-safe with nothing to prove: there is no failure to open on.
+The other way is the classic `def P … : Result Bool`, used as `P args = ok true`, and THAT is what
+`certifiedStrict` here certifies: does any failing call inside `P` make it FALSE rather than let a
+failure through?
 
-THE INVARIANT FORM THIS CHECK IS ABOUT: `def Inv … : Result Bool`, used as `Inv s = ok true`.
-Strictness is then a THEOREM ABOUT THE MONAD, not a heuristic:
+THE CERTIFIED FORM: `def P … : Result Bool`, used as `P args = ok true`. Strictness is then a THEOREM
+ABOUT THE MONAD, not a heuristic:
 
     bind (fail e) k = fail e     bind div k = div        -- Aeneas.Std.Primitives, bind_fail/bind_div
     ok true ≠ fail e             ok true ≠ div           -- constructor disjointness on Result
@@ -948,108 +951,13 @@ private def invariantClaim? (e : Expr) : MetaM (Option (Name × Array Expr)) := 
   unless (← whnf outs[0]!) == mkConst ``Bool.true do return none
   return some (c, args)
 
-/-- The single argument position at which `a` and `b` differ. `none` unless there is exactly one —
-"the invariant, on a different state, with everything else the same" is the whole shape, and
-allowing two differences would let an unrelated pair of predicate uses match. -/
-private def soleDifference? (a b : Array Expr) : MetaM (Option Nat) := do
-  unless a.size == b.size do return none
-  let mut diff : Option Nat := none
-  for i in [0:a.size] do
-    unless ← withNewMCtxDepth (isDefEq a[i]! b[i]!) do
-      if diff.isSome then return none
-      diff := some i
-  return diff
-
-/-- The invariant-preservation SHAPE, factored out so both callers share one rule. `invariant_not_strict` reports a
-failure as a near-miss `SKIPPED` — it was only guessing the theorem's intent — while
-`checkSchemaConformance` reports the very same failure as a FINDING, because there the author
-DECLARED that intent. One rule, two severities, decided by whether anyone claimed the shape.
-
-`none` = the conclusion is not an `Inv args = ok true` claim at all, so not even a near miss.
-`.error why` = it looks like one but the shape does not hold. `.ok inv` = the invariant's name. -/
-private def invariantShape? (qn : Name) (targets : Array Name)
-    : MetaM (Option (Except String (Name × Nat × Nat))) := do
-  let ci ← getConstInfo qn
-  forallTelescope (← instantiateMVars ci.type) fun xs concl => do
-    let some (inv, cargs) ← invariantClaim? (← instantiateMVars concl) | return none
-    if ← isTrustedDecl inv then
-      return some (.error "the conclusion's invariant is library code, not project-local")
-    -- the invariant, on some other state, among the hypotheses
-    let mut pre : Option (Nat × Array Expr × Nat) := none
-    for i in [0:xs.size] do
-      let bty ← instantiateMVars (← inferType xs[i]!)
-      if let some (c, hargs) ← invariantClaim? bty then
-        if c == inv then
-          -- FIRST match wins, so which hypothesis a finding is about does not depend on binder
-          -- order.
-          if pre.isNone then
-            if let some j ← soleDifference? hargs cargs then pre := some (j, hargs, i)
-    let some (j, hargs, preIdx) := pre
-      | return some (.error "no hypothesis applies the same invariant to another state at exactly one differing argument")
-    -- an execution of a DECLARED TARGET that consumes the pre-state and produces the post-state.
-    -- Both states must be BARE VARIABLES of the telescope: an execution produces a variable, and a
-    -- pre-state given as a compound expression is not the shape this check is about.
-    let (.fvar preId, .fvar postId) := (hargs[j]!, cargs[j]!)
-      | return some (.error "the differing argument is not a bare variable on both sides")
-    for i in [0:xs.size] do
-      let bty ← instantiateMVars (← inferType xs[i]!)
-      if let some (fn, eargs, outs) ← definingEq? bty then
-        unless isSubjectCall targets fn do continue
-        unless eargs.any (fun a => a.containsFVar preId) do continue
-        let mut leaves : Array FVarId := #[]
-        for fld in outs do leaves := leaves ++ (← outputLeaves fld)
-        -- `preIdx`/`i` are what let `schema_conformance` insist NOTHING ELSE propositional is here.
-        if leaves.contains postId then return some (.ok (inv, preIdx, i))
-    return some (.error "no execution hypothesis for a named target consumes the pre-state and produces the post-state")
-
-/-- `invariant_not_strict` — an invariant-preservation theorem whose invariant is not certified
-failure-strict.
-
-THE SHAPE, and it is deliberately narrow — false negatives are the accepted cost:
-
-    theorem preserves …
-        (hinv  : Inv c₁ … s  … cₙ = ok true)   -- the invariant, on the PRE-state
-        (hexec : f x s = ok (y, s'))            -- a DECLARED TARGET, producing s'
-        : Inv c₁ … s' … cₙ = ok true            -- the SAME invariant, on the POST-state
-
-All three must hold, and the `cᵢ` must agree: the hypothesis and the conclusion must name the same
-constant, differ at exactly ONE argument position, the pre-state there must be consumed by the
-execution, and the post-state there must be one of the execution's OWN output variables. Anything
-looser fires on ordinary measurement chains.
-
-WHAT SILENCE MEANS HERE, and it is weaker than for `assumed_postcondition`. Nothing is reported when the
-theorem is not of this shape at ALL — a judge running all three checks over a whole module would
-otherwise get a line per theorem. So silence means "certified strict, OR not an invariant-
-preservation theorem in this form". A NEAR MISS — the conclusion is `Inv … = ok true` but the rest
-of the shape does not hold — IS reported as `SKIPPED`, because that is the case where a judge
-believes the check ran and it did not. An invariant written INLINE in the theorem rather than as a
-`def` has no constant to walk and is therefore invisible; write it as a `def`. -/
-def checkInvariantTotality (qn : Name) (targets : Array Name) : MetaM Nat := do
-  let tlist := String.intercalate ", " (targets.toList.map (fun t => "\"" ++ toString t ++ "\""))
-  if targets.isEmpty then
-    IO.println s!"LUSTERNA_CHECK_SKIPPED \{\"check\": \"invariant_not_strict\", \"theorem\": \"{qn}\", \"reason\": \"no targets given\"}"
-    return 0
-  match ← invariantShape? qn targets with
-  | none => return 0
-  | some (.error why) =>
-    IO.println s!"LUSTERNA_CHECK_SKIPPED \{\"check\": \"invariant_not_strict\", \"theorem\": \"{qn}\", \"reason\": \"{why}\", \"targets\": [{tlist}]}"
-    return 0
-  | some (.ok (inv, _, _)) =>
-    -- SHAPE CONFIRMED. Now the only question that matters.
-    let budget ← IO.mkRef maxStrictNodes
-    match ← certifiedStrict inv {} budget with
-    | none => return 0
-    | some (reason, detail) =>
-      emit s!"\{\"check\": \"invariant_not_strict\", \"theorem\": \"{qn}\", \"invariant\": \"{inv}\", \"reason\": \"{reason}\", \"detail\": \"{jesc detail}\"}"
-      return 1
-
 /-! ══ `schema_conformance` — verify the DECLARED intent ═══════════════════════════════════════════
 
-The other checks hunt for bad shapes, which is why their SILENCE is ambiguous — "clean, or nothing I
-recognise". This one inverts that. FORMALISE annotates each theorem with the schema it is written
-to (`@[lusterna_invariant]`, `@[lusterna_hoare]`, `@[lusterna_freeform "why"]`), and this verifies
-the annotation. A theorem that fails the schema IT DECLARED is a FACT, not a judgement — which is
-what lets it block rather than merely report (see `checkSpecGate` below).
+`assumed_postcondition` hunts for a bad shape, which is why its SILENCE is ambiguous — "clean, or
+nothing I recognise". This one inverts that. FORMALISE declares each theorem's family (`@[lusterna]`
+checked, or `@[lusterna_lemma "why"]` exempt), and this verifies it. A theorem that fails the shape IT
+DECLARED is a FACT, not a judgement — which is what lets it block rather than merely report (see
+`checkSpecGate` below).
 
 DEFAULT-REJECT IS ONLY SAFE BECAUSE OF THE ANNOTATION. Applied to arbitrary theorems it would flag
 every honest use of `→`, `∨`, `¬`. Applied to a theorem whose author declared its schema, it is
@@ -1093,6 +1001,86 @@ private def execOutputsFresh (fn : Expr) (args outs : Array Expr) (leaves : Arra
   let _ := fn
   return none
 
+/-- `some detail` iff a `Aeneas.Std.Result`-valued MEASUREMENT is reachable in `e`, UNFOLDING
+project-local predicate definitions and Prop-valued inductives — the places a measurement can hide
+behind a name. `none` means `e` is a PURE proposition: it names no fallible computation at all, so
+nothing in it can fail, hence nothing can fail OPEN. That is the trivially-sound half of
+`claimFailSafe?` — the readable total-projection form the campaigns already gravitate to — and it
+needs no monad reasoning, only the absence of the monad.
+
+`core.result.Result` (Rust's own `Result`, a described VALUE) is deliberately not a measurement: only
+`Aeneas.Std.Result` (the failure monad) is, exactly the distinction `isResultTy`/`neutralWrappers`
+draw elsewhere — so a `match res with | .Ok … | .Err …` on a produced value stays pure. -/
+private partial def resultMeasurement? (e : Expr) (seen : NameSet) (fuel : Nat)
+    : MetaM (Option String) := do
+  if fuel == 0 then return some "the claim nests deeper than the walk budget"
+  -- A subterm whose TYPE is the failure monad IS a measurement, however it is spelled.
+  match ← (try pure (some (← inferType e)) catch _ => pure none) with
+  | some ty => if ← isResultTy ty then return some (← ppTrunc e)
+  | none    => pure ()
+  match e with
+  | .mdata _ b      => resultMeasurement? b seen fuel
+  | .proj _ _ b     => resultMeasurement? b seen (fuel - 1)
+  | .lam n t b bi | .forallE n t b bi =>
+    if let some r ← resultMeasurement? t seen (fuel - 1) then return some r
+    withLocalDecl n bi t fun x => resultMeasurement? (b.instantiate1 x) seen (fuel - 1)
+  | .letE n t v b _ =>
+    if let some r ← resultMeasurement? t seen (fuel - 1) then return some r
+    if let some r ← resultMeasurement? v seen (fuel - 1) then return some r
+    withLetDecl n t v fun x => resultMeasurement? (b.instantiate1 x) seen (fuel - 1)
+  | _ =>
+    -- An application — `∧`/`∨`/`↔`/`¬`/`Eq`/`Exists` and arbitrary wrappers alike: every argument,
+    -- then the head's own definition or, for a Prop-valued inductive, its constructor fields.
+    for a in e.getAppArgs do
+      if let some r ← resultMeasurement? a seen (fuel - 1) then return some r
+    let .const cn _ := e.getAppFn | return none
+    if seen.contains cn then return none
+    let seen := seen.insert cn
+    match ← predicateBody? cn with
+    | .body _ =>
+      match ← Meta.unfoldDefinition? e with
+      | some u => resultMeasurement? u seen (fuel - 1)
+      | none   => return none
+    | .constructors ctors numParams =>
+      let args := e.getAppArgs
+      for c in ctors do
+        let ct ← instantiateForall (← getConstInfo c).type (args.extract 0 (min numParams args.size))
+        if let some r ← resultMeasurement? ct seen (fuel - 1) then return some r
+      return none
+    -- An `axiom`/`opaque` Prop predicate hides a body that could carry a fail-open measurement; a
+    -- pure claim must not rest on one, so it is reported rather than assumed clean.
+    | .uninspectable kind => return some s!"a claim rests on an {kind} predicate `{cn}` with no inspectable body"
+    | .notPredicate       => return none
+
+/-- A CHECKED property's CLAIM — a precondition, or the conclusion — is FAIL-SAFE when a measurement's
+failure can never make it vacuously true. Two sound forms are accepted:
+
+  • a PURE proposition (`resultMeasurement?` finds nothing): it names no fallible computation, so it
+    has no failure to open on. This is the readable, total-projection form.
+  • the classic `P args = ok true` for a project-local FAILURE-STRICT `Result Bool` `P`
+    (`certifiedStrict`): a bound measurement propagates `fail`, and `fail ≠ ok true`.
+
+`none` = fail-safe; `some (rule, detail)` = why not, phrased as an actionable fix. -/
+private def claimFailSafe? (e : Expr) : MetaM (Option (String × String)) := do
+  match ← resultMeasurement? e {} maxTermDepth with
+  | none      => return none        -- a pure proposition: nothing can fail
+  | some meas =>
+    -- it names a measurement, so the only sound form is the failure-strict `P args = ok true`.
+    match ← invariantClaim? e with
+    | some (pred, _) =>
+      if ← isTrustedDecl pred then
+        return some ("claim_not_failsafe",
+          s!"the claim rests on library code, not a project-local predicate: {← ppTrunc e}")
+      let budget ← IO.mkRef maxStrictNodes
+      match ← certifiedStrict pred {} budget with
+      | none            => return none
+      | some (_, detail) => return some ("predicate_not_failure_strict",
+          s!"the predicate `{pred}` is not certified failure-strict: {detail}")
+    | none => return some ("claim_not_failsafe",
+        s!"a measurement can fail here ({meas}) yet the claim is not `P args = ok true` for a \
+failure-strict `P` — state the property as a plain proposition over the values the execution \
+produced, or bind the measurement inside a failure-strict `Result Bool` predicate")
+
 /-- `schema_conformance`. `targets` is the same list the other target-aware checks take. -/
 def checkSchemaConformance (qn : Name) (targets : Array Name) : MetaM Nat := do
   let env ← getEnv
@@ -1103,13 +1091,13 @@ def checkSchemaConformance (qn : Name) (targets : Array Name) : MetaM Nat := do
   -- strictly cheaper than annotating, and the whole scheme would be an opt-out.
   if schemas.isEmpty then
     report "none" "no_schema_declared"
-      "every spec theorem must declare exactly one schema; a supporting lemma declares \
-@[lusterna_freeform \"why\"]"
+      "every spec theorem must declare a family: a checked property is @[lusterna], a supporting \
+lemma is @[lusterna_lemma \"why\"]"
     return 1
   if schemas.size > 1 then
     report (String.intercalate "+" schemas.toList) "multiple_schemas_declared"
-      s!"declares {schemas.size} schemas ({String.intercalate ", " schemas.toList}); pick one — \
-being checked against the laxer of two is not a conformance result"
+      s!"declares {schemas.size} families ({String.intercalate ", " schemas.toList}); a theorem is \
+either a checked property or an exempt lemma, not both"
     return 1
   let schema := schemas[0]!
   -- A `private` theorem's attribute may not survive export (see Lean's `exportEntriesFnEx`), so a
@@ -1118,56 +1106,26 @@ being checked against the laxer of two is not a conformance result"
     report schema "private_declaration"
       "a private theorem's schema annotation may not survive module export; spec theorems must be public"
     return 1
-  if schema == "freeform" then
+  if schema == "lemma" then
     -- The reason string is validated at attribute-elaboration time (it cannot be empty), so there
     -- is nothing left to verify. Deliberately NOT gated on — it is reported in the campaign report.
     return 0
   if targets.isEmpty then
     IO.println s!"LUSTERNA_CHECK_SKIPPED \{\"check\": \"schema_conformance\", \"theorem\": \"{qn}\", \"schema\": \"{schema}\", \"reason\": \"no targets given\"}"
     return 0
-  if schema == "invariant" then
-    match ← invariantShape? qn targets with
-    | none =>
-      report schema "invariant_shape"
-        "the conclusion is not `Inv args = ok true` for a project-local definition"
-      return 1
-    | some (.error why) => report schema "invariant_shape" why; return 1
-    | some (.ok (inv, preIdx, execIdx)) =>
-      -- NOTHING BUT THE INVARIANT AND THE EXECUTION. The pre-state claim, the execution, and the
-      -- conclusion — that is the whole theorem. A side condition left inline
-      -- (`(hcl : c.val ≤ l.val)`) makes the entering assumption STRONGER than the invariant, so the
-      -- theorem is no longer "this invariant is preserved" but a Hoare triple wearing its clothes,
-      -- and the reader cannot tell which from the annotation. Fold the condition into the invariant,
-      -- or declare `hoare` and name it in `Pre` — where it becomes an inspectable object a later
-      -- campaign can reuse rather than a loose hypothesis. Without this the two schemas held their
-      -- preconditions to different standards, and the choice between them was partly discretionary.
-      let ci ← getConstInfo qn
-      -- The count comes BACK from the telescope: `let mut` does not cross the closure boundary.
-      let mut n ← forallTelescope (← instantiateMVars ci.type) fun xs _ => do
-        let mut k := 0
-        for i in [0:xs.size] do
-          if i == preIdx || i == execIdx then continue
-          let bty ← instantiateMVars (← inferType xs[i]!)
-          if ← isPropSafe bty then
-            report schema "extraneous_hypothesis"
-              s!"an invariant-preservation theorem carries only the invariant on the pre-state and \
-the execution; this is neither: {← ppTrunc bty} — fold it into `{inv}`, or declare `hoare` and name \
-it in `Pre`"
-            k := k + 1
-        return k
-      let budget ← IO.mkRef maxStrictNodes
-      if let some (_, detail) ← certifiedStrict inv {} budget then
-        report schema "predicate_not_failure_strict" s!"the invariant `{inv}` is not certified: {detail}"
-        n := n + 1
-      return n
-  unless schema == "hoare" do return 0
-  -- ── the FORWARD HOARE TRIPLE ────────────────────────────────────────────────────────────────
+  -- ── the ONE CHECKED SHAPE ───────────────────────────────────────────────────────────────────
+  -- One declared-target execution binding fresh outputs, and a claim — precondition and conclusion
+  -- alike — that cannot fail OPEN. There is NO invariant/hoare split: an unconditional preservation
+  -- and a conditional one differ only in whether a precondition is present, which the fail-safe rule
+  -- treats uniformly. Whether the property is, on its own or with others, an INVARIANT of the system
+  -- is PROVE/REPORT's question, never this check's.
   let ci ← getConstInfo qn
   forallTelescope (← instantiateMVars ci.type) fun xs concl => do
     let mut n := 0
-    -- Classify each binder. A `Pre args = ok true` hypothesis also matches `definingEq?`, so the
-    -- EXECUTIONS are exactly the defining equations on a DECLARED TARGET — a precondition's head is
-    -- never a target, so it lands among the propositions where it belongs.
+    -- Classify each binder: an execution of a DECLARED TARGET, or a proposition. `Inv pre = ok true`
+    -- (a legacy invariant's pre-state hypothesis) matches `definingEq?` too, but its head is not a
+    -- target, so it lands among the propositions — where `claimFailSafe?` accepts it as a fail-safe
+    -- precondition, exactly as it accepts any other `Pre args = ok true` or a pure proposition.
     let mut execs : Array (Expr × Array Expr × Array Expr) := #[]
     let mut props : Array Expr := #[]
     for x in xs do
@@ -1176,12 +1134,12 @@ it in `Pre`"
         if isSubjectCall targets fn then
           execs := execs.push (fn, args, outs); continue
       if ← isPropSafe bty then props := props.push bty
-    -- RULE 1 — exactly one execution. This is what makes the taint fixpoint unnecessary here:
-    -- with one declared execution and a whitelisted hypothesis form, smuggling a fact about the
-    -- post-state is structurally impossible rather than merely detectable.
+    -- RULE 1 — exactly one execution of a declared target. This is what makes the taint fixpoint
+    -- unnecessary here: with one declared execution and every other hypothesis a fail-safe claim,
+    -- smuggling a fact about the post-state is structurally impossible rather than merely detectable.
     unless execs.size == 1 do
       report schema "execution_not_unique"
-        s!"a Hoare triple has exactly one execution of a declared target; found {execs.size}"
+        s!"a checked property runs exactly one declared target; found {execs.size}"
       return 1
     let (fn, eargs, eouts) := execs[0]!
     let mut leaves : Array FVarId := #[]
@@ -1192,104 +1150,74 @@ it in `Pre`"
     if let some why ← execOutputsFresh fn eargs eouts leaves then
       report schema "execution_output_not_fresh" why
       n := n + 1
-    -- RULE 3 — every other proposition is a PRECONDITION over root inputs.
+    -- RULE 3 — every other hypothesis is a FAIL-SAFE claim (a pure proposition over the inputs, or
+    -- `Pre args = ok true` with `Pre` failure-strict). `assumed_postcondition`, run next in the gate,
+    -- separately forbids a precondition from constraining the execution's OWN output.
     for bty in props do
-      let some (pre, pargs) ← invariantClaim? bty
-        | report schema "hypothesis_not_a_precondition"
-            s!"not of the form `Pre args = ok true`: {← ppTrunc bty} — state it inside `Pre`"
-          n := n + 1
-          continue
-      -- Naming WHICH argument, because "move it into `Pre`" is only actionable if you know which.
-      for k in [0:pargs.size] do
-        let hit := leaves.filter (fun l => pargs[k]!.containsFVar l)
-        unless hit.isEmpty do
-          let names ← hit.mapM fun v => return toString (← v.getDecl).userName
-          report schema "precondition_mentions_output"
-            s!"`{pre}` argument #{k} ({← ppTrunc pargs[k]!}) mentions the execution's own output \
-{String.intercalate ", " names.toList}; a precondition may only speak about root inputs"
-          n := n + 1
-      let budget ← IO.mkRef maxStrictNodes
-      if let some (_, detail) ← certifiedStrict pre {} budget then
-        report schema "predicate_not_failure_strict"
-          s!"the precondition `{pre}` is not certified: {detail}"
+      if let some (rule, detail) ← claimFailSafe? bty then
+        report schema rule detail
         n := n + 1
-    -- RULE 4 — the conclusion IS a postcondition claim.
-    let some (post, cargs) ← invariantClaim? (← instantiateMVars concl)
-      | report schema "conclusion_not_a_postcondition"
-          s!"the conclusion must be `Post args = ok true` for a project-local definition, not \
-{← ppTrunc concl}"
-        return n + 1
-    -- RULE 5 — the postcondition is failure-strict.
-    let budget ← IO.mkRef maxStrictNodes
-    if let some (_, detail) ← certifiedStrict post {} budget then
-      report schema "predicate_not_failure_strict"
-        s!"the postcondition `{post}` is not certified: {detail}"
+    -- RULE 4 — the conclusion is a FAIL-SAFE claim.
+    let concl' ← instantiateMVars concl
+    if let some (rule, detail) ← claimFailSafe? concl' then
+      report schema rule detail
       n := n + 1
-    -- RULE 6 — the postcondition actually USES what the execution produced. Without this a theorem
-    -- conforms while saying nothing about the function: the data binders naming outputs in advance
-    -- (`ok (.Ok eff, vfinal)`) are not propositions, so rule 3 never sees them, and nothing else
-    -- would force `Post` to mention them.
-    let unused ← leaves.filterM fun l => do
-      unless ← carriesInformation l do return false
-      return !(cargs.any (fun a => a.containsFVar l))
-    unless unused.isEmpty do
-      let names ← unused.mapM fun v => return toString (← v.getDecl).userName
-      report schema "postcondition_ignores_output"
-        s!"`{post}` never mentions the execution's output {String.intercalate ", " names.toList}, \
-so the theorem claims nothing about what `{fn}` produced"
+    -- RULE 5 — the conclusion says something about what the execution produced: at least one
+    -- INFORMATIVE output appears in it. "At least one", not "every": a preservation property that
+    -- speaks only of the post-state and ignores the return value is a first-class checked property,
+    -- not a Hoare triple obliged to pin every output. A void (`Unit`) return leaves nothing to name.
+    let informative ← leaves.filterM carriesInformation
+    unless informative.isEmpty || informative.any (fun l => concl'.containsFVar l) do
+      let names ← informative.mapM fun v => return toString (← v.getDecl).userName
+      report schema "conclusion_ignores_output"
+        s!"the conclusion mentions none of `{fn}`'s outputs ({String.intercalate ", " names.toList}), \
+so the property claims nothing about what it produced"
       n := n + 1
     return n
 
 /-! ══ THE SPEC GATE — what the harness itself enforces ══════════════════════════════════════════
 
-`checkSpecGate` composes all three checks into the one thing FORMALISE must clear. It is not a tool
-an agent invokes and interprets: a finding here BLOCKS the stage and comes back as a concrete
-critique, and FORMALISE runs again.
+`checkSpecGate` composes conformance and provenance into the one thing FORMALISE must clear. It is
+not a tool an agent invokes and interprets: a finding here BLOCKS the stage and comes back as a
+concrete critique, and FORMALISE runs again.
 
 WHY BLOCKING IS SOUND NOW AND WAS NOT BEFORE. `checkAssumedPostcondition` has three documented,
 unavoidable false positives — a relational antecedent (injectivity, determinism, cancellation,
 non-interference), a bound on an intermediate, and a non-execution case split in the conclusion.
 Blocking on those would make a CORRECT theorem unsubmittable, which is exactly why the checks used
-to be advisory. The schema ANNOTATION retires all three, because each is excluded by the `hoare`
-conformance rules themselves:
+to be advisory. The schema ANNOTATION (`@[lusterna]`) retires all three, because the ONE checked
+shape excludes each of them:
 
   • a relational antecedent needs TWO executions — `execution_not_unique` forbids that;
-  • a bound on an intermediate is not `Pre <root inputs> = ok true` — `hypothesis_not_a_precondition`
-    forbids it, and names the fix (move it into `Pre`);
-  • a case split in the conclusion is not `Post … = ok true` — `conclusion_not_a_postcondition`.
+  • a bound on an intermediate that constrains a produced value is not a fail-safe precondition over
+    inputs — `assumed_postcondition` reports it as constraining a tainted variable;
+  • a case split on a produced value in the conclusion is caught the same way, by provenance.
 
-The false positive's own rationale is that "the strict rule is about single-execution Hoare
-properties and these are not". `@[lusterna_hoare]` is the author DECLARING that this one is. So on a
-conforming theorem a finding is a defect rather than a prompt, and blocking is honest.
+The false positive's own rationale is that "the strict rule is about single-execution properties and
+these are not". `@[lusterna]` is the author DECLARING that this one is. So on a conforming theorem a
+finding is a defect rather than a prompt, and blocking is honest.
 
-PRECEDENCE, so the critique stays actionable: a theorem that does not conform to its declared schema
-gets THAT finding and nothing else. Piling taint findings on a theorem whose shape is already wrong
-buries the one message FORMALISE can act on.
+PRECEDENCE, so the critique stays actionable: a theorem that does not conform gets THAT finding and
+nothing else (conformance runs first; provenance only once the shape is right). Piling taint findings
+on a theorem whose shape is already wrong buries the one message FORMALISE can act on.
 
-SCOPING: `@[lusterna_freeform]` is out of scope by declaration — it is where a relational or
-two-run property lives, so the other two checks do not run on it and cannot block it.
+SCOPING: `@[lusterna_lemma]` is out of scope by declaration — it is where a relational or two-run
+property lives, so provenance does not run on it and cannot block it.
 
 CONTINUATIONS ARE ALWAYS `#[]`, and nothing is lost. A theorem genuinely about a COMPOSITION needs a
-second execution, which `execution_not_unique` rejects — so such a theorem is `freeform`, and never
-reaches the checks that would have needed the exemption. -/
+second execution, which `execution_not_unique` rejects — so such a theorem is a `@[lusterna_lemma]`,
+and never reaches the check that would have needed the exemption. -/
 def checkSpecGate (qn : Name) (targets : Array Name) : MetaM Nat := do
   let schemas := Lusterna.Schemas.declaredSchemas (← getEnv) qn
-  -- Missing / doubled / freeform are all settled by the conformance check alone.
-  if schemas.size != 1 || schemas[0]! == "freeform" then
+  -- Missing / doubled / lemma are all settled by the conformance check alone.
+  if schemas.size != 1 || schemas[0]! == "lemma" then
     return ← checkSchemaConformance qn targets
   let conformance ← checkSchemaConformance qn targets
   if conformance > 0 then return conformance
-  -- SHAPE IS RIGHT. Only now do the provenance rules mean what they say.
-  let taint ← checkAssumedPostcondition qn targets #[]
-  -- `invariant_not_strict` runs ONLY on a theorem that declared `invariant`. On a `hoare` theorem
-  -- its own shape detection near-misses — the conclusion `Post args = ok true` IS an
-  -- `Inv args = ok true` claim, with no matching pre-state hypothesis — so it emits `SKIPPED`, and a
-  -- skip blocks. A conforming Hoare triple would be rejected for a check that does not apply to it.
-  -- Nothing is lost by scoping it: for a `hoare` theorem the strictness of `Pre`/`Post` is already
-  -- enforced by `schema_conformance`'s `predicate_not_failure_strict`, which calls the same
-  -- `certifiedStrict`.
-  let strict ← if schemas[0]! == "invariant" then checkInvariantTotality qn targets else pure 0
-  return taint + strict
+  -- SHAPE IS RIGHT. Only now do the provenance rules mean what they say. Failure-strictness is
+  -- already enforced INSIDE conformance (`claimFailSafe?` on every precondition and the conclusion),
+  -- so the gate has nothing more to add on that front; the one remaining check is provenance.
+  checkAssumedPostcondition qn targets #[]
 
 /-! ══ `assumption_legitimacy` — the trusted base may not relax a goal ═════════════════════════════
 
@@ -1385,6 +1313,41 @@ def checkImplReference (thms : Array Name) (translationModules : Array Name) : M
       | some m => translationModules.contains m
       | none   => false
     emit s!"\{\"check\": \"impl_ref\", \"theorem\": \"{t}\", \"refs_impl\": {refsImpl}}"
+
+/-! ══ `anchor_bridge` — a reconstructed measurement must be tied to the real function ═════════════
+
+A checked property may PROJECT state to `.val` fields and reconstruct a fallible measurement
+(`total_supply()`) as pure arithmetic. That is sound and readable, but the gate cannot see whether the
+reconstruction is FAITHFUL — nothing forces the projection to mention the real function at all, so a
+campaign can be fully impl-verified while its central predicate is ungrounded. This check closes the
+total-severance case: each ANCHOR function INFER names (the real measurement a property is stated in
+terms of) must be referenced by AT LEAST ONE theorem in the module, so a bridge to it exists. Whether
+that bridge is faithful stays with SPEC-JUDGE; that it exists at all is mechanical.
+
+Anchors are dotted SUFFIXES (like targets). A mere mention is NOT enough — the anchor must appear in
+a MEASUREMENT position: run and its result constrained, either `anchor … = ok …` (in a hypothesis or
+the conclusion) or a `⦃ ⦄` triple over the anchor. That rules out a theorem that name-drops the
+function without actually measuring it. This is a stronger FLOOR, not a faithfulness guarantee —
+whether the measured result is faithfully tied to the campaign's projection stays with SPEC-JUDGE.
+Emits `{check:"anchor_bridge", anchor, referenced}` per anchor. -/
+def checkAnchorReference (thms : Array Name) (anchors : Array Name) : MetaM Unit := do
+  let env ← getEnv
+  for a in anchors do
+    let anchorMeasured (e : Expr) : MetaM Bool := do
+      match ← definingEq? e with
+      | some (fn, _, _) => match fn with
+                           | .const c _ => return nameHasSuffix c a
+                           | _          => return false
+      | none => return false
+    let referenced ← thms.anyM fun t => do
+      let some ci := env.find? t | return false
+      -- a triple `anchor … ⦃ … ⦄` runs the anchor too; a bare `= ok` is caught per binder/conclusion.
+      if tripleOverTarget #[a] ci.type then return true
+      forallTelescope ci.type fun xs concl => do
+        for x in xs do
+          if ← anchorMeasured (← instantiateMVars (← inferType x)) then return true
+        anchorMeasured (← instantiateMVars concl)
+    emit s!"\{\"check\": \"anchor_bridge\", \"anchor\": \"{a}\", \"referenced\": {referenced}}"
 
 /-- Purity half of the refutation gate: a `<name>__refuted` lemma is a real proof of the negation
 only if `collectAxioms` shows NO `sorryAx` (`native_decide`'s trust IS allowed — a refutation is a

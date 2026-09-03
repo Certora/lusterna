@@ -61,3 +61,20 @@ FOR_PROVE: str = (
 # needs them written out — SPEC-JUDGE no longer runs the checks at all and is briefed on semantics.
 FOR_SPEC_GATE: str = _section("The Mechanical Spec Gate (what FORMALISE must clear)",
                               _read("skills", "mechanical-checks.md"))
+
+
+# ── platform docs ─────────────────────────────────────────────────────────────
+# One rung MORE specific than the general skills (true for all Aeneas targets), one rung MORE general
+# than a per-campaign instruction doc: semantics common to every program on an execution PLATFORM.
+# Appended to a stage briefing when the target is detected to run on that platform
+# (`pipeline._detect_platform`, keyed structurally off the runtime, not a framework). Add a platform
+# by dropping a `docs/platforms/<name>.md` and a row here.
+_PLATFORM_DOCS: dict[str, str] = {
+    "solana": _section("Solana program semantics", _read("platforms", "solana.md")),
+}
+
+
+def platform_addendum(platform: str | None) -> str:
+    """The platform doc for `platform` (from `deps.progress['platform']`), or '' for none/unknown —
+    so a stage that always concatenates it is a no-op off-platform."""
+    return _PLATFORM_DOCS.get(platform or "", "")

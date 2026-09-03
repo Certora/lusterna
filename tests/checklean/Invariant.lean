@@ -1,12 +1,13 @@
 import Aeneas
 import Probe
+import Probe.LusternaSchemas
 
-/-! Fixture for `invariant_not_strict`.
+/-! Fixture for `schema_conformance`'s FAILURE-STRICTNESS (`claimFailSafe?` → `certifiedStrict`).
 
-Two halves. The invariant DEFINITIONS below are the real subject: each is either inside the
-failure-strict fragment (and must certify) or outside it (and must be reported). The theorems are
-thin wrappers whose only job is to present the invariant-preservation SHAPE so the check fires at
-all, plus a handful that deliberately miss the shape.
+Two halves. The predicate DEFINITIONS below are the real subject: each is either inside the
+failure-strict fragment (and must certify) or outside it (and must be reported). The theorems at the
+bottom are thin `@[lusterna]` wrappers whose only job is to present a checked property whose claim
+rests on the predicate, so the strictness check fires on it, plus a handful that miss the shape.
 
 The empirical anchor for the whole check is `sum_bals` over `overflowing`: it genuinely returns
 `fail integerOverflow`, so `InvSum overflowing = fail …` (never `ok true`) while
@@ -240,136 +241,129 @@ end Probe.Inv
 namespace Probe.Inv.Spec
 open Probe.Inv
 
-/-! ── clean: the invariant certifies, so the theorem draws nothing ───────────────────────── -/
+/-! These are `@[lusterna]` CHECKED properties. The `invariant_not_strict` check they used to drive
+was FOLDED INTO `schema_conformance`: `certifiedStrict` is byte-for-byte unchanged and is now reached
+through `claimFailSafe?`, which vets every precondition and the conclusion. A preservation stated on a
+fail-open predicate draws `predicate_not_failure_strict` (on BOTH the pre-state hypothesis and the
+conclusion, since each is a claim resting on that predicate — 2 findings); on a strict predicate it
+draws nothing. This is the parity corpus for the strictness fragment. -/
 
-theorem i1_flat (amt : U64) (s s' : St) (y : Unit)
+/-! ── CLEAN: the predicate certifies, so the checked property conforms ─────────────────────── -/
+
+@[lusterna] theorem i1_flat (amt : U64) (s s' : St) (y : Unit)
     (hinv : InvFlat s = ok true) (hexec : transfer amt s = ok (y, s')) :
     InvFlat s' = ok true := by sorry
 
-theorem i2_assert (amt : U64) (s s' : St) (y : Unit)
+@[lusterna] theorem i2_assert (amt : U64) (s s' : St) (y : Unit)
     (hinv : InvAssert s = ok true) (hexec : transfer amt s = ok (y, s')) :
     InvAssert s' = ok true := by sorry
 
-theorem i3_fold (amt : U64) (s s' : St) (y : Unit)
+@[lusterna] theorem i3_fold (amt : U64) (s s' : St) (y : Unit)
     (hinv : InvFoldTop s = ok true) (hexec : transfer amt s = ok (y, s')) :
     InvFoldTop s' = ok true := by sorry
 
-theorem i4_wf (amt : U64) (s s' : St) (y : Unit)
+@[lusterna] theorem i4_wf (amt : U64) (s s' : St) (y : Unit)
     (hinv : InvWfTop s = ok true) (hexec : transfer amt s = ok (y, s')) :
     InvWfTop s' = ok true := by sorry
 
-theorem i5_ite (amt : U64) (s s' : St) (y : Unit)
+@[lusterna] theorem i5_ite (amt : U64) (s s' : St) (y : Unit)
     (hinv : InvIte s = ok true) (hexec : transfer amt s = ok (y, s')) :
     InvIte s' = ok true := by sorry
 
-theorem i6_dite (amt : U64) (s s' : St) (y : Unit)
+@[lusterna] theorem i6_dite (amt : U64) (s s' : St) (y : Unit)
     (hinv : InvDite s = ok true) (hexec : transfer amt s = ok (y, s')) :
     InvDite s' = ok true := by sorry
 
-theorem i7_match_pure (amt : U64) (s s' : St) (y : Unit)
+@[lusterna] theorem i7_match_pure (amt : U64) (s s' : St) (y : Unit)
     (hinv : InvMatchPure s = ok true) (hexec : transfer amt s = ok (y, s')) :
     InvMatchPure s' = ok true := by sorry
 
-theorem i8_of_option (amt : U64) (s s' : St) (y : Unit)
+@[lusterna] theorem i8_of_option (amt : U64) (s s' : St) (y : Unit)
     (hinv : InvOfOption s = ok true) (hexec : transfer amt s = ok (y, s')) :
     InvOfOption s' = ok true := by sorry
 
-theorem i9_cap_agrees (cap amt : U64) (s s' : St) (y : Unit)
+@[lusterna] theorem i9_cap_agrees (cap amt : U64) (s s' : St) (y : Unit)
     (hinv : InvWithCap cap s = ok true) (hexec : transfer amt s = ok (y, s')) :
     InvWithCap cap s' = ok true := by sorry
 
-theorem i10_sum (amt : U64) (s s' : St) (y : Unit)
+@[lusterna] theorem i10_sum (amt : U64) (s s' : St) (y : Unit)
     (hinv : InvSum s = ok true) (hexec : transfer amt s = ok (y, s')) :
     InvSum s' = ok true := by sorry
 
-/-! ── FLAGGED `fail_open` ─────────────────────────────────────────────────────────────────── -/
-
-theorem i11_sum_open (amt : U64) (s s' : St) (y : Unit)
-    (hinv : InvSumOpen s = ok true) (hexec : transfer amt s = ok (y, s')) :
-    InvSumOpen s' = ok true := by sorry
-
-theorem i12_match_res (amt : U64) (s s' : St) (y : Unit)
-    (hinv : InvMatchRes s = ok true) (hexec : transfer amt s = ok (y, s')) :
-    InvMatchRes s' = ok true := by sorry
-
-theorem i13_ite_okq (amt : U64) (s s' : St) (y : Unit)
-    (hinv : InvIteOkQ s = ok true) (hexec : transfer amt s = ok (y, s')) :
-    InvIteOkQ s' = ok true := by sorry
-
-theorem i14_let_res (amt : U64) (s s' : St) (y : Unit)
-    (hinv : InvLetRes s = ok true) (hexec : transfer amt s = ok (y, s')) :
-    InvLetRes s' = ok true := by sorry
-
-theorem i15_deep (amt : U64) (s s' : St) (y : Unit)
-    (hinv : InvDeep s = ok true) (hexec : transfer amt s = ok (y, s')) :
-    InvDeep s' = ok true := by sorry
-
-theorem i16_cap_bad (cap amt : U64) (s s' : St) (y : Unit)
-    (hinv : InvWithCapBad cap s = ok true) (hexec : transfer amt s = ok (y, s')) :
-    InvWithCapBad cap s' = ok true := by sorry
-
-/-! ── FLAGGED `not_certified` ─────────────────────────────────────────────────────────────── -/
-
-theorem i17_opaque (amt : U64) (s s' : St) (y : Unit)
-    (hinv : InvOpaque s = ok true) (hexec : transfer amt s = ok (y, s')) :
-    InvOpaque s' = ok true := by sorry
-
-theorem i18_partial (amt : U64) (s s' : St) (y : Unit)
-    (hinv : InvPartial s = ok true) (hexec : transfer amt s = ok (y, s')) :
-    InvPartial s' = ok true := by sorry
-
-theorem i19_foldm (amt : U64) (s s' : St) (y : Unit)
-    (hinv : InvFoldM s = ok true) (hexec : transfer amt s = ok (y, s')) :
-    InvFoldM s' = ok true := by sorry
-
-theorem i27_array_deep_chain (amt : U64) (s s' : ArrSt) (y : Unit)
+@[lusterna] theorem i27_array_deep_chain (amt : U64) (s s' : ArrSt) (y : Unit)
     (hinv : InvArr s = ok true) (hexec : transferArr amt s = ok (y, s')) :
     InvArr s' = ok true := by sorry
 
-theorem i28_partial_fixpoint_loop (amt : U64) (s s' : St) (y : Unit)
+@[lusterna] theorem i28_partial_fixpoint_loop (amt : U64) (s s' : St) (y : Unit)
     (hinv : InvLoop s = ok true) (hexec : transfer amt s = ok (y, s')) :
     InvLoop s' = ok true := by sorry
 
-/-! ── the SHAPE gate ──────────────────────────────────────────────────────────────────────── -/
-
-/-- SILENT: the conclusion is not `Inv args = ok true` at all, so this check has nothing to say.
-Pinned because a line per ordinary theorem would drown the judge's output. -/
-theorem i20_ordinary_theorem (amt : U64) (s s' : St) (y : Unit)
+/-- CLEAN, plain-Prop: the readable form the whole redesign is for — a raw equation about the output,
+no `Result Bool` wrapper, no measurement, so `claimFailSafe?` accepts it as a pure proposition. -/
+@[lusterna] theorem i20_plain_prop (amt : U64) (s s' : St) (y : Unit)
     (hexec : transfer amt s = ok (y, s')) : s'.total = amt := by sorry
 
-/-- SILENT: a Prop-valued invariant is `assumed_postcondition`'s business, not this check's. -/
-theorem i21_prop_invariant (amt : U64) (s s' : St) (y : Unit)
+/-! ── FLAGGED `predicate_not_failure_strict` (fail-open) — pre-state AND conclusion each ───── -/
+
+@[lusterna] theorem i11_sum_open (amt : U64) (s s' : St) (y : Unit)
+    (hinv : InvSumOpen s = ok true) (hexec : transfer amt s = ok (y, s')) :
+    InvSumOpen s' = ok true := by sorry
+
+@[lusterna] theorem i12_match_res (amt : U64) (s s' : St) (y : Unit)
+    (hinv : InvMatchRes s = ok true) (hexec : transfer amt s = ok (y, s')) :
+    InvMatchRes s' = ok true := by sorry
+
+@[lusterna] theorem i13_ite_okq (amt : U64) (s s' : St) (y : Unit)
+    (hinv : InvIteOkQ s = ok true) (hexec : transfer amt s = ok (y, s')) :
+    InvIteOkQ s' = ok true := by sorry
+
+@[lusterna] theorem i14_let_res (amt : U64) (s s' : St) (y : Unit)
+    (hinv : InvLetRes s = ok true) (hexec : transfer amt s = ok (y, s')) :
+    InvLetRes s' = ok true := by sorry
+
+@[lusterna] theorem i15_deep (amt : U64) (s s' : St) (y : Unit)
+    (hinv : InvDeep s = ok true) (hexec : transfer amt s = ok (y, s')) :
+    InvDeep s' = ok true := by sorry
+
+@[lusterna] theorem i16_cap_bad (cap amt : U64) (s s' : St) (y : Unit)
+    (hinv : InvWithCapBad cap s = ok true) (hexec : transfer amt s = ok (y, s')) :
+    InvWithCapBad cap s' = ok true := by sorry
+
+/-! ── FLAGGED `predicate_not_failure_strict` (not certified: no inspectable body / combinator) ─ -/
+
+@[lusterna] theorem i17_opaque (amt : U64) (s s' : St) (y : Unit)
+    (hinv : InvOpaque s = ok true) (hexec : transfer amt s = ok (y, s')) :
+    InvOpaque s' = ok true := by sorry
+
+@[lusterna] theorem i18_partial (amt : U64) (s s' : St) (y : Unit)
+    (hinv : InvPartial s = ok true) (hexec : transfer amt s = ok (y, s')) :
+    InvPartial s' = ok true := by sorry
+
+@[lusterna] theorem i19_foldm (amt : U64) (s s' : St) (y : Unit)
+    (hinv : InvFoldM s = ok true) (hexec : transfer amt s = ok (y, s')) :
+    InvFoldM s' = ok true := by sorry
+
+/-! ── FLAGGED `claim_not_failsafe`: a measurement, but NOT the accepted `P args = ok true` form ─
+
+The checked shape accepts a claim two ways: a pure proposition, or `P args = ok true` for a
+project-local failure-strict `P`. A claim that NAMES a measurement any other way — an inline
+existential, or an inline `do`-block whose head is library `Bind.bind` — is neither, and is reported
+with the fix: state it as a plain proposition over the produced values, or as a `Result Bool`
+predicate. (Both fire twice: the pre-state hypothesis and the conclusion.) -/
+
+@[lusterna] theorem i21_existential_measurement (amt : U64) (s s' : St) (y : Unit)
     (hinv : InvProp s) (hexec : transfer amt s = ok (y, s')) : InvProp s' := by sorry
 
-/-- SKIPPED, near miss: the invariant is written INLINE. `(do …) = ok true` does match the claim
-shape, but its head is `Bind.bind` — library code, with nothing project-local to walk. Reported
-rather than silent, which is the more useful answer: name the invariant as a `def`. -/
-theorem i22_inline_invariant (amt : U64) (s s' : St) (y : Unit)
+@[lusterna] theorem i22_inline_measurement (amt : U64) (s s' : St) (y : Unit)
     (hinv : (do let t ← total_supply s; ok (t.val == 0)) = ok true)
     (hexec : transfer amt s = ok (y, s')) :
     (do let t ← total_supply s'; ok (t.val == 0)) = ok true := by sorry
 
-/-- SKIPPED, near miss: the conclusion IS the shape but no hypothesis carries the invariant on a
-pre-state. Reported, because this is the case where a judge believes the check ran and it did not. -/
-theorem i23_no_pre_hypothesis (amt : U64) (s s' : St) (y : Unit)
-    (hexec : transfer amt s = ok (y, s')) : InvSumOpen s' = ok true := by sorry
+/-! ── FLAGGED `execution_not_unique`: the execution is not a DECLARED target (a wrong `--subjects`),
+so the checked property has NO execution and must not read as clean. -/
 
-/-- SKIPPED, near miss: TWO argument positions differ, so this is not "the same invariant on
-another state". -/
-theorem i24_two_differences (cap cap2 amt : U64) (s s' : St) (y : Unit)
-    (hinv : InvWithCapBad cap s = ok true) (hexec : transfer amt s = ok (y, s')) :
-    InvWithCapBad cap2 s' = ok true := by sorry
-
-/-- SKIPPED, near miss: the execution is not a DECLARED target. This is what a wrong `--subjects`
-looks like, and it must not read as clean. -/
-theorem i25_not_a_target (s s' : St) (y : Unit)
+@[lusterna] theorem i25_not_a_target (s s' : St) (y : Unit)
     (hinv : InvSumOpen s = ok true) (hexec : notATarget s = ok (y, s')) :
     InvSumOpen s' = ok true := by sorry
-
-/-- SKIPPED, near miss: the differing argument is a compound expression, not a bare variable, so
-there is no execution output to match it against. -/
-theorem i26_compound_pre_state (amt : U64) (s s' : St) (y : Unit)
-    (hinv : InvSumOpen { s with total := 0#u64 } = ok true)
-    (hexec : transfer amt s = ok (y, s')) : InvSumOpen s' = ok true := by sorry
 
 end Probe.Inv.Spec
