@@ -402,8 +402,8 @@ def impl_references(deps: AgentDeps, spec_rel: str) -> dict[str, bool]:
     Decided in the built environment by `checkImplReference` (`getUsedConstants` on each theorem's
     elaborated TYPE, matched to the translation's own modules via `getModuleFor?`) — robust to
     `open`/namespacing, unlike the former text scan, which matched the full in-namespace def name
-    (`state.reserve.ReserveLiquidity.total_supply`) against a statement that referenced it by its opened
-    short name (`ReserveLiquidity.total_supply`) and so wrongly reported every theorem abstract-only. A
+    (`crate.foo.Bar.measure`) against a statement that referenced it by its opened short name
+    (`Bar.measure`) and so wrongly reported every theorem abstract-only. A
     theorem the driver never reaches is conservatively False (abstract), never a false impl-verified."""
     original = tools.read_out(deps, spec_rel)
     if original.startswith("ERROR:"):
@@ -617,10 +617,10 @@ def _parse_skip_records(text: str) -> list[dict]:
 def _target_name_forms(patterns: list[str]) -> list[str]:
     """The dotted-suffix forms an INFER `target_patterns` entry can actually match in generated Lean.
 
-    Those patterns are CHARON MATCHERS, not Lean names: `crate::state::reserve::_::total_supply`
+    Those patterns are CHARON MATCHERS, not Lean names: `crate::foo::_::measure`
     uses `crate` for the crate root and `_` as a WILDCARD for the impl/type. Aeneas generates
-    `state.reserve.ReserveLiquidity.total_supply` — the wildcard stands for a component that IS
-    present in the Lean name — so rewriting `::`→`.` yields `crate.state.reserve._.total_supply`,
+    `foo.Bar.measure` — the wildcard stands for a component that IS
+    present in the Lean name — so rewriting `::`→`.` yields `crate.foo._.measure`,
     which suffix-matches nothing at all. The failure is silent and total: every target lookup comes
     back EMPTY, and a checker told "no targets" reports `found 0` on every theorem while a gate told
     the same reports nothing to reject.

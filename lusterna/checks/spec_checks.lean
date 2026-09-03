@@ -155,8 +155,8 @@ private def predicateBody? (n : Name) : MetaM PredBody := do
   | .axiomInfo _   => return .uninspectable "axiom"
   | .opaqueInfo _  => return .uninspectable "opaque"
   -- A Prop-valued inductive has no BODY, but its CONSTRUCTOR FIELDS are propositions and a guard
-  -- sits in one perfectly well — `structure Solvent (s : State) : Prop where proof : ∀ v,
-  -- total_supply s = ok v → Min ≤ v` is the same fail-open invariant, and a structure is the natural
+  -- sits in one perfectly well — `structure Inv (s : State) : Prop where proof : ∀ v,
+  -- measure s = ok v → Min ≤ v` is the same fail-open invariant, and a structure is the natural
   -- way to write one. Only the inductive's own name appears in a theorem's used constants, so the
   -- constructors have to be reached from here.
   | .inductInfo iv => return .constructors iv.ctors.toArray iv.numParams
@@ -481,7 +481,7 @@ other fallible call on the post-state stays a finding. A target is NOT implicitl
 continuation — an iterative theorem must name it in both lists.
 
 TARGETS ARE REQUIRED, not inferred. Without them a precondition stated through a pre-state
-measurement (`(hm : total_supply s = ok t) (hk : k ≤ t)`) reads as a violation, which is a common
+measurement (`(hm : measure s = ok t) (hk : k ≤ t)`) reads as a violation, which is a common
 enough shape to drown the check. SPEC-JUDGE has the campaign's `target_patterns` in
 `infer/campaigns/<Campaign>.json`. An empty `targets`, or targets that match no execution
 hypothesis here, emits `LUSTERNA_CHECK_SKIPPED` rather than returning silently — this check is
@@ -688,7 +688,7 @@ def checkAssumedPostcondition (qn : Name) (targets : Array Name)
 
 A checked property is only worth what its claim is worth. If a measurement inside the claim can FAIL
 and the claim still comes out true, the theorem admits states that cannot even be described —
-`total_supply` reverts, so "the property holds" for free — and a counterexample is then an artefact
+the measurement reverts, so "the property holds" for free — and a counterexample is then an artefact
 of the spec rather than a bug in the code.
 
 `claimFailSafe?` (below) accepts a claim two ways. A PURE proposition — one that names no measurement
@@ -902,8 +902,8 @@ mutual
   one of ours. A callee that does not return `Result` at all is irrelevant — its arguments were
   already `resultFree`.
 
-  THE BODY COMES FROM `getEqnsFor?`, NOT `dv.value`. A recursive invariant — a fold over accounts,
-  which is exactly what `sum(balances) = total_supply` is — compiles to
+  THE BODY COMES FROM `getEqnsFor?`, NOT `dv.value`. A recursive invariant — a fold over a collection,
+  which is exactly what a `sum(items) = total` predicate is — compiles to
   `fun l => List.brecOn l Inv._f`, and no syntactic walk can read that. The equation lemmas give
   back the surface `do`-chain, one per branch, for structural AND well-founded recursion alike
   (verified on both). `dv.value` is the fallback for definitions that have no equations. Each RHS is
@@ -1300,8 +1300,8 @@ A theorem verifies the implementation iff its STATEMENT references a `def` from 
 TRANSLATION, as opposed to being a purely abstract helper lemma over the spec's own predicates +
 trusted libraries. Decided from the elaborated TYPE's used constants and the module each was compiled
 into (`getModuleFor?` ∈ the translation's modules) — robust to `open`/namespacing, unlike a text scan
-of the statement, which missed a def referenced by its opened short name (`ReserveLiquidity.total_supply`
-under `open kamino_lending.state.reserve`) and wrongly reported every theorem "abstract-only". Emits
+of the statement, which missed a def referenced by its opened short name (`Bar.measure` under
+`open crate.foo`) and wrongly reported every theorem "abstract-only". Emits
 `{check:"impl_ref", theorem, refs_impl}` per theorem; a theorem the driver never reaches leaves no
 record and the caller treats it conservatively as abstract. -/
 def checkImplReference (thms : Array Name) (translationModules : Array Name) : MetaM Unit := do
@@ -1316,8 +1316,8 @@ def checkImplReference (thms : Array Name) (translationModules : Array Name) : M
 
 /-! ══ `anchor_bridge` — a reconstructed measurement must be tied to the real function ═════════════
 
-A checked property may PROJECT state to `.val` fields and reconstruct a fallible measurement
-(`total_supply()`) as pure arithmetic. That is sound and readable, but the gate cannot see whether the
+A checked property may PROJECT state to `.val` fields and reconstruct a fallible measurement (a
+getter) as pure arithmetic. That is sound and readable, but the gate cannot see whether the
 reconstruction is FAITHFUL — nothing forces the projection to mention the real function at all, so a
 campaign can be fully impl-verified while its central predicate is ungrounded. This check closes the
 total-severance case: each ANCHOR function INFER names (the real measurement a property is stated in

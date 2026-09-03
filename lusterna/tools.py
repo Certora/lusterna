@@ -106,8 +106,8 @@ _SRC_PATHSPEC = ["--", ".", ":(exclude)verification"]
 def _stage_untracked_source(container_id: str) -> None:
     """Intent-to-add (`git add -N`) untracked SOURCE files in the diff scope, so `git diff` renders a
     brand-new file as an addition instead of omitting it. Without this, a TRANSLATE agent that creates
-    a whole new crate (e.g. a scoped-extraction `klend-verification/` when the real crate cannot build
-    on the image) would have its entire rung-3 model INVISIBLE to the diff the TRANSLATE-JUDGE reviews
+    a whole new crate (e.g. a scoped-extraction `<crate>-verification/` when the real crate cannot
+    build on the image) would have its entire rung-3 model INVISIBLE to the diff the TRANSLATE-JUDGE reviews
     — untracked files never appear in `git diff <base>`. Respects `.gitignore` (so `target/`, `.lake/`,
     `*.llbc` stay out) and the same `verification/` exclusion. Intent-to-add is reversible and
     superseded by the harness's own `git add -A` stage commit, so it does not change what gets
