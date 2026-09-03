@@ -24,21 +24,21 @@ open Probe.Inv
 /-! ── the Pre/Post pair a conforming Hoare triple is written against ─────────────────────────── -/
 
 def TransferPre (amt : U64) (s : St) : Result Bool := do
-  let t ← total_supply s
+  let t ← measure s
   ok (t.val + amt.val < 1000)
 
 def TransferPost (amt : U64) (s s' : St) : Result Bool := do
-  let t ← total_supply s
-  let t' ← total_supply s'
+  let t ← measure s
+  let t' ← measure s'
   ok (t'.val == amt.val && t.val ≤ 1000)
 
 /-- Fail-open: rejected as `predicate_not_failure_strict` by `claimFailSafe?`'s `certifiedStrict`. -/
 def TransferPostOpen (amt : U64) (s s' : St) : Result Bool :=
-  ok (! ok? (total_supply s') || amt.val == 0)
+  ok (! ok? (measure s') || amt.val == 0)
 
 /-- Mentions no post-state at all, so it claims nothing about the call — rule 6. -/
 def PostIgnoresOutput (amt : U64) (s : St) : Result Bool := do
-  let t ← total_supply s
+  let t ← measure s
   ok (t.val == amt.val)
 
 /-! ── the REAL Aeneas output shape: `Result (core.result.Result Eff Err × St)` ─────────────────
@@ -57,13 +57,13 @@ def transferEff (amt : U64) (s : St) : Result (core.result.Result Eff Err × St)
   ok (.Ok ⟨amt⟩, { s with total := amt })
 
 def EffPost (amt : U64) (s : St) (e : Eff) (s' : St) : Result Bool := do
-  let t' ← total_supply s'
+  let t' ← measure s'
   ok (t'.val == amt.val && e.amount.val == amt.val)
 
 /-- Mentions the post-state but NOT `eff` — a subset miss, which an all-or-nothing rule 6 would let
 through. -/
 def EffPostIgnoresEff (amt : U64) (s s' : St) : Result Bool := do
-  let t' ← total_supply s'
+  let t' ← measure s'
   ok (t'.val == amt.val)
 
 /-! ── CONFORMING: must draw nothing ──────────────────────────────────────────────────────────── -/
@@ -118,7 +118,7 @@ theorem s17_mentions_one_of_two_clean (amt : U64) (s s' : St) (eff : Eff)
     (hexec : transferEff amt s = ok (.Ok eff, s')) :
     EffPostIgnoresEff amt s s' = ok true := by sorry
 
-/-- Was `extraneous_hypothesis` — the `deposit_liquidity` shape from a real klend spec, the exact case
+/-- Was `extraneous_hypothesis` — a preservation-with-side-condition shape from a real campaign spec, the exact case
 the old split forced from `invariant` to `hoare`. A preservation carrying one extra pure precondition
 is one checked property; nothing to reclassify. THIS conforming is the whole point of the merge. -/
 @[lusterna]
@@ -214,9 +214,9 @@ theorem g3_intermediate_bound_is_lemma (amt : U64) (s s' : St) (y : Unit)
     s'.total.val < 1000 := by sorry
 
 /-- The ANCHOR BRIDGE fixture (for `checkAnchorReference`): a theorem whose TYPE directly references
-the real measurement `Probe.Inv.total_supply`, so the anchor `total_supply` reads as referenced while
+the real measurement `Probe.Inv.measure`, so the anchor `measure` reads as referenced while
 an anchor no theorem names does not. This is the bridge a reconstructed projection would carry. -/
-@[lusterna_lemma "bridges the projection to the real total_supply getter"]
-theorem total_supply_reads (s : St) (t : U64) (h : total_supply s = ok t) : t = s.total := by sorry
+@[lusterna_lemma "bridges the projection to the real measure getter"]
+theorem measure_reads (s : St) (t : U64) (h : measure s = ok t) : t = s.total := by sorry
 
 end Probe.Schemas

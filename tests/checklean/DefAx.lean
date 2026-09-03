@@ -5,7 +5,7 @@ open Aeneas.Std
 that matters here and nowhere else in the suite: the footprint is the TRANSITIVE axiom closure over a
 def's body, so a target that reaches an opaque leaf only INDIRECTLY (through another def, via an
 error/formatting path in the real case) still carries it. That transitive reach is exactly the
-Fraction/Display leak this check exists to surface before a full PROVE is spent on a doomed
+value-type/Display leak this check exists to surface before a full PROVE is spent on a doomed
 translation. `verify.py`'s fixture run asserts the exact per-def footprint below. -/
 namespace Probe.DefAx
 

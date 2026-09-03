@@ -26,7 +26,7 @@ structure St where
   accts : List Acct
   total : U64
 
-def total_supply (s : St) : Result U64 := ok s.total
+def measure (s : St) : Result U64 := ok s.total
 
 /-- Fallible for real: the sum overflows `U64` on `overflowing` below. -/
 def sum_bals : List Acct → Result U64
@@ -46,13 +46,13 @@ def notATarget (s : St) : Result (Unit × St) := ok ((), s)
 
 /-- The canonical form: bind every measurement, decide on pure data. -/
 def InvFlat (s : St) : Result Bool := do
-  let t ← total_supply s
+  let t ← measure s
   let b ← sum_bals s.accts
   ok (t == b)
 
 /-- `massert` is not a special case — it is a call whose arguments are Result-free. -/
 def InvAssert (s : St) : Result Bool := do
-  let t ← total_supply s
+  let t ← measure s
   massert (t.val < 100)
   ok (t.val == 0)
 
@@ -72,7 +72,7 @@ def InvWf (l : List Acct) (acc : Nat) : Result Bool :=
   match l with
   | [] => ok (acc == 0)
   | a :: rest => do
-    let b ← total_supply ⟨[], a.bal⟩
+    let b ← measure ⟨[], a.bal⟩
     InvWf rest (acc + b.val)
 termination_by l.length
 
@@ -80,19 +80,19 @@ def InvWfTop (s : St) : Result Bool := InvWf s.accts 0
 
 /-- Branching on PURE data. Both branches stay in the monad and are each walked. -/
 def InvIte (s : St) : Result Bool := do
-  let t ← total_supply s
+  let t ← measure s
   if s.accts.isEmpty then ok (t.val == 0) else ok (t.val > 0)
 
 /-- `dite`, whose branches are lambdas rather than plain terms. -/
 def InvDite (s : St) : Result Bool :=
-  if _h : s.accts.isEmpty then do let t ← total_supply s; ok (t.val == 0)
-  else do let t ← total_supply s; ok (t.val > 0)
+  if _h : s.accts.isEmpty then do let t ← measure s; ok (t.val == 0)
+  else do let t ← measure s; ok (t.val > 0)
 
 /-- Matching a PURE scrutinee. Contrast `InvMatchRes`, whose scrutinee is a `Result`. -/
 def InvMatchPure (s : St) : Result Bool :=
   match s.accts with
   | [] => ok true
-  | _ => do let t ← total_supply s; ok (t.val > 0)
+  | _ => do let t ← measure s; ok (t.val > 0)
 
 /-- `Result.ofOption` never RECEIVES a `Result`, so it cannot launder one — it can only produce
 `fail`, which is the strict direction. A blocklist naming Aeneas's `Result` helpers would have
@@ -103,7 +103,7 @@ def InvOfOption (s : St) : Result Bool := do
 
 /-- An extra non-state argument, which the shape rule requires to AGREE across the theorem. -/
 def InvWithCap (cap : U64) (s : St) : Result Bool := do
-  let t ← total_supply s
+  let t ← measure s
   ok (t.val ≤ cap.val)
 
 /-- The empirical anchor. `InvSum overflowing = fail integerOverflow`, never `ok true`. -/
@@ -182,20 +182,20 @@ def InvSumOpen (s : St) : Result Bool :=
 
 /-- A Boolean encoding of fail-open behaviour: no implication anywhere, so only the
 failure-strictness fragment finds it. Elaborates to
-`InvMatchRes.match_1 motive (total_supply s) …`, so the scrutinee is an argument. -/
+`InvMatchRes.match_1 motive (measure s) …`, so the scrutinee is an argument. -/
 def InvMatchRes (s : St) : Result Bool :=
-  match total_supply s with
+  match measure s with
   | ok t => ok (t.val == 0)
   | fail _ => ok true
   | div => ok true
 
 /-- Same defect behind an `ite` condition rather than a match. -/
 def InvIteOkQ (s : St) : Result Bool :=
-  if ok? (total_supply s) then ok true else ok true
+  if ok? (measure s) then ok true else ok true
 
 /-- A plain (non-monadic) `let` binding a `Result` is not a bind, and does not launder the match. -/
 def InvLetRes (s : St) : Result Bool :=
-  let r := total_supply s
+  let r := measure s
   match r with
   | ok t => ok (t.val == 0)
   | fail _ => ok true
@@ -210,7 +210,7 @@ def InvDeep (s : St) : Result Bool := W2 s
 
 /-- Fail-open with an extra argument, so the reported case is not only the one-argument shape. -/
 def InvWithCapBad (cap : U64) (s : St) : Result Bool :=
-  ok (! ok? (total_supply s) || cap.val == 0)
+  ok (! ok? (measure s) || cap.val == 0)
 
 /-- The other half of the anchor: the fail-open form reports "invariant holds" on exactly the state
 whose total cannot be computed. This is the defect, executable. -/
@@ -234,7 +234,7 @@ def InvFoldM (s : St) : Result Bool := do
   ok (n == s.total)
 
 /-- Prop-valued, so OUT OF SCOPE here — `assumed_postcondition` owns this form. Silent, not skipped. -/
-def InvProp (s : St) : Prop := ∃ t, total_supply s = ok t ∧ t.val = 0
+def InvProp (s : St) : Prop := ∃ t, measure s = ok t ∧ t.val = 0
 
 end Probe.Inv
 
@@ -355,9 +355,9 @@ predicate. (Both fire twice: the pre-state hypothesis and the conclusion.) -/
     (hinv : InvProp s) (hexec : transfer amt s = ok (y, s')) : InvProp s' := by sorry
 
 @[lusterna] theorem i22_inline_measurement (amt : U64) (s s' : St) (y : Unit)
-    (hinv : (do let t ← total_supply s; ok (t.val == 0)) = ok true)
+    (hinv : (do let t ← measure s; ok (t.val == 0)) = ok true)
     (hexec : transfer amt s = ok (y, s')) :
-    (do let t ← total_supply s'; ok (t.val == 0)) = ok true := by sorry
+    (do let t ← measure s'; ok (t.val == 0)) = ok true := by sorry
 
 /-! ── FLAGGED `execution_not_unique`: the execution is not a DECLARED target (a wrong `--subjects`),
 so the checked property has NO execution and must not read as clean. -/

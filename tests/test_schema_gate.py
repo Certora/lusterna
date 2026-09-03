@@ -150,19 +150,19 @@ def test_targets_rewrite_rust_paths_to_dotted():
 
 def test_charon_wildcard_patterns_still_match_generated_lean():
     """THE REGRESSION. INFER emits Charon matchers, where `_` is a wildcard for the impl/type:
-    `crate::state::reserve::_::total_supply`. Aeneas generates
-    `state.reserve.ReserveLiquidity.total_supply`, so a plain `::`→`.` rewrite produces
-    `crate.state.reserve._.total_supply` and matches NOTHING — every target lookup comes back empty,
-    and the conformance check then reports `found 0` on every theorem. A real klend run stalled on
+    `crate::foo::_::measure`. Aeneas generates
+    `crate.foo.Bar.measure`, so a plain `::`→`.` rewrite produces
+    `crate.foo._.measure` and matches NOTHING — every target lookup comes back empty,
+    and the conformance check then reports `found 0` on every theorem. A real run stalled on
     exactly this, for 8 FORMALISE rounds."""
     deps = _deps()
     deps.progress["target_patterns"] = [
-        "crate::state::reserve::_::total_supply",
+        "crate::foo::_::measure",
         "crate::state::reserve::_::deposit",
         "crate::approximate_compounded_interest",
     ]
     forms = lean._schema_targets(deps)
-    for generated in ("state.reserve.ReserveLiquidity.total_supply",
+    for generated in ("crate.foo.Bar.measure",
                       "state.reserve.Reserve.deposit",
                       "approximate_compounded_interest"):
         assert _matches(generated, forms), f"{generated} unmatched by {forms}"

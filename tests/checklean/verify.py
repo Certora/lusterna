@@ -375,7 +375,7 @@ LEGIT_CHECK = (["Probe.Legit.limbMul_spec", "Probe.Legit.deposit_monotone"], ["d
 
 # `checkDefAxioms` — the TRANSLATE-time opaque-footprint disclosure. Per target def, the NON-standard
 # axioms its body TRANSITIVELY depends on. `leakyIndirect` never names `Op` itself — it reaches it
-# through `leakyDirect` — so its presence here is the transitive-closure assertion (the Fraction/
+# through `leakyDirect` — so its presence here is the transitive-closure assertion (the Amount/
 # Display leak in miniature). See DefAx.lean.
 EXPECTED_DEF_AXIOMS = {
     "Probe.DefAx.cleanDef":      [],
@@ -576,13 +576,13 @@ def run_fixture() -> int:
             print(f"\ncheckDefAxioms OK: {got_footprint}")
 
         # ── checkAnchorReference: the fidelity bridge ───────────────────────────────────────────────
-        # `total_supply` is named directly in `total_supply_reads`'s TYPE → referenced; a measurement
+        # `measure` is named directly in `measure_reads`'s TYPE → referenced; a measurement
         # no theorem names → not referenced (the ungrounded-core case `check_spec_gate` blocks on).
         an_body = ("import Probe.Schemas\nimport Probe.LusternaChecks\nopen Lusterna.Checks\n"
                    "set_option maxRecDepth 8000 in\n"
                    "#eval show Lean.Meta.MetaM Unit from do\n"
-                   "  checkAnchorReference #[`Probe.Schemas.total_supply_reads, "
-                   "`Probe.Schemas.s1_conforms] #[`total_supply, `nonexistent_measurement]\n"
+                   "  checkAnchorReference #[`Probe.Schemas.measure_reads, "
+                   "`Probe.Schemas.s1_conforms] #[`measure, `nonexistent_measurement]\n"
                    '  IO.println "LUSTERNA_CHECK_DONE"\n')
         assert not tools.write_out(deps, "lean/_anchor_driver.lean", an_body).startswith("ERROR:")
         _, aout, aerr = container.exec_in(cid, ["lake", "env", "lean", "_anchor_driver.lean"],
@@ -590,7 +590,7 @@ def run_fixture() -> int:
         an_find, _, an_done = parse_findings(aout + "\n" + aerr)
         got_anchors = {f["anchor"]: bool(f.get("referenced"))
                        for f in an_find if f.get("check") == "anchor_bridge"}
-        anchor_ok = an_done is not None and got_anchors == {"total_supply": True,
+        anchor_ok = an_done is not None and got_anchors == {"measure": True,
                                                             "nonexistent_measurement": False}
         if not anchor_ok:
             print(f"\ncheckAnchorReference MISMATCH: got {got_anchors}")
@@ -661,8 +661,8 @@ GATE_CONTAINER = "lusterna-checklean-gate"
 
 def run_gate_fixture() -> int:
     """Drive the REAL taint gate — `lean.target_footprint_gate` (build + `checkDefAxioms` + the
-    block/pass decision + its categorised feedback + fail-closed handling) — over the Klendish
-    fixture: a klend-shaped translation with a CLEAN target and a target that transitively reaches a
+    block/pass decision + its categorised feedback + fail-closed handling) — over the Leaky
+    fixture: a realistically shaped translation with a CLEAN target and a target that transitively reaches a
     `Display`/`fmt` opaque. The DefAx fixture covers the Lean checker; THIS covers the Python gate
     WRAPPER (the trusted verdict the TRANSLATE stage blocks on). Asserts BLOCK / PASS / fail-closed.
     Also validates `lean.impl_references` (the impl-verified partition) on the open'd-short-name case
@@ -673,30 +673,30 @@ def run_gate_fixture() -> int:
     print(f"\n[gate fixture] container {cid[:12]}")
     try:
         deps = AgentDeps(container_id=cid, repo_path=HERE, session_id="gate",
-                         design_doc="", campaign="Solvency")
+                         design_doc="", campaign="Gate")
         lean_dir = f"{container.OUT_IN}/lean"
         sh("docker", "exec", cid, "mkdir", "-p", lean_dir)
-        translation = (HERE / "Klendish.lean").read_text()
-        assert not tools.write_out(deps, "lean/KlendishModel.lean", translation).startswith("ERROR:")
+        translation = (HERE / "Leaky.lean").read_text()
+        assert not tools.write_out(deps, "lean/LeakyModel.lean", translation).startswith("ERROR:")
         lean.setup_lake(deps)
         code, out, err = container.exec_in(cid, ["lake", "build"], workdir=lean_dir, timeout=1800)
         if code != 0:
             print(f"gate fixture did not build:\n{out}\n{err}")
             return 1
-        files, lp = ["lean/KlendishModel.lean"], "lean/KlendishModel.lean"
+        files, lp = ["lean/LeakyModel.lean"], "lean/LeakyModel.lean"
         deps.progress["aeneas"] = {"lean_path": lp, "lean_files": files, "holes": []}
 
         def gate(patterns: list[str]) -> dict:
             deps.progress["target_patterns"] = patterns
             return lean.target_footprint_gate(deps, translation, files, lp)
 
-        # leaky+clean → BLOCK: only `repay` flagged, feedback categorises the Display leak.
-        g1 = gate(["crate::_::total_supply", "crate::_::repay"])
-        case1 = (not g1["ok"] and any("repay" in d for d in g1["footprint"])
-                 and all("total_supply" not in d for d in g1["footprint"])
+        # leaky+clean → BLOCK: only `leakyOp` flagged, feedback categorises the Display leak.
+        g1 = gate(["crate::_::cleanTarget", "crate::_::leakyOp"])
+        case1 = (not g1["ok"] and any("leakyOp" in d for d in g1["footprint"])
+                 and all("cleanTarget" not in d for d in g1["footprint"])
                  and "Display" in g1["feedback"])
         # clean-only → PASS (empty footprint).
-        g2 = gate(["crate::_::total_supply"])
+        g2 = gate(["crate::_::cleanTarget"])
         case2 = g2["ok"] and not g2["footprint"]
         # nonexistent target → BLOCK, fail-closed (the vacuous false-clean a name mismatch produces).
         g3 = gate(["crate::_::does_not_exist"])
@@ -711,21 +711,21 @@ def run_gate_fixture() -> int:
             print(f"    (leaky footprint={g1['footprint']}, ok={g1['ok']})")
 
         # ── impl_references: does a theorem VERIFY THE IMPLEMENTATION? ─────────────────────────────
-        # The exact bug this replaced: `ts_uses_impl` references the translated `total_supply` via the
-        # OPENED short name (`open klendish`), which a text scan of the full in-namespace def name
+        # The exact bug this replaced: `ts_uses_impl` references the translated `cleanTarget` via the
+        # OPENED short name (`open leaky`), which a text scan of the full in-namespace def name
         # missed → every theorem wrongly "abstract". `pure_lemma` is genuinely abstract (Nat only).
-        spec = ("import KlendishModel\nopen klendish\n"
-                "namespace KlendishModel.Spec.Solvency\n"
-                "theorem ts_uses_impl (x : Nat) (h : total_supply x = 1) : True := trivial\n"
+        spec = ("import LeakyModel\nopen leaky\n"
+                "namespace LeakyModel.Spec.Property\n"
+                "theorem ts_uses_impl (x : Nat) (h : cleanTarget x = 1) : True := trivial\n"
                 "theorem pure_lemma (a b : Nat) : a + b = b + a := Nat.add_comm a b\n"
-                "end KlendishModel.Spec.Solvency\n")
-        assert not tools.write_out(deps, "lean/KlendishModel/Spec/Solvency.lean", spec).startswith("ERROR:")
+                "end LeakyModel.Spec.Property\n")
+        assert not tools.write_out(deps, "lean/LeakyModel/Spec/Solvency.lean", spec).startswith("ERROR:")
         code, out, err = container.exec_in(cid, ["lake", "build"], workdir=lean_dir, timeout=1800)
         if code != 0:
             print(f"  impl_references: spec did not build:\n{out}\n{err}")
             ok = False
         else:
-            refs = lean.impl_references(deps, "lean/KlendishModel/Spec/Solvency.lean")
+            refs = lean.impl_references(deps, "lean/LeakyModel/Spec/Solvency.lean")
             case4 = refs.get("ts_uses_impl") is True and refs.get("pure_lemma") is False
             print(f"  impl_references (open'd name → impl-verified, abstract → not): "
                   f"{'PASS' if case4 else 'FAIL'}")
