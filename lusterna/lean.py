@@ -754,6 +754,68 @@ def check_spec_gate(deps: AgentDeps, spec_rel: str) -> list[dict]:
     return out
 
 
+def check_grounding(deps: AgentDeps, established: set[str]) -> dict:
+    """POST-PROVE grounding rung of the authoritative verdict. For each measurement INFER named an
+    anchor, decide whether an ESTABLISHED theorem references it in a MEASUREMENT position
+    (`f … = ok …`, or an Aeneas triple over it) — i.e. whether the projection the properties reason
+    about is tied back to the real fallible function by a bridge that is actually PROVED, not merely
+    stated.
+
+    This is the SAME `checkAnchorReference` the spec gate runs at FORMALISE, re-timed and re-scoped.
+    At FORMALISE every theorem is `sorry`, so the gate can only see that a bridge is WRITTEN; here it
+    runs over the established set (`established` = the campaign-qualified `<Campaign>::<name>` clean
+    theorems), so `referenced` means "referenced by a theorem that HOLDS". A stated-but-unproven bridge
+    (`bridge := by sorry`, or one demoted to tainted) grounds nothing and surfaces here as ungrounded —
+    closing the gap the FORMALISE-time check cannot see, because a projection's invariants can be clean
+    while the bridge that ties them to reality is not.
+
+    Returns {"anchors": [forms], "grounded": [forms], "ungrounded": [forms]} over the anchor NAME FORMS
+    (as the gate uses them). Empty anchors ⇒ nothing to ground (fail-safe, like the gate). A driver
+    that cannot run, or an empty established set, leaves every anchor UNGROUNDED — conservative, never
+    silently grounded, mirroring how `check_axioms` treats an unresolved theorem."""
+    from pathlib import Path as _P
+    anchors = _target_name_forms(deps.progress.get("anchor_functions", []))
+    if not anchors:
+        return {"anchors": [], "grounded": [], "ungrounded": []}
+    mods = spec_modules(deps)
+    stem = _crate_stem(deps)
+    if not mods or not stem:
+        return {"anchors": anchors, "grounded": [], "ungrounded": anchors}
+    qnames: list[str] = []
+    for mod in mods:
+        src = tools.read_out(deps, mod)
+        if src.startswith("ERROR:"):
+            continue
+        camp = _P(mod).stem
+        for short, qual in zip(_theorem_names(src), _theorem_qualified_names(src)):
+            if f"{camp}::{short}" in established:
+                qnames.append(qual)
+    if not qnames:                       # nothing established ⇒ no theorem can ground an anchor
+        return {"anchors": anchors, "grounded": [], "ungrounded": anchors}
+    imports = "".join(f"import {stem}.Spec.{_P(m).stem}\n" for m in mods)
+    body = (imports + f"import {stem}.{_LINT_TOOL_NAME.removesuffix('.lean')}\n"
+            "open Lusterna.Checks\n"
+            "set_option maxRecDepth 8000 in\n"
+            "#eval show Lean.Meta.MetaM Unit from do\n"
+            f"  checkAnchorReference #[{', '.join('`' + q for q in qnames)}] "
+            f"#[{', '.join('`' + a for a in anchors)}]\n"
+            f'  IO.println "{_GATE_DONE}"\n')
+    code, text = _run_lean_checker(deps, body, "_grounding_check.lean")
+    if text.startswith("ERROR:") or not _driver_ran(text):
+        log.warning("check_grounding: driver did not finish (rc=%s) — every anchor conservatively "
+                    "UNGROUNDED. Lean output tail:\n%s", code, text[-800:])
+        return {"anchors": anchors, "grounded": [], "ungrounded": anchors}
+    seen: dict[str, bool] = {}
+    for rec in _parse_check_records(text):
+        if rec.get("check") == "anchor_bridge":
+            seen[rec.get("anchor", "?")] = bool(rec.get("referenced", False))
+    grounded = [a for a in anchors if seen.get(a, False)]
+    ungrounded = [a for a in anchors if not seen.get(a, False)]
+    log.info("check_grounding: %d/%d anchor form(s) grounded by an established theorem (ungrounded: %s)",
+             len(grounded), len(anchors), ungrounded or "none")
+    return {"anchors": anchors, "grounded": grounded, "ungrounded": ungrounded}
+
+
 def _detect_holes(deps: AgentDeps, lean_files: list[str]) -> dict[str, list[str]]:
     """Map each Lean file to the names of functions Aeneas left untranslated (a bare
     `sorry` body). A file with no holes is omitted from the map."""

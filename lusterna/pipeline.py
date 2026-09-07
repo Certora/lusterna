@@ -451,6 +451,16 @@ def _record_axioms(deps: AgentDeps) -> None:
         "refutations": refuted,
         "sorry_remaining": sorry_remaining,
     }
+    # GROUNDING rung: does an ESTABLISHED (clean) theorem tie each projected measurement back to its
+    # real function? Re-times the FORMALISE anchor check to the proven set, so a projection whose bridge
+    # was left `sorry`/tainted shows as ungrounded even when its invariants are clean.
+    grounding = lean.check_grounding(deps, set(clean))
+    deps.progress["axioms"]["grounding"] = grounding
+    if grounding.get("ungrounded"):
+        log.warning("PROVE: ⚠ %d measurement anchor(s) UNGROUNDED — the properties project these "
+                    "measurements but no ESTABLISHED theorem ties the projection to the real function "
+                    "(bridge unproven or absent): %s", len(grounding["ungrounded"]),
+                    grounding["ungrounded"])
     if refuted:
         log.warning("PROVE: ⚑ %d theorem(s) REFUTED — a kernel-verified counterexample shows the "
                     "property FALSE as stated (a candidate CODE discrepancy to investigate): %s",
@@ -527,7 +537,7 @@ def _stage_prove(deps: AgentDeps) -> None:
 # ── REPORT ──────────────────────────────────────────────────────────────────────
 
 _SECTION_NAMES = ["01_overview.md", "02_translation.md", "03_implementation_spec.md",
-                  "04_spec_judge.md", "05_proofs.md", "06_summary.md"]
+                  "04_fidelity.md", "05_proofs.md", "06_summary.md"]
 
 
 def _campaigns_index(deps: AgentDeps) -> str:
@@ -602,6 +612,25 @@ def _authoritative_verdict(deps: AgentDeps) -> str:
         f"undeclared axiom): {len(tainted)} {tainted or ''}",
         "",
     ]
+    grounding = ax.get("grounding", {})
+    g_anchors = grounding.get("anchors", [])
+    if g_anchors:
+        g_ok, g_bad = grounding.get("grounded", []), grounding.get("ungrounded", [])
+        lines += [
+            f"- **Projection grounding: {len(g_ok)} / {len(g_anchors)} measurement anchor(s) tied to "
+            f"the real function by an ESTABLISHED bridge** (a clean theorem referencing the real "
+            f"measurement, so a projected quantity is PROVED to be the real one, not a lookalike):",
+            f"  grounded: {g_ok or '(none)'}",
+        ]
+        if g_bad:
+            lines += [
+                f"  ⚠ **UNGROUNDED: {g_bad}** — the properties reason about a projection of these "
+                f"measurements, but no established theorem ties that projection back to the real "
+                f"function (its bridge is unproven or absent). The projection may be a faithful "
+                f"lookalike, but it is not PROVED to be the real quantity — treat properties resting "
+                f"on it as ungrounded until the bridge is established.",
+            ]
+        lines.append("")
     if declared or illegit:
         used_by: dict[str, list] = {}
         for thm, used in assumed.items():
