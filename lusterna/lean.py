@@ -559,7 +559,7 @@ def target_footprint_gate(deps: AgentDeps, translation: str, lean_files: list[st
     return {"ok": False, "footprint": foot, "feedback": feedback}
 
 
-_LLBC_CHECKED_OP_RE = "checked\\.[-+*]"   # a plain operator compiled with overflow-checks ON
+_LLBC_CHECKED_OP_RE = "(panic|checked)\\.[-+*]"   # a plain operator compiled with overflow-checks ON
 
 
 _OVERFLOW_KEYS = ("overflow-checks", "debug-assertions")
@@ -627,9 +627,11 @@ def _extraction_overflow_profile(deps: AgentDeps) -> tuple[dict | None, str]:
 
 def _model_has_checked_ops(deps: AgentDeps) -> tuple[bool | None, str]:
     """Whether the emitted `.llbc` compiled plain arithmetic OPERATORS checked — Charon's own
-    OverflowMode, read back from its rendering (`charon pretty-print` shows such an op as `checked.+`;
-    a source `wrapping_add` is a call, not a `checked.` operator, so this reads the profile's effect,
-    not intentional wrapping). True | False | None (no `.llbc` to read)."""
+    OverflowMode, read back from its rendering. `charon cargo --preset=aeneas` resugars a checked op to
+    `panic.+` (OverflowMode::Panic); plain `charon cargo` shows the pre-resugar `checked.+`; either is a
+    checked operator, `wrap.+` is not, and a source `wrapping_add` is a call (never `panic.`/`checked.`
+    on an operator), so this reads the profile's effect, not intentional wrapping. True | False | None
+    (no `.llbc` to read)."""
     _, out, _ = exec_in(deps.container_id, ["sh", "-c",
         f"find {REPO_IN} -name '*.llbc' -not -path '*/target/*' 2>/dev/null"])
     llbcs = [l.strip() for l in out.splitlines() if l.strip()]

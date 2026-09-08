@@ -70,9 +70,11 @@ reading the op back with `charon pretty-print`:
 
 The op flips with the profile, confirming the chain: the **dev default is checked**, plain `--release`
 is **wrapping**, and the release manifest's `overflow-checks` decides the `--release` case. (The
-`checked.+ … assert … panic` that pretty-print shows is the pre-resugar form; the
-`reconstruct_fallible_operations` pass then collapses it to `OverflowMode::Panic`, which Aeneas renders
-as a `Result`-returning op.)
+`checked.+ … assert … panic` shown above is the PRE-RESUGAR form, from plain `charon cargo`. The
+production `charon cargo --preset=aeneas` runs the `reconstruct_fallible_operations` pass, which
+collapses it to `OverflowMode::Panic` — pretty-printed as **`panic.+`** — which Aeneas renders as a
+`Result`-returning op. So in a production `.llbc` a checked operator reads `panic.+`, a wrapping one
+`wrap.+`.)
 
 ## The consequence, and the trap
 
@@ -129,7 +131,8 @@ Two subtleties make this easy to get wrong even on inspection:
   so every `= ok` property silently misses that execution. A model whose posture differs from the
   deployment is unfaithful, full stop — not something to paper over with `= ok` theorems.
 - You can read the outcome directly off the artefacts. In the LLBC, `charon pretty-print` shows
-  `checked.+` (with an overflow assert) for a fallible op and `wrap.+` for a total one. In the emitted
+  `panic.+` for a fallible op and `wrap.+` for a total one (or, from a plain non-`--preset=aeneas`
+  build, the pre-resugar `checked.+` with an overflow assert). In the emitted
   Lean, a fallible op is a `Result`-returning `add`/`sub` (`… = ok …` in specs, `*_add_inv`/`*_sub_inv`
   bounds in proofs) and a wrapping op is a total function with no `Result`. If arithmetic you expect to
   be checked shows up total (or vice-versa), the compile's overflow posture is not what you assumed.
