@@ -204,6 +204,21 @@ TOOLCHAIN (all via bash):
     standalone crate has none of the target's Anchor/account plumbing.)
   • Charon → a `.llbc`. From the crate dir (whose Cargo.toml defines the target's package):
         charon cargo --preset=aeneas --start-from crate::module::_::method -- -p <package>
+  • ARITHMETIC OVERFLOW POSTURE (soundness — NON-NEGOTIABLE) — in the model, `+`/`-`/`*` are FALLIBLE
+    (overflow → panic → `fail`) or TOTAL (wrapping) exactly as the compile Charon ran had overflow-checks
+    ON or OFF, PER CRATE. The model MUST reproduce the DEPLOYED build's posture, per crate. This is a
+    requirement, not a choice: you do NOT rely on Charon's dev default (which forces everything checked)
+    happening to agree — a checked model of a wrapping binary silently OVER-CLAIMS (the binary keeps a
+    wrapped value the model calls `fail`, so every `= ok` property misses that run). Read the deployed
+    posture from the target's deployed profile (`[profile.release] overflow-checks`, plus any per-package
+    override for a value-type you model — e.g. a fixed-point/bignum crate gated on `debug-assertions`),
+    then compile Charon UNDER that profile so the model reproduces it by construction: in-place, build
+    the real crate under its deployed profile (`… -- -p <package> --release`); extraction, COPY the
+    target's deployed `[profile.*]` overflow settings into the extraction crate's Cargo.toml and build
+    it the same way. Confirm the emitted ops agree (fallible ⇔ deployment checked; total ⇔ deployment
+    wraps) and record the posture, its source, and how you confirmed it in accountability.md. A model
+    whose overflow posture differs from the deployment is a translation FAILURE. (Mechanism and flags:
+    the fallible-arithmetic reference appended below.)
   • Aeneas → Lean. Clear the dest, then run ONCE WITHOUT -split-files (single top-level module
     lean/<Crate>.lean — the layout the pipeline expects):
         rm -rf /workspace/out/lean/* && aeneas -backend lean -dest /workspace/out/lean <path/to.llbc>

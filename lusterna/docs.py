@@ -28,9 +28,14 @@ def _section(title: str, content: str) -> str:
 # TRANSLATE drives Charon+Aeneas at the shell; it gets the translatability playbook — the measured
 # verdict table (what translates / opaques / holes / rejects), the modelable-stdlib line, the
 # behaviour-preserving recipes, and the charon/aeneas mechanics — so it recognises-and-applies
-# instead of re-discovering Aeneas's fragment every run.
-FOR_TRANSLATE: str = _section("Aeneas Translatability Playbook",
-                              _read("skills", "aeneas-translate.md"))
+# instead of re-discovering Aeneas's fragment every run. It also gets the fallible-arithmetic
+# reference: whether the model's `+`/`-` can overflow-abort is set by the OVERFLOW POSTURE of the
+# compile Charon runs, so TRANSLATE (which owns that compile) must match it to the deployed build.
+FOR_TRANSLATE: str = (
+    _section("Aeneas Translatability Playbook", _read("skills", "aeneas-translate.md"))
+    + _section("Fallible Arithmetic — the overflow posture of the model",
+               _read("prose", "aeneas-fallible-ops.md"))
+)
 
 # FORMALISE writes theorem STATEMENTS only (structured output — it cannot emit proofs), so
 # it gets JUST the Aeneas translation semantics it needs to reference the Result monad,
