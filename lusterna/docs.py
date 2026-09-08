@@ -31,11 +31,18 @@ def _section(title: str, content: str) -> str:
 # instead of re-discovering Aeneas's fragment every run. It also gets the fallible-arithmetic
 # reference: whether the model's `+`/`-` can overflow-abort is set by the OVERFLOW POSTURE of the
 # compile Charon runs, so TRANSLATE (which owns that compile) must match it to the deployed build.
+_FALLIBLE_OPS: str = _section("Fallible Arithmetic — the overflow posture of the model",
+                              _read("prose", "aeneas-fallible-ops.md"))
+
 FOR_TRANSLATE: str = (
     _section("Aeneas Translatability Playbook", _read("skills", "aeneas-translate.md"))
-    + _section("Fallible Arithmetic — the overflow posture of the model",
-               _read("prose", "aeneas-fallible-ops.md"))
+    + _FALLIBLE_OPS
 )
+
+# REVIEW attributes and discloses the arithmetic overflow posture in the fidelity review, so it gets
+# the same reference — the mechanism (the model's `+`/`-` are fallible/wrapping as the compile Charon
+# ran had overflow-checks on/off) it must narrate correctly, and the rung-3 case it must check.
+FOR_REVIEW: str = _FALLIBLE_OPS
 
 # FORMALISE writes theorem STATEMENTS only (structured output — it cannot emit proofs), so
 # it gets JUST the Aeneas translation semantics it needs to reference the Result monad,

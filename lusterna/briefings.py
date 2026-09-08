@@ -632,7 +632,11 @@ owner: §4 (the fidelity review) is the centrepiece and the largest part; the re
     scoping, opaqued leaves, any rung-3 modeling with the agent's stated rationale (report the trail; do
     not impose a grade of your own). Make the TRUST BOUNDARY explicit: opaqued primitives, untranslated
     holes, and declared assumptions are things the proofs REST ON but did not establish — tie each to
-    the `#print axioms` verdict (a theorem depending on one shows tainted or modulo-base).
+    the `#print axioms` verdict (a theorem depending on one shows tainted or modulo-base). Include the
+    ARITHMETIC OVERFLOW POSTURE here (`overflow_posture` in the facts): the harness verified the crate
+    Charon compiled carries the DEPLOYED build's overflow `[profile.release]`, so the model's `+`/`-`
+    are fallible/wrapping as the shipped binary is — state that plainly and cite the deployment profile;
+    a rung-3 hand-modelled value-type is the one part the harness could not enforce, so flag it for §4.
   03_implementation_spec.md — the properties, in the reader's terms: every theorem statement with a
     one-line plain explanation of what it claims about the code, mapped to the INFER properties it
     discharges (infer/campaigns/<Campaign>.json); name any INFER property with NO corresponding theorem
@@ -676,6 +680,15 @@ owner: §4 (the fidelity review) is the centrepiece and the largest part; the re
         these to their definitions (unsigned-vs-signed `.val` and how subtraction behaves in each —
         `Nat` truncates at zero, `Int` does not — a hidden scale factor a fixed-point reading carries,
         a cast that is lossless vs lossy) and establish them from the definition, never the name.
+    OVERFLOW POSTURE — attribute it correctly (the fallible-arithmetic reference is appended below).
+    The harness already VERIFIED the model reproduces the deployment's posture for Charon-translated
+    arithmetic (`overflow_posture` in the facts: the compiled crate's overflow `[profile.release]`
+    matches the deployment's, and `--release` took effect). Narrate WHY the model's `+`/`-` are fallible
+    or wrapping — the deployed profile, not "Aeneas assumes checked" — and cite the profile at its
+    source. The one part the harness could NOT enforce is a rung-3 HAND-MODELLED value-type (no crate to
+    carry a profile): for each such type, CHECK the agent's accountability claim by reading — does the
+    hand-model abort on overflow where the deployed type does, and wrap where it wraps? Flag any
+    hand-modelled type whose overflow behaviour is unstated, or does not match the original, as a gap.
     Write §4 in the register and shape of a document a skeptical Rust engineer could cross-check
     against the crate and the Lean sources unaided: lead from the theorems and what they say, fold in
     the worries a skeptic would raise and the answers, cite exact sources throughout.
@@ -699,4 +712,4 @@ already is) and you do not loop back or block — a grounding gap you find is RE
 for the human to weigh, surfaced and never silently dropped.
 
 Be thorough; do not summarise away detail a reader needs. STOP once the six files exist.
-""" + WORKSPACE
+""" + docs.FOR_REVIEW + WORKSPACE

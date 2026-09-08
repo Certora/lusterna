@@ -675,6 +675,7 @@ def _stage_report(deps: AgentDeps) -> str:
     facts = {
         "axioms": deps.progress.get("axioms", {}),
         "spec_judge": deps.progress.get("verdict", {}),
+        "overflow_posture": deps.progress.get("overflow_posture", {}),
         "target_patterns": deps.progress.get("target_patterns", []),
         "opaque_assumptions": lean.external_axioms(lean.translation_text(deps)),
         "holes": deps.progress.get("aeneas", {}).get("holes", []),

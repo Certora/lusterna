@@ -82,5 +82,17 @@ Practical consequences for a `@[lusterna]` spec:
   makes the failure branches immaterial" — do not claim a fully-mechanised on-chain invariant without
   it, unless the property was stated on the folded transition.
 
+## Arithmetic overflow: the DEPLOYED build decides
+
+The shipped artifact is the **release/BPF build** (`cargo build-sbf` builds the release profile), so
+the target's `[profile.release]` — not the dev default — decides whether `+`/`-`/`*` panic-and-revert
+on overflow or wrap. Aeneas models each op as fallible or wrapping exactly as the compile Charon ran
+had overflow checks on or off, so the model must be built to reproduce the RELEASE posture; the harness
+verifies the crate Charon compiled carries the deployment's `[profile.release]`. Two Solana footguns:
+the Rust release default is **wrapping** (a program shipped without `overflow-checks = true` wraps on
+chain, and a checked model of it would silently over-claim), and a fixed-point/bignum dependency whose
+overflow is `debug_assert!`-gated needs its own `[profile.release.package.<crate>] debug-assertions =
+true` to check in release. See the fallible-arithmetic reference for the full mechanism.
+
 Out of scope unless a property explicitly constrains it: which accounts a transaction may touch, CPI
 trust boundaries, rent/lamports, and the compute budget.
