@@ -266,6 +266,13 @@ def _stage_translate(deps: AgentDeps) -> None:
         taint = lean.target_footprint_gate(deps, translation, facts["lean_files"], facts["lean_path"])
         if not taint["ok"]:
             return False, taint["feedback"]
+        # OVERFLOW POSTURE — the model's arithmetic must reproduce the DEPLOYED build's overflow posture
+        # (a checked model of a wrapping binary over-claims). A confirmed over-claim BLOCKS; every
+        # unconfirmed case is recorded for the trust story. See docs/prose/aeneas-fallible-ops.md.
+        posture = lean.check_overflow_posture(deps)
+        deps.progress["overflow_posture"] = posture
+        if posture.get("block"):
+            return False, posture["feedback"]
         # Taint-clean. Whether the target is genuinely translated (a real def, not mocked) and carries
         # ONLY the minimal relevant core — no irrelevant modelled/opaqued surface, even the non-tainting
         # kind the taint gate cannot see — is the TRANSLATE-JUDGE's semantic call, against the

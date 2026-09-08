@@ -216,9 +216,15 @@ TOOLCHAIN (all via bash):
     the real crate under its deployed profile (`… -- -p <package> --release`); extraction, COPY the
     target's deployed `[profile.*]` overflow settings into the extraction crate's Cargo.toml and build
     it the same way. Confirm the emitted ops agree (fallible ⇔ deployment checked; total ⇔ deployment
-    wraps) and record the posture, its source, and how you confirmed it in accountability.md. A model
-    whose overflow posture differs from the deployment is a translation FAILURE. (Mechanism and flags:
-    the fallible-arithmetic reference appended below.)
+    wraps) and record the posture, its source, and how you confirmed it in accountability.md. The
+    harness VERIFIES this: it compares the crate you compiled `[profile.release]` against the
+    deployment's and bounces the translation back if they differ — so copy the profile faithfully. A
+    model whose overflow posture differs from the deployment is a translation FAILURE. If instead you
+    RUNG-3 HAND-MODEL a value-type (no source crate to carry a profile, so nothing to copy), the model
+    MUST reproduce that type's overflow behaviour DIRECTLY — fallible where the deployed type aborts on
+    overflow, total where it wraps — since no profile can enforce it for you; state which in
+    accountability.md for REVIEW to check. (Mechanism and flags: the fallible-arithmetic reference
+    appended below.)
   • Aeneas → Lean. Clear the dest, then run ONCE WITHOUT -split-files (single top-level module
     lean/<Crate>.lean — the layout the pipeline expects):
         rm -rf /workspace/out/lean/* && aeneas -backend lean -dest /workspace/out/lean <path/to.llbc>

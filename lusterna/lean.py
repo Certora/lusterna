@@ -5,10 +5,11 @@ import logging
 import os
 import re
 import subprocess
+import tomllib
 from pathlib import Path
 
 from . import checkpoint, tools
-from .container import exec_in, OUT_IN
+from .container import exec_in, OUT_IN, REPO_IN, VERIF_IN
 from .schemas import AgentDeps
 
 log = logging.getLogger(__name__)
@@ -556,6 +557,140 @@ def target_footprint_gate(deps: AgentDeps, translation: str, lean_files: list[st
         "model the value concretely — never delegate a modelled type's Display/serde back to the "
         "original):\n" + "\n".join(lines))
     return {"ok": False, "footprint": foot, "feedback": feedback}
+
+
+_LLBC_CHECKED_OP_RE = "checked\\.[-+*]"   # a plain operator compiled with overflow-checks ON
+
+
+_OVERFLOW_KEYS = ("overflow-checks", "debug-assertions")
+
+
+def _overflow_subset(rel: dict) -> dict:
+    """The overflow-relevant slice of a `[profile.release]` table — the two overflow flags at the top
+    level and per package, NORMALISED (absent ⇒ False, the Rust release default) so two profiles
+    compare by intent: `{overflow-checks, debug-assertions, package: {name: {...}}}`. Non-overflow
+    keys (lto, opt-level, …) are ignored: they do not affect whether an op panics."""
+    def flags(t: dict) -> dict:
+        return {k: bool(t.get(k, False)) for k in _OVERFLOW_KEYS}
+    out = flags(rel)
+    out["package"] = {name: flags(t) for name, t in (rel.get("package") or {}).items()
+                      if isinstance(t, dict) and any(k in t for k in _OVERFLOW_KEYS)}
+    return out
+
+
+def _any_checked(prof: dict) -> bool:
+    """Does this overflow profile enable checking ANYWHERE — top level or any package?"""
+    return (any(prof.get(k) for k in _OVERFLOW_KEYS)
+            or any(any(p.values()) for p in (prof.get("package") or {}).values()))
+
+
+def _release_profile(deps: AgentDeps, manifest: str) -> dict | None:
+    """The `[profile.release]` table of *manifest* (empty dict if the manifest parses but has none);
+    None if it cannot be read/parsed."""
+    c, text, _ = exec_in(deps.container_id, ["cat", manifest])
+    if c != 0:
+        return None
+    try:
+        return ((tomllib.loads(text).get("profile") or {}).get("release")) or {}
+    except tomllib.TOMLDecodeError:
+        return None
+
+
+def _deploy_overflow_profile(deps: AgentDeps) -> tuple[dict, str]:
+    """The DEPLOYED build's overflow profile (ground truth): the overflow subset of the target's
+    workspace-root `[profile.release]`, EXCLUDING the generated extraction crate under verification/.
+    `release` is the deployed profile — certain on Solana (`cargo build-sbf` builds release), standard
+    for any shipped program. Absent ⇒ the Rust release default (all-wrapping)."""
+    _, out, _ = exec_in(deps.container_id, ["sh", "-c",
+        f"find {REPO_IN} -maxdepth 4 -name Cargo.toml -not -path '*/verification/*' "
+        f"-not -path '*/target/*' 2>/dev/null"])
+    for m in (l.strip() for l in out.splitlines() if l.strip()):
+        rel = _release_profile(deps, m)
+        if rel:                               # a manifest that actually carries [profile.release]
+            return _overflow_subset(rel), m
+    return _overflow_subset({}), "(no [profile.release] in the target — release default = wrap)"
+
+
+def _extraction_overflow_profile(deps: AgentDeps) -> tuple[dict | None, str]:
+    """The overflow profile of the crate Charon compiled, WHEN it is a generated extraction crate under
+    verification/ (its own workspace root, so its `[profile.release]` governs the compile). None ⇒ no
+    extraction crate found — an in-place translation of the real crate, whose profile IS the
+    deployment's, so it matches by construction."""
+    _, out, _ = exec_in(deps.container_id, ["sh", "-c",
+        f"find {VERIF_IN}/translate -name Cargo.toml -not -path '*/target/*' 2>/dev/null"])
+    for m in (l.strip() for l in out.splitlines() if l.strip()):
+        rel = _release_profile(deps, m)
+        if rel is not None:                   # an extraction manifest (its [profile.release] may be {})
+            return _overflow_subset(rel), m
+    return None, "(no extraction crate — in-place translation)"
+
+
+def _model_has_checked_ops(deps: AgentDeps) -> tuple[bool | None, str]:
+    """Whether the emitted `.llbc` compiled plain arithmetic OPERATORS checked — Charon's own
+    OverflowMode, read back from its rendering (`charon pretty-print` shows such an op as `checked.+`;
+    a source `wrapping_add` is a call, not a `checked.` operator, so this reads the profile's effect,
+    not intentional wrapping). True | False | None (no `.llbc` to read)."""
+    _, out, _ = exec_in(deps.container_id, ["sh", "-c",
+        f"find {REPO_IN} -name '*.llbc' -not -path '*/target/*' 2>/dev/null"])
+    llbcs = [l.strip() for l in out.splitlines() if l.strip()]
+    if not llbcs:
+        return None, "no .llbc found to confirm the model's overflow posture"
+    for f in llbcs:
+        c, hit, _ = exec_in(deps.container_id, ["sh", "-c",
+            f"charon pretty-print {f} 2>/dev/null | grep -m1 -oE '{_LLBC_CHECKED_OP_RE}'"])
+        if c == 0 and hit.strip():
+            return True, f"{f}: emits `checked.` operator arithmetic"
+    return False, "no `checked.` operator arithmetic in the emitted .llbc"
+
+
+def check_overflow_posture(deps: AgentDeps) -> dict:
+    """TRANSLATE-time VERIFY gate for the overflow-posture mandate (docs/prose/aeneas-fallible-ops.md).
+    The model's arithmetic must reproduce the DEPLOYED build's overflow posture. Rather than re-derive
+    that posture (Charon cannot compile the uncompilable original — the reason extraction exists), we
+    VERIFY the agent compiled under it, against ground truth, in two mechanical steps:
+
+      1. PROFILE MATCH — the extraction crate must carry the deployment's overflow `[profile.release]`
+         (the agent copies it verbatim; in-place it is the same manifest and matches by construction).
+         A mismatch blocks with the exact profile to copy. This is the regime-1 enforcement, and it
+         covers a shared value-type crate too: the copied per-package override applies to the same crate.
+      2. `--release` TOOK EFFECT — from the `.llbc`: a wrapping deployment (checks nowhere) whose model
+         still emits `checked.` operators means the dev default leaked in (the profile was ignored) → block.
+
+    The agent keeps driving the toolchain; the gate guides it back with ground truth when the profile
+    is wrong. A rung-3 HAND-MODELLED value-type has no crate to carry a profile — that its model captures
+    the original's overflow behaviour is a fidelity matter, briefed to the agent and checked by REVIEW,
+    not here (declared boundary)."""
+    deploy_prof, deploy_m = _deploy_overflow_profile(deps)
+    comp_prof, comp_m = _extraction_overflow_profile(deps)
+    model_checked, model_detail = _model_has_checked_ops(deps)
+    deploy_any = _any_checked(deploy_prof)
+
+    profile_mismatch = comp_prof is not None and comp_prof != deploy_prof
+    # dev-default leak: a wrapping deployment whose model still checks (or we cannot rule it out).
+    release_not_honoured = (not deploy_any) and (model_checked is True or model_checked is None)
+    block = profile_mismatch or release_not_honoured
+
+    rec = {"deploy_profile": deploy_prof, "deploy_source": deploy_m,
+           "compiled_profile": comp_prof, "compiled_source": comp_m,
+           "model_checked_ops": model_checked, "block": block}
+    if profile_mismatch:
+        rec["feedback"] = (
+            "OVERFLOW-PROFILE MISMATCH (soundness): the extraction crate's `[profile.release]` does not "
+            "match the deployment's, so the model may not reproduce the shipped overflow behaviour. "
+            f"Deployment ({deploy_m}): {deploy_prof}. Extraction ({comp_m}): {comp_prof}. Copy the "
+            "deployment's `[profile.release]` overflow keys (overflow-checks and any per-package "
+            "debug-assertions/overflow-checks) verbatim into the extraction crate's Cargo.toml and "
+            "rebuild `--release`, per the fallible-arithmetic reference.")
+    elif release_not_honoured:
+        rec["feedback"] = (
+            "OVERFLOW POSTURE (soundness): the deployment WRAPS on overflow (no overflow-checks in "
+            f"`[profile.release]`: {deploy_prof}), but the model may compile arithmetic CHECKED "
+            f"({model_detail}) — the dev-default profile leaked in. Rebuild the crate Charon reads with "
+            "`--release` so plain operators wrap as they do in the shipped binary. If the `.llbc` could "
+            "not be read, keep it on disk so the posture can be confirmed.")
+    log.info("check_overflow_posture: deploy_any=%s profile_mismatch=%s model_checked=%s block=%s",
+             deploy_any, profile_mismatch, model_checked, block)
+    return rec
 
 
 # The `LUSTERNA_CHECK {...}` line a check emits. Lean prefixes `#eval` output with a
