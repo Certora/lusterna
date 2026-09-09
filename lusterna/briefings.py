@@ -268,6 +268,15 @@ cleanly and compiles:
      rounding ties and floor-vs-ceil off-by-one, values that exceed the narrow type, empty/last-write
      for a collection), and confirm they pass (`cargo test`). These tests ARE the justification for
      the edit. A rung-3 edit with no equivalence tests is unverified — the TRANSLATE-JUDGE rejects it.
+     ⚠ REPRESENTATION FOR PROVABILITY — when a rung-3 model REPLACES a value-type (a fixed-point/
+     bignum, a collection whose contents a property reads), choose its representation for PROVABILITY.
+     The model's equivalence to the original is evidenced the same way whatever its representation —
+     the behavioural-equivalence tests above — so the representation is free to be chosen for how
+     cheaply the model's own `add`/`sub`/`mul`/`div` PROVE against its value (`toNat`): as THEOREMS,
+     not assumptions on the trusted base. A representation that mirrors the original's memory layout
+     inherits its proof difficulty for no change in how that equivalence is evidenced. For a multi-limb
+     bignum that means the FEWEST, WIDEST limbs that still capture the value (wider native limbs like
+     `u128` over more, narrower ones like `u64`).
   4. Give up only if a target function's OWN body relies on a construct with no behaviour-preserving
      translatable form (record this in the summary + accountability).
 
