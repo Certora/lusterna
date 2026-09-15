@@ -169,15 +169,23 @@ def run(
         summary = asyncio.run(pipeline.run_session(deps))
     finally:
         # Always fetch the branch out (partial too), so the target repo holds the latest state even
-        # if the kept-alive container is later killed. Best-effort: never masks the run's result.
-        container_mod.export_branch(container_id, repo_path, sid)
+        # if the kept-alive container is later killed. `exported` is True ONLY when the run's tip is
+        # confirmed on the host — the gate on tearing the container down.
+        exported = container_mod.export_branch(container_id, repo_path, sid)
         if _external:
             log.info("Leaving user-provided container %s as-is", container_id[:12])
-        elif deps.completed:
-            container_mod.stop(container_id)          # run finished — free it
+        elif deps.completed and exported:
+            container_mod.stop(container_id)          # run finished AND delivered — free it (--rm removes)
         else:
-            # Incomplete (budget/interrupt/crash): keep it alive so `--session-id %s` re-attaches
-            # with full state instead of restarting the stage from a pristine tree.
+            # Either the run is incomplete (budget/interrupt/crash) OR the export could not be confirmed
+            # on the host. NEVER destroy a container whose artefacts are not safely on disk — a stopped
+            # `--rm` container is gone forever, and with it the whole (token-costly) run. Keep it alive
+            # so `--session-id %s` can re-attach with full state and re-export.
+            if deps.completed and not exported:
+                log.warning("Run COMPLETED but its export could not be confirmed on the host — keeping "
+                            "the container ALIVE so the results are not lost. Re-run with "
+                            "`--session-id %s` to re-attach and recover; see the export warning above.",
+                            sid)
             container_mod.keep_alive(container_id)
 
     output = {

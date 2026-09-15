@@ -222,48 +222,94 @@ def seed_from_ref(container_id: str, target: Path, seed_ref: str, session_id: st
              run_branch(session_id), target, seed_ref, seed_sha[:12], container_id[:12])
 
 
-def export_branch(container_id: str, dest: Path, session_id: str) -> None:
+def export_branch(container_id: str, dest: Path, session_id: str) -> bool:
     """Fetch the run branch out of the container into the target repo at *dest*.
 
-    The container holds the one repo (source + verification/, on branch lusterna/<session>). We
-    bundle the branch and the pristine root, copy the bundle to the host, and `git fetch` it into
-    *dest* — git-initialising *dest* if it is not already a repo. The fetch creates
-    `lusterna/<session>` and `lusterna/<session>-base` (= the pristine source) and touches nothing
-    else: any OTHER branch the delivered repo already has is left as-is.
+    Returns True ONLY when the run's tip is CONFIRMED present on the host — the signal the caller uses
+    to decide the container may be torn down. Any failure returns False (never raised), and on False
+    the run still lives solely inside the container: the caller MUST keep it alive.
+
+    The container holds the one repo (source + verification/, on branch lusterna/<session>). The
+    pristine root (PRISTINE_REF / `<branch>-base`) is, by construction, a commit *dest* ALREADY holds
+    — the run was seeded FROM *dest*. So we ship only the RUN-RELATIVE delta as a THIN bundle
+    (`^PRISTINE_REF <branch>`): this never traverses at or below the pristine root, so a SHALLOW seed
+    (whose ancestry is absent by design) exports fine, where the old full-history bundle failed to
+    traverse the missing parent below the shallow boundary. `<branch>-base` is (re)pointed on the host
+    at the pristine commit it already carries. The fetch touches nothing else: any OTHER branch the
+    delivered repo has is left as-is.
     Review the whole run with:  git -C <dest> diff lusterna/<session>-base lusterna/<session>
 
     Robust to the run branch already being CHECKED OUT in *dest* (e.g. re-exporting a resumed session
     whose branch you inspected): a plain fetch into the current branch is refused, so we pass git's
     sanctioned `--update-head-ok` and then re-sync the working tree to the new tip ONLY if it is clean
-    — a dirty worktree is never clobbered. Best-effort by design: a failure is logged, never raised,
-    and the bundle is KEPT on failure (it is the only host copy of the run) with a recovery command.
+    — a dirty worktree is never clobbered. The bundle is KEPT on failure (it is the only host copy of
+    the run's delta) with a recovery command.
     """
     branch = run_branch(session_id)
     base = f"{branch}-base"
     bundle_in = "/workspace/lusterna.bundle"
-    code, _, err = exec_in(container_id, ["git", "bundle", "create", bundle_in, branch, PRISTINE_REF],
-                           workdir=REPO_IN)
-    if code != 0:
-        log.warning("Skipping export — could not bundle %s: %s", branch, err.strip()[:200])
-        return
+
+    pcode, pout, _ = exec_in(container_id, ["git", "rev-parse", "--verify", "-q", PRISTINE_REF],
+                             workdir=REPO_IN)
+    tcode, tout, _ = exec_in(container_id, ["git", "rev-parse", "--verify", "-q", branch],
+                             workdir=REPO_IN)
+    if pcode != 0 or tcode != 0:
+        log.warning("Skipping export — %s or %s is absent inside the container.", PRISTINE_REF, branch)
+        return False
+    pristine_sha, tip_sha = pout.strip(), tout.strip()
+
     dest.mkdir(parents=True, exist_ok=True)
     if not (dest / ".git").exists():
         subprocess.run(["git", "init", "-q", str(dest)], check=True)
-    bundle_host = dest / ".lusterna-run.bundle"
-    _docker("cp", f"{container_id}:{bundle_in}", str(bundle_host))
 
     def _git(*args: str) -> subprocess.CompletedProcess:
         return subprocess.run(["git", "-C", str(dest), *args], capture_output=True, text=True)
 
+    # (Re)point `<branch>-base` at the pristine commit the host already holds (the run was seeded FROM
+    # here). Independent of the delta bundle, and always the correct anchor for the review diff. If the
+    # host somehow lacks it, warn and press on — the run branch itself carries the artefacts.
+    if _git("cat-file", "-e", f"{pristine_sha}^{{commit}}").returncode == 0:
+        if _git("branch", "-f", base, pristine_sha).returncode != 0:
+            log.warning("Could not point %s at %s on host (checked out?) — review the diff manually.",
+                        base, pristine_sha[:12])
+    else:
+        log.warning("Host is missing the pristine root %s — `%s` not set; the run branch is still "
+                    "delivered.", pristine_sha[:12], base)
+
+    if tip_sha == pristine_sha:
+        # The run added no commits over the seed: nothing to bundle, and the tip is already on the host
+        # (it IS the pristine). Base is anchored above; nothing can be lost.
+        log.info("Export: run branch has no commits over the pristine root — base anchored at %s.",
+                 tip_sha[:12])
+        return True
+
+    # THIN bundle of ONLY the run-relative commits; the host resolves the pristine prerequisite from
+    # its own objects, so we never walk below the (possibly shallow) pristine boundary.
+    code, _, err = exec_in(container_id,
+                           ["git", "bundle", "create", bundle_in, f"^{PRISTINE_REF}", branch],
+                           workdir=REPO_IN)
+    if code != 0:
+        log.warning("Skipping export — could not bundle %s: %s", branch, err.strip()[:200])
+        return False
+    bundle_host = dest / ".lusterna-run.bundle"
+    _docker("cp", f"{container_id}:{bundle_in}", str(bundle_host))
+
     fetch = _git("fetch", "-q", "--update-head-ok", str(bundle_host.resolve()),
-                 f"+{branch}:refs/heads/{branch}", f"+{PRISTINE_REF}:refs/heads/{base}")
+                 f"+{branch}:refs/heads/{branch}")
     if fetch.returncode != 0:
-        # NEVER delete the bundle on failure — it is the only host copy of the run.
+        # NEVER delete the bundle on failure — it is the only host copy of the run's delta.
         log.warning("Export fetch failed (%s) — the run is PRESERVED at %s; recover with:\n"
-                    "  git -C %s fetch --update-head-ok %s '+%s:refs/heads/%s' '+%s:refs/heads/%s'",
-                    (fetch.stderr or "").strip()[:200], bundle_host, dest, bundle_host,
-                    branch, branch, PRISTINE_REF, base)
-        return
+                    "  git -C %s fetch --update-head-ok %s '+%s:refs/heads/%s'",
+                    (fetch.stderr or "").strip()[:200], bundle_host, dest, bundle_host, branch, branch)
+        return False
+    # CONFIRM the run's tip actually landed on the host before the caller is told it is safe to tear the
+    # container down. A ref that fetched but points elsewhere (or a missing prerequisite) is a failure.
+    landed = _git("rev-parse", "--verify", "-q", f"refs/heads/{branch}").stdout.strip()
+    if landed != tip_sha:
+        log.warning("Export could not be confirmed on host (expected %s, got %s) — bundle PRESERVED "
+                    "at %s.", tip_sha[:12], (landed or "∅")[:12], bundle_host)
+        return False
+
     # If the run branch is the one checked out here, --update-head-ok moved its ref but not the
     # worktree; re-sync a CLEAN worktree to match, and leave a dirty one untouched (never lose edits).
     if _git("symbolic-ref", "-q", "--short", "HEAD").stdout.strip() == branch:
@@ -275,6 +321,7 @@ def export_branch(container_id: str, dest: Path, session_id: str) -> None:
             _git("reset", "--hard", "-q", branch)
     bundle_host.unlink(missing_ok=True)
     log.info("Run branch exported → %s (%s; base %s)", dest, branch, base)
+    return True
 
 
 def host_has_branch(dest: Path, session_id: str) -> bool:
