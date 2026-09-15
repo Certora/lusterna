@@ -1,16 +1,16 @@
 # Lusterna
 
-An AI agent that translates Rust programs into formally verified Lean 4 specifications.
+A harnessed orchestrator for AI Agents to translate Rust programs into formally verified Lean 4 specifications.
 
 Lusterna **spawns an AI agent as the engine for each pipeline stage** — a headless agent
 session, running inside the toolchain container, drives Charon/Aeneas/Lake and does all the file
 and proof work itself. The Python harness is a thin, **trusted spine**: it sequences the stages and
 runs the soundness gates that the agents are not allowed to touch.
 
-Given a Rust repository and a design document, Lusterna:
+Given a Rust repository and an instruction document with a minimal set of hints, Lusterna:
 
 1. **Infers**, from the pristine code, the behavioural properties the target functions satisfy, which
-   functions the verification targets, and the minimal state the properties constrain (the design
+   functions the verification targets, and the minimal state the properties constrain (the instruction
    document is only a focus hint; the code is the source of truth). This is the first stage — it also
    orients: the entry crate and the functions that matter.
 2. **Translates** the target to Lean 4 via [Charon](https://github.com/AeneasVerif/charon) +
@@ -29,40 +29,157 @@ Given a Rust repository and a design document, Lusterna:
 7. Writes a **verification report** — led by a harness-generated verdict block that no agent
    narrative can override.
 
-Each stage is one AI-agent session with its own tools; its **deliverable is files** under
-`/workspace/out` (not a structured blob). The harness reads those files and applies the mechanical
-gates. The session's activity is streamed to the host log live, so you can watch what it does.
+## Requirements
 
-## The spawn model — trust vs labor
+- Python 3.10+
+- Docker (with access to the Docker daemon)
+- An Anthropic API key (`ANTHROPIC_API_KEY`) — forwarded into the container per stage
 
-The one line the whole design is built on:
+## Installation
 
-- **The AI agent owns the labor** — reading code, driving charon/aeneas/lake, writing Lean,
-  attempting proofs, judging, reporting. It brings todos, incremental file-based deliverables,
-  context compaction, resume, and per-run cost caps for free.
-- **The harness owns the trust** — a small, deterministic, agent-inaccessible spine: the soundness
-  gates, their isolation, the audit trail, and the reproducible stage sequence. This is *precisely
-  the code the AI is not allowed to write or run.*
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+```
 
-The inviolable gates, run by the harness on the files a stage produced (never delegated to an
-agent, never inferred from "it compiled"):
+## Quickstart
 
-- **`collectAxioms`** (`lean.check_axioms`) — the authoritative established-vs-tainted verdict, the
-  exact kernel axiom set `#print axioms` reports, classified in a harness-owned Lean metaprogram;
-- **the mechanical spec checks** (`lean.check_spec_gate`, `lean.legitimacy_check`) — MetaM checks over
-  each theorem's *elaborated type* (a spec that assumes its own postcondition; a claim that can fail
-  open; a trusted assumption that references a target);
-- **`lake build`** — the compile gate;
-- **the pristine-baseline git diff** — the audit trail of every source edit.
+```sh
+# 1. Build the toolchain image (one-time — includes the Rust/Lean toolchain + Node + the claude CLI)
+lusterna build-image
 
-A stage runs as an AI-agent session; the harness then applies that stage's gate and, if it is not
-satisfied, **resumes the session with the gate's feedback** until it passes or a progress-aware
-stall trips (`STALL_ROUNDS` consecutive rounds with the *same* failure — a genuinely-improving loop
-is never cut off). Each session is bounded by the agent's own `--max-budget-usd`.
+# 2. Run the pipeline
+export ANTHROPIC_API_KEY=sk-...
+lusterna run /path/to/rust-repo /path/to/design.md
 
-## Radical design choices
+# The results land as a git branch in the target repo. Review the whole run with:
+#   git -C /path/to/rust-repo diff lusterna/<session>-base lusterna/<session>
+```
 
-The harness is about 2,500 lines of Python with no real dependencies, no LLM SDK, no
+## Commands
+
+```
+lusterna run REPO DESIGN_DOC [BRANCH] [OPTIONS]
+```
+
+`BRANCH` (optional) is the commit the run **seeds from** and anchors `<branch>-base` at — its tree is
+the starting point. Omit it to seed from the target's current `HEAD` (or, for a non-git target, a
+synthesised pristine baseline). Pass a prior run's `lusterna/<sid>` branch to make the run
+**incremental**: the earlier translation/spec/proofs are reused and only the delta is recomputed
+(see [Incremental runs](#incremental-runs)).
+
+| Option | Default | Description |
+|---|---|---|
+| `--session-id ID` | (new UUID) | Resume a previous session |
+| `--checkpoint-number N` | (latest) | Checkpoint to resume from within a session |
+| `--container NAME` | (auto-start) | Attach to a pre-running toolchain container |
+| `--image TAG` | `lusterna-toolchain:latest` | Image to start when `--container` is not given |
+
+The run's results are fetched into `REPO` as branch `lusterna/<session>` (with `lusterna/<session>-base`
+for diffing); `REPO` is git-initialised if it is not already a repo, and its working tree and any
+existing branches are left untouched. Output is JSON on stdout (`session_id`, `repo`, `branch`,
+`container_id`, `summary`, `progress_keys`); the live per-stage activity trail and progress go to
+stderr as structured log lines.
+
+```
+lusterna build-image [--tag TAG]      # build the toolchain image (required before the first run)
+lusterna list-sessions                # sessions that have at least one checkpoint
+lusterna list-checkpoints SESSION_ID  # checkpoints for a session (JSON)
+lusterna show-checkpoint SESSION_ID [--number N]   # a checkpoint's state (JSON)
+```
+
+## Checkpoints & resuming
+
+After each stage the harness saves a numbered checkpoint under a per-session directory:
+
+```
+~/.local/share/lusterna/sessions/<session-id>/checkpoint-001.json …
+```
+
+Each records the progress dict (incl. per-stage agent session ids and costs), container ID,
+repo path, design doc, and the `git_head` SHA of the run branch at save time.
+
+An interrupted run (a stage session failing unrecoverably, or a graceful abort) is stopped
+gracefully — never a traceback — and its container is **kept alive**, so a resume re-attaches to it
+with full in-stage state and continues rather than restarting the stage. Only if that container is
+gone does resume rebuild a fresh one: it restores the repo (source edits, `verification/`, and the
+branch) from the run branch already fetched into the target repo, and hard-resets to the
+checkpoint's `git_head`, continuing from exactly that state.
+
+When resume must start a **fresh agent session** (its predecessor's in-container conversation is gone
+with the dead container), the work carries across on **disk, not in the agent's memory**: the stage
+briefing tells every resumed session to first re-read the committed artefacts — the translation, spec
+modules, established lemmas, and its own `prove/` notes (`assumptions.md`, `refutations.json`) — and
+continue from them rather than re-derive. Artefacts are streamed to disk *as* a stage works, not only
+at its end, so a resumed session that skipped them would be "unprimed" and re-tread banked work.
+
+```sh
+lusterna list-sessions
+lusterna list-checkpoints <session-id>
+
+# Resume from the latest checkpoint (or a specific one with --checkpoint-number N).
+lusterna run /path/to/repo design.md --session-id <uuid>
+```
+
+## Incremental runs
+
+Distinct from resuming: an incremental run is a **new session seeded from a prior run's branch**, so
+a fresh campaign builds on earlier work instead of starting over. You pass the prior run's branch as
+the seed:
+
+```sh
+lusterna run /path/to/repo new-campaign.md lusterna/<prior-session>
+```
+
+The prior branch's tree (translation, spec, proofs, source edits) becomes the starting point and the
+`-base` anchor, so `git diff lusterna/<new>-base lusterna/<new>` is exactly what the new campaign
+added. **What to reuse vs. redo is driven by the instruction document, not by flags** — every stage
+is told a prior artefact may already be present and reconciles it against the new instruction
+(reuse / extend / revise). Two motivating cases:
+
+- **Grow a campaign** — a new instruction that adds properties: the TRANSLATION is reused, INFER
+  adds the new properties, FORMALISE/PROVE handle the delta, and prior proofs carry over.
+- **Close remaining `sorry`s** — an instruction to finish the open obligations: everything upstream
+  is reused and PROVE re-attacks just the unproven theorems (with more budget/effort).
+
+Reuse saves **labor**, never **trust**: the branch carries Lean *source text* (defs, statements,
+proof scripts) but not the compiled `.lake`, so every run rebuilds and re-runs `#print axioms` over
+the whole final state — a reused proof is re-verified from scratch, not inherited on faith.
+
+## Output artefacts
+
+After a run, the target repo carries branch `lusterna/<session>` with one commit per stage (the
+multi-GB `.lake` build tree is excluded). The branch holds the original source (plus any
+behaviour-preserving edit TRANSLATE made) and all generated artefacts under `verification/`:
+
+The mental model: `lean/` is the verified artifact; every other dir is one stage's trail.
+
+```
+<repo>/  (on branch lusterna/<session>)
+├── …                             — the original source, plus any TRANSLATE source edit
+└── verification/
+    ├── lean/                      — the verified Lean project (unchanged layout — lakefile-driven)
+    │   ├── <Crate>.lean           — Aeneas translation (root module)
+    │   ├── <Crate>/…              — translation submodules + <Crate>/Spec.lean (the theorem spec)
+    │   └── lakefile.lean          — Lake project file
+    ├── infer/campaigns/<Campaign>.json — entry_file + properties/invariants + target_patterns + relevant_state
+    ├── translate/                 — plan.md, accountability.md, source.diff, facts.json, verdict.json
+    ├── spec-judge/verdict.json    — the spec-judge verdict
+    ├── report/                    — axioms.json (authoritative verdicts) + the report sections
+    └── VERIFICATION_REPORT.md     — led by the harness's authoritative #print axioms verdict, then
+                                      theorem status, assumptions, and proof sketches
+```
+
+Review the whole run as a single diff:
+
+```sh
+git -C <repo> diff lusterna/<session>-base lusterna/<session>
+```
+
+## Design choices
+
+The harness is about 2,500 lines of Python and Lean with no real dependencies, no LLM SDK, no
 agent framework, no orchestration or graph library, no vector store, no database. It contains the
 trusted spine described above, i.e. the soundness gates, their container isolation, the audit trail, and
 the stage sequence, and nothing else. All labor runs in a standalone coding agent spawned in the
@@ -113,6 +230,33 @@ The rest of the structure follows from the same boundary:
 Because the trusted core is small and carries no framework dependencies, a future Rust
 re-implementation of the harness is bounded work: the gates and the stage sequence port directly,
 while the interchangeable agent remains outside that boundary.
+
+### The spawn model — trust vs labor
+
+The one line the whole design is built on:
+
+- **The AI agent owns the labor** — reading code, driving charon/aeneas/lake, writing Lean,
+  attempting proofs, judging, reporting. It brings todos, incremental file-based deliverables,
+  context compaction, resume, and per-run cost caps for free.
+- **The harness owns the trust** — a small, deterministic, agent-inaccessible spine: the soundness
+  gates, their isolation, the audit trail, and the reproducible stage sequence. This is *precisely
+  the code the AI is not allowed to write or run.*
+
+The inviolable gates, run by the harness on the files a stage produced (never delegated to an
+agent, never inferred from "it compiled"):
+
+- **`collectAxioms`** (`lean.check_axioms`) — the authoritative established-vs-tainted verdict, the
+  exact kernel axiom set `#print axioms` reports, classified in a harness-owned Lean metaprogram;
+- **the mechanical spec checks** (`lean.check_spec_gate`, `lean.legitimacy_check`) — MetaM checks over
+  each theorem's *elaborated type* (a spec that assumes its own postcondition; a claim that can fail
+  open; a trusted assumption that references a target);
+- **`lake build`** — the compile gate;
+- **the pristine-baseline git diff** — the audit trail of every source edit.
+
+A stage runs as an AI-agent session; the harness then applies that stage's gate and, if it is not
+satisfied, **resumes the session with the gate's feedback** until it passes or a progress-aware
+stall trips (`STALL_ROUNDS` consecutive rounds with the *same* failure — a genuinely-improving loop
+is never cut off). Each session is bounded by the agent's own `--max-budget-usd`.
 
 ## Pipeline
 
@@ -168,7 +312,7 @@ are tainted. The axiom gate after PROVE is the authoritative verdict; the report
 generated by the harness, not the agent — is the number of established theorems that also reference an
 Aeneas-translated def.
 
-The verdict carries a further **grounding** rung: for each measurement the spec *projects* (reading
+The verdict carries a further **grounding** rung: for each measurement the spec *projects* (e.g. reading
 `.val` fields into `Int`/`Nat` rather than phrasing a property through the real, fallible call), the
 harness re-runs the anchor check over the *established* set and records whether a theorem that HOLDS
 ties that projection back to the real function — an unbridged projection is flagged, not hidden (a
@@ -334,7 +478,7 @@ behaviour-preserving recipes, and the charon/aeneas mechanics.
 
 ### The translatability inventory
 
-The playbook is **measured**, not folklore. Aeneas's translatable fragment is defined by the
+The playbook is **measured**: Aeneas's translatable fragment is defined by the
 toolchain, so `tools/aeneas-characterize/` measures it directly rather than relying on anecdote:
 
 - **What it does.** `characterize.py` runs a corpus of tiny single-construct probe crates (a
@@ -401,7 +545,7 @@ the counterexample vanish (statements are FORMALISE's, and the spec was already 
 by SPEC-JUDGE), and a refutation is a *falsehood* — it can never enter `Assumptions.lean`, the
 trusted-*true* ledger. It is reported, not papered over.
 
-## Architecture
+## Repository layout 
 
 ```
 lusterna/
@@ -426,10 +570,7 @@ tools/aeneas-characterize/   — build-time harness that measures Aeneas's trans
                                fragment (see above); seeds the TRANSLATE playbook.
 ```
 
-There is no in-process LLM SDK: the engine is the `claude` CLI (installed in the toolchain image),
-invoked over `docker exec`. `pydantic-ai` was retired with the spawn-model migration.
-
-## Docker interaction
+### Docker interaction
 
 The toolchain (Rust/Cargo, Charon, Aeneas, Lean/Lake) **and the AI agent itself** (Node + the
 agent CLI) live entirely inside a Docker container. There are no bind-mounts: the source repo is
@@ -447,124 +588,6 @@ the target repo.
 - The container runs with `--cap-drop all` and `--security-opt no-new-privileges`. Network is
   enabled so Charon can `cargo build` targets whose dependencies are fetched on demand, and so
   the agent can reach the Anthropic API.
-
-## Checkpoints & resuming
-
-After each stage the harness saves a numbered checkpoint under a per-session directory:
-
-```
-~/.local/share/lusterna/sessions/<session-id>/checkpoint-001.json …
-```
-
-Each records the progress dict (incl. per-stage agent session ids and costs), container ID,
-repo path, design doc, and the `git_head` SHA of the run branch at save time.
-
-An interrupted run (a stage session failing unrecoverably, or a graceful abort) is stopped
-gracefully — never a traceback — and its container is **kept alive**, so a resume re-attaches to it
-with full in-stage state and continues rather than restarting the stage. Only if that container is
-gone does resume rebuild a fresh one: it restores the repo (source edits, `verification/`, and the
-branch) from the run branch already fetched into the target repo, and hard-resets to the
-checkpoint's `git_head`, continuing from exactly that state.
-
-When resume must start a **fresh agent session** (its predecessor's in-container conversation is gone
-with the dead container), the work carries across on **disk, not in the agent's memory**: the stage
-briefing tells every resumed session to first re-read the committed artefacts — the translation, spec
-modules, established lemmas, and its own `prove/` notes (`assumptions.md`, `refutations.json`) — and
-continue from them rather than re-derive. Artefacts are streamed to disk *as* a stage works, not only
-at its end, so a resumed session that skipped them would be "unprimed" and re-tread banked work.
-
-```sh
-lusterna list-sessions
-lusterna list-checkpoints <session-id>
-
-# Resume from the latest checkpoint (or a specific one with --checkpoint-number N).
-lusterna run /path/to/repo design.md --session-id <uuid>
-```
-
-## Incremental runs
-
-Distinct from resuming: an incremental run is a **new session seeded from a prior run's branch**, so
-a fresh campaign builds on earlier work instead of starting over. You pass the prior run's branch as
-the seed:
-
-```sh
-lusterna run /path/to/repo new-campaign.md lusterna/<prior-session>
-```
-
-The prior branch's tree (translation, spec, proofs, source edits) becomes the starting point and the
-`-base` anchor, so `git diff lusterna/<new>-base lusterna/<new>` is exactly what the new campaign
-added. **What to reuse vs. redo is driven by the instruction document, not by flags** — every stage
-is told a prior artefact may already be present and reconciles it against the new instruction
-(reuse / extend / revise). Two motivating cases:
-
-- **Grow a campaign** — a new instruction that adds properties: the TRANSLATION is reused, INFER
-  adds the new properties, FORMALISE/PROVE handle the delta, and prior proofs carry over.
-- **Close remaining `sorry`s** — an instruction to finish the open obligations: everything upstream
-  is reused and PROVE re-attacks just the unproven theorems (with more budget/effort).
-
-Reuse saves **labor**, never **trust**: the branch carries Lean *source text* (defs, statements,
-proof scripts) but not the compiled `.lake`, so every run rebuilds and re-runs `#print axioms` over
-the whole final state — a reused proof is re-verified from scratch, not inherited on faith.
-
-## Requirements
-
-- Python 3.10+ (only `click`; no LLM SDK)
-- Docker (with access to the Docker daemon)
-- An Anthropic API key (`ANTHROPIC_API_KEY`) — forwarded into the container per stage
-
-## Installation
-
-```sh
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
-```
-
-## Quickstart
-
-```sh
-# 1. Build the toolchain image (one-time — includes the Rust/Lean toolchain + Node + the claude CLI)
-lusterna build-image
-
-# 2. Run the pipeline
-export ANTHROPIC_API_KEY=sk-...
-lusterna run /path/to/rust-repo /path/to/design.md
-
-# The results land as a git branch in the target repo. Review the whole run with:
-#   git -C /path/to/rust-repo diff lusterna/<session>-base lusterna/<session>
-```
-
-## Commands
-
-```
-lusterna run REPO DESIGN_DOC [BRANCH] [OPTIONS]
-```
-
-`BRANCH` (optional) is the commit the run **seeds from** and anchors `<branch>-base` at — its tree is
-the starting point. Omit it to seed from the target's current `HEAD` (or, for a non-git target, a
-synthesised pristine baseline). Pass a prior run's `lusterna/<sid>` branch to make the run
-**incremental**: the earlier translation/spec/proofs are reused and only the delta is recomputed
-(see [Incremental runs](#incremental-runs)).
-
-| Option | Default | Description |
-|---|---|---|
-| `--session-id ID` | (new UUID) | Resume a previous session |
-| `--checkpoint-number N` | (latest) | Checkpoint to resume from within a session |
-| `--container NAME` | (auto-start) | Attach to a pre-running toolchain container |
-| `--image TAG` | `lusterna-toolchain:latest` | Image to start when `--container` is not given |
-
-The run's results are fetched into `REPO` as branch `lusterna/<session>` (with `lusterna/<session>-base`
-for diffing); `REPO` is git-initialised if it is not already a repo, and its working tree and any
-existing branches are left untouched. Output is JSON on stdout (`session_id`, `repo`, `branch`,
-`container_id`, `summary`, `progress_keys`); the live per-stage activity trail and progress go to
-stderr as structured log lines.
-
-```
-lusterna build-image [--tag TAG]      # build the toolchain image (required before the first run)
-lusterna list-sessions                # sessions that have at least one checkpoint
-lusterna list-checkpoints SESSION_ID  # checkpoints for a session (JSON)
-lusterna show-checkpoint SESSION_ID [--number N]   # a checkpoint's state (JSON)
-```
 
 ## Environment variables
 
@@ -586,33 +609,3 @@ lusterna show-checkpoint SESSION_ID [--number N]   # a checkpoint's state (JSON)
 
 Model retry, context compaction, and cost caps are owned by the AI agent itself, so there are no
 knobs for them here.
-
-## Output artefacts
-
-After a run, the target repo carries branch `lusterna/<session>` with one commit per stage (the
-multi-GB `.lake` build tree is excluded). The branch holds the original source (plus any
-behaviour-preserving edit TRANSLATE made) and all generated artefacts under `verification/`:
-
-The mental model: `lean/` is the verified artifact; every other dir is one stage's trail.
-
-```
-<repo>/  (on branch lusterna/<session>)
-├── …                             — the original source, plus any TRANSLATE source edit
-└── verification/
-    ├── lean/                      — the verified Lean project (unchanged layout — lakefile-driven)
-    │   ├── <Crate>.lean           — Aeneas translation (root module)
-    │   ├── <Crate>/…              — translation submodules + <Crate>/Spec.lean (the theorem spec)
-    │   └── lakefile.lean          — Lake project file
-    ├── infer/campaigns/<Campaign>.json — entry_file + properties/invariants + target_patterns + relevant_state
-    ├── translate/                 — plan.md, accountability.md, source.diff, facts.json, verdict.json
-    ├── spec-judge/verdict.json    — the spec-judge verdict
-    ├── report/                    — axioms.json (authoritative verdicts) + the report sections
-    └── VERIFICATION_REPORT.md     — led by the harness's authoritative #print axioms verdict, then
-                                      theorem status, assumptions, and proof sketches
-```
-
-Review the whole run as a single diff:
-
-```sh
-git -C <repo> diff lusterna/<session>-base lusterna/<session>
-```
