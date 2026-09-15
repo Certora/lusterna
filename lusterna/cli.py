@@ -168,17 +168,11 @@ def run(
     try:
         summary = asyncio.run(pipeline.run_session(deps))
     finally:
-        # Always fetch the branch out (partial too), so the target repo holds the latest state even
-        # if the kept-alive container is later killed. Best-effort: never masks the run's result.
-        container_mod.export_branch(container_id, repo_path, sid)
-        if _external:
-            log.info("Leaving user-provided container %s as-is", container_id[:12])
-        elif deps.completed:
-            container_mod.stop(container_id)          # run finished — free it
-        else:
-            # Incomplete (budget/interrupt/crash): keep it alive so `--session-id %s` re-attaches
-            # with full state instead of restarting the stage from a pristine tree.
-            container_mod.keep_alive(container_id)
+        # Export the branch out (partial too) and decide the container's fate in one place: it is torn
+        # down (--rm = permanent) ONLY when a completed run is also confirmed on the host; otherwise it
+        # is kept alive so `--session-id` can re-attach and recover. Never masks the run's result.
+        container_mod.finalize(container_id, repo_path, sid,
+                               completed=deps.completed, external=_external)
 
     output = {
         "session_id": sid,
