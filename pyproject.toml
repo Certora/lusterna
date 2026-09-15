@@ -17,6 +17,12 @@ dependencies = [
 # toolchain by tests/checklean/verify.py, which needs Docker and the lusterna-toolchain image.
 dev = ["pytest>=7"]
 
+[tool.pytest.ini_options]
+# `integration` marks tests that drive a real container (Docker + the lusterna-toolchain image); they
+# self-skip when it is unavailable. Exclude them from the container-free unit run with `-m "not
+# integration"`.
+markers = ["integration: needs Docker and the lusterna-toolchain image"]
+
 [tool.setuptools.packages.find]
 include = ["lusterna*"]
 

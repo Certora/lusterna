@@ -399,6 +399,32 @@ def keep_alive(container_id: str) -> None:
              "re-attach; free it with: docker kill %s", container_id[:12], container_id)
 
 
+def finalize(container_id: str, dest: Path, session_id: str, *, completed: bool, external: bool) -> str:
+    """Export the run, then decide the container's fate — the ONE place that guarantees a container is
+    torn down only when its results are safely on the host.
+
+    A run container starts with `--rm`, so `stop()` deletes it (and the only in-container copy of the
+    proofs and report) forever. We therefore stop it ONLY when the run both COMPLETED and its export
+    was CONFIRMED on the host. In every other case — incomplete run, or a completed run whose export
+    could not be confirmed — the container is kept alive so `--session-id` can re-attach and recover,
+    rather than silently discarding a whole (token-costly) run. Returns the outcome:
+    'left-external' | 'stopped' | 'kept-alive'.
+    """
+    exported = export_branch(container_id, dest, session_id)
+    if external:
+        log.info("Leaving user-provided container %s as-is", container_id[:12])
+        return "left-external"
+    if completed and exported:
+        stop(container_id)  # run finished AND delivered — free it (--rm removes)
+        return "stopped"
+    if completed and not exported:
+        log.warning("Run COMPLETED but its export could not be confirmed on the host — keeping the "
+                    "container ALIVE so the results are not lost. Re-run with `--session-id %s` to "
+                    "re-attach and recover; see the export warning above.", session_id)
+    keep_alive(container_id)
+    return "kept-alive"
+
+
 def is_running(container_id: str) -> bool:
     r = _docker("inspect", "--format={{.State.Running}}", container_id, check=False)
     return r.returncode == 0 and r.stdout.strip() == "true"
