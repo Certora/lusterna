@@ -1294,6 +1294,28 @@ def checkDefAxioms (targets : Array Name) : MetaM Unit := do
           emit s!"\{\"check\": \"def_axioms\", \"def\": \"{n}\", \"opaque\": [{op}]}"
     | _ => pure ()
 
+/-! ══ `statement_type` — per-theorem type fingerprint for the statement-drift detector ═══════════════
+
+FORMALISE fixes the theorem STATEMENTS and PROVE fills in the proofs "without changing any statement";
+that is a directive, not a gate. This emits a STRUCTURAL HASH of each theorem's elaborated TYPE for
+every theorem compiled into *module* (the campaign spec module). `lean.check_statement_drift` captures
+the map at FORMALISE and diffs it after PROVE: a hash that CHANGED (or a theorem that VANISHED) with no
+`__refuted` witness is a possible "moved the goalposts" weakening, raised to REVIEW. Hashing
+`ConstantInfo.type` makes the fingerprint invariant to HOW (or whether) the theorem is proved and to
+pretty-print variation, and sensitive to the statement alone. Enumerating by compiled MODULE
+(`getModuleFor?`) rather than scanning source is robust to `open`/namespacing — the same reason
+`checkImplReference` does; internal/auxiliary decls (`_proof_`, `match_`, …) are skipped. -/
+def dumpStatementTypes (module : Name) : MetaM Unit := do
+  let env ← getEnv
+  for (n, info) in env.constants.toList do
+    match info with
+    | .thmInfo _ =>
+      unless n.isInternal do
+        if env.getModuleFor? n == some module then
+          let ty ← ppTrunc info.type
+          emit s!"\{\"check\": \"statement_type\", \"theorem\": \"{n}\", \"hash\": \"{info.type.hash}\", \"type\": \"{jesc ty}\"}"
+    | _ => pure ()
+
 /-! ══ `impl_ref` — does a theorem VERIFY THE IMPLEMENTATION? ═══════════════════════════════════════
 
 A theorem verifies the implementation iff its STATEMENT references a `def` from the Aeneas
