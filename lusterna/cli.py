@@ -58,7 +58,10 @@ def main(verbose: bool) -> None:
 @click.argument("repo", type=click.Path(exists=True, file_okay=False, resolve_path=True))
 @click.argument("design_doc", type=click.Path(exists=True, dir_okay=False, resolve_path=True))
 @click.argument("branch", required=False, default=None)
-@click.option("--session-id", default=None, help="Resume an existing session by ID")
+@click.option("--session-id", default=None,
+              help="Session ID. If a checkpoint exists for it, RESUME that session; otherwise start a "
+                   "NEW session under this name instead of the default random one. A name that "
+                   "collides with an existing checkpoint resumes it, so pick a fresh name for a new run.")
 @click.option("--checkpoint-number", "ckpt_number", default=None, type=int,
               help="Checkpoint number to resume from (default: latest)")
 @click.option("--container", default=config.CONTAINER_ID or None,
