@@ -71,7 +71,7 @@ synthesised pristine baseline). Pass a prior run's `lusterna/<sid>` branch to ma
 
 | Option | Default | Description |
 |---|---|---|
-| `--session-id ID` | (new UUID) | Resume a previous session |
+| `--session-id ID` | (new UUID) | Session ID. Resumes if a checkpoint by that ID exists; otherwise starts a **new** run under that name (a stable, readable id instead of the default random one). A name that collides with an existing checkpoint resumes it, so choose a fresh one for a new run. |
 | `--checkpoint-number N` | (latest) | Checkpoint to resume from within a session |
 | `--container NAME` | (auto-start) | Attach to a pre-running toolchain container |
 | `--image TAG` | `lusterna-toolchain:latest` | Image to start when `--container` is not given |
