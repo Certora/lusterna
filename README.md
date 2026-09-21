@@ -63,11 +63,14 @@ lusterna run /path/to/rust-repo /path/to/design.md
 lusterna run REPO DESIGN_DOC [BRANCH] [OPTIONS]
 ```
 
+`REPO` must be a **full, non-shallow git repository with at least one commit** — the run seeds from a
+commit and delivers its results back as a branch, so a bare directory or a shallow clone is refused up
+front (run `git init && git add -A && git commit`, or `git fetch --unshallow`, first).
+
 `BRANCH` (optional) is the commit the run **seeds from** and anchors `<branch>-base` at — its tree is
-the starting point. Omit it to seed from the target's current `HEAD` (or, for a non-git target, a
-synthesised pristine baseline). Pass a prior run's `lusterna/<sid>` branch to make the run
-**incremental**: the earlier translation/spec/proofs are reused and only the delta is recomputed
-(see [Incremental runs](#incremental-runs)).
+the starting point. Omit it to seed from the target's current `HEAD`. Pass a prior run's
+`lusterna/<sid>` branch to make the run **incremental**: the earlier translation/spec/proofs are
+reused and only the delta is recomputed (see [Incremental runs](#incremental-runs)).
 
 | Option | Default | Description |
 |---|---|---|
@@ -573,9 +576,8 @@ tools/aeneas-characterize/   — build-time harness that measures Aeneas's trans
 ### Docker interaction
 
 The toolchain (Rust/Cargo, Charon, Aeneas, Lean/Lake) **and the AI agent itself** (Node + the
-agent CLI) live entirely inside a Docker container. There are no bind-mounts: the source repo is
-pushed in via a tar pipe at session start, and at the end the run's git branch is fetched back into
-the target repo.
+agent CLI) live entirely inside a Docker container. There are no bind-mounts: the seed commit is
+bundled in at session start, and at the end the run's git branch is fetched back into the target repo.
 
 - The container has its own isolated filesystem — no host paths are exposed. The whole run is ONE
   git repo at `/workspace/repo`: the source is git-initialised at a pristine baseline (so any

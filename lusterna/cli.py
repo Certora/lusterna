@@ -83,9 +83,10 @@ def run(
     branch `lusterna/<session>`. It SEEDS from BRANCH — its tree is the starting point and its
     `<branch>-base` anchor. Passing a prior run's `lusterna/<sid>` branch makes the run INCREMENTAL:
     the earlier translation/spec/proofs are reused (what to redo vs reuse is driven by DESIGN_DOC,
-    not flags), and only the delta is recomputed. Omit BRANCH to seed from the target's current HEAD
-    (or, for a non-git target, a synthesised pristine baseline). REPO's working tree and existing
-    branches are left untouched. Review with:
+    not flags), and only the delta is recomputed. Omit BRANCH to seed from the target's current HEAD.
+    REPO must be a full (non-shallow) git repository with at least one commit — a bare directory or a
+    shallow clone is refused up front. REPO's working tree and existing branches are left untouched.
+    Review with:
     `git -C REPO diff lusterna/<session>-base lusterna/<session>`.
 
     Per-stage cost is capped by the agent's own --max-budget-usd (config.CC_STAGE_BUDGET_USD);
@@ -115,6 +116,11 @@ def run(
     _external = bool(_user_container) and container_mod.is_running(_user_container)
     resuming = bool(saved)
 
+    # Pre-flight the target BEFORE any container work: it must be a full, non-shallow git repo with a
+    # resolvable seed, or this HARD-STOPS with an actionable message — never a lost campaign after the
+    # fact. Doubles as resolving the commit a fresh run seeds from.
+    seed_ref = container_mod.seed_ref_or_fail(repo_path, branch)
+
     needs_lake = False   # only the dead-container import path (below) drops the .lake build tree
     if container and container_mod.is_running(container):
         # Container kept alive from an interrupted run — re-attach with full in-container state.
@@ -138,19 +144,14 @@ def run(
             # translation already exists so a resumed lean stage builds against the cache, not a
             # cold full Mathlib rebuild.
             needs_lake = "aeneas" in progress
-        elif (seed_ref := container_mod.resolve_seed_ref(repo_path, branch)) is not None:
-            # New session seeded from a branch/HEAD — fresh or (if the seed carries prior artefacts)
-            # incremental. Same path either way; the stages reconcile against whatever the seed holds.
+        else:
+            # Fresh (or incremental) run — seed from the pre-flighted ref. A seed that already carries a
+            # translation needs .lake re-provisioned (it is not bundled), so a reused/continued lean
+            # stage builds against the cache rather than cold.
             container_mod.seed_from_ref(container_id, repo_path, seed_ref, sid)
-            # A seed that already has a translation needs .lake re-provisioned (it isn't carried), so
-            # a reused/continued lean stage builds against the cache rather than cold.
             needs_lake = container_mod.exec_in(
                 container_id, ["test", "-d", f"{container_mod.VERIF_IN}/lean"],
                 workdir=container_mod.REPO_IN)[0] == 0
-        else:
-            # Non-git target (or unborn HEAD): synthesise a pristine baseline from the working tree.
-            container_mod.push_repo(container_id, repo_path)
-            container_mod.init_repo_git(container_id, sid)
 
     deps = AgentDeps(
         container_id=container_id,
