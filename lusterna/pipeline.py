@@ -480,11 +480,10 @@ def _record_axioms(deps: AgentDeps) -> None:
     # refutation is a legitimate correction (accounted); one without is a possible goalpost move → REVIEW.
     drift = lean.check_statement_drift(deps, refuted)
     deps.progress["axioms"]["statement_drift"] = drift
-    unaccounted = (drift.get("drifted") or []) + (drift.get("removed") or [])
-    if unaccounted:
+    if drift.get("unaccounted"):
         log.warning("PROVE: ⚠ %d statement(s) changed/removed since FORMALISE with NO refutation "
                     "witness (possible goalpost move — raised to REVIEW): %s",
-                    len(unaccounted), unaccounted)
+                    len(drift["unaccounted"]), drift["unaccounted"])
     checkpoint.snapshot(deps)
     established = len(clean) + len(assumed)
     if bad:
@@ -652,27 +651,39 @@ def _authoritative_verdict(deps: AgentDeps) -> str:
             ]
         lines.append("")
     drift = ax.get("statement_drift", {})
-    if drift.get("checked"):
-        d_bad = (drift.get("drifted") or []) + (drift.get("removed") or [])
-        d_ok = drift.get("accounted") or []
-        if d_bad:
+    if drift:
+        stable = drift.get("stable") or []
+        accounted = drift.get("accounted") or []
+        unaccounted = drift.get("unaccounted") or []
+        if not (stable or accounted or unaccounted):
+            # all three empty ⇒ the check could not run (no FORMALISE baseline, or the dump did not
+            # complete). Surface that explicitly — a fidelity check that did not run must not read as
+            # a clean pass.
             lines += [
-                f"- ⚠ **STATEMENT DRIFT: {len(d_bad)} statement(s) changed or removed since FORMALISE "
-                f"with NO refutation witness** — a PROVE-stage edit altered or dropped a theorem the "
-                f"FORMALISE spec had fixed, and no `<name>__refuted` lemma accounts for it. This is the "
-                f"'moved the goalposts to make it provable' shape: REVIEW must confirm each is a genuine "
-                f"correction, not a weakening. Changed/removed: {d_bad}",
+                "- ⚠ Statement fidelity NOT verified this run — the FORMALISE→PROVE statement check "
+                "could not run (no baseline captured, or the checker did not complete). The statements "
+                "were not confirmed unchanged; REVIEW should check them manually.",
                 "",
             ]
-        if d_ok:
-            lines += [
-                f"- Statement changes since FORMALISE backed by a kernel-verified refutation "
-                f"(accountable corrections, not weakenings): {len(d_ok)} {d_ok}",
-                "",
-            ]
-        if not d_bad and not d_ok:
-            lines += [f"- Statement fidelity: all {len(drift.get('stable', []))} FORMALISE statement(s) "
-                      f"carried through PROVE unchanged.", ""]
+        else:
+            if unaccounted:
+                lines += [
+                    f"- ⚠ **STATEMENT DRIFT: {len(unaccounted)} statement(s) changed or removed since "
+                    f"FORMALISE with NO refutation witness** — a PROVE-stage edit altered or dropped a "
+                    f"theorem the FORMALISE spec had fixed, and no `<name>__refuted` lemma accounts for "
+                    f"it. This is the 'moved the goalposts to make it provable' shape: REVIEW must "
+                    f"confirm each is a genuine correction, not a weakening. Changed/removed: {unaccounted}",
+                    "",
+                ]
+            if accounted:
+                lines += [
+                    f"- Statement changes since FORMALISE backed by a kernel-verified refutation "
+                    f"(accountable corrections, not weakenings): {len(accounted)} {accounted}",
+                    "",
+                ]
+            if not unaccounted and not accounted:
+                lines += [f"- Statement fidelity: all {len(stable)} FORMALISE statement(s) carried "
+                          f"through PROVE unchanged.", ""]
     if declared or illegit:
         used_by: dict[str, list] = {}
         for thm, used in assumed.items():

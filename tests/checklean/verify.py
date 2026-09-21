@@ -787,24 +787,23 @@ def run_drift_fixture() -> int:
         check("deterministic across a rebuild-free re-dump", again == base, f"{again} vs {base}")
         deps.progress["formalise_types"] = base
 
-        # v2 — tB's STATEMENT changed (still provable), tA untouched → tB drifts, tA stable.
+        # v2 — tB's STATEMENT changed (still provable), tA untouched → tB unaccounted, tA stable.
         if not build_spec("theorem tA : 1 + 1 = 2 := by rfl\ntheorem tB : 0 = 0 := by rfl\n"):
             return 1
         d = lean.check_statement_drift(deps, refuted=[])
-        check("changed statement → drifted, other stable",
-              d.get("checked") and d["drifted"] == ["tB"] and d["stable"] == ["tA"]
-              and not d["removed"] and not d["accounted"], str(d))
+        check("changed statement → unaccounted, other stable",
+              d["unaccounted"] == ["tB"] and d["stable"] == ["tA"] and not d["accounted"], str(d))
         # same change, but with a refutation witness for tB → accounted, not flagged.
         d = lean.check_statement_drift(deps, refuted=["tB"])
         check("changed statement WITH refutation → accounted",
-              d["accounted"] == ["tB"] and not d["drifted"], str(d))
+              d["accounted"] == ["tB"] and not d["unaccounted"], str(d))
 
-        # v3 — tB removed entirely → removed (no witness).
+        # v3 — tB removed entirely → unaccounted (no witness; removed collapses into unaccounted).
         if not build_spec("theorem tA : 1 + 1 = 2 := by rfl\n"):
             return 1
         d = lean.check_statement_drift(deps, refuted=[])
-        check("removed statement → removed, other stable",
-              d["removed"] == ["tB"] and d["stable"] == ["tA"] and not d["drifted"], str(d))
+        check("removed statement → unaccounted, other stable",
+              d["unaccounted"] == ["tB"] and d["stable"] == ["tA"] and not d["accounted"], str(d))
         return 0 if ok else 1
     finally:
         sh("docker", "rm", "-f", DRIFT_CONTAINER, check=False)

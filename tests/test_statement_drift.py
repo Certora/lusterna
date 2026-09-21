@@ -17,31 +17,30 @@ def test_unchanged_statement_is_stable():
     old = {"C.foo": "h1", "C.bar": "h2"}
     res = lean._classify_drift(old, dict(old), refuted=set())
     assert res["stable"] == ["C.foo", "C.bar"]
-    assert res["drifted"] == [] and res["removed"] == [] and res["accounted"] == []
+    assert res["unaccounted"] == [] and res["accounted"] == []
 
 
-def test_changed_statement_without_witness_is_drifted():
-    old = {"C.foo": "h1"}
-    new = {"C.foo": "DIFFERENT"}
-    res = lean._classify_drift(old, new, refuted=set())
-    assert res["drifted"] == ["C.foo"] and res["stable"] == []
+def test_changed_statement_without_witness_is_unaccounted():
+    res = lean._classify_drift({"C.foo": "h1"}, {"C.foo": "DIFFERENT"}, refuted=set())
+    assert res["unaccounted"] == ["C.foo"] and res["stable"] == []
 
 
-def test_removed_statement_without_witness_is_removed():
+def test_removed_statement_without_witness_is_unaccounted():
+    """Changed and removed collapse into the one `unaccounted` bucket — no consumer distinguishes them."""
     res = lean._classify_drift({"C.foo": "h1"}, {}, refuted=set())
-    assert res["removed"] == ["C.foo"] and res["drifted"] == []
+    assert res["unaccounted"] == ["C.foo"] and res["accounted"] == []
 
 
 def test_changed_statement_with_refutation_is_accounted():
     """A statement legitimately changes when it is found false and refuted (the P5 path): a
     `<name>__refuted` witness (short name in *refuted*) accounts for the change, not flagged."""
     res = lean._classify_drift({"C.foo": "h1"}, {"C.foo": "DIFFERENT"}, refuted={"foo"})
-    assert res["accounted"] == ["C.foo"] and res["drifted"] == []
+    assert res["accounted"] == ["C.foo"] and res["unaccounted"] == []
 
 
 def test_removed_statement_with_refutation_is_accounted():
     res = lean._classify_drift({"C.foo": "h1"}, {}, refuted={"foo"})
-    assert res["accounted"] == ["C.foo"] and res["removed"] == []
+    assert res["accounted"] == ["C.foo"] and res["unaccounted"] == []
 
 
 def test_added_lemma_is_not_reported():
@@ -50,7 +49,7 @@ def test_added_lemma_is_not_reported():
     new = {"C.foo": "h1", "C.helper": "h9", "C.helper2": "h8"}
     res = lean._classify_drift(old, new, refuted=set())
     assert res["stable"] == ["C.foo"]
-    assert res["drifted"] == [] and res["removed"] == [] and res["accounted"] == []
+    assert res["unaccounted"] == [] and res["accounted"] == []
 
 
 def test_refutation_matches_on_short_name_under_namespace():
@@ -96,19 +95,19 @@ def test_check_uses_progress_baseline_and_flags_unaccounted(monkeypatch):
     # bar's statement changed since FORMALISE, no refutation for it
     monkeypatch.setattr(lean, "dump_statement_types", lambda deps, mod: {"C.foo": "h1", "C.bar": "CHANGED"})
     res = lean.check_statement_drift(deps, refuted=[])
-    assert res["checked"] is True
-    assert res["stable"] == ["C.foo"] and res["drifted"] == ["C.bar"]
+    assert res["stable"] == ["C.foo"] and res["unaccounted"] == ["C.bar"] and res["accounted"] == []
 
 
-def test_check_false_when_no_baseline(monkeypatch):
-    """No FORMALISE fingerprint captured ⇒ checked False (conservative), never a fabricated pass."""
+def test_all_empty_when_no_baseline(monkeypatch):
+    """No FORMALISE fingerprint captured ⇒ all buckets empty (the could-not-run signal the verdict
+    surfaces as "not verified" — never a fabricated clean pass)."""
     deps = _deps()
-    assert lean.check_statement_drift(deps, refuted=[])["checked"] is False
+    assert lean.check_statement_drift(deps, refuted=[]) == {"stable": [], "accounted": [], "unaccounted": []}
 
 
-def test_check_false_when_fresh_dump_unavailable(monkeypatch):
+def test_all_empty_when_fresh_dump_unavailable(monkeypatch):
     deps = _deps()
     deps.progress["formalise_types"] = {"C.foo": "h1"}
     monkeypatch.setattr(lean, "campaign_spec_module", lambda deps: "Crate.Spec.C")
     monkeypatch.setattr(lean, "dump_statement_types", lambda deps, mod: {})
-    assert lean.check_statement_drift(deps, refuted=[])["checked"] is False
+    assert lean.check_statement_drift(deps, refuted=[]) == {"stable": [], "accounted": [], "unaccounted": []}

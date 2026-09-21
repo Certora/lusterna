@@ -1339,26 +1339,24 @@ def dump_statement_types(deps: AgentDeps, module: str) -> dict[str, str]:
 def _classify_drift(old: dict[str, str], new: dict[str, str], refuted: set[str]) -> dict:
     """Classify each FORMALISE theorem by comparing its type FINGERPRINT (from *old*) against the
     current one (*new*), keyed by fully-qualified name. A theorem is:
-      • stable    — present with an identical type hash;
-      • accounted — type changed OR theorem gone, AND a refutation witness exists (its short name is
-                    in *refuted*) → a legitimate, recorded correction (the P5 path);
-      • drifted   — type changed with NO refutation witness → raise to REVIEW;
-      • removed   — theorem gone with NO refutation witness → raise to REVIEW.
-    Theorems only in *new* are PROVE-added supporting lemmas — expected, not reported. Reported names
-    are the fully-qualified constant names Lean emitted."""
-    stable, drifted, removed, accounted = [], [], [], []
+      • stable      — present with an identical type hash;
+      • accounted   — statement changed OR theorem gone, AND a refutation witness exists (its short
+                      name is in *refuted*) → a legitimate, recorded correction (the P5 path);
+      • unaccounted — statement changed OR theorem gone with NO refutation witness → raise to REVIEW.
+    Changed-vs-removed is not distinguished: no consumer acts on it differently (the name plus the
+    diff tell a reviewer which), so both fall in the one `unaccounted` bucket. Theorems only in *new*
+    are PROVE-added supporting lemmas — expected, not reported. Reported names are the fully-qualified
+    constant names Lean emitted."""
+    stable, accounted, unaccounted = [], [], []
     for qual, old_hash in old.items():
         short = qual.rsplit(".", 1)[-1]
-        changed = qual not in new or new[qual] != old_hash
-        if not changed:
+        if qual in new and new[qual] == old_hash:
             stable.append(qual)
         elif short in refuted:
             accounted.append(qual)
-        elif qual not in new:
-            removed.append(qual)
         else:
-            drifted.append(qual)
-    return {"stable": stable, "drifted": drifted, "removed": removed, "accounted": accounted}
+            unaccounted.append(qual)
+    return {"stable": stable, "accounted": accounted, "unaccounted": unaccounted}
 
 
 def check_statement_drift(deps: AgentDeps, refuted: list[str]) -> dict:
@@ -1367,19 +1365,19 @@ def check_statement_drift(deps: AgentDeps, refuted: list[str]) -> dict:
     Diffs the FORMALISE type fingerprints (`progress['formalise_types']`, captured by
     `_stage_formalise` right after the spec compiled) against a fresh dump over the same module. A
     changed or removed statement is ACCOUNTED when a `<name>__refuted` witness exists for it (*refuted*,
-    the short names from `verify_refutations`) and otherwise surfaces as drift for REVIEW. Returns
-    {"checked", "stable", "drifted", "removed", "accounted"}. `checked` is False (conservative, never a
-    silent pass) when no FORMALISE fingerprint was captured or the fresh dump could not run."""
+    the short names from `verify_refutations`) and otherwise surfaces as `unaccounted` for REVIEW.
+    Returns {"stable", "accounted", "unaccounted"}. All three EMPTY is the could-not-run signal (no
+    FORMALISE fingerprint captured, or the fresh dump did not complete) — a real campaign module always
+    has ≥1 theorem, so the caller reads all-empty as "not verified" rather than a silent clean pass."""
     old = deps.progress.get("formalise_types") or {}
     if not old:
-        return {"checked": False, "stable": [], "drifted": [], "removed": [], "accounted": []}
+        return {"stable": [], "accounted": [], "unaccounted": []}
     new = dump_statement_types(deps, campaign_spec_module(deps))
     if not new:
-        return {"checked": False, "stable": [], "drifted": [], "removed": [], "accounted": []}
+        return {"stable": [], "accounted": [], "unaccounted": []}
     res = _classify_drift(old, new, set(refuted or []))
-    res["checked"] = True
-    log.info("check_statement_drift: %d stable, %d drifted, %d removed, %d accounted-by-refutation",
-             len(res["stable"]), len(res["drifted"]), len(res["removed"]), len(res["accounted"]))
+    log.info("check_statement_drift: %d stable, %d accounted-by-refutation, %d unaccounted",
+             len(res["stable"]), len(res["accounted"]), len(res["unaccounted"]))
     return res
 
 
