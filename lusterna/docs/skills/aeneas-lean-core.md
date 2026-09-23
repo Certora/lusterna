@@ -243,20 +243,21 @@ statement then holds for almost any implementation:
 theorem t (s s' : State) (h : transfer s = ok s') (h2 : s'.total = s.total) :
     s'.total = s.total
 
--- GOOD: the property is what the theorem CLAIMS, not what it is handed.
-theorem t (s : State) : transfer s ⦃ s' => s'.total = s.total ⦄
+-- GOOD (a CHECKED property): the triple runs the target, and the claim is its postcondition.
+theorem t (s : State) : transfer s ⦃ r => r.total = s.total ⦄
+-- the equational `= ok r` form is fine inside a @[lusterna_lemma] or a proof, but it is NOT a checked
+-- shape — the gate wants the triple (`not_a_target_triple` otherwise).
 theorem t (s s' : State) (h : transfer s = ok s') : s'.total = s.total
 ```
 
 Hypotheses are for constraints on the **inputs and the pre-state** — a bound that rules out
 overflow, a well-formedness precondition. Anything you want to say about an **output or the
-post-state** belongs in the `⦃ ⦄` postcondition or in the conclusion. For a stateful
-`f : Input → State → Result (Output × State)` the shape to write is:
+post-state** belongs in the `⦃ ⦄` postcondition. For a stateful
+`f : Input → State → Result (Output × State)` a CHECKED property is the triple:
 
 ```lean
-theorem f_preserves_var (x : Input) (s s' : State) (y : Output)
-    (hpre : Pre x s) (hexec : f x s = ok (y, s')) :
-    s'.var = s.var
+theorem f_preserves_var (x : Input) (s : State) (hpre : Pre x s) :
+    f x s ⦃ r => r.snd.var = s.var ⦄
 ```
 
 **Naming a value does not launder it.** `(hz : z = s'.var)` followed by `(hz2 : 0 < z)` is the same
@@ -274,10 +275,11 @@ branch — each decides in the binder what you were meant to prove. Write
 wrapping the Rust result as `ok (core.result.Result.Ok v, s')` is fine — that is the translation's
 own shape, not a choice you made.)
 
-SPEC-JUDGE runs a mechanical information-flow check for exactly this: a fact about the post-state
-may enter only through the subject's own execution relation, and it follows the taint through
-aliases. A hypothesis that is defeq to the goal — the theorem closed by `exact` — is reported at its
-strongest. Get it right the first time.
+The checked shape is the triple precisely so these cheats are impossible by construction: the result
+binder is fresh, the target runs exactly once, and totality is asserted — so there is no hypothesis to
+pin, launder, or fail open. The `schema_conformance` gate rejects an equational conclusion outright
+(`not_a_target_triple`). The pitfalls above still matter when you write a `@[lusterna_lemma]` in the
+equational form — get it right there too.
 
 ### The two `Result` layers: execution vs Rust outcome
 
@@ -367,40 +369,27 @@ def Lhs (s : State) : Nat := s.a.val * 2 ^ 60 + s.b.val
 def Rhs (s : State) : Nat := s.c.val * 2 ^ 60
 def Inv (s : State) : Prop := Rhs s ≤ Lhs s
 
-theorem op_preserves_inv (amt : U64) (s s' : State) (y : Unit)
-    (hinv  : Inv s)
-    (hexec : op amt s = ok (y, s')) :
-    Inv s' := by sorry
+theorem op_preserves_inv (amt : U64) (s : State) (hinv : Inv s) :
+    op amt s ⦃ r => Inv r.snd ⦄ := by sorry
 ```
 
 If the property is genuinely *about* a fallible measurement (a getter `measure`), do NOT phrase the
 invariant through it — a measurement that reverts would let "the invariant holds" for free, and it
 bundles representability into the property. State the invariant on the projected fields as above, and
-tie it back to the real getter with a **checked bridge lemma** (`measure s = ok t → t.val = <the
-projection>`) so the projection is provably about the real function.
+tie it back to the real getter with a **checked bridge** (`measure s ⦃ t => t.val = <the projection> ⦄`)
+so the projection is provably about the real function.
 
-#### The `Result Bool` form, when you must bind a measurement
+#### The postcondition is pure — the triple already handles failure
 
-When you genuinely need a fallible call inside the predicate, the second correct form is a
-`Result Bool` `def` used as `= ok true`, written the **failure-strict** way:
+The triple `f args ⦃ r => post r ⦄` asserts `f` itself succeeds, so `post` never needs to re-assert it
+and must name **no nested fallible measurement** of the result. A measurement inside the postcondition
+can fail open — `f x s ⦃ r => measure r.snd = ok t → φ t ⦄` is vacuously true whenever `measure` fails,
+the same fail-open bug in triple clothing, and `checkSchemaConformance` rejects it
+(`claim_not_failsafe`). If the claim is genuinely about a getter of the result, project through it (the
+plain-proposition form above) or state a separate `@[lusterna_lemma]` bridge and reference that.
 
-```lean
-def Inv (s : State) : Result Bool := do
-  let t ← measure s               -- bind every measurement, never PASS a Result
-  let b ← other s
-  ok (t == b)
-```
-
-This is total because `bind (fail e) k = fail e` and `ok true` is neither `fail` nor `div` — so if
-any bound measurement fails, the claim is `False`, never vacuously true. Never let a `Result` be
-*passed* to anything: `ok (! ok? (measure s))` and `match measure s with | fail _ => ok true | …` are
-the same fail-open bug wearing Boolean clothes, and `checkSchemaConformance`'s failure-strictness
-fragment finds them. A fold over a collection is an ordinary recursive `def` here, which the check
-reads through its equation lemmas.
-
-The `⦃ ⦄` triple and `∃ … ∧ …` are also total and legitimate — but they are for **proof machinery**
-(the `progress` tactic, `@[progress]` lemmas, loop invariants) and for bridge lemmas, NOT for a
-checked property's own shape. Keep them inside a `@[lusterna_lemma]`.
+The existential `∃ t, g s' = ok t ∧ …` is also total, but it is proof machinery for a bridge lemma —
+the checked property's own shape is the triple itself.
 
 #### Declare each theorem's family
 
@@ -409,18 +398,15 @@ conforms — so it is a claim about the statement, not a label on it. There are 
 <Crate>.LusternaSchemas` to use them.
 
 ```lean
--- a CHECKED PROPERTY: one target execution, and a fail-safe claim about what it produced. A
+-- a CHECKED PROPERTY: a WP triple over a target, and a pure claim about its result `r`. A
 -- preservation and a postcondition are the SAME family — there is no separate "invariant" label.
 @[lusterna]
-theorem op_preserves_inv (amt : U64) (s s' : State) (y : Unit)
-    (hinv  : Inv s)
-    (hexec : op amt s = ok (y, s')) :
-    Inv s' := by sorry
+theorem op_preserves_inv (amt : U64) (s : State) (hinv : Inv s) :
+    op amt s ⦃ r => Inv r.snd ⦄ := by sorry
 
 @[lusterna]
-theorem op_effect (amt : U64) (s s' : State) (y : Unit)
-    (hexec : op amt s = ok (y, s')) :
-    s'.field.val = s.field.val + amt.val := by sorry     -- a plain-Prop postcondition
+theorem op_effect (amt : U64) (s : State) :
+    op amt s ⦃ r => r.snd.field.val = s.field.val + amt.val ⦄ := by sorry   -- a plain-Prop postcondition
 
 -- a SUPPORTING lemma, declared out of scope, with its reason
 @[lusterna_lemma "pure arithmetic over the state model; no target execution"]
@@ -431,11 +417,12 @@ Whether a preserved property is, across the whole campaign, an **invariant** of 
 PROVE stage's conclusion (a base case plus a preservation for every operation) — never a per-theorem
 label. Four things the conformance check will hold you to, all ordinary good practice:
 
-- **One execution per checked property.** Two calls is a composition — a `@[lusterna_lemma]`.
-- **Every hypothesis is a fail-safe claim** (a pure proposition over inputs, or `P args = ok true`
-  with `P` failure-strict), and none may constrain the execution's own output — that is provenance's
-  job to catch.
-- **The conclusion must mention what the call produced** — at least one output, or it claims nothing.
+- **The checked shape is a triple over a target.** The triple runs the target once and asserts it is
+  total, so you never write an execution hypothesis — an equational `op … = ok …` conclusion is
+  rejected (`not_a_target_triple`), and a triple over a non-target is `triple_not_over_target`.
+- **The postcondition is pure, mentions `r`, and constrains it** — no nested fallible measurement
+  (`claim_not_failsafe`), it must name the result (`conclusion_ignores_output`), and it must not assume
+  itself or be `True` (`vacuous_claim`).
 - **Relational properties are `@[lusterna_lemma]`.** Injectivity, determinism and non-interference
   need two executions by construction — say so rather than bending the annotation.
 

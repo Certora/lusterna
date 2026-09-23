@@ -366,8 +366,9 @@ A blind shape rule would reject honest work — some real properties (injectivit
 genuinely *do* need hypotheses about outputs. So FORMALISE labels every theorem with one of two
 families:
 
-- `@[lusterna]` — a **checked property**: the operation runs once, and the theorem makes a claim
-  about what it produced (a postcondition, or a property preserved across the call);
+- `@[lusterna]` — a **checked property**: a weakest-precondition *triple* over one of the target
+  operations, `op args ⦃ r => <claim about r> ⦄`, making a claim about the result the operation
+  produced (a postcondition, or a property preserved across the call);
 - `@[lusterna_lemma "why"]` — a supporting lemma deliberately outside that shape (a relational
   property, a bridge, a pure arithmetic helper), with a stated reason.
 
@@ -380,45 +381,38 @@ plus a preservation for every operation) — it is never a label on a single the
 properties; invariance is proved. And the one thing the gate can't judge — whether a theorem *means*
 the right thing — is exactly what SPEC-JUDGE looks at next.
 
-#### The two checks
+#### The check
 
-**1. Don't assume your own output** (`assumed_postcondition`). A fact about what the operation
-*produced* may only enter a theorem through the operation's own execution; every other hypothesis may
-talk about the inputs and the starting state, and nothing else. Adding `(h2 : s'.total = s.total)` to
-a theorem that concludes `s'.total = s.total` — the cheat above — is caught here. The check follows
-the reasoning the way a proof would, so it isn't fooled by hiding the assumed fact one hop away
-(rename `s'.total` to `z`, then assume a fact about `z`) or behind a further call. Two kinds of honest
-hypothesis are deliberately allowed and read as such: a relational premise (injectivity's "these two
-outputs are equal") and a bound on an intermediate value (which is both an overflow guard and a domain
-restriction). The check has to be *told* which functions are the ones under test — without that, a
-legitimate precondition measured on the starting state looks identical to a cheat — so if it isn't
-told, it reports "skipped" rather than a misleading "clean".
+**The theorem is a triple over a target, and its claim can't cheat** (`schema_conformance`). A checked
+property is an Aeneas WP triple `op args ⦃ r => post r ⦄`: the operation runs *once*, and the triple
+asserts it *terminates without failing* — so the property can never be satisfied by a call that
+reverted, the result `r` is bound freshly (nothing can pin it), and there is no execution hypothesis
+through which to smuggle a fact. That single form does for free everything a separate shape rule and
+information-flow analysis used to police by hand. All the gate then vets is the postcondition, which
+must:
 
-**2. The theorem has the checked shape, and its claim can't cheat by failing** (`schema_conformance`).
-The first check hunts for a *bad* shape, so its silence is a little ambiguous ("clean — or nothing I
-recognised"). This one inverts that: it takes a theorem the author declared `@[lusterna]` and verifies
-it really is a checked property — one operation, every other hypothesis a legitimate precondition, a
-conclusion that actually says something about an output. This is the one check safe to *default to
-rejecting*, precisely because it only ever runs against a family the author chose (applied to
-arbitrary theorems it would flag every honest use of "and"/"or"/"implies"). It also carries the
-**fail-safe** rule, the subtle one: a claim must not be quietly satisfiable by a *measurement that
-fails*. A property is often stated through a small function that returns a yes/no answer, and — like
-any real code — a measurement inside it can fail (an overflow, a missing key); if it quietly answers
-"yes" on such a failure, the theorem holds for free on states nobody meant to allow and guarantees
-nothing. The readable way to avoid this is to make no fallible measurement at all — state the property
-on the raw integer fields — and the check accepts that directly; where a measurement genuinely is
-needed, the rule is *a failable value may be used to continue a computation or returned, but never
-passed to something that could look at it and ignore the failure*, followed through helper functions
-and recursion alike.
+- **mention the result `r`** — or it says nothing about what the operation produced;
+- **be a plain proposition** — ordinary integer arithmetic over the projected fields, naming no nested
+  *fallible measurement* of the result. This is the **fail-safe** rule, the subtle one: a measurement
+  inside the claim can fail (an overflow, a missing key), and if it quietly makes the claim true on
+  that failure, the theorem holds for free on states nobody meant to allow. State the property on the
+  raw integer fields, or bridge the measurement in a lemma;
+- **genuinely constrain `r`** — not a tautology that assumes itself, not `True`.
 
-The harness runs both together (`checkSpecGate`): it checks the declared shape first, then applies the
-provenance rule only once the shape is right, so a rejection carries the *one* actionable message
-rather than a pile of downstream consequences. What neither can establish is whether the theorem
-*means* the right thing — whether a plain-integer projection faithfully mirrors the real code, whether
-the property is the one that matters — so that judgment of fitness (versus form) stays with SPEC-JUDGE.
+This is the one thing safe to *default to rejecting*, precisely because it only ever runs against a
+family the author chose (applied to arbitrary theorems it would flag every honest use of
+"and"/"or"/"implies").
 
-`tests/checklean/` is the regression suite for both checks: a fixture crate of theorems that must
-fire and controls that must not (including the pinned false positive and the accepted misses), run
+Three **governance** rules keep the checked family from being quietly emptied — the failure that once
+let a campaign pass with *zero* checked theorems, every core property demoted to a lemma. A measurement
+the properties reason about must be referenced by some theorem (a bridge), and by a *checked* one; and
+systemically, if no theorem is a checked triple over any target at all, the gate hard-stops rather than
+reporting "clean". What the gate cannot establish is whether the theorem *means* the right thing —
+whether a plain-integer projection faithfully mirrors the real code, whether the property is the one
+that matters — so that judgment of fitness (versus form) stays with SPEC-JUDGE.
+
+`tests/checklean/` is the regression suite for the gate: a fixture crate of theorems that must
+fire and controls that must not (including the accepted misses), run
 against the real toolchain by `python tests/checklean/verify.py`, which drives the checker through
 the exact same invocation the harness uses in a real run. Cases the check deliberately *skips* are
 pinned there too, so "clean" can never quietly mean "never ran".
