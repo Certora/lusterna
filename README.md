@@ -476,24 +476,10 @@ translation.
 
 To make the session recognise-and-apply rather than rediscover Aeneas's fragment every run, the
 translatability playbook (`docs/skills/aeneas-translate.md`) is appended to the TRANSLATE briefing —
-a verdict table (what translates / opaques / holes / rejects), the modelable-stdlib line,
-behaviour-preserving recipes, and the charon/aeneas mechanics.
-
-### The translatability inventory
-
-The playbook is **measured**: Aeneas's translatable fragment is defined by the
-toolchain, so `tools/aeneas-characterize/` measures it directly rather than relying on anecdote:
-
-- **What it does.** `characterize.py` runs a corpus of tiny single-construct probe crates (a
-  `BTreeMap`, an iterator chain, an `Option` combinator, a closure, a trait object, …) through
-  charon+aeneas once, in the toolchain image, and records the verdict for each — `def` (translates)
-  / `axiom` (opaqued, no Lean model) / `hole` (`sorry`) / `error` (rejected). It also extracts
-  Aeneas's builtin registry (`extract/ExtractBuiltin*.ml`) — the authoritative "what stdlib has a
-  Lean model" set that decides def-vs-axiom. Output: `characterization.json`.
-- **How to run it.** `python tools/aeneas-characterize/characterize.py` (needs the toolchain image
-  and the editable-installed package). It prints a table and writes the JSON.
-- **When.** On a toolchain-image bump — the fragment is version-specific. Then reconcile the
-  playbook's verdict table and recipes with the fresh `characterization.json`.
+how to identify what Aeneas opaqued, holed, or rejected (by reading the generated Lean, and when in
+doubt Aeneas's own builtin registry in the container), the behaviour-preserving recipe for each, and
+the charon/aeneas mechanics. It teaches the agent to read the live toolchain rather than a snapshot,
+so nothing goes stale across the nightly Aeneas bumps.
 
 ## PROVE
 
@@ -568,9 +554,6 @@ lusterna/
 ├── container.py    — Docker lifecycle: start, push repo, exec, exec_stream, export the run branch
 ├── checkpoint.py   — Per-session numbered checkpoints + snapshot(deps) serialisation
 └── config.py       — Env-driven knobs, plus logging setup
-
-tools/aeneas-characterize/   — build-time harness that measures Aeneas's translatable
-                               fragment (see above); seeds the TRANSLATE playbook.
 ```
 
 ### Docker interaction
