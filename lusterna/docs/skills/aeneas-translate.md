@@ -1,12 +1,10 @@
 # Aeneas translatability playbook (TRANSLATE stage)
 
 This is a decision playbook for turning a Rust target into a clean Lean translation with Charon +
-Aeneas. It tells you, per construct, whether Aeneas will translate it, opaque it, hole it, or reject
-it — and the behaviour-preserving recipe when you must fix it. **It is measured, not folklore:** the
-verdict table below is produced by `tools/aeneas-characterize` running one probe per construct through
-this exact toolchain, and the "modelable stdlib" set is extracted from Aeneas's own builtin registry
-(`extract/ExtractBuiltin*.ml`). It is **version-locked to the toolchain image** — regenerate it on a
-toolchain bump.
+Aeneas. It does NOT carry a fixed list of what translates: Aeneas's fragment shifts with the nightly
+toolchain, so any static verdict table goes stale. Instead it tells you how to **identify** what the
+toolchain opaqued, holed, or rejected on THIS image, and the behaviour-preserving **recipe** to fix
+each case. The toolchain in the container is the source of truth — read it, don't memorise it.
 
 ## The one rule
 
@@ -26,40 +24,41 @@ helper — taints EVERY theorem about that function, even one that never exercis
 reason your way to "this path is inert, no value flows through it": that reasoning is exactly what a
 transitive closure ignores. A leaf is irrelevant only if NO target's body can reach it at all.
 
-## Verdict table (measured on this toolchain)
+## Identify what Aeneas could not translate
 
-`def` = translated (use freely) · `axiom` = opaque, no Lean model (model it if a property depends on it)
-· `hole` = body left `sorry` (same treatment as axiom) · `error` = rejected / aborts (must refactor away).
+Two complementary signals, both read from the LIVE toolchain — never a remembered list.
 
-| Construct | Verdict | If a property depends on it |
-| --- | --- | --- |
-| `Vec` index / `push` / `new` / deref, slice indexing | **def** | use as-is |
-| `Option::unwrap_or`, `Option::unwrap` | **def** | use as-is |
-| generic closures (`FnMut`/`FnOnce`, monomorphized) | **def** | use as-is |
-| single loop without early-return | **def** | use as-is |
-| `BTreeMap` / `HashMap` get/insert/entry | **axiom** | MODEL → assoc-list |
-| `Option::ok_or` / `map` / `and_then` / `copied` (combinators w/o a builtin) | **axiom** | MODEL → explicit `match` |
-| iterator-adaptor chains (`.iter().map().sum()` …) | **axiom** | MODEL → explicit loop |
-| `f32`/`f64` arithmetic | **hole** | out of scope (no float model) — opaque only if irrelevant |
-| byte-string literals `b"…"`, raw-pointer deref/aggregate | **hole** | refactor away or opaque if irrelevant |
-| `&dyn Trait` dispatch | **hole** | MODEL → monomorphize to a concrete type / generic param |
-| `transmute` | **axiom** | refactor away (unsafe reinterpretation is not modelable) |
-| function pointers, arrow-typed `static` (e.g. `fn(...) -> ...`) | **error** | monomorphize (generic param / direct call) |
-| `union` | **error** | replace with an enum/struct if behaviour permits |
-| Generic Associated Types (GAT) | **error** | monomorphize the associated type |
-| labeled `break`/`continue` to an outer loop | **error** | restructure to a flag + single exit |
-| `return` inside a (nested) loop | **error** | restructure to a mutable result + single exit |
+**1. Read what the toolchain produced (primary — always current).** After translating, open the
+generated Lean under `/workspace/out/lean` and inspect each target and the constants it reaches:
 
-(Constructs Aeneas rejects that are unreachable from safe Rust — `mut`-recursive globals, unwinding,
-raw pointer metadata — are not listed; you won't hit them from a normal verification target.)
+- `def …` — translated cleanly; use as-is.
+- `axiom …` — OPAQUED: Aeneas has no Lean model for it, so it is an assumption with no defining
+  equations. If any property depends on its behaviour you must MODEL it (recipe below); otherwise it
+  is acceptable only under the one rule above.
+- a body that is `sorry` — HOLE: same treatment as an axiom.
+- a target with NO `def` (and no `.llbc` produced), with `not supported` / `unsupported` printed by
+  charon/aeneas on stderr — REJECTED outright: the construct must be refactored away (recipe below).
 
-## Modelable stdlib (the opaque-vs-def line)
+Then run `#print axioms` on a theorem: that is the real verdict. It closes over the WHOLE proof term
+(every error/panic/format branch, per the one rule), so it surfaces an opaque leaf reached through ANY
+path — including ones you would never spot by reading the value path.
 
-The verdict "def vs axiom" for a stdlib item is decided by Aeneas's builtin registry: **in the registry
-→ has a Lean model → `def`; absent → emitted as an `axiom`.** Present (so translate as-is): `alloc::vec::Vec`
-(new/index/deref/push), `core::option::Option` core, `core::slice::index::*`. **Absent (so opaqued):**
-`alloc::collections::btree::*` (BTreeMap), `HashMap`, and most `Option`/`Result`/iterator *combinators*.
-So a map/collection the properties are about is always the case that needs modeling.
+**2. Look it up in Aeneas's source (to predict or confirm a stdlib item).** Whether a stdlib item
+becomes a `def` or an `axiom` is decided by Aeneas's builtin registry: **in the registry → it has a
+Lean model → `def`; absent → emitted as an `axiom`.** The registry is source you can read directly in
+the container:
+
+- `/opt/aeneas/src/extract/ExtractBuiltin.ml` — the backend-agnostic registry (`mk_type`, `mk_trait`,
+  the fun/globals maps); Rust paths appear as string literals (`"alloc::vec::Vec"`,
+  `"core::option::Option"`, `"core::ops::index::Index"`).
+- `/opt/aeneas/src/extract/ExtractBuiltinLean.ml` — the Lean model NAME each registered path maps to.
+- `/opt/aeneas/src/extract/ExtractBuiltinCore.ml` — shared core registrations.
+
+So `grep -rn '"core::option::Option::ok_or' /opt/aeneas/src/extract/ExtractBuiltin*.ml` answers "is
+`ok_or` modelled?" directly. What Aeneas REJECTS outright (rather than opaques) is decided in its
+pre-passes — `grep -n 'not supported\|unsupported' /opt/aeneas/src/PrePasses.ml /opt/aeneas/src/Main.ml`
+shows the constructs it refuses. Prefer signal (1) — the actual output on your actual target — and use
+(2) up front to decide whether a dependency is worth keeping, opaquing, or modelling.
 
 ## Recipe library (behaviour-preserving)
 
@@ -138,11 +137,3 @@ that re-examines every dependency in the generated Lean instead of committing).
    already classified or study how Aeneas models a primitive.
 4. Stop as soon as the target functions are real `def`s and it compiles — the judge + `#print axioms`
    catch a wrong opaque/model call; you don't need to pre-verify every one.
-
-## Provenance
-
-The verdict table and the registry are measured by `tools/aeneas-characterize/characterize.py`
-(`characterization.json`), which runs one probe per construct through this toolchain directly. It is an
-inventory of the constructs the recipes cover, not an exhaustive catalogue — a construct a real target
-hits that the corpus missed shows up in that run's `translate/accountability.md`, the feed for
-extending it. Re-run it when the toolchain image changes.
