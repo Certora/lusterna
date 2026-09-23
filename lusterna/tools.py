@@ -82,9 +82,9 @@ def _repo_baseline(container_id: str) -> str:
     """SHA of the PRISTINE baseline — the source exactly as handed to us (the seed tree), before any
     edit. The source diff is taken against this; build-env prep and TRANSLATE edits alike show up.
 
-    `refs/lusterna/pristine` is the ref every setup path pins to that tree (init_repo_git for a
-    synthesised baseline, seed_from_ref for a branch seed, import_repo on dead-container resume), so
-    it is the authoritative baseline. It is NOT the repo's root commit: seeding from a real repo's
+    `refs/lusterna/pristine` is the ref every setup path pins to that tree (seed_from_ref for the
+    branch/HEAD seed, import_repo on dead-container resume), so it is the authoritative baseline. It
+    is NOT the repo's root commit: seeding from a real repo's
     branch brings full history (a bundle carries the ancestry), so `rev-list --max-parents=0` would be
     the project's genesis commit — diffing against which yields the entire repo history as "changed",
     burying the agent's actual edits (this was a real bug). Fall back to the root commit only if the
