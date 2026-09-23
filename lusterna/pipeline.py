@@ -399,6 +399,10 @@ def _stage_formalise(deps: AgentDeps) -> None:
         check=check,
     )
     tools.commit(deps.container_id, "feat(spec): implementation spec (statements only)")
+    # Fingerprint the FORMALISE statements (Lean-side structural type hashes, `dumpStatementTypes`) as
+    # the baseline the post-PROVE statement-drift check diffs against — did PROVE alter a statement
+    # FORMALISE fixed? Captured now, while the spec is built; carried across resume via the checkpoint.
+    deps.progress["formalise_types"] = lean.dump_statement_types(deps, lean.campaign_spec_module(deps))
     checkpoint.snapshot(deps)   # commit-then-snapshot: git_head must track this stage's own commit
 
 
@@ -472,6 +476,14 @@ def _record_axioms(deps: AgentDeps) -> None:
         log.warning("PROVE: ⚑ %d theorem(s) REFUTED — a kernel-verified counterexample shows the "
                     "property FALSE as stated (a candidate CODE discrepancy to investigate): %s",
                     len(refuted), refuted)
+    # STATEMENT-DRIFT rung: did PROVE alter or drop a statement FORMALISE fixed? A change backed by a
+    # refutation is a legitimate correction (accounted); one without is a possible goalpost move → REVIEW.
+    drift = lean.check_statement_drift(deps, refuted)
+    deps.progress["axioms"]["statement_drift"] = drift
+    if drift.get("unaccounted"):
+        log.warning("PROVE: ⚠ %d statement(s) changed/removed since FORMALISE with NO refutation "
+                    "witness (possible goalpost move — raised to REVIEW): %s",
+                    len(drift["unaccounted"]), drift["unaccounted"])
     checkpoint.snapshot(deps)
     established = len(clean) + len(assumed)
     if bad:
@@ -638,6 +650,40 @@ def _authoritative_verdict(deps: AgentDeps) -> str:
                 f"on it as ungrounded until the bridge is established.",
             ]
         lines.append("")
+    drift = ax.get("statement_drift", {})
+    if drift:
+        stable = drift.get("stable") or []
+        accounted = drift.get("accounted") or []
+        unaccounted = drift.get("unaccounted") or []
+        if not (stable or accounted or unaccounted):
+            # all three empty ⇒ the check could not run (no FORMALISE baseline, or the dump did not
+            # complete). Surface that explicitly — a fidelity check that did not run must not read as
+            # a clean pass.
+            lines += [
+                "- ⚠ Statement fidelity NOT verified this run — the FORMALISE→PROVE statement check "
+                "could not run (no baseline captured, or the checker did not complete). The statements "
+                "were not confirmed unchanged; REVIEW should check them manually.",
+                "",
+            ]
+        else:
+            if unaccounted:
+                lines += [
+                    f"- ⚠ **STATEMENT DRIFT: {len(unaccounted)} statement(s) changed or removed since "
+                    f"FORMALISE with NO refutation witness** — a PROVE-stage edit altered or dropped a "
+                    f"theorem the FORMALISE spec had fixed, and no `<name>__refuted` lemma accounts for "
+                    f"it. This is the 'moved the goalposts to make it provable' shape: REVIEW must "
+                    f"confirm each is a genuine correction, not a weakening. Changed/removed: {unaccounted}",
+                    "",
+                ]
+            if accounted:
+                lines += [
+                    f"- Statement changes since FORMALISE backed by a kernel-verified refutation "
+                    f"(accountable corrections, not weakenings): {len(accounted)} {accounted}",
+                    "",
+                ]
+            if not unaccounted and not accounted:
+                lines += [f"- Statement fidelity: all {len(stable)} FORMALISE statement(s) carried "
+                          f"through PROVE unchanged.", ""]
     if declared or illegit:
         used_by: dict[str, list] = {}
         for thm, used in assumed.items():

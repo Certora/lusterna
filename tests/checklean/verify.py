@@ -737,6 +737,78 @@ def run_gate_fixture() -> int:
         sh("docker", "rm", "-f", GATE_CONTAINER, check=False)
 
 
+DRIFT_CONTAINER = "lusterna-checklean-drift"
+
+
+def run_drift_fixture() -> int:
+    """Drive the statement-drift detector — `lean.dump_statement_types` (the Lean `dumpStatementTypes`
+    check) + `lean.check_statement_drift` — against the REAL toolchain. Builds a two-theorem spec,
+    fingerprints it (the FORMALISE baseline), then rebuilds with one statement CHANGED and one later
+    REMOVED, asserting the Lean type-hashes are stable-yet-discriminating and the drift is classified
+    as drifted / accounted-by-refutation / removed. This is the behavioural counterpart to the Python
+    unit tests, which only diff canned hashes."""
+    sh("docker", "rm", "-f", DRIFT_CONTAINER, check=False)
+    cid = sh("docker", "run", "--rm", "--detach", "--name", DRIFT_CONTAINER,
+             "lusterna-toolchain:latest", "sleep", "infinity").strip()
+    print(f"\n[drift fixture] container {cid[:12]}")
+    try:
+        deps = AgentDeps(container_id=cid, repo_path=HERE, session_id="drift",
+                         design_doc="", campaign="Drift")
+        lean_dir = f"{container.OUT_IN}/lean"
+        sh("docker", "exec", cid, "mkdir", "-p", f"{lean_dir}/DriftCrate/Spec")
+        assert not tools.write_out(deps, "lean/DriftCrate.lean", "-- crate root\n").startswith("ERROR:")
+        deps.progress["aeneas"] = {"lean_path": "lean/DriftCrate.lean", "lean_files": [], "holes": []}
+        spec_rel = "lean/DriftCrate/Spec/Drift.lean"
+        module = lean.campaign_spec_module(deps)          # DriftCrate.Spec.Drift
+
+        def build_spec(src: str) -> bool:
+            assert not tools.write_out(deps, spec_rel, src).startswith("ERROR:")
+            code, out, err = container.exec_in(cid, ["lake", "build"], workdir=lean_dir, timeout=1800)
+            if code != 0:
+                print(f"  drift fixture did not build:\n{out}\n{err}")
+            return code == 0
+
+        lean.setup_lake(deps)
+        # v1 — the FORMALISE baseline: two theorems.
+        if not build_spec("theorem tA : 1 + 1 = 2 := by rfl\ntheorem tB : 2 + 2 = 4 := by rfl\n"):
+            return 1
+
+        base = lean.dump_statement_types(deps, module)
+        again = lean.dump_statement_types(deps, module)
+        ok = True
+
+        def check(name: str, passed: bool, detail: str = "") -> None:
+            nonlocal ok
+            print(f"  {name}: {'PASS' if passed else 'FAIL'}{('  ' + detail) if not passed and detail else ''}")
+            ok = ok and passed
+
+        check("enumerate: both theorems fingerprinted", set(base) == {"tA", "tB"}, str(base))
+        check("hashes non-empty", all(base.values()), str(base))
+        check("deterministic across a rebuild-free re-dump", again == base, f"{again} vs {base}")
+        deps.progress["formalise_types"] = base
+
+        # v2 — tB's STATEMENT changed (still provable), tA untouched → tB unaccounted, tA stable.
+        if not build_spec("theorem tA : 1 + 1 = 2 := by rfl\ntheorem tB : 0 = 0 := by rfl\n"):
+            return 1
+        d = lean.check_statement_drift(deps, refuted=[])
+        check("changed statement → unaccounted, other stable",
+              d["unaccounted"] == ["tB"] and d["stable"] == ["tA"] and not d["accounted"], str(d))
+        # same change, but with a refutation witness for tB → accounted, not flagged.
+        d = lean.check_statement_drift(deps, refuted=["tB"])
+        check("changed statement WITH refutation → accounted",
+              d["accounted"] == ["tB"] and not d["unaccounted"], str(d))
+
+        # v3 — tB removed entirely → unaccounted (no witness; removed collapses into unaccounted).
+        if not build_spec("theorem tA : 1 + 1 = 2 := by rfl\n"):
+            return 1
+        d = lean.check_statement_drift(deps, refuted=[])
+        check("removed statement → unaccounted, other stable",
+              d["unaccounted"] == ["tB"] and d["stable"] == ["tA"] and not d["accounted"], str(d))
+        return 0 if ok else 1
+    finally:
+        sh("docker", "rm", "-f", DRIFT_CONTAINER, check=False)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--file", type=Path, help="an arbitrary .lean file to check (root module)")
@@ -759,6 +831,7 @@ def main() -> int:
     # checker regression, and the taint-gate wrapper. Both must pass.
     rc = run_fixture()
     rc = run_gate_fixture() or rc
+    rc = run_drift_fixture() or rc
     return rc
 
 

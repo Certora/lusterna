@@ -1225,6 +1225,12 @@ def _module_of(rel: str) -> str:
     return ".".join(parts[1:]).removesuffix(".lean") if len(parts) >= 2 and parts[0] == "lean" else ""
 
 
+def campaign_spec_module(deps: AgentDeps) -> str:
+    """The Lean module name of THIS campaign's spec file (e.g. `Crate.Spec.Campaign`) — the module the
+    statement-drift fingerprint is dumped over, at FORMALISE and again post-PROVE."""
+    return _module_of(campaign_spec(deps))
+
+
 def verify_refutations(deps: AgentDeps) -> list[str]:
     """WRITTEN theorem names the refutations module MECHANICALLY establishes FALSE. For each
     `theorem <name>__refuted : ¬ …` it applies TWO checks, both required:
@@ -1285,6 +1291,94 @@ def verify_refutations(deps: AgentDeps) -> list[str]:
         log.info("verify_refutations: %d theorem(s) mechanically REFUTED (false as stated): %s",
                  len(refuted), refuted)
     return refuted
+
+
+# ── statement-drift detector ───────────────────────────────────────────────────────────────────────
+# FORMALISE fixes the theorem STATEMENTS (committed as "implementation spec (statements only)") and
+# PROVE fills in the proofs. PROVE is told to prove them "WITHOUT changing any statement", but that is
+# a directive, not a gate: an agent can quietly WEAKEN a true statement to make it provable — the
+# "moved the goalposts" cheat. This detector compares each FORMALISE statement against its PROVE form
+# and classifies the drift. It does NOT block: a statement legitimately CHANGES when it is found false
+# and REFUTED (the P5-style correction), so a change backed by a `<name>__refuted` witness is
+# ACCOUNTED; a change with no witness is raised to REVIEW. Detect and account, never forbid.
+#
+# The comparison is done in LEAN, never by scanning source: `dumpStatementTypes` enumerates the
+# theorems the campaign module compiled into and emits a STRUCTURAL HASH of each elaborated TYPE (the
+# statement, proof irrelevant). The fingerprint is captured at FORMALISE into progress and diffed
+# against a fresh dump post-PROVE. Python only compares the Lean-produced hashes — no regex over Lean
+# statements, which is brittle (multiline attributes, unicode, binder defaults, `open`/namespacing).
+
+
+def dump_statement_types(deps: AgentDeps, module: str) -> dict[str, str]:
+    """{fully-qualified theorem name → structural hash of its elaborated TYPE} for every theorem the
+    Lean module *module* (e.g. `Crate.Spec.Campaign`) compiled into. The hash is produced by
+    `dumpStatementTypes` in Lean over `ConstantInfo.type`, so two builds of the SAME statement yield
+    the SAME hash regardless of how it is proved or pretty-printed, and a CHANGED statement yields a
+    different one. Returns {} if the driver cannot run (the caller treats that conservatively)."""
+    stem = _crate_stem(deps)
+    if not stem or not module:
+        return {}
+    body = (f"import {module}\n"
+            f"import {stem}.{_LINT_TOOL_NAME.removesuffix('.lean')}\n"
+            "open Lusterna.Checks\n"
+            "#eval show Lean.Meta.MetaM Unit from do\n"
+            f"  dumpStatementTypes `{module}\n"
+            f'  IO.println "{_GATE_DONE}"\n')
+    code, text = _run_lean_checker(deps, body, "_statement_types.lean")
+    if text.startswith("ERROR:") or not _driver_ran(text):
+        log.warning("dump_statement_types: driver did not finish (rc=%s) for %s. Lean tail:\n%s",
+                    code, module, text[-600:])
+        return {}
+    out: dict[str, str] = {}
+    for rec in _parse_check_records(text):
+        if rec.get("check") == "statement_type" and rec.get("theorem"):
+            out[rec["theorem"]] = str(rec.get("hash", ""))
+    return out
+
+
+def _classify_drift(old: dict[str, str], new: dict[str, str], refuted: set[str]) -> dict:
+    """Classify each FORMALISE theorem by comparing its type FINGERPRINT (from *old*) against the
+    current one (*new*), keyed by fully-qualified name. A theorem is:
+      • stable      — present with an identical type hash;
+      • accounted   — statement changed OR theorem gone, AND a refutation witness exists (its short
+                      name is in *refuted*) → a legitimate, recorded correction (the P5 path);
+      • unaccounted — statement changed OR theorem gone with NO refutation witness → raise to REVIEW.
+    Changed-vs-removed is not distinguished: no consumer acts on it differently (the name plus the
+    diff tell a reviewer which), so both fall in the one `unaccounted` bucket. Theorems only in *new*
+    are PROVE-added supporting lemmas — expected, not reported. Reported names are the fully-qualified
+    constant names Lean emitted."""
+    stable, accounted, unaccounted = [], [], []
+    for qual, old_hash in old.items():
+        short = qual.rsplit(".", 1)[-1]
+        if qual in new and new[qual] == old_hash:
+            stable.append(qual)
+        elif short in refuted:
+            accounted.append(qual)
+        else:
+            unaccounted.append(qual)
+    return {"stable": stable, "accounted": accounted, "unaccounted": unaccounted}
+
+
+def check_statement_drift(deps: AgentDeps, refuted: list[str]) -> dict:
+    """POST-PROVE fidelity check: did PROVE alter or drop any statement the FORMALISE spec fixed?
+
+    Diffs the FORMALISE type fingerprints (`progress['formalise_types']`, captured by
+    `_stage_formalise` right after the spec compiled) against a fresh dump over the same module. A
+    changed or removed statement is ACCOUNTED when a `<name>__refuted` witness exists for it (*refuted*,
+    the short names from `verify_refutations`) and otherwise surfaces as `unaccounted` for REVIEW.
+    Returns {"stable", "accounted", "unaccounted"}. All three EMPTY is the could-not-run signal (no
+    FORMALISE fingerprint captured, or the fresh dump did not complete) — a real campaign module always
+    has ≥1 theorem, so the caller reads all-empty as "not verified" rather than a silent clean pass."""
+    old = deps.progress.get("formalise_types") or {}
+    if not old:
+        return {"stable": [], "accounted": [], "unaccounted": []}
+    new = dump_statement_types(deps, campaign_spec_module(deps))
+    if not new:
+        return {"stable": [], "accounted": [], "unaccounted": []}
+    res = _classify_drift(old, new, set(refuted or []))
+    log.info("check_statement_drift: %d stable, %d accounted-by-refutation, %d unaccounted",
+             len(res["stable"]), len(res["accounted"]), len(res["unaccounted"]))
+    return res
 
 
 def build(deps: AgentDeps) -> dict:
