@@ -395,17 +395,22 @@ def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
             "raw": text[-3000:]}
 
 
-def impl_references(deps: AgentDeps, spec_rel: str) -> dict[str, bool]:
-    """Which of a spec module's theorems VERIFY THE IMPLEMENTATION — i.e. their STATEMENT references a
-    `def` from the Aeneas TRANSLATION (a real translated def), vs a purely abstract helper lemma over
-    the spec's own predicates + trusted libraries. Returns `{written_theorem_name: bool}`.
+def impl_references(deps: AgentDeps, spec_rel: str) -> dict[str, str]:
+    """How each of a spec module's theorems relates to the TRANSLATION, three ways —
+    `{written_theorem_name: "function" | "surface" | "abstract"}`:
+      • `"function"` — its STATEMENT runs a translated FUNCTION and can constrain its result: it
+        VERIFIES THE IMPLEMENTATION (the headline signal).
+      • `"surface"` — it names a translated TYPE or plain VALUE constant (`Channel`, `BPS_DENOMINATOR`)
+        but executes no translated function; weaker than the headline count implies.
+      • `"abstract"` — a purely abstract helper over the spec's own predicates + trusted libraries,
+        with no reference to the translation at all.
 
     Decided in the built environment by `checkImplReference` (`getUsedConstants` on each theorem's
     elaborated TYPE, matched to the translation's own modules via `getModuleFor?`) — robust to
     `open`/namespacing, unlike the former text scan, which matched the full in-namespace def name
     (`crate.foo.Bar.measure`) against a statement that referenced it by its opened short name
-    (`Bar.measure`) and so wrongly reported every theorem abstract-only. A
-    theorem the driver never reaches is conservatively False (abstract), never a false impl-verified."""
+    (`Bar.measure`) and so wrongly reported every theorem abstract-only. A theorem the driver never
+    reaches is conservatively `"abstract"`, never a false impl-verified."""
     original = tools.read_out(deps, spec_rel)
     if original.startswith("ERROR:"):
         return {}
@@ -415,13 +420,13 @@ def impl_references(deps: AgentDeps, spec_rel: str) -> dict[str, bool]:
     qnames = _theorem_qualified_names(original)
     parts = tools._norm_out(spec_rel).split("/")
     if len(parts) < 3 or parts[0] != "lean":
-        return {n: False for n in names}
+        return {n: "abstract" for n in names}
     lib, spec_module = parts[1], ".".join(parts[1:]).removesuffix(".lean")
     # The modules a translated `def` lives in — the Aeneas output files recorded at TRANSLATE.
     trans_mods = sorted({m for f in deps.progress.get("aeneas", {}).get("lean_files", [])
                          for m in [_module_of(f)] if m})
     if not trans_mods:
-        return {n: False for n in names}
+        return {n: "abstract" for n in names}
     qlist = ", ".join("`" + q for q in qnames)
     mlist = ", ".join("`" + m for m in trans_mods)
     body = (f"import {spec_module}\nimport {lib}.{_LINT_TOOL_NAME.removesuffix('.lean')}\n"
@@ -434,10 +439,10 @@ def impl_references(deps: AgentDeps, spec_rel: str) -> dict[str, bool]:
         log.warning("impl_references: driver did not finish (rc=%s) — treating every theorem as "
                     "abstract (conservative, never a false impl-verified). Lean tail:\n%s", code,
                     text[-800:])
-        return {n: False for n in names}
-    recs = {r.get("theorem"): bool(r.get("refs_impl"))
+        return {n: "abstract" for n in names}
+    recs = {r.get("theorem"): r.get("kind", "abstract")
             for r in _parse_check_records(text) if r.get("check") == "impl_ref"}
-    return {written: recs.get(qual, False) for written, qual in zip(names, qnames)}
+    return {written: recs.get(qual, "abstract") for written, qual in zip(names, qnames)}
 
 
 def _axiom_fix_hint(ax: str) -> str:

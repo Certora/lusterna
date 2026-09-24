@@ -428,25 +428,32 @@ def _record_axioms(deps: AgentDeps) -> None:
     # honoured on faith. A specific axiom name means only theorems leaning on it are demoted.
     taint_all_assumed = lean._LEGIT_TAINT_ALL in bad
     clean, assumed, tainted = [], {}, []
-    impl_verified, impl_verified_assumed, abstract_only = [], [], []
+    impl_verified, impl_verified_assumed, abstract_only, surface_only = [], [], [], []
     sorry_remaining = 0
+
+    def _bucket(kind: str, clean_dst: list, assumed_bucket: bool) -> list:
+        # THREE-WAY (checkImplReference): "function" runs a translated function → impl-verified;
+        # "surface" names a translated type/constant but runs nothing → its own weaker bucket;
+        # "abstract" → abstract_only. `surface_only` is one list across clean+assumed, like abstract_only.
+        if kind == "function":
+            return impl_verified_assumed if assumed_bucket else clean_dst
+        return surface_only if kind == "surface" else abstract_only
+
     for mod in lean.spec_modules(deps):
         camp = _P(mod).stem
         ax = lean.check_axioms(deps, mod)
-        impl_ref = lean.impl_references(deps, mod)   # {written_name: statement references a translated def}
+        impl_ref = lean.impl_references(deps, mod)   # {written_name: "function"|"surface"|"abstract"}
         sorry_remaining += len(ax["sorry"])   # open obligations: theorems still resting on `sorryAx`
         clean += [f"{camp}::{n}" for n in ax["clean"]]
         for n in ax["clean"]:
-            dst = impl_verified if impl_ref.get(n, False) else abstract_only
-            dst.append(f"{camp}::{n}")
+            _bucket(impl_ref.get(n, "abstract"), impl_verified, assumed_bucket=False).append(f"{camp}::{n}")
         for n, used in ax["assumed"].items():
             q = f"{camp}::{n}"
             if taint_all_assumed or (set(used) & bad):   # leans on an inadmissible axiom → fail-closed
                 tainted.append(q)
                 continue
             assumed[q] = used
-            dst = impl_verified_assumed if impl_ref.get(n, False) else abstract_only
-            dst.append(q)
+            _bucket(impl_ref.get(n, "abstract"), impl_verified, assumed_bucket=True).append(q)
         tainted += [f"{camp}::{n}" for n in ax["tainted"]]
 
     # A kernel-verified refutation is a DISCREPANCY, not a spec amendment: a theorem shown FALSE as
@@ -456,7 +463,7 @@ def _record_axioms(deps: AgentDeps) -> None:
     deps.progress["axioms"] = {
         "clean": clean, "assumed": assumed, "tainted": tainted,
         "impl_verified": impl_verified, "impl_verified_assumed": impl_verified_assumed,
-        "abstract_only": abstract_only,
+        "surface_only": surface_only, "abstract_only": abstract_only,
         "declared_assumptions": sorted(lean.declared_assumptions(deps)),
         "illegitimate_assumptions": sorted(bad),
         "refutations": refuted,
@@ -495,10 +502,10 @@ def _record_axioms(deps: AgentDeps) -> None:
                     "implementation; 0 properties of the code are verified (abstract only: %s)",
                     established, abstract_only)
     log.info("PROVE complete — %d sorry remaining; established %d (%d clean + %d assumed) of %d; "
-             "impl-verified %d clean + %d modulo-base; abstract-only %d; tainted %d",
+             "impl-verified %d clean + %d modulo-base; surface-only %d; abstract-only %d; tainted %d",
              sorry_remaining, established, len(clean), len(assumed),
              established + len(tainted), len(impl_verified), len(impl_verified_assumed),
-             len(abstract_only), len(tainted))
+             len(surface_only), len(abstract_only), len(tainted))
 
 
 def _stage_prove(deps: AgentDeps) -> None:
@@ -582,6 +589,7 @@ def _authoritative_verdict(deps: AgentDeps) -> str:
     assumed = ax.get("assumed", {})                        # {thm: [assumption qnames]}
     impl, abstract = ax.get("impl_verified", []), ax.get("abstract_only", [])
     impl_assumed = ax.get("impl_verified_assumed", [])
+    surface = ax.get("surface_only", [])
     declared = ax.get("declared_assumptions", [])
     illegit = ax.get("illegitimate_assumptions", [])
     refuted = ax.get("refutations", [])
@@ -615,7 +623,8 @@ def _authoritative_verdict(deps: AgentDeps) -> str:
         ]
     lines += [
         f"- **VERIFY THE IMPLEMENTATION on standard axioms: {len(impl)} / {total}** "
-        f"(kernel-established, standard axioms only, referencing an Aeneas-translated def):",
+        f"(kernel-established, standard axioms only, RUNNING an Aeneas-translated function and "
+        f"constraining its result):",
         f"  {impl or '(none)'}",
     ]
     if impl_assumed or declared:
@@ -625,8 +634,16 @@ def _authoritative_verdict(deps: AgentDeps) -> str:
             f"\"verified modulo the trusted base\", NOT unconditionally verified):",
             f"  {impl_assumed or '(none)'}",
         ]
+    if surface:
+        lines += [
+            f"- References the implementation's TYPES/CONSTANTS only: {len(surface)} {surface} "
+            f"(established, and the statement NAMES a translated type or value constant — but it runs "
+            f"no translated function, so it constrains no execution. Weaker than impl-verified: NOT "
+            f"counted in the headline. Read each as a fact about the data shape or a literal, not about "
+            f"behaviour.)",
+        ]
     lines += [
-        f"- Abstract-only established lemmas (not about the implementation): {len(abstract)} {abstract or ''}",
+        f"- Abstract-only established lemmas (no translated reference at all): {len(abstract)} {abstract or ''}",
         f"- NOT established — **tainted, verify NOTHING** (a leftover `sorry`, native_decide, or an "
         f"undeclared axiom): {len(tainted)} {tainted or ''}",
         "",

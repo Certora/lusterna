@@ -601,16 +601,19 @@ THE AUTHORITATIVE SPINE — you narrate it, you never override it. The harness p
 from it to the top-level report. It is authoritative — any prose of yours that conflicts with it is
 wrong — and it carries THREE rungs your write-up must reproduce faithfully (all under the top-level
 `axioms` key):
-  1. SOUNDNESS: `axioms.impl_verified` are established on STANDARD axioms AND reference an Aeneas-
-     translated def (the HEADLINE — theorems that verify the implementation). `axioms.impl_verified_assumed`
+  1. SOUNDNESS: `axioms.impl_verified` are established on STANDARD axioms AND RUN an Aeneas-translated
+     function, constraining its result (the HEADLINE — theorems that verify the implementation).
+     `axioms.impl_verified_assumed`
      are established only MODULO the declared trusted base (`axioms.declared_assumptions` /
      `axioms.assumed`) — report as "verified modulo the trusted base", separate from the unconditional
      count. `axioms.tainted` verify NOTHING (a leftover `sorry`, native_decide compiler trust, or an
      undeclared axiom); a proof that COMPILES may still be tainted, so never count "it builds" as
      verified. `axioms.illegitimate_assumptions`, if any, were demoted to tainted — flag prominently.
-  2. IMPLEMENTATION PARTITION: `axioms.impl_verified` vs `axioms.abstract_only`. This tells you a
-     theorem is ABOUT the code; it does NOT by itself tell you a projection is faithful — that is the
-     next rung and the heart of your job.
+  2. IMPLEMENTATION PARTITION: `axioms.impl_verified` (runs a translated function) vs
+     `axioms.surface_only` (names a translated type/constant but runs nothing — weaker, never the
+     headline) vs `axioms.abstract_only` (no translated reference). Being impl_verified tells you a
+     theorem RUNS the code; it does NOT by itself tell you a projection is faithful — that is the next
+     rung and the heart of your job.
   3. GROUNDING (`axioms.grounding`): for each measurement the properties reconstruct as a projection,
      whether an ESTABLISHED theorem ties that projection to the real function (`grounded`) or not
      (`ungrounded`). An `ungrounded` anchor means the properties reason about a projected quantity that
@@ -627,9 +630,12 @@ owner: §4 (the fidelity review) is the centrepiece and the largest part; the re
 
   01_overview.md — for the code owner: a one-paragraph executive summary and an overview table. The
     HEADLINE is `len(axioms.impl_verified)` — theorems that VERIFY THE IMPLEMENTATION (kernel-
-    established, standard axioms, referencing a translated def); report abstract lemmas and tainted
-    theorems separately, never as the result; if none reference the implementation, say plainly that 0
-    properties of the code were verified. Lead with `axioms.refutations` if non-empty (a refuted
+    established, standard axioms, RUNNING a translated function and constraining its result). Report the
+    other categories separately, never folded into the headline: `axioms.surface_only` (established, but
+    the statement only NAMES a translated type or value constant — e.g. `Channel`, `BPS_DENOMINATOR` —
+    and runs no function, so it constrains no execution; call these out as weaker than impl-verified,
+    not silently), abstract lemmas, and tainted theorems. If none run the implementation, say plainly
+    that 0 properties of the code were verified. Lead with `axioms.refutations` if non-empty (a refuted
     property is the most important thing a reader can see). State the grounding headline from rung 3
     (how many measurement anchors are tied to the real function by an established bridge, naming any
     ungrounded one). Note the pre-proof spec-judge screen result (`spec_judge.defects`: none, or the
@@ -701,7 +707,8 @@ owner: §4 (the fidelity review) is the centrepiece and the largest part; the re
     the worries a skeptic would raise and the answers, cite exact sources throughout.
   05_proofs.md — proof status per theorem. The AUTHORITATIVE verdict is `#print axioms`: established
     only if the proof rests on nothing beyond the standard axioms. Mark each theorem implementation-
-    verified / verified-modulo-base / abstract-only / tainted / REFUTED, with a one-line sketch or a
+    verified / verified-modulo-base / surface-only (`axioms.surface_only` — names a translated
+    type/constant but runs no function) / abstract-only / tainted / REFUTED, with a one-line sketch or a
     suggested strategy. For any theorem in `axioms.refutations`, mark it REFUTED and describe the
     counterexample (the witness and why the property fails) — a distinct, prominent category, never
     lumped with "not yet proved".

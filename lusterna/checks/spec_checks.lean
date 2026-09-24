@@ -30,7 +30,8 @@ THE STANDALONE CHECKS — each driven by its own `lean.py` counterpart, NOT part
     `Lean.collectAxioms` (the exact function `#print axioms` calls).
   • `checkDefAxioms` (`lean.target_footprint_gate`) — the TRANSLATE-time taint gate over target `def`s.
   • `dumpStatementTypes` (`lean.check_statement_drift`) — per-theorem type fingerprint (FORMALISE→PROVE).
-  • `checkImplReference` (`lean.impl_references`) — does a theorem reference a translated `def`?
+  • `checkImplReference` (`lean.impl_references`) — three-way: does a theorem run a translated
+    function, merely name a translated type/constant, or reference the translation not at all?
   • `checkAnchorReference` (`lean.check_grounding`) — is each INFER anchor measured by some theorem?
   • `checkAnchorCheckedReference` (`lean.check_anchor_coverage`) — is each anchor measured by a CHECKED
     (`@[lusterna]`) triple? The governance floor: the checked family may not be quietly emptied.
@@ -377,13 +378,32 @@ def dumpStatementTypes (module : Name) : MetaM Unit := do
 
 def checkImplReference (thms : Array Name) (translationModules : Array Name) : MetaM Unit := do
   let env ← getEnv
+  -- A used constant is RUNNABLE translated CODE iff it is a `def`/`opaque` whose type is a function
+  -- (takes arguments) or a `Result` computation. A translated TYPE (`Channel`, an inductive) and a
+  -- plain VALUE constant (`BPS_DENOMINATOR : U32`, a nullary non-`Result` def) are NOT code: a
+  -- statement merely NAMES them without executing anything. (An `axiom` is an assumed primitive, not
+  -- established code, so it never counts as `function` either.)
+  let codeTy (ty : Expr) : Bool := ty.isForall || ty.getUsedConstants.contains ``Aeneas.Std.Result
+  let isCode (c : Name) : Bool :=
+    match env.find? c with
+    | some (.defnInfo vi)   => codeTy vi.type
+    | some (.opaqueInfo vi) => codeTy vi.type
+    | _                     => false
   for t in thms do
     let some ci := env.find? t | continue
-    let refsImpl := ci.type.getUsedConstants.any fun c =>
+    let inTrans (c : Name) : Bool :=
       match env.getModuleFor? c with
       | some m => translationModules.contains m
       | none   => false
-    emit s!"\{\"check\": \"impl_ref\", \"theorem\": \"{t}\", \"refs_impl\": {refsImpl}}"
+    let used := ci.type.getUsedConstants
+    -- THREE-WAY. `function`: runs a translated function and can constrain its result — the strong
+    -- "verifies the implementation" signal. `surface`: names a translated type or value constant but
+    -- executes nothing — weaker than the headline implies. `abstract`: no reference to the translation.
+    let kind :=
+      if used.any (fun c => inTrans c && isCode c) then "function"
+      else if used.any inTrans then "surface"
+      else "abstract"
+    emit s!"\{\"check\": \"impl_ref\", \"theorem\": \"{t}\", \"kind\": \"{kind}\"}"
 
 /-! ══ `anchor_bridge` — a reconstructed measurement must be tied to the real function ═════════════
 

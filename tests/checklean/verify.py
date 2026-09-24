@@ -339,13 +339,18 @@ def run_gate_fixture() -> int:
         if not case1:
             print(f"    (leaky footprint={g1['footprint']}, ok={g1['ok']})")
 
-        # ── impl_references: does a theorem VERIFY THE IMPLEMENTATION? ─────────────────────────────
-        # The exact bug this replaced: `ts_uses_impl` references the translated `cleanTarget` via the
-        # OPENED short name (`open leaky`), which a text scan of the full in-namespace def name
-        # missed → every theorem wrongly "abstract". `pure_lemma` is genuinely abstract (Nat only).
-        spec = ("import LeakyModel\nopen leaky\n"
+        # ── impl_references: three-way, does a theorem RUN the implementation? ─────────────────────
+        # `function`: runs a translated function — via a normal fn (`cleanTarget`, resolved through the
+        # OPENED short name `open leaky`, the case a text scan got wrong) or a nullary `Result`
+        # computation (`nullaryComp`). `surface`: names a translated TYPE (`Formatter`) or VALUE
+        # constant (`denom`) but runs nothing — the over-count this bucket exists to separate out.
+        # `abstract`: no translated reference at all (`pure_lemma`, Nat only).
+        spec = ("import LeakyModel\nopen leaky Aeneas.Std\n"
                 "namespace LeakyModel.Spec.Property\n"
                 "theorem ts_uses_impl (x : Nat) (h : cleanTarget x = 1) : True := trivial\n"
+                "theorem ts_nullary (h : nullaryComp = .ok 0) : True := trivial\n"
+                "theorem ts_type_only (f : Formatter) : True := trivial\n"
+                "theorem ts_const_only (h : denom = 10) : True := trivial\n"
                 "theorem pure_lemma (a b : Nat) : a + b = b + a := Nat.add_comm a b\n"
                 "end LeakyModel.Spec.Property\n")
         assert not tools.write_out(deps, "lean/LeakyModel/Spec/Solvency.lean", spec).startswith("ERROR:")
@@ -355,11 +360,13 @@ def run_gate_fixture() -> int:
             ok = False
         else:
             refs = lean.impl_references(deps, "lean/LeakyModel/Spec/Solvency.lean")
-            case4 = refs.get("ts_uses_impl") is True and refs.get("pure_lemma") is False
-            print(f"  impl_references (open'd name → impl-verified, abstract → not): "
+            want = {"ts_uses_impl": "function", "ts_nullary": "function",
+                    "ts_type_only": "surface", "ts_const_only": "surface", "pure_lemma": "abstract"}
+            case4 = all(refs.get(k) == v for k, v in want.items())
+            print(f"  impl_references (function / surface / abstract three-way): "
                   f"{'PASS' if case4 else 'FAIL'}")
             if not case4:
-                print(f"    (got {refs})")
+                print(f"    (got {refs}, want {want})")
             ok = ok and case4
         return 0 if ok else 1
     finally:
