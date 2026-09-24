@@ -1,21 +1,22 @@
 /-
 Lusterna SPEC SCHEMAS — the attributes FORMALISE uses to DECLARE what each theorem IS.
 
-`assumed_postcondition` in `spec_checks.lean` hunts for a bad shape, which makes its SILENCE ambiguous
-("clean, or nothing I recognise"). These attributes invert that: the author declares the family, and
-`checkSchemaConformance` verifies the declaration. A conformance failure on a DECLARED family is a
-fact rather than a judgement, which is what lets the harness gate on it.
+The author DECLARES the family, and `checkSchemaConformance` verifies the declaration. A conformance
+failure on a DECLARED family is a fact rather than a judgement, which is what lets the harness gate on
+it — unlike a checker that hunts for a bad shape, whose SILENCE is ambiguous ("clean, or nothing I
+recognise").
 
-  @[lusterna]                        -- a CHECKED property: one target execution → a fail-safe claim
+  @[lusterna]                        -- a CHECKED property: a WP triple over a target
   @[lusterna_lemma "why"]            -- a supporting lemma, deliberately outside the checked shape
 
 These TWO families are the whole taxonomy — there is no third, and no invariant/hoare distinction. A
-CHECKED property (`@[lusterna]`) runs one declared-target execution and states a claim about what it
-produced; the claim is a plain proposition (`Prop`) over the produced values, or the failure-strict
-`Result Bool` used as `P args = ok true` — either way `schema_conformance` verifies it cannot fail
-OPEN (a measurement's failure can never make the claim vacuously true). Whether that one checked
-property is, on its own or with others, an INVARIANT of the system is a PROVE/REPORT question, never a
-per-theorem label: the gate checks properties, not invariance.
+CHECKED property (`@[lusterna]`) is an Aeneas WP triple over a declared target, `f args ⦃ r => post r ⦄`,
+whose postcondition MENTIONS the produced value, is a PURE proposition (no nested `Result` measurement
+that could fail OPEN), and genuinely CONSTRAINS the value (not a self-assuming tautology). The triple
+form gives single execution, totality and output-freshness for free, so `schema_conformance` need only
+vet the postcondition. Whether that one checked property is, on its own or with others, an INVARIANT of
+the system is a PROVE/REPORT question, never a per-theorem label: the gate checks properties, not
+invariance.
 
 ╔══════════════════════════════════════════════════════════════════════════════════════════════╗
 ║ HARNESS-OWNED, and the attribute set is APPEND-ONLY. Do not edit or delete this file.         ║
@@ -45,10 +46,10 @@ syntax (name := lusterna_lemma) "lusterna_lemma " str : attr
 
 namespace Lusterna.Schemas
 
-/-- A CHECKED property: one declared-target execution binding fresh outputs, and a fail-safe claim
-about what it produced (a plain `Prop`, or a failure-strict `Result Bool` used as `P args = ok true`)
-— see Lusterna `schema_conformance`. Whether the property is an INVARIANT is a PROVE/REPORT question,
-not this label. -/
+/-- A CHECKED property: a WP triple over a declared target, `f args ⦃ r => post r ⦄`, whose
+postcondition mentions the produced value, is a pure `Prop` (no nested `Result` measurement that could
+fail OPEN), and genuinely constrains it — see Lusterna `schema_conformance`. Whether the property is an
+INVARIANT is a PROVE/REPORT question, not this label. -/
 initialize checkedAttr : TagAttribute ←
   registerTagAttribute `lusterna
     "this theorem is a Lusterna-checked property (see Lusterna `schema_conformance`)"

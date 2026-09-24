@@ -1,10 +1,16 @@
 """Regression tests for THE SPEC GATE (`lean.check_spec_gate`).
 
-Both checks in `spec_checks.lean` block FORMALISE now — no stage interprets them. That is sound only
-because each theorem DECLARES its family, which retires the shape rules' documented false positives
-(a relational antecedent needs two executions, which the one checked shape forbids; and so on).
+The gate blocks FORMALISE and no stage interprets it. Under the triple checked-schema a checked
+property is a WP triple over a target with a pure, non-vacuous postcondition, so `schema_conformance`
+is the one per-theorem check; the module-level checked-coverage records drive two governance rules:
 
-Two properties carry the weight here:
+  • GUARD A (`no_checked_execution`): a systemic hard-stop when NO target is measured by any checked
+    triple across the whole spec — the exact failure that let a campaign pass with an empty
+    `@[lusterna]` family, every core property quietly demoted to a lemma.
+  • prong 3 (`anchor_uncovered`): a declared anchor measured only by an exempt lemma (or nothing) is
+    an ungoverned core.
+
+Two properties carry the weight here too:
 
   • "could not check" is NEVER reported as "conforms". The gate reads a `LUSTERNA_GATE_DONE`
     sentinel for exactly the reason `check_axioms` treats an unresolved theorem as tainted: silence
@@ -31,9 +37,11 @@ end Foo.Spec
 FINDING = ('x.lean:6:0: info: LUSTERNA_CHECK {"check": "schema_conformance", '
            '"theorem": "Foo.Spec.bare", "schema": "none", "rule": "no_schema_declared", '
            '"detail": "every spec theorem must declare a family"}')
-TAINT = ('LUSTERNA_CHECK {"check": "assumed_postcondition", "theorem": "Foo.Spec.good", '
-         '"fn": "f", "tainted": ["r"], "hypothesis": "h", "rule": "constrains tainted variable", '
-         '"detail": "d", "schema": "checked", "is_conclusion": false}')
+# The real driver ALWAYS calls `checkAnchorCheckedReference` over the targets, so a live run always
+# emits one `anchor_checked` record per target. A clean spec has its target covered by a checked
+# triple; feeding this keeps GUARD A quiet in the tests that exercise other rules.
+COVERED = ('LUSTERNA_CHECK {"check": "anchor_checked", "theorem": "(module)", '
+           '"anchor": "Foo.transfer", "checked_referenced": true}')
 UNRELATED = 'LUSTERNA_CHECK {"check": "some_future_check", "theorem": "Foo.Spec.good"}'
 SKIPPED = ('LUSTERNA_CHECK_SKIPPED {"check": "schema_conformance", '
            '"theorem": "Foo.Spec.good", "schema": "checked", "reason": "no targets given"}')
@@ -54,8 +62,9 @@ def stub(monkeypatch):
 
 
 def test_conforming_spec_returns_no_failures(stub):
-    """A spec WITH theorems, a driver that finished, and no findings — the only shape that may pass."""
-    stub(f"{lean._GATE_DONE}\n")
+    """A spec WITH theorems, a driver that finished, its target covered by a checked triple, and no
+    other findings — the only shape that may pass."""
+    stub(f"{COVERED}\n{lean._GATE_DONE}\n")
     assert lean.check_spec_gate(_deps(), "lean/Foo/Spec.lean") == []
 
 
@@ -63,7 +72,7 @@ def test_skipped_record_blocks(stub):
     """A SKIPPED record names a theorem that went UNCHECKED, while the finding list still looks
     complete. Dropping it would let "nothing was checked" reach the gate as "everything conforms" —
     the same rule tests/checklean/verify.py pins for the judge-facing path."""
-    stub(f"{SKIPPED}\n{lean._GATE_DONE}\n")
+    stub(f"{COVERED}\n{SKIPPED}\n{lean._GATE_DONE}\n")
     bad = lean.check_spec_gate(_deps(), "lean/Foo/Spec.lean")
     assert [b["rule"] for b in bad] == ["could_not_check"]
     assert bad[0]["theorem"] == "Foo.Spec.good"
@@ -92,24 +101,40 @@ def test_unreadable_translation_yields_no_targets(monkeypatch):
 
 
 def test_failure_is_parsed_with_its_rule(stub):
-    stub(f"{FINDING}\n{lean._GATE_DONE}\n")
+    stub(f"{COVERED}\n{FINDING}\n{lean._GATE_DONE}\n")
     bad = lean.check_spec_gate(_deps(), "lean/Foo/Spec.lean")
     assert len(bad) == 1
     assert bad[0]["theorem"] == "Foo.Spec.bare"
     assert bad[0]["rule"] == "no_schema_declared"
 
 
-def test_all_three_checks_block(stub):
-    """The gate is the composition, so a taint finding blocks exactly as a conformance one does."""
-    stub(f"{TAINT}\n{lean._GATE_DONE}\n")
+def test_guard_a_blocks_when_no_checked_execution(stub):
+    """GUARD A — the systemic hard-stop. A driver that finished cleanly but whose targets are covered
+    by NO checked triple is the exact regression: the checked family is empty, yet nothing per-theorem
+    fires. It must block with `no_checked_execution`, not pass."""
+    stub(f"{lean._GATE_DONE}\n")   # no anchor_checked record ⇒ target uncovered
     bad = lean.check_spec_gate(_deps(), "lean/Foo/Spec.lean")
-    assert [b["check"] for b in bad] == ["assumed_postcondition"]
+    assert [b["rule"] for b in bad] == ["no_checked_execution"]
+    assert bad[0]["theorem"] == "(module)"
+
+
+def test_prong3_blocks_uncovered_anchor(stub):
+    """prong 3 — a declared anchor measured by no checked triple (only a lemma, say) blocks with
+    `anchor_uncovered`, provided SOME target is covered so GUARD A stays quiet."""
+    deps = _deps()
+    deps.progress["anchor_functions"] = ["measure"]
+    uncovered_anchor = ('LUSTERNA_CHECK {"check": "anchor_checked", "theorem": "(module)", '
+                        '"anchor": "measure", "checked_referenced": false}')
+    stub(f"{COVERED}\n{uncovered_anchor}\n{lean._GATE_DONE}\n")
+    bad = lean.check_spec_gate(deps, "lean/Foo/Spec.lean")
+    assert [b["rule"] for b in bad] == ["anchor_uncovered"]
+    assert "measure" in bad[0]["detail"]
 
 
 def test_findings_from_unknown_checks_are_ignored(stub):
     """Every check shares one output token, so a finding from something outside the gate's own set
     must not silently become a rejection."""
-    stub(f"{UNRELATED}\n{lean._GATE_DONE}\n")
+    stub(f"{COVERED}\n{UNRELATED}\n{lean._GATE_DONE}\n")
     assert lean.check_spec_gate(_deps(), "lean/Foo/Spec.lean") == []
 
 
@@ -182,8 +207,9 @@ def test_format_gate_findings_names_the_check_and_rule():
     """FORMALISE acts on this message unaided, so it must carry both names."""
     msg = pipeline._format_gate_findings(
         [{"check": "schema_conformance", "theorem": "Foo.Spec.bare", "schema": "checked",
-          "rule": "execution_not_unique", "detail": "found 2"}])
-    for expect in ("Foo.Spec.bare", "schema_conformance", "execution_not_unique", "checked", "found 2"):
+          "rule": "triple_not_over_target", "detail": "runs Foo.k, not a target"}])
+    for expect in ("Foo.Spec.bare", "schema_conformance", "triple_not_over_target", "checked",
+                   "runs Foo.k, not a target"):
         assert expect in msg, expect
 
 
