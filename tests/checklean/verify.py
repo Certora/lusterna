@@ -28,7 +28,6 @@ import json
 import re
 import subprocess
 import sys
-from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -45,344 +44,58 @@ _CHECK_RE = re.compile(r"(?m)^\s*(?:\S+:\d+:\d+:\s*)?(?:info:\s*)?LUSTERNA_CHECK
 _DONE_RE = re.compile(r"(?m)^\s*(?:\S+:\d+:\d+:\s*)?(?:info:\s*)?LUSTERNA_CHECK_DONE(?:\s+(\{.*\}))?\s*$")
 _SKIP_RE = re.compile(r"(?m)^\s*(?:\S+:\d+:\d+:\s*)?(?:info:\s*)?LUSTERNA_CHECK_SKIPPED\s+(\{.*\})\s*$")
 
-# Every finding the fixture must produce, keyed by (check, theorem-or-predicate). This is the
-# regression suite for the checker itself — see Fixture.lean for why each row is (not) expected.
+# Every finding the fixture (Schemas.lean) must produce, keyed by (check, theorem). Under the TRIPLE
+# checked-schema every finding is a `schema_conformance` (one per broken rule) plus the standalone
+# `assumption_legitimacy` from Legit.lean; the equational-era taint fixpoint is gone.
 EXPECTED = {
-    # a predicate named under Aeneas's `<fn>.spec` convention -- the triple exclusion must not
-    # swallow it (it matches the real `Aeneas.Std.WP.spec` constant, not the name suffix).
-    # THE GUARD IS THE ANTECEDENT, not a shape two binders wide. An extra binder between the output
-    # and its equation (V12), no bound output at all (V13), or the success equality tucked into a
-    # conjunction (V17) are the same fail-open property and all used to walk past the matcher.
-    # A TRIPLE'S POSTCONDITION is not covered by the triple's own success requirement (V14).
-    # FOUR WRAPPERS DEEP (V15) — past the old three-round breadth-first cap, which returned its
-    # partial result as though it were a complete clean one.
-    # A DECLARATION NAMED UNDER A TRUSTED NAMESPACE (V16) is still project code: trust follows the
-    # module a declaration was compiled into, which generated code cannot pick.
-    # IN THE CONCLUSION, surviving the peel inside a conjunction (V18).
-    # THE DEMAND, not the syntax. V19 hides the equation behind a predicate used as the antecedent —
-    # invisible from either side alone, since at the use site it is not an equation and inside the
-    # predicate it is a body. V20 hides it behind an existential. Both are unfolded/traversed at the
-    # USE SITE now. (V22 is the control: a DATA-valued function type whose domain is an equation is
-    # not an implication and must stay clean.)
-    # A PROP-VALUED STRUCTURE keeps its propositions in constructor fields, not in a body (V21).
-
-    # ── Taint.lean: `assumed_postcondition`, the information-flow rule ───────────────────────
-    # t2 is the motivating case: nothing local separates it from the honest version, since the
-    # execution is real and `Pre x s` genuine. The finding must carry "is_conclusion": true.
-    ("assumed_postcondition", "Probe.Taint.t2_assumes_its_own_conclusion"),
-    # taint closes through the alias `hz : z = s'.var`, and it fires on BOTH the alias (which carries
-    # the taint) and `hz2 : 0 < z` (what it enables) — TWO findings, pinned in EXPECTED_COUNTS.
-    ("assumed_postcondition", "Probe.Taint.t3_closed_taint"),
-    # KNOWN FALSE POSITIVES, both accepted and pinned. Injectivity's `hab : sa = sb` is a
-    # hypothesis about two runs' outputs by construction; a bound on
-    # an intermediate is a real overflow guard AND a domain restriction on the subject's output.
-    ("assumed_postcondition", "Probe.Taint.t7_injectivity_known_fp"),
-    ("assumed_postcondition", "Probe.Taint.t8_intermediate_bound_known_fp"),
-    ("assumed_postcondition", "Probe.Taint.t10_tainted_named_predicate"),
-    # A FALLIBLE CALL ON THE POST-STATE is not a neutral observation, so being execution-shaped is
-    # not enough to be trusted. t13/t14 smuggle the whole postcondition inside one
-    # (`simp [checkVarPreserved] at hcheat; exact hcheat`); t15 smuggles nothing and is still a
-    # weakening, because it assumes `total` succeeds on s'; t5b is a genuine next step that simply
-    # was not declared as a continuation; t6 is the same shape in the conclusion, reached from the
-    # taint side (fix: t6a/t6b).
-    ("assumed_postcondition", "Probe.Taint.t5b_undeclared_continuation"),
-    ("assumed_postcondition", "Probe.Taint.t6_conclusion_side_measurement"),
-    ("assumed_postcondition", "Probe.Taint.t13_predicate_as_call"),
-    ("assumed_postcondition", "Probe.Taint.t14_bool_predicate_as_call"),
-    ("assumed_postcondition", "Probe.Taint.t15_success_on_post_state"),
-    # A SUBJECT EXECUTION MUST PRODUCE FRESH, UNPINNED OUTPUTS. t11's `ok (y, s)` asserts the
-    # post-state IS the pre-state; t16 pins the output value to a constant; t17 pins the post-state
-    # structurally. Each decides in the execution binder what the conclusion should have claimed.
-    ("assumed_postcondition", "Probe.Taint.t11_in_place_state"),
-    ("assumed_postcondition", "Probe.Taint.t16_constant_output"),
-    ("assumed_postcondition", "Probe.Taint.t17_structured_output"),
-    # AN EQUALITY IS AN ASSUMPTION, not a definition. t18's alias is the whole cheat with nothing
-    # downstream to catch it; t19 rebuilds the goal across two of them. Both propagate taint AND
-    # are reported -- t3 accordingly fires twice, on the alias and on what it enables.
-    ("assumed_postcondition", "Probe.Taint.t18_alias_is_the_cheat"),
-    ("assumed_postcondition", "Probe.Taint.t19_two_alias_reconstruction"),
-    # A DATA BINDER can carry a proposition. `Meta.isProp` is not a security boundary.
-    ("assumed_postcondition", "Probe.Taint.t20_subtype_carries_postcondition"),
-    # A SECOND CALL CAN PIN THE SUBJECT'S OUTPUT WITHOUT TOUCHING A TAINTED ARGUMENT — t21's
-    # `expected x = ok y` runs on clean inputs and determines `y` anyway, so exemption tests the
-    # whole binder type rather than the argument list.
-    ("assumed_postcondition", "Probe.Taint.t21_output_pinned_by_clean_call"),
-    # An AUTHORIZED CONTINUATION gets the chaining edge, not a licence to constrain: t22 declares
-    # `settle` and still pins the post-state in its own execution binder.
-    ("assumed_postcondition", "Probe.Taint.t22_continuation_output_not_fresh"),
-    # A TARGET IS A PROVENANCE SOURCE, NOT AN AUTOMATIC CONTINUATION. t23 re-runs the subject on its
-    # own post-state without declaring it; t24 is the same theorem with the declaration, and clean.
-    ("assumed_postcondition", "Probe.Taint.t23_target_rerun_undeclared"),
-    # CHOOSING A CONSTRUCTOR is information whether or not it carries fields.
-    ("assumed_postcondition", "Probe.Taint.t25_option_wrapper_pins_branch"),
-    # OUTPUT OWNERSHIP. Freshness is local to one call, so two executions PRODUCING the same
-    # variable is a way to write injectivity's relational premise without writing one (t26); and a
-    # continuation may not land its result on a value that predates every target (t27).
-    ("assumed_postcondition", "Probe.Taint.t26_shared_output_between_subjects"),
-    ("assumed_postcondition", "Probe.Taint.t27_continuation_output_aliases_root_input"),
-    # THE CONCLUSION IS EXEMPT, so a named predicate is where the antecedent moves (t28). t29 is the
-    # carve-out that keeps that from flagging every bounded quantification over the post-state.
-    ("assumed_postcondition", "Probe.Taint.t28_predicate_hides_antecedent"),
-    # A TRIPLE'S POSTCONDITION can assume what it claims. The post-state is lambda-bound, which was
-    # wrongly documented as making the defect structurally impossible; both of these were clean.
-    ("assumed_postcondition", "Probe.Taint.t31_triple_postcondition_assumes_itself"),
-    ("assumed_postcondition", "Probe.Taint.t32_triple_postcondition_hides_antecedent"),
-    # THE CONCLUSION IS COMPOSITIONAL. t33 hides the predicate behind `And` (a trusted inductive, so
-    # a root-keyed unfold never looked); t34 sits three wrappers past the old depth-two cutoff;
-    # t35 carries the antecedent in a Prop-valued structure field.
-    ("assumed_postcondition", "Probe.Taint.t33_conclusion_behind_a_connective"),
-    ("assumed_postcondition", "Probe.Taint.t34_conclusion_beyond_old_depth_cap"),
-    ("assumed_postcondition", "Probe.Taint.t35_conclusion_structure_field"),
-    # The quantifier carve-out is no longer SILENT: a bounded quantification over the post-state is
-    # reported at low signal ("quantifier over the post-state"), because "mentions a local binder"
-    # is bypassable — `∀ i, (i = i → P s') → P s'` satisfies it and is still a free assumption.
-    ("assumed_postcondition", "Probe.Taint.t29_quantifier_guard_is_not_an_antecedent"),
-
-    # ── Invariant.lean: failure-strictness, now via `schema_conformance` (`claimFailSafe?`) ─────
-    # A preservation stated on a FAIL-OPEN predicate: BOTH the pre-state hypothesis and the
-    # conclusion rest on it, so each is a non-fail-safe claim — 2 findings, pinned in EXPECTED_COUNTS.
-    ("schema_conformance", "Probe.Inv.Spec.i11_sum_open"),    # `ok (! ok? (sum_bals …))`
-    ("schema_conformance", "Probe.Inv.Spec.i12_match_res"),   # match ON a Result
-    ("schema_conformance", "Probe.Inv.Spec.i13_ite_okq"),     # Result in an `ite` condition
-    ("schema_conformance", "Probe.Inv.Spec.i14_let_res"),     # non-monadic `let` of a Result
-    ("schema_conformance", "Probe.Inv.Spec.i15_deep"),        # 4 wrappers above a fail-open leaf
-    ("schema_conformance", "Probe.Inv.Spec.i16_cap_bad"),     # same, with an extra argument
-    # NOT CERTIFIED — no evidence of a defect, only that the walk cannot certify (same `rule`).
-    ("schema_conformance", "Probe.Inv.Spec.i17_opaque"),
-    ("schema_conformance", "Probe.Inv.Spec.i18_partial"),
-    ("schema_conformance", "Probe.Inv.Spec.i19_foldm"),       # `List.foldlM`, see the fixture
-    # `claim_not_failsafe` — a measurement stated as an inline existential (i21) or an inline
-    # `do`-block over library `Bind.bind` (i22): neither pure nor `P args = ok true`. 2 each.
-    ("schema_conformance", "Probe.Inv.Spec.i21_existential_measurement"),
-    ("schema_conformance", "Probe.Inv.Spec.i22_inline_measurement"),
-    # `execution_not_unique` — the execution is not a declared target (a wrong `--subjects`).
-    ("schema_conformance", "Probe.Inv.Spec.i25_not_a_target"),
-    # i1..i10, i20_plain_prop, i27, i28 are absent: the strict / plain-Prop controls draw nothing.
-
-    # ── Schemas.lean: `schema_conformance` — one broken rule per theorem ───────────────────────
-    ("schema_conformance", "Probe.Schemas.s5_two_executions"),
-    ("schema_conformance", "Probe.Schemas.s6_pinned_output"),
-    # s7 is PROVENANCE, not shape: a fail-safe precondition that mentions the post-state conforms,
-    # then `assumed_postcondition` catches it. So its finding is that check's, not schema's.
-    ("assumed_postcondition", "Probe.Schemas.s7_pre_mentions_output"),
-    ("schema_conformance", "Probe.Schemas.s10_post_not_strict"),
-    ("schema_conformance", "Probe.Schemas.s11_conclusion_ignores_output"),
-    ("schema_conformance", "Probe.Schemas.s14_unannotated"),
-    ("schema_conformance", "Probe.Schemas.s15_double_annotated"),
-    # precedence: the shape finding, and ONLY it, on a theorem that is also non-strict
-    ("schema_conformance", "Probe.Schemas.g1_precedence_shape_first"),
-    # ABSENT deliberately (the intended loosening, pinned CLEAN as regression guards): s8 (a pure
-    # precondition over a root), s9 (a plain-Prop conclusion), s17 (mentions one of two outputs),
-    # g4 (a preservation with a side condition — the exact case the invariant/hoare split forced
-    # apart). g2/g3 are `@[lusterna_lemma]`, out of scope.
-
-    # ── Legit.lean: `assumption_legitimacy` ────────────────────────────────────────────────────
-    # deposit_monotone's type references the target `deposit` → flagged; limbMul_spec (substrate) is
-    # the clean control, absent here.
+    ("schema_conformance", "Probe.Schemas.s5_not_a_triple"),
+    ("schema_conformance", "Probe.Schemas.s6_triple_not_over_target"),
+    ("schema_conformance", "Probe.Schemas.s7_ignores_output"),
+    ("schema_conformance", "Probe.Schemas.s8_post_measurement"),
+    ("schema_conformance", "Probe.Schemas.s9_vacuous_direct"),
+    ("schema_conformance", "Probe.Schemas.s10_vacuous_predicate"),
+    ("schema_conformance", "Probe.Schemas.s11_vacuous_conj"),
+    ("schema_conformance", "Probe.Schemas.s12_vacuous_structure"),
+    ("schema_conformance", "Probe.Schemas.s13_unannotated"),
+    ("schema_conformance", "Probe.Schemas.s14_double"),
     ("assumption_legitimacy", "Probe.Legit.deposit_monotone"),
 }
 
-# `schema_conformance`'s `rule` field is the whole point of the check — a finding that fires for the wrong reason
-# is not a pass. Pinned per theorem, so a rule that starts mis-attributing shows up here.
+# Each conformance finding's `rule` — a finding for the wrong reason is an unactionable retry message.
 EXPECTED_SCHEMA_RULES = {
-    # Invariant.lean — failure-strictness and the two other checked-shape rules it exercises
-    "Probe.Inv.Spec.i11_sum_open":  "predicate_not_failure_strict",
-    "Probe.Inv.Spec.i12_match_res": "predicate_not_failure_strict",
-    "Probe.Inv.Spec.i13_ite_okq":   "predicate_not_failure_strict",
-    "Probe.Inv.Spec.i14_let_res":   "predicate_not_failure_strict",
-    "Probe.Inv.Spec.i15_deep":      "predicate_not_failure_strict",
-    "Probe.Inv.Spec.i16_cap_bad":   "predicate_not_failure_strict",
-    "Probe.Inv.Spec.i17_opaque":    "predicate_not_failure_strict",
-    "Probe.Inv.Spec.i18_partial":   "predicate_not_failure_strict",
-    "Probe.Inv.Spec.i19_foldm":     "predicate_not_failure_strict",
-    "Probe.Inv.Spec.i21_existential_measurement": "claim_not_failsafe",
-    "Probe.Inv.Spec.i22_inline_measurement":      "claim_not_failsafe",
-    "Probe.Inv.Spec.i25_not_a_target":            "execution_not_unique",
-    # Schemas.lean
-    "Probe.Schemas.s5_two_executions":      "execution_not_unique",
-    "Probe.Schemas.s6_pinned_output":       "execution_output_not_fresh",
-    "Probe.Schemas.s10_post_not_strict":    "predicate_not_failure_strict",
-    "Probe.Schemas.s11_conclusion_ignores_output": "conclusion_ignores_output",
-    "Probe.Schemas.s14_unannotated":        "no_schema_declared",
-    "Probe.Schemas.s15_double_annotated":   "multiple_schemas_declared",
-    "Probe.Schemas.g1_precedence_shape_first":       "execution_not_unique",
-}
-# Taint.lean's t1/t4/t5/t6a/t6b/t9/t24/t30/t36 are absent on purpose — they are
-# `assumed_postcondition`'s clean controls: the canonical shape, a pre-state measurement
-# precondition, a chain through a DECLARED continuation, the two total forms of a post-state
-# measurement in the conclusion (the prescribed fix for t6), the triple, and a target re-run with
-# the target DECLARED as its own continuation.
-#
-# Several Taint theorems fire more than once (t3's alias plus what it enables, t19's two aliases,
-# t26's two subjects producing the same output), so the finding COUNT exceeds the number of EXPECTED
-# rows. The exact multiplicities are pinned per theorem in EXPECTED_COUNTS.
-#
-# b16/b17/b18 (proof and implicit-type arguments) are absent on purpose — a proof term is not an
-# input, and an implicit type is reached through the other binders' types; both must stay clean.
-#
-# `PureNat`/`GoodConj`/`GoodTriple`-style controls are likewise absent — clean is correct.
-EXPECTED_FINDING_COUNT = 64   # assumed_postcondition's 32 (Taint) + 1 (Schemas.s7)
-                              # + schema_conformance's 30: Invariant's 11×2 fail-safe + i25,
-                              #   Schemas' s5/s6/s10/s11/s14/s15/g1
-                              # + assumption_legitimacy's 1 (deposit_monotone)
-
-# ── Attribute-level expectations (beyond membership) ─────────────────────────────────────────────
-# Membership pins WHICH theorems fire; these pin the rest. A regression that keeps the same theorems
-# firing but changes WHY/HOW — a finding migrated to the wrong hypothesis, or two findings collapsing
-# into one — passes a membership-only check. These close that gap. (The fail-open-vs-not-certified
-# severity distinction now lives in a `schema_conformance` finding's `detail`, not a `reason` field.)
-
-# `assumed_postcondition`'s `is_conclusion: true` marks the strongest form — a hypothesis that
-# restates the CONCLUSION itself (closed by `exact hvar`). Only t2 and t18 qualify; every other
-# finding is hypothesis-side. Pinned both ways (a control `false`) so a mis-classification in either
-# direction is caught.
-EXPECTED_IS_CONCLUSION = {
-    "Probe.Taint.t2_assumes_its_own_conclusion": True,
-    "Probe.Taint.t18_alias_is_the_cheat":        True,
-    "Probe.Taint.t15_success_on_post_state":     False,
-    "Probe.Taint.t28_predicate_hides_antecedent": False,
+    "Probe.Schemas.s5_not_a_triple":           "not_a_target_triple",
+    "Probe.Schemas.s6_triple_not_over_target": "triple_not_over_target",
+    "Probe.Schemas.s7_ignores_output":         "conclusion_ignores_output",
+    "Probe.Schemas.s8_post_measurement":       "claim_not_failsafe",
+    "Probe.Schemas.s9_vacuous_direct":         "vacuous_claim",
+    "Probe.Schemas.s10_vacuous_predicate":     "vacuous_claim",
+    "Probe.Schemas.s11_vacuous_conj":          "vacuous_claim",
+    "Probe.Schemas.s12_vacuous_structure":     "vacuous_claim",
+    "Probe.Schemas.s13_unannotated":           "no_schema_declared",
+    "Probe.Schemas.s14_double":                "multiple_schemas_declared",
 }
 
-# Per-(check, theorem) finding counts. Any EXPECTED key not listed here must fire EXACTLY once; the
-# ones below fire more. This pins the COMPOSITION of the total, so a finding migrating between two
-# EXPECTED theorems (which leaves the scalar total unchanged) is caught.
-EXPECTED_COUNTS = {
-    ("assumed_postcondition", "Probe.Taint.t3_closed_taint"):                2,
-    ("assumed_postcondition", "Probe.Taint.t19_two_alias_reconstruction"):   2,
-    ("assumed_postcondition", "Probe.Taint.t26_shared_output_between_subjects"): 2,
-    # A preservation on a non-fail-safe predicate fires on BOTH the pre-state hypothesis and the
-    # conclusion — the two claims that rest on it.
-    ("schema_conformance", "Probe.Inv.Spec.i11_sum_open"):  2,
-    ("schema_conformance", "Probe.Inv.Spec.i12_match_res"): 2,
-    ("schema_conformance", "Probe.Inv.Spec.i13_ite_okq"):   2,
-    ("schema_conformance", "Probe.Inv.Spec.i14_let_res"):   2,
-    ("schema_conformance", "Probe.Inv.Spec.i15_deep"):      2,
-    ("schema_conformance", "Probe.Inv.Spec.i16_cap_bad"):   2,
-    ("schema_conformance", "Probe.Inv.Spec.i17_opaque"):    2,
-    ("schema_conformance", "Probe.Inv.Spec.i18_partial"):   2,
-    ("schema_conformance", "Probe.Inv.Spec.i19_foldm"):     2,
-    ("schema_conformance", "Probe.Inv.Spec.i21_existential_measurement"): 2,
-    ("schema_conformance", "Probe.Inv.Spec.i22_inline_measurement"):      2,
-}
+EXPECTED_FINDING_COUNT = 11   # 10 schema_conformance + 1 assumption_legitimacy
 
-# For the twice-firing taint theorems, the DISTINCT hypotheses each fires on (substring match, robust
-# to pretty-printer spacing). Pins that the two findings land on the two right binders — so a collapse
-# to one, or a shift onto the wrong binder, is caught at the attribute level, not just by the count.
-EXPECTED_HYPOTHESES = {
-    ("assumed_postcondition", "Probe.Taint.t3_closed_taint"):              {"z = s'.var", "0 < z"},
-    ("assumed_postcondition", "Probe.Taint.t19_two_alias_reconstruction"): {"z = s'.var", "z = s.var"},
-}
-
-# `assumed_postcondition` only — (theorem, subjects, continuations). It must be told which functions
-# are under test, so it runs on the Taint module with an explicit subject.
-# `t11` names `touch` because that is ITS subject; `t12` names a target it never calls, which is
-# exactly the SKIPPED case pinned below.
-TAINT_THEOREMS = [
-    # THE RECONCILIATION, pinned rather than asserted. Three documents now claim checks 2 and 3
-    # do not contradict each other on the `Inv … = ok true` shape: the PRE-state form is a clean
-    # hypothesis (its output is the pinned literal `true`, so it taints nothing) and the POST-state
-    # form is the conclusion, which `assumed_postcondition` exempts. If either of these fires, that claim is wrong
-    # in mechanical-checks.md, aeneas-lean-core.md and README.md, and the text must change.
-    ("Probe.Inv.Spec.i1_flat", ["Probe.Inv.transfer"], []),
-    ("Probe.Inv.Spec.i10_sum", ["Probe.Inv.transfer"], []),
-    ("Probe.Taint.t1_canonical_good", ["Probe.Taint.transfer"], []),
-    ("Probe.Taint.t2_assumes_its_own_conclusion", ["Probe.Taint.transfer"], []),
-    ("Probe.Taint.t3_closed_taint", ["Probe.Taint.transfer"], []),
-    ("Probe.Taint.t4_measurement_precondition", ["Probe.Taint.transfer"], []),
-    # the ONLY two rows that declare a continuation — t5b is t5 without one, and t8 declares it so
-    # its finding stays isolated to the intermediate bound it is actually about.
-    ("Probe.Taint.t5_chained_subject", ["Probe.Taint.transfer"], ["Probe.Taint.settle"]),
-    ("Probe.Taint.t5b_undeclared_continuation", ["Probe.Taint.transfer"], []),
-    ("Probe.Taint.t6_conclusion_side_measurement", ["Probe.Taint.transfer"], []),
-    ("Probe.Taint.t6a_conclusion_triple", ["Probe.Taint.transfer"], []),
-    ("Probe.Taint.t6b_conclusion_exists", ["Probe.Taint.transfer"], []),
-    ("Probe.Taint.t7_injectivity_known_fp", ["Probe.Taint.transfer"], []),
-    ("Probe.Taint.t8_intermediate_bound_known_fp", ["Probe.Taint.transfer"], ["Probe.Taint.settle"]),
-    ("Probe.Taint.t9_triple_form", ["Probe.Taint.transfer"], []),
-    ("Probe.Taint.t10_tainted_named_predicate", ["Probe.Taint.transfer"], []),
-    ("Probe.Taint.t12_no_subject_execution", ["Probe.Taint.transfer"], []),
-    ("Probe.Taint.t13_predicate_as_call", ["Probe.Taint.transfer"], []),
-    ("Probe.Taint.t14_bool_predicate_as_call", ["Probe.Taint.transfer"], []),
-    ("Probe.Taint.t15_success_on_post_state", ["Probe.Taint.transfer"], []),
-    ("Probe.Taint.t20_subtype_carries_postcondition", ["Probe.Taint.transfer"], []),
-    ("Probe.Taint.t11_in_place_state", ["Probe.Taint.touch"], []),
-    ("Probe.Taint.t21_output_pinned_by_clean_call", ["Probe.Taint.transfer"], []),
-    ("Probe.Taint.t22_continuation_output_not_fresh", ["Probe.Taint.transfer"], ["Probe.Taint.settle"]),
-    ("Probe.Taint.t23_target_rerun_undeclared", ["Probe.Taint.transfer"], []),
-    ("Probe.Taint.t24_target_rerun_declared", ["Probe.Taint.transfer"], ["Probe.Taint.transfer"]),
-    ("Probe.Taint.t25_option_wrapper_pins_branch", ["Probe.Taint.maybe"], []),
-    ("Probe.Taint.t26_shared_output_between_subjects", ["Probe.Taint.transfer"], []),
-    ("Probe.Taint.t27_continuation_output_aliases_root_input", ["Probe.Taint.transfer"], ["Probe.Taint.reset"]),
-    ("Probe.Taint.t28_predicate_hides_antecedent", ["Probe.Taint.transfer"], []),
-    ("Probe.Taint.t29_quantifier_guard_is_not_an_antecedent", ["Probe.Taint.transfer"], []),
-    ("Probe.Taint.t30_declared_continuation_on_clean_args", ["Probe.Taint.transfer"], ["Probe.Taint.settle"]),
-    ("Probe.Taint.t31_triple_postcondition_assumes_itself", ["Probe.Taint.transfer"], []),
-    ("Probe.Taint.t32_triple_postcondition_hides_antecedent", ["Probe.Taint.transfer"], []),
-    ("Probe.Taint.t33_conclusion_behind_a_connective", ["Probe.Taint.transfer"], []),
-    ("Probe.Taint.t34_conclusion_beyond_old_depth_cap", ["Probe.Taint.transfer"], []),
-    ("Probe.Taint.t35_conclusion_structure_field", ["Probe.Taint.transfer"], []),
-    ("Probe.Taint.t36_aeneas_result_wrapper_is_neutral", ["Probe.Taint.rustCall"], []),
-    ("Probe.Taint.t19_two_alias_reconstruction", ["Probe.Taint.transfer"], []),
-    ("Probe.Taint.t18_alias_is_the_cheat", ["Probe.Taint.transfer"], []),
-    ("Probe.Taint.t17_structured_output", ["Probe.Taint.transfer"], []),
-    ("Probe.Taint.t16_constant_output", ["Probe.Taint.transfer"], []),
-]
-
-# `LUSTERNA_CHECK_SKIPPED` records that MUST appear, keyed like EXPECTED. Any other one fails the
-# run: "clean" has to mean "checked", and a skip means part of the run never happened.
-EXPECTED_SKIPPED = {
-    ("assumed_postcondition", "Probe.Taint.t12_no_subject_execution"),
-}
-
-# The checked-property fixtures — (theorem, targets), all run through `checkSpecGate` (the `schema`
-# param). Invariant.lean and Schemas.lean both hold `@[lusterna]` / `@[lusterna_lemma]` theorems now;
-# the clean controls are exercised by the same run as the findings, so a check that silently stopped
-# firing cannot still "pass".
-INVARIANT_THEOREMS = [(f"Probe.Inv.Spec.{n}", ["Probe.Inv.transfer", "Probe.Inv.transferArr"])
-                      for n in [
-    # certified strict / plain-Prop — must draw nothing
-    "i1_flat", "i2_assert", "i3_fold", "i4_wf", "i5_ite", "i6_dite", "i7_match_pure",
-    "i8_of_option", "i9_cap_agrees", "i10_sum", "i27_array_deep_chain",
-    "i28_partial_fixpoint_loop", "i20_plain_prop",
-    # predicate_not_failure_strict (fail-open)
-    "i11_sum_open", "i12_match_res", "i13_ite_okq", "i14_let_res", "i15_deep", "i16_cap_bad",
-    # predicate_not_failure_strict (not certified)
-    "i17_opaque", "i18_partial", "i19_foldm",
-    # claim_not_failsafe / execution_not_unique
-    "i21_existential_measurement", "i22_inline_measurement", "i25_not_a_target",
+# The checked-property fixtures — (theorem, targets), run through `checkSpecGate`. Every s-theorem is
+# listed (clean controls too) so a check that silently stopped firing cannot still "pass". The only
+# target is `Probe.f`; `s6` runs `Probe.Schemas.k` (not a target) -> `triple_not_over_target`.
+SCHEMA_THEOREMS = [(f"Probe.Schemas.{n}", ["Probe.f"]) for n in [
+    "s1_conforms", "s2_conditional_clean", "s3_lemma",
+    "s5_not_a_triple", "s6_triple_not_over_target", "s7_ignores_output", "s8_post_measurement",
+    "s9_vacuous_direct", "s10_vacuous_predicate", "s11_vacuous_conj", "s12_vacuous_structure",
+    "s13_unannotated", "s14_double", "g_lemma_bridge",
 ]]
 
-SCHEMA_THEOREMS = [(f"Probe.Schemas.{n}", ["Probe.Inv.transfer", "Probe.Schemas.transferEff"])
-                   for n in [
-    # conforming — must draw nothing
-    "s1_conforms", "s2_no_precondition", "s3_preservation", "s4_lemma",
-    # the intended loosening, pinned CLEAN
-    "s8_pure_precondition_clean", "s9_plain_prop_conclusion_clean", "s17_mentions_one_of_two_clean",
-    "g4_preservation_with_side_condition_clean",
-    # one broken rule each
-    "s5_two_executions", "s6_pinned_output", "s7_pre_mentions_output", "s10_post_not_strict",
-    "s11_conclusion_ignores_output", "s14_unannotated", "s15_double_annotated",
-    # the real Aeneas output shape: two informative outputs, one behind a neutral wrapper
-    "s16_wrapped_outputs_conform",
-    # the gate's own composition: precedence, and lemma scoping off the shape rules
-    "g1_precedence_shape_first", "g2_injectivity_is_lemma", "g3_intermediate_bound_is_lemma",
-]]
-
-# `assumption_legitimacy` — (assumption-module axioms to check, target patterns). `limbMul_spec` is
-# the substrate control (must stay clean); `deposit_monotone` references the target `deposit` and must
-# be flagged. See Legit.lean.
+# `assumption_legitimacy` — (axioms to check, target patterns). See Legit.lean.
 LEGIT_CHECK = (["Probe.Legit.limbMul_spec", "Probe.Legit.deposit_monotone"], ["deposit"])
 
-# `checkDefAxioms` — the TRANSLATE-time opaque-footprint disclosure. Per target def, the NON-standard
-# axioms its body TRANSITIVELY depends on. `leakyIndirect` never names `Op` itself — it reaches it
-# through `leakyDirect` — so its presence here is the transitive-closure assertion (the Amount/
-# Display leak in miniature). See DefAx.lean.
+# `checkDefAxioms` — the TRANSLATE-time opaque-footprint disclosure. See DefAx.lean.
 EXPECTED_DEF_AXIOMS = {
     "Probe.DefAx.cleanDef":      [],
     "Probe.DefAx.leakyDirect":   ["Probe.DefAx.Op"],
     "Probe.DefAx.leakyIndirect": ["Probe.DefAx.Op"],
 }
-
 
 
 def sh(*args: str, check: bool = True) -> str:
@@ -405,40 +118,25 @@ def parse_findings(out: str) -> tuple[list[dict], list[dict], dict | None]:
 
 
 def run_checks(cid: str, lean_dir: str, import_lines: list[str],
-               taint: list[tuple[str, list[str], list[str]]] | None = None,
                schema: list[tuple[str, list[str]]] | None = None,
                legitimacy: tuple[list[str], list[str]] | None = None,
                ) -> tuple[list[dict], list[dict], dict | None, str]:
-    """The exact invocation documented in docs/skills/mechanical-checks.md: write a tiny driver
-    that imports the checker plus the target module(s), call the `check*` functions per theorem,
-    run it with `lake env lean`. *taint* pairs a theorem with the SUBJECT functions
-    `assumed_postcondition` needs told, plus any CONTINUATION functions it may legitimately chain
-    through; *schema* pairs a theorem with the TARGET functions `checkSpecGate` needs told (which
-    composes conformance and provenance — failure-strictness is checked inside conformance). Every
-    check now takes its own explicit theorem list — there is no longer a check that runs on "every
-    theorem" with no configuration. Returns (findings, skipped-records, done-record-or-None, raw
-    combined output) — `done is None` means the driver never finished (a real compile error), which
-    the caller must treat as "could not check", never as clean."""
+    """Write a tiny driver that imports the checker plus the target module(s), call the `check*`
+    functions, run it with `lake env lean`. *schema* pairs a theorem with the TARGET functions
+    `checkSpecGate` needs told. Returns (findings, skipped, done-or-None, raw); `done is None` means
+    the driver never finished (a real compile error) -- treat as "could not check", never clean."""
     body_lines = import_lines + [
         "open Lusterna.Checks",
         "set_option maxRecDepth 4000 in",
         "#eval show Lean.Meta.MetaM Unit from do",
     ]
-    for t, subjects, conts in (taint or []):
-        arr = ", ".join("`" + g for g in subjects)
-        carr = ", ".join("`" + g for g in conts)
-        body_lines.append(f"  let _ ← checkAssumedPostcondition `{t} #[{arr}] #[{carr}]")
     for t, tgts in (schema or []):
         arr = ", ".join("`" + g for g in tgts)
-        # THE GATE, not the bare conformance check: `checkSpecGate` is what the harness runs, and
-        # its precedence (shape finding alone) and freeform scoping only exist in the composition.
         body_lines.append(f"  let _ ← checkSpecGate `{t} #[{arr}]")
     if legitimacy is not None:
         axioms, tgts = legitimacy
         aarr = ", ".join("`" + a for a in axioms)
         tarr = ", ".join("`" + g for g in tgts)
-        # `assumption_legitimacy` takes (axioms, targets), not (theorem, targets) — it is consumed by
-        # the harness's `_record_axioms`, not the FORMALISE gate, but shares the record protocol.
         body_lines.append(f"  checkAssumptionLegitimacy #[{aarr}] #[{tarr}]")
     body_lines.append('  IO.println "LUSTERNA_CHECK_DONE"')
     body = "\n".join(body_lines) + "\n"
@@ -462,11 +160,8 @@ def run_fixture() -> int:
         deps = AgentDeps(container_id=cid, repo_path=HERE, session_id="fixture",
                          design_doc="", campaign="Fixture")
         lean_dir = f"{container.OUT_IN}/lean"
-        sh("docker", "exec", cid, "mkdir", "-p", f"{lean_dir}/Probe/Spec")
+        sh("docker", "exec", cid, "mkdir", "-p", f"{lean_dir}/Probe")
         for src, dst in [(HERE / "Probe.lean", "lean/Probe.lean"),
-                         (HERE / "Fixture.lean", "lean/Probe/Spec/Fixture.lean"),
-                         (HERE / "Taint.lean", "lean/Probe/Taint.lean"),
-                         (HERE / "Invariant.lean", "lean/Probe/Invariant.lean"),
                          (HERE / "Schemas.lean", "lean/Probe/Schemas.lean"),
                          (HERE / "DefAx.lean", "lean/Probe/DefAx.lean"),
                          (HERE / "Legit.lean", "lean/Probe/Legit.lean")]:
@@ -480,89 +175,37 @@ def run_fixture() -> int:
 
         findings, skipped, done, _ = run_checks(
             cid, lean_dir,
-            ["import Probe.LusternaChecks", "import Probe.Spec.Fixture",
-             "import Probe.Taint", "import Probe.Invariant", "import Probe.Schemas",
-             "import Probe.Legit"],
-            taint=TAINT_THEOREMS, schema=INVARIANT_THEOREMS + SCHEMA_THEOREMS,
-            legitimacy=LEGIT_CHECK)
+            ["import Probe.LusternaChecks", "import Probe.Schemas", "import Probe.Legit"],
+            schema=SCHEMA_THEOREMS, legitimacy=LEGIT_CHECK)
         if done is None:
-            return sys.exit("the driver file never completed — see raw output above")
+            return sys.exit("the driver file never completed -- see raw output above")
 
-        # A SKIPPED record means part of the run never happened while the finding set still looks
-        # complete — the ambiguity the token exists to expose. Only the ones pinned in
-        # EXPECTED_SKIPPED may appear, and each of those must actually appear.
-        got_skipped = {(k.get("check", "?"), k.get("theorem") or k.get("predicate") or k.get("axiom", "?"))
-                       for k in skipped}
-        got = {(f["check"], f.get("theorem") or f.get("predicate") or f.get("axiom", "?"))
-               for f in findings}
+        got = {(f["check"], f.get("theorem") or f.get("axiom", "?")) for f in findings}
         print(f"\n{len(findings)} finding(s) (expected {EXPECTED_FINDING_COUNT}):")
-        for f in sorted(findings, key=lambda d: (d["check"],
-                        str(d.get("theorem") or d.get("predicate") or d.get("axiom")))):
-            who = f.get("theorem") or f.get("predicate") or f.get("axiom")
-            what = f.get("hypothesis") or f.get("guard") or f.get("detail") or f.get("reason")
-            print(f"  [{f['check']}] {who}: {what}")
-
+        for f in sorted(findings, key=lambda d: (d["check"], str(d.get("theorem") or d.get("axiom")))):
+            who = f.get("theorem") or f.get("axiom")
+            print(f"  [{f['check']}] {who}: {f.get('rule') or f.get('reason')}")
         missing = EXPECTED - got
         spurious = got - EXPECTED
         for label, d in [("MISSED (false negative)", sorted(missing)),
-                         ("SPURIOUS (false positive)", sorted(spurious)),
-                         ("SKIPPED, unexpected", sorted(got_skipped - EXPECTED_SKIPPED)),
-                         ("SKIPPED, expected but absent", sorted(EXPECTED_SKIPPED - got_skipped))]:
+                         ("SPURIOUS (false positive)", sorted(spurious))]:
             if d:
                 print(f"\n{label}: {d}")
-        # `schema_conformance`'s `rule` is the assertion, not just that a finding appeared: a conformance check
-        # that fires for the wrong reason gives FORMALISE an unactionable retry message.
         rules = {f["theorem"]: f.get("rule") for f in findings if f["check"] == "schema_conformance"}
         rule_bad = {k: (rules.get(k), v) for k, v in EXPECTED_SCHEMA_RULES.items() if rules.get(k) != v}
         if rule_bad:
             print("\nWRONG RULE (theorem: got, expected):")
-            for k, (got, exp) in sorted(rule_bad.items()):
-                print(f"  {k}: {got!r} != {exp!r}")
+            for k, (g, e) in sorted(rule_bad.items()):
+                print(f"  {k}: {g!r} != {e!r}")
+        count_ok = len(findings) == EXPECTED_FINDING_COUNT
+        if not count_ok:
+            print(f"\nCOUNT MISMATCH: got {len(findings)}, expected {EXPECTED_FINDING_COUNT}")
 
-        # ── attribute-level assertions (is_conclusion / per-theorem count / hypothesis) ──
-        isc_bad = {}
-        for f in findings:
-            if f["check"] == "assumed_postcondition" and f["theorem"] in EXPECTED_IS_CONCLUSION:
-                exp = EXPECTED_IS_CONCLUSION[f["theorem"]]
-                if f.get("is_conclusion") != exp:
-                    isc_bad[f["theorem"]] = (f.get("is_conclusion"), exp)
-        if isc_bad:
-            print("\nWRONG is_conclusion (theorem: got, expected):")
-            for k, (got, exp) in sorted(isc_bad.items()):
-                print(f"  {k}: {got!r} != {exp!r}")
-
-        counts = Counter((f["check"], f.get("theorem") or f.get("predicate") or f.get("axiom", "?"))
-                         for f in findings)
-        count_bad = {k: (counts.get(k, 0), EXPECTED_COUNTS.get(k, 1))
-                     for k in EXPECTED if counts.get(k, 0) != EXPECTED_COUNTS.get(k, 1)}
-        if count_bad:
-            print("\nWRONG per-theorem count (key: got, expected):")
-            for k, (got, exp) in sorted(count_bad.items()):
-                print(f"  {k}: {got} != {exp}")
-
-        hyp_bad = {}
-        for k, subs in EXPECTED_HYPOTHESES.items():
-            hyps = [f.get("hypothesis", "") for f in findings
-                    if (f["check"], f.get("theorem")) == k]
-            missing_subs = [s for s in subs if not any(s in h for h in hyps)]
-            if missing_subs:
-                hyp_bad[k] = (missing_subs, hyps)
-        if hyp_bad:
-            print("\nMISSING HYPOTHESIS (key: expected-substrings not found, got):")
-            for k, (subs, hyps) in sorted(hyp_bad.items()):
-                print(f"  {k}: {subs} not in {hyps}")
-
-        # ── checkDefAxioms: the TRANSLATE-time opaque-footprint disclosure ──────────────────────────
-        # Its own driver (run_checks is spec-gate-shaped); asserts the exact transitive footprint.
-        # checkDefAxioms takes dotted-SUFFIX patterns and discovers the matching crate defs in the
-        # environment (like the legitimacy/schema checks) — pass the bare method names, not the
-        # reconstructed constant names, so this exercises the same resolution path production uses.
+        # -- checkDefAxioms: the TRANSLATE-time opaque-footprint disclosure --
         da_pats = ", ".join("`" + d.rsplit(".", 1)[-1] for d in EXPECTED_DEF_AXIOMS)
         da_body = ("import Probe.DefAx\nimport Probe.LusternaChecks\nopen Lusterna.Checks\n"
-                   "set_option maxRecDepth 8000 in\n"
-                   "#eval show Lean.Meta.MetaM Unit from do\n"
-                   f"  checkDefAxioms #[{da_pats}]\n"
-                   '  IO.println "LUSTERNA_CHECK_DONE"\n')
+                   "set_option maxRecDepth 8000 in\n#eval show Lean.Meta.MetaM Unit from do\n"
+                   f"  checkDefAxioms #[{da_pats}]\n  IO.println \"LUSTERNA_CHECK_DONE\"\n")
         assert not tools.write_out(deps, "lean/_defax_driver.lean", da_body).startswith("ERROR:")
         _, dout, derr = container.exec_in(cid, ["lake", "env", "lean", "_defax_driver.lean"],
                                           workdir=lean_dir, timeout=300)
@@ -570,39 +213,29 @@ def run_fixture() -> int:
         got_footprint = {f["def"]: sorted(f.get("opaque", []))
                          for f in da_find if f.get("check") == "def_axioms"}
         footprint_ok = da_done is not None and got_footprint == EXPECTED_DEF_AXIOMS
-        if not footprint_ok:
-            print(f"\ncheckDefAxioms MISMATCH: got {got_footprint}, expected {EXPECTED_DEF_AXIOMS}")
-        else:
-            print(f"\ncheckDefAxioms OK: {got_footprint}")
+        print(f"\ncheckDefAxioms {'OK' if footprint_ok else 'MISMATCH'}: {got_footprint}")
 
-        # ── checkAnchorReference: the fidelity bridge ───────────────────────────────────────────────
-        # `measure` is named directly in `measure_reads`'s TYPE → referenced; a measurement
-        # no theorem names → not referenced (the ungrounded-core case `check_spec_gate` blocks on).
+        # -- checkAnchorReference + checkAnchorCheckedReference: fidelity bridge + prong-3 split --
         an_body = ("import Probe.Schemas\nimport Probe.LusternaChecks\nopen Lusterna.Checks\n"
-                   "set_option maxRecDepth 8000 in\n"
-                   "#eval show Lean.Meta.MetaM Unit from do\n"
-                   "  checkAnchorReference #[`Probe.Schemas.measure_reads, "
-                   "`Probe.Schemas.s1_conforms] #[`measure, `nonexistent_measurement]\n"
-                   '  IO.println "LUSTERNA_CHECK_DONE"\n')
+                   "set_option maxRecDepth 8000 in\n#eval show Lean.Meta.MetaM Unit from do\n"
+                   "  checkAnchorReference #[`Probe.Schemas.s1_conforms, `Probe.Schemas.g_lemma_bridge] #[`f, `g, `nope]\n"
+                   "  checkAnchorCheckedReference #[`Probe.Schemas.s1_conforms, `Probe.Schemas.g_lemma_bridge] #[`f, `g]\n"
+                   "  IO.println \"LUSTERNA_CHECK_DONE\"\n")
         assert not tools.write_out(deps, "lean/_anchor_driver.lean", an_body).startswith("ERROR:")
         _, aout, aerr = container.exec_in(cid, ["lake", "env", "lean", "_anchor_driver.lean"],
                                           workdir=lean_dir, timeout=300)
         an_find, _, an_done = parse_findings(aout + "\n" + aerr)
         got_anchors = {f["anchor"]: bool(f.get("referenced"))
                        for f in an_find if f.get("check") == "anchor_bridge"}
-        anchor_ok = an_done is not None and got_anchors == {"measure": True,
-                                                            "nonexistent_measurement": False}
-        if not anchor_ok:
-            print(f"\ncheckAnchorReference MISMATCH: got {got_anchors}")
-        else:
-            print(f"\ncheckAnchorReference OK: {got_anchors}")
+        got_checked = {f["anchor"]: bool(f.get("checked_referenced"))
+                       for f in an_find if f.get("check") == "anchor_checked"}
+        anchor_ok = (an_done is not None
+                     and got_anchors == {"f": True, "g": True, "nope": False}
+                     and got_checked == {"f": True, "g": False})
+        print(f"\nanchor {'OK' if anchor_ok else 'MISMATCH'}: bridge={got_anchors} checked={got_checked}")
 
-        skip_ok = got_skipped == EXPECTED_SKIPPED and len(skipped) == len(EXPECTED_SKIPPED)
-        count_ok = len(findings) == EXPECTED_FINDING_COUNT
-        if not count_ok:
-            print(f"\nCOUNT MISMATCH: got {len(findings)}, expected {EXPECTED_FINDING_COUNT}")
-        ok = (not (missing or spurious or rule_bad or isc_bad or count_bad or hyp_bad)
-              and skip_ok and count_ok and footprint_ok and anchor_ok)
+        ok = (not (missing or spurious or rule_bad) and count_ok and footprint_ok and anchor_ok
+              and not skipped)
         print("\nPASS" if ok else "\nFAIL")
         return 0 if ok else 1
     finally:
@@ -633,13 +266,9 @@ def run_arbitrary(file: Path, targets: list[str], deps_files: list[Path],
             return sys.exit(f"file did not build:\n{out}\n{err}")
 
         imports = [f"import {lib_name}.LusternaChecks", f"import {file.stem}"]
-        # Checks 2 and 3 run only when --subjects names the function(s) under test; without them
-        # `assumed_postcondition` has no taint source and the others no target, and all would report SKIPPED on every
-        # theorem rather than anything useful.
-        taint = [(t, subjects, conts) for t in targets] if subjects else None
-        # The schema gate needs the same "functions under test" list, so --subjects enables it too.
+        # The schema gate runs only when --subjects names the target function(s) under test.
         inv = [(t, subjects) for t in targets] if subjects else None
-        findings, skipped, done, raw = run_checks(cid, lean_dir, imports, taint=taint, schema=inv)
+        findings, skipped, done, raw = run_checks(cid, lean_dir, imports, schema=inv)
         if done is None:
             print("\nDRIVER DID NOT COMPLETE — could not check (not evidence either way):")
             print(raw[-2000:])
@@ -710,13 +339,18 @@ def run_gate_fixture() -> int:
         if not case1:
             print(f"    (leaky footprint={g1['footprint']}, ok={g1['ok']})")
 
-        # ── impl_references: does a theorem VERIFY THE IMPLEMENTATION? ─────────────────────────────
-        # The exact bug this replaced: `ts_uses_impl` references the translated `cleanTarget` via the
-        # OPENED short name (`open leaky`), which a text scan of the full in-namespace def name
-        # missed → every theorem wrongly "abstract". `pure_lemma` is genuinely abstract (Nat only).
-        spec = ("import LeakyModel\nopen leaky\n"
+        # ── impl_references: three-way, does a theorem RUN the implementation? ─────────────────────
+        # `function`: runs a translated function — via a normal fn (`cleanTarget`, resolved through the
+        # OPENED short name `open leaky`, the case a text scan got wrong) or a nullary `Result`
+        # computation (`nullaryComp`). `surface`: names a translated TYPE (`Formatter`) or VALUE
+        # constant (`denom`) but runs nothing — the over-count this bucket exists to separate out.
+        # `abstract`: no translated reference at all (`pure_lemma`, Nat only).
+        spec = ("import LeakyModel\nopen leaky Aeneas.Std\n"
                 "namespace LeakyModel.Spec.Property\n"
                 "theorem ts_uses_impl (x : Nat) (h : cleanTarget x = 1) : True := trivial\n"
+                "theorem ts_nullary (h : nullaryComp = .ok 0) : True := trivial\n"
+                "theorem ts_type_only (f : Formatter) : True := trivial\n"
+                "theorem ts_const_only (h : denom = 10) : True := trivial\n"
                 "theorem pure_lemma (a b : Nat) : a + b = b + a := Nat.add_comm a b\n"
                 "end LeakyModel.Spec.Property\n")
         assert not tools.write_out(deps, "lean/LeakyModel/Spec/Solvency.lean", spec).startswith("ERROR:")
@@ -726,11 +360,13 @@ def run_gate_fixture() -> int:
             ok = False
         else:
             refs = lean.impl_references(deps, "lean/LeakyModel/Spec/Solvency.lean")
-            case4 = refs.get("ts_uses_impl") is True and refs.get("pure_lemma") is False
-            print(f"  impl_references (open'd name → impl-verified, abstract → not): "
+            want = {"ts_uses_impl": "function", "ts_nullary": "function",
+                    "ts_type_only": "surface", "ts_const_only": "surface", "pure_lemma": "abstract"}
+            case4 = all(refs.get(k) == v for k, v in want.items())
+            print(f"  impl_references (function / surface / abstract three-way): "
                   f"{'PASS' if case4 else 'FAIL'}")
             if not case4:
-                print(f"    (got {refs})")
+                print(f"    (got {refs}, want {want})")
             ok = ok and case4
         return 0 if ok else 1
     finally:

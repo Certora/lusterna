@@ -21,6 +21,14 @@ def Amount.add (a b : Amount) : Amount := a + b
 /-- CLEAN target — only value ops; its footprint is empty. -/
 def cleanTarget (x : Nat) : Nat := Amount.add x 1
 
+/-- A translated VALUE constant (mimics `BPS_DENOMINATOR : U32`): a nullary, non-`Result` `def`.
+Naming it is NOT running code — the impl-reference check must classify a theorem over it as `surface`. -/
+def denom : Nat := 10
+
+/-- A translated nullary COMPUTATION (returns `Result`): running code even with no arguments, so the
+impl-reference check must classify a theorem over it as `function`, not `surface`. -/
+def nullaryComp : Result Nat := .ok 0
+
 /-- LEAKY target — reaches the `Display`/`fmt` opaque, like `leakyOp` reaching `ValueDisplay.fmt`. -/
 noncomputable def leakyOp (x : Nat) (f : Formatter) : Nat := displayFmt x f + 1
 

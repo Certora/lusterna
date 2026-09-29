@@ -395,17 +395,22 @@ def check_axioms(deps: AgentDeps, spec_rel: str) -> dict:
             "raw": text[-3000:]}
 
 
-def impl_references(deps: AgentDeps, spec_rel: str) -> dict[str, bool]:
-    """Which of a spec module's theorems VERIFY THE IMPLEMENTATION — i.e. their STATEMENT references a
-    `def` from the Aeneas TRANSLATION (a real translated def), vs a purely abstract helper lemma over
-    the spec's own predicates + trusted libraries. Returns `{written_theorem_name: bool}`.
+def impl_references(deps: AgentDeps, spec_rel: str) -> dict[str, str]:
+    """How each of a spec module's theorems relates to the TRANSLATION, three ways —
+    `{written_theorem_name: "function" | "surface" | "abstract"}`:
+      • `"function"` — its STATEMENT runs a translated FUNCTION and can constrain its result: it
+        VERIFIES THE IMPLEMENTATION (the headline signal).
+      • `"surface"` — it names a translated TYPE or plain VALUE constant (`Channel`, `BPS_DENOMINATOR`)
+        but executes no translated function; weaker than the headline count implies.
+      • `"abstract"` — a purely abstract helper over the spec's own predicates + trusted libraries,
+        with no reference to the translation at all.
 
     Decided in the built environment by `checkImplReference` (`getUsedConstants` on each theorem's
     elaborated TYPE, matched to the translation's own modules via `getModuleFor?`) — robust to
     `open`/namespacing, unlike the former text scan, which matched the full in-namespace def name
     (`crate.foo.Bar.measure`) against a statement that referenced it by its opened short name
-    (`Bar.measure`) and so wrongly reported every theorem abstract-only. A
-    theorem the driver never reaches is conservatively False (abstract), never a false impl-verified."""
+    (`Bar.measure`) and so wrongly reported every theorem abstract-only. A theorem the driver never
+    reaches is conservatively `"abstract"`, never a false impl-verified."""
     original = tools.read_out(deps, spec_rel)
     if original.startswith("ERROR:"):
         return {}
@@ -415,13 +420,13 @@ def impl_references(deps: AgentDeps, spec_rel: str) -> dict[str, bool]:
     qnames = _theorem_qualified_names(original)
     parts = tools._norm_out(spec_rel).split("/")
     if len(parts) < 3 or parts[0] != "lean":
-        return {n: False for n in names}
+        return {n: "abstract" for n in names}
     lib, spec_module = parts[1], ".".join(parts[1:]).removesuffix(".lean")
     # The modules a translated `def` lives in — the Aeneas output files recorded at TRANSLATE.
     trans_mods = sorted({m for f in deps.progress.get("aeneas", {}).get("lean_files", [])
                          for m in [_module_of(f)] if m})
     if not trans_mods:
-        return {n: False for n in names}
+        return {n: "abstract" for n in names}
     qlist = ", ".join("`" + q for q in qnames)
     mlist = ", ".join("`" + m for m in trans_mods)
     body = (f"import {spec_module}\nimport {lib}.{_LINT_TOOL_NAME.removesuffix('.lean')}\n"
@@ -434,10 +439,10 @@ def impl_references(deps: AgentDeps, spec_rel: str) -> dict[str, bool]:
         log.warning("impl_references: driver did not finish (rc=%s) — treating every theorem as "
                     "abstract (conservative, never a false impl-verified). Lean tail:\n%s", code,
                     text[-800:])
-        return {n: False for n in names}
-    recs = {r.get("theorem"): bool(r.get("refs_impl"))
+        return {n: "abstract" for n in names}
+    recs = {r.get("theorem"): r.get("kind", "abstract")
             for r in _parse_check_records(text) if r.get("check") == "impl_ref"}
-    return {written: recs.get(qual, False) for written, qual in zip(names, qnames)}
+    return {written: recs.get(qual, "abstract") for written, qual in zip(names, qnames)}
 
 
 def _axiom_fix_hint(ax: str) -> str:
@@ -706,11 +711,13 @@ _CHECK_LINE_RE = re.compile(
 _SKIP_LINE_RE = re.compile(
     r"(?m)^\s*(?:\S+:\d+:\d+:\s*)?(?:info:\s*)?LUSTERNA_CHECK_SKIPPED\s+(\{.*\})\s*$")
 
-# Every check whose finding BLOCKS the stage. `assumed_postcondition` is in here because the schema
-# annotation retires its documented false positives (see `checkSpecGate` in spec_checks.lean); a
-# finding on a conforming theorem is a defect, not a prompt. (Failure-strictness is no longer a
-# separate check — `schema_conformance`'s `claimFailSafe?` folds it in.)
-_GATE_CHECKS = {"schema_conformance", "assumed_postcondition"}
+# The per-theorem check whose finding BLOCKS the stage. Under the triple checked-schema there is one:
+# `schema_conformance`. Everything the equational-era gate spread across a taint fixpoint, a
+# freshness pass and a failure-strict certifier now folds into the triple's own shape (single
+# execution, totality and output-freshness come for free; failure-strictness is the postcondition
+# purity rule). The module-level anchor checks (`anchor_bridge`, `anchor_checked`) block too, but are
+# appended directly by their own handlers below rather than filtered through this set.
+_GATE_CHECKS = {"schema_conformance"}
 
 _GATE_DONE = "LUSTERNA_GATE_DONE"
 
@@ -846,12 +853,20 @@ def check_spec_gate(deps: AgentDeps, spec_rel: str) -> list[dict]:
     qall = ", ".join("`" + q for q in qnames)
     anchor_line = (f"  checkAnchorReference #[{qall}] #[{', '.join('`' + a for a in anchors)}]\n"
                    if anchors else "")
+    # CHECKED-COVERAGE (governance): which targets/anchors a CHECKED (`@[lusterna]`) triple actually
+    # measures. Guard A reads it over the targets (blindness); prong 3 reads it over the anchors
+    # (a real measurement must be carried by a checked property, not quietly demoted to a lemma). It
+    # keys on the triple's TYPE, so a property destined to be refuted still counts here — its checked
+    # triple exists at FORMALISE, it simply will not prove — and the check never false-blocks.
+    cover_syms = targets + [a for a in anchors if a not in targets]
+    cover_line = (f"  checkAnchorCheckedReference #[{qall}] "
+                  f"#[{', '.join('`' + s for s in cover_syms)}]\n")
     body = (f"import {spec_module}\nimport {lib}.{_LINT_TOOL_NAME.removesuffix('.lean')}\n"
             "open Lusterna.Checks\n"
             "set_option maxRecDepth 8000 in\n"
             "#eval show Lean.Meta.MetaM Unit from do\n"
             + "".join(f"  let _ ← checkSpecGate `{n} #[{tarr}]\n" for n in qnames)
-            + anchor_line
+            + anchor_line + cover_line
             + f'  IO.println "{_GATE_DONE}"\n')
     code, text = _run_lean_checker(deps, body, "_spec_gate.lean")
     if text.startswith("ERROR:"):
@@ -887,6 +902,33 @@ def check_spec_gate(deps: AgentDeps, spec_rel: str) -> list[dict]:
                                   f"are stated in terms of — add a checked bridge theorem tying your "
                                   f"projection to `{anchor}` (e.g. `{anchor} … = ok t → <projection> "
                                   f"= t…`), or the core is ungrounded"})
+    # GUARD A + prong 3, read from the checked-coverage records.
+    covered = {rec.get("anchor"): bool(rec.get("checked_referenced", False))
+               for rec in _parse_check_records(text) if rec.get("check") == "anchor_checked"}
+    if not any(covered.get(t, False) for t in targets):
+        # GUARD A — systemic blindness. NOT one theorem's problem: the whole spec contains no CHECKED
+        # triple over any target, so the gate saw nothing to constrain. This is exactly the failure
+        # that let a campaign pass with an empty `@[lusterna]` family (every core property demoted to
+        # a lemma) — a hard stop, never a per-theorem retry.
+        out.append({"check": "anchor_checked", "theorem": "(module)", "schema": "checked",
+                    "rule": "no_checked_execution",
+                    "detail": "no theorem is a CHECKED (`@[lusterna]`) triple over any target "
+                              f"function ({', '.join(targets)}). The checked family is empty of "
+                              "recognized executions: state at least one target's property as a "
+                              "checked triple `target … ⦃ r => <pure, non-vacuous claim about r> ⦄`, "
+                              "rather than demoting the core to `@[lusterna_lemma]`"})
+    else:
+        # Prong 3 — a declared anchor measured only by a lemma (or by nothing) is an ungoverned core:
+        # the real measurement exists but no CHECKED property carries it. Fail-safe: only anchors the
+        # campaign actually declared are required.
+        for a in anchors:
+            if not covered.get(a, False):
+                out.append({"check": "anchor_checked", "theorem": "(module)", "schema": "checked",
+                            "rule": "anchor_uncovered",
+                            "detail": f"the measurement `{a}` is referenced only by an exempt lemma "
+                                      "(or not at all), never by a CHECKED triple — a real anchor "
+                                      "must be carried by a checked property so the core cannot be "
+                                      f"quietly emptied; state a `@[lusterna]` triple over `{a}`"})
     log.info("check_spec_gate: %d blocking finding(s) over %d theorem(s)", len(out), len(qnames))
     return out
 
