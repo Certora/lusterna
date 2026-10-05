@@ -217,9 +217,11 @@ TOOLCHAIN (all via bash):
     target's deployed `[profile.*]` overflow settings into the extraction crate's Cargo.toml and build
     it the same way. Confirm the emitted ops agree (fallible ⇔ deployment checked; total ⇔ deployment
     wraps) and record the posture, its source, and how you confirmed it in accountability.md. The
-    harness VERIFIES this: it compares the crate you compiled `[profile.release]` against the
-    deployment's and bounces the translation back if they differ — so copy the profile faithfully. A
-    model whose overflow posture differs from the deployment is a translation FAILURE. If instead you
+    harness VERIFIES this: it identifies the crate you compiled from the emitted `<crate>.llbc` and
+    compares its workspace `[profile.release]` against the deployment's, bouncing the translation back
+    if they differ — so copy the profile faithfully, and LEAVE the `.llbc` on disk (the gate reads it to
+    identify the compiled crate and to confirm `--release` took effect; absent, it cannot verify and
+    blocks). A model whose overflow posture differs from the deployment is a translation FAILURE. If instead you
     RUNG-3 HAND-MODEL a value-type (no source crate to carry a profile, so nothing to copy), the model
     MUST reproduce that type's overflow behaviour DIRECTLY — fallible where the deployed type aborts on
     overflow, total where it wraps — since no profile can enforce it for you; state which in
