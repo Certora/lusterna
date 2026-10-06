@@ -6,10 +6,10 @@ import os
 import re
 import subprocess
 import tomllib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from . import checkpoint, tools
-from .container import exec_in, OUT_IN, REPO_IN, VERIF_IN
+from .container import exec_in, OUT_IN, REPO_IN
 from .schemas import AgentDeps
 
 log = logging.getLogger(__name__)
@@ -601,33 +601,98 @@ def _release_profile(deps: AgentDeps, manifest: str) -> dict | None:
         return None
 
 
-def _deploy_overflow_profile(deps: AgentDeps) -> tuple[dict, str]:
-    """The DEPLOYED build's overflow profile (ground truth): the overflow subset of the target's
-    workspace-root `[profile.release]`, EXCLUDING the generated extraction crate under verification/.
-    `release` is the deployed profile — certain on Solana (`cargo build-sbf` builds release), standard
-    for any shipped program. Absent ⇒ the Rust release default (all-wrapping)."""
+def _crate_lib_name(deps: AgentDeps, manifest: str) -> str | None:
+    """The crate (lib) name Charon names its `.llbc` after: `[lib].name` if set, else `[package].name`
+    with `-`→`_` (Cargo's crate-name normalisation). None if unreadable. This is what ties an emitted
+    `<crate>.llbc` back to the `Cargo.toml` that produced it — regardless of WHERE that crate lives."""
+    c, text, _ = exec_in(deps.container_id, ["cat", manifest])
+    if c != 0:
+        return None
+    try:
+        t = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return None
+    if lib := (t.get("lib") or {}).get("name"):
+        return lib
+    pkg = (t.get("package") or {}).get("name")
+    return pkg.replace("-", "_") if pkg else None
+
+
+def _is_workspace_manifest(deps: AgentDeps, manifest: str) -> bool:
+    """Whether *manifest* declares a Cargo `[workspace]` — i.e. it is a workspace ROOT, the ONLY place
+    a `[profile.*]` table is honoured by cargo."""
+    c, text, _ = exec_in(deps.container_id, ["cat", manifest])
+    if c != 0:
+        return False
+    try:
+        return "workspace" in tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return False
+
+
+def _workspace_root(deps: AgentDeps, manifest: str) -> str:
+    """The Cargo WORKSPACE ROOT governing *manifest* — the nearest ancestor (inclusive) `Cargo.toml`
+    declaring `[workspace]`. Cargo honours `[profile.*]` only at the workspace root, so THAT manifest's
+    `[profile.release]` is the posture the crate actually compiled under — whether the crate is a
+    standalone extraction crate (its own `[workspace]`, so this is itself) or an in-place member (the
+    shared repo root). Falls back to *manifest* itself if no `[workspace]` ancestor exists."""
+    d = PurePosixPath(manifest).parent
+    while True:
+        cand = str(d / "Cargo.toml")
+        if _is_workspace_manifest(deps, cand):
+            return cand
+        if d == d.parent:                      # reached filesystem root
+            return manifest
+        d = d.parent
+
+
+def _compiled_manifests(deps: AgentDeps) -> list[str]:
+    """The `Cargo.toml`(s) of the crate(s) Charon actually compiled — GROUND TRUTH, not a path guess.
+    Charon names its output `<crate>.llbc`, so each emitted `.llbc` basename is a crate name; the
+    compiled manifest is the one whose crate (lib) name matches it, WHEREVER the agent built it.
+
+    This replaces a path convention — "the extraction crate lives under verification/translate" — that
+    silently failed the moment an agent built the extraction crate elsewhere in the repo: the finder
+    missed it (→ false "in-place"), while the deploy finder mistook it for the deployment. Matching on
+    the artefact Charon emitted cannot make either error. Empty ⇒ no `.llbc`, or none matched a
+    manifest — the caller treats that as could-not-verify, never a pass."""
+    crates = {PurePosixPath(p).stem for p in _llbc_paths(deps)}      # `klend_core.llbc` → `klend_core`
+    if not crates:
+        return []
+    _, out, _ = exec_in(deps.container_id, ["sh", "-c",
+        f"find {REPO_IN} -maxdepth 7 -name Cargo.toml -not -path '*/target/*' 2>/dev/null"])
+    return [m for m in (l.strip() for l in out.splitlines() if l.strip())
+            if _crate_lib_name(deps, m) in crates]
+
+
+def _deploy_root(deps: AgentDeps) -> tuple[dict, str]:
+    """The DEPLOYED program's overflow posture (ground truth): the `[profile.release]` of the shipped
+    workspace ROOT — the SHALLOWEST `Cargo.toml` under the repo that declares `[workspace]`. A deeper,
+    standalone extraction workspace can never shadow it, and anything under verification/ is excluded.
+    If the shipped root carries no `[profile.release]`, the deployment WRAPS (the Rust release default);
+    a workspace-less lone-package repo falls back to the shallowest manifest that carries one. Returns
+    (overflow-subset, source)."""
     _, out, _ = exec_in(deps.container_id, ["sh", "-c",
         f"find {REPO_IN} -maxdepth 4 -name Cargo.toml -not -path '*/verification/*' "
         f"-not -path '*/target/*' 2>/dev/null"])
-    for m in (l.strip() for l in out.splitlines() if l.strip()):
+    manifests = sorted((l.strip() for l in out.splitlines() if l.strip()), key=lambda m: m.count("/"))
+    ws = [m for m in manifests if _is_workspace_manifest(deps, m)]
+    if ws:                                     # the shipped workspace root = shallowest [workspace]
+        root = ws[0]
+        return _overflow_subset(_release_profile(deps, root) or {}), root
+    for m in manifests:                        # workspace-less repo: shallowest manifest with a profile
         rel = _release_profile(deps, m)
-        if rel:                               # a manifest that actually carries [profile.release]
+        if rel:
             return _overflow_subset(rel), m
     return _overflow_subset({}), "(no [profile.release] in the target — release default = wrap)"
 
 
-def _extraction_overflow_profile(deps: AgentDeps) -> tuple[dict | None, str]:
-    """The overflow profile of the crate Charon compiled, WHEN it is a generated extraction crate under
-    verification/ (its own workspace root, so its `[profile.release]` governs the compile). None ⇒ no
-    extraction crate found — an in-place translation of the real crate, whose profile IS the
-    deployment's, so it matches by construction."""
+def _llbc_paths(deps: AgentDeps) -> list[str]:
+    """Every emitted `.llbc` on disk — the artefact Charon produced, and the GROUND TRUTH of what was
+    compiled (its basename is the crate name). Build trees excluded."""
     _, out, _ = exec_in(deps.container_id, ["sh", "-c",
-        f"find {VERIF_IN}/translate -name Cargo.toml -not -path '*/target/*' 2>/dev/null"])
-    for m in (l.strip() for l in out.splitlines() if l.strip()):
-        rel = _release_profile(deps, m)
-        if rel is not None:                   # an extraction manifest (its [profile.release] may be {})
-            return _overflow_subset(rel), m
-    return None, "(no extraction crate — in-place translation)"
+        f"find {REPO_IN} -name '*.llbc' -not -path '*/target/*' 2>/dev/null"])
+    return [l.strip() for l in out.splitlines() if l.strip()]
 
 
 def _model_has_checked_ops(deps: AgentDeps) -> tuple[bool | None, str]:
@@ -637,9 +702,7 @@ def _model_has_checked_ops(deps: AgentDeps) -> tuple[bool | None, str]:
     checked operator, `wrap.+` is not, and a source `wrapping_add` is a call (never `panic.`/`checked.`
     on an operator), so this reads the profile's effect, not intentional wrapping. True | False | None
     (no `.llbc` to read)."""
-    _, out, _ = exec_in(deps.container_id, ["sh", "-c",
-        f"find {REPO_IN} -name '*.llbc' -not -path '*/target/*' 2>/dev/null"])
-    llbcs = [l.strip() for l in out.splitlines() if l.strip()]
+    llbcs = _llbc_paths(deps)
     if not llbcs:
         return None, "no .llbc found to confirm the model's overflow posture"
     for f in llbcs:
@@ -654,40 +717,72 @@ def check_overflow_posture(deps: AgentDeps) -> dict:
     """TRANSLATE-time VERIFY gate for the overflow-posture mandate (docs/prose/aeneas-fallible-ops.md).
     The model's arithmetic must reproduce the DEPLOYED build's overflow posture. Rather than re-derive
     that posture (Charon cannot compile the uncompilable original — the reason extraction exists), we
-    VERIFY the agent compiled under it, against ground truth, in two mechanical steps:
+    identify the crate Charon compiled and the deployment from GROUND TRUTH, then VERIFY in two steps:
 
-      1. PROFILE MATCH — the extraction crate must carry the deployment's overflow `[profile.release]`
-         (the agent copies it verbatim; in-place it is the same manifest and matches by construction).
-         A mismatch blocks with the exact profile to copy. This is the regime-1 enforcement, and it
-         covers a shared value-type crate too: the copied per-package override applies to the same crate.
+      1. PROFILE MATCH — the crate Charon compiled must compile under the deployment's overflow
+         `[profile.release]`. The governing profile is the compiled crate's WORKSPACE ROOT: the
+         deployment root itself (in-place → matches by construction) or a standalone extraction crate's
+         own copied `[profile.release]`. A mismatch blocks with the exact profile to copy.
       2. `--release` TOOK EFFECT — from the `.llbc`: a wrapping deployment (checks nowhere) whose model
          still emits `checked.` operators means the dev default leaked in (the profile was ignored) → block.
+
+    GROUND TRUTH, not path convention: the compiled crate is the one whose crate name an emitted
+    `<crate>.llbc` names (`_compiled_manifests`), wherever the agent built it; the deployment is the
+    shipped workspace root (`_deploy_root`, the shallowest `[workspace]`, which a deeper extraction
+    workspace cannot shadow). The earlier gate located both by path (extraction ⇒ under
+    verification/translate; deploy ⇒ first `[profile.release]` under the repo) and, when the extraction
+    crate was built elsewhere in the repo, silently read the deploy profile FROM the compiled crate and
+    compared it to itself — a vacuous pass. FAIL-CLOSED: if no `.llbc` identifies the compiled crate the
+    gate BLOCKS (could-not-verify); a soundness gate's inability to compare is never "clean".
 
     The agent keeps driving the toolchain; the gate guides it back with ground truth when the profile
     is wrong. A rung-3 HAND-MODELLED value-type has no crate to carry a profile — that its model captures
     the original's overflow behaviour is a fidelity matter, briefed to the agent and checked by REVIEW,
     not here (declared boundary)."""
-    deploy_prof, deploy_m = _deploy_overflow_profile(deps)
-    comp_prof, comp_m = _extraction_overflow_profile(deps)
-    model_checked, model_detail = _model_has_checked_ops(deps)
+    deploy_prof, deploy_m = _deploy_root(deps)
     deploy_any = _any_checked(deploy_prof)
+    model_checked, model_detail = _model_has_checked_ops(deps)
 
-    profile_mismatch = comp_prof is not None and comp_prof != deploy_prof
+    comp_ms = _compiled_manifests(deps)
+    could_not_verify = not comp_ms              # no `.llbc` identifies the compiled crate → cannot check
+    # Each compiled crate must compile under the deployment's overflow profile. The profile that
+    # GOVERNS it is its workspace root's: the deployment root itself (in-place → matches by
+    # construction) or a standalone extraction crate's own `[profile.release]`.
+    comp_roots = [_workspace_root(deps, m) for m in comp_ms]
+    mism: list[tuple[str, dict]] = []
+    for root in comp_roots:
+        if root == deploy_m:
+            continue
+        cp = _overflow_subset(_release_profile(deps, root) or {})
+        if cp != deploy_prof:
+            mism.append((root, cp))
+    profile_mismatch = bool(mism)
     # dev-default leak: a wrapping deployment whose model still checks (or we cannot rule it out).
     release_not_honoured = (not deploy_any) and (model_checked is True or model_checked is None)
-    block = profile_mismatch or release_not_honoured
+    block = could_not_verify or profile_mismatch or release_not_honoured
 
+    comp_src = comp_ms[0] if comp_ms else "(no .llbc — crate Charon compiled is unidentifiable)"
+    comp_root = comp_roots[0] if comp_roots else None
+    comp_prof = _overflow_subset(_release_profile(deps, comp_root) or {}) if comp_root else None
     rec = {"deploy_profile": deploy_prof, "deploy_source": deploy_m,
-           "compiled_profile": comp_prof, "compiled_source": comp_m,
-           "model_checked_ops": model_checked, "block": block}
-    if profile_mismatch:
+           "compiled_profile": comp_prof, "compiled_source": comp_src,
+           "compiled_workspace": comp_root, "compiled_sources": comp_ms,
+           "model_checked_ops": model_checked, "could_not_verify": could_not_verify, "block": block}
+    if could_not_verify:
         rec["feedback"] = (
-            "OVERFLOW-PROFILE MISMATCH (soundness): the extraction crate's `[profile.release]` does not "
-            "match the deployment's, so the model may not reproduce the shipped overflow behaviour. "
-            f"Deployment ({deploy_m}): {deploy_prof}. Extraction ({comp_m}): {comp_prof}. Copy the "
-            "deployment's `[profile.release]` overflow keys (overflow-checks and any per-package "
-            "debug-assertions/overflow-checks) verbatim into the extraction crate's Cargo.toml and "
-            "rebuild `--release`, per the fallible-arithmetic reference.")
+            "OVERFLOW POSTURE (soundness) — COULD NOT VERIFY: no `.llbc` on disk whose crate name "
+            "matches a `Cargo.toml`, so the harness cannot identify the crate Charon compiled and "
+            "cannot confirm it carries the deployment's overflow `[profile.release]`. Keep the emitted "
+            "`<crate>.llbc` on disk after running Charon so the posture can be checked.")
+    elif profile_mismatch:
+        root, cp = mism[0]
+        rec["feedback"] = (
+            "OVERFLOW-PROFILE MISMATCH (soundness): the crate Charon compiled does NOT compile under the "
+            "deployment's overflow `[profile.release]`, so the model may not reproduce the shipped "
+            f"overflow behaviour. Deployment root ({deploy_m}): {deploy_prof}. Compiled crate's "
+            f"workspace ({root}): {cp}. Copy the deployment's overflow keys (overflow-checks and any "
+            "per-package debug-assertions/overflow-checks) verbatim into the compiled crate's Cargo.toml "
+            "and rebuild `--release`, per the fallible-arithmetic reference.")
     elif release_not_honoured:
         rec["feedback"] = (
             "OVERFLOW POSTURE (soundness): the deployment WRAPS on overflow (no overflow-checks in "
@@ -695,8 +790,9 @@ def check_overflow_posture(deps: AgentDeps) -> dict:
             f"({model_detail}) — the dev-default profile leaked in. Rebuild the crate Charon reads with "
             "`--release` so plain operators wrap as they do in the shipped binary. If the `.llbc` could "
             "not be read, keep it on disk so the posture can be confirmed.")
-    log.info("check_overflow_posture: deploy_any=%s profile_mismatch=%s model_checked=%s block=%s",
-             deploy_any, profile_mismatch, model_checked, block)
+    log.info("check_overflow_posture: deploy=%s compiled=%s profile_mismatch=%s could_not_verify=%s "
+             "model_checked=%s block=%s", deploy_m, comp_src, profile_mismatch, could_not_verify,
+             model_checked, block)
     return rec
 
 
