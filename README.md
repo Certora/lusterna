@@ -1,6 +1,9 @@
 # Lusterna
 
 A harnessed orchestrator for AI Agents to translate Rust programs into formally verified Lean 4 specifications.
+Although it works with general Rust code, its primary use case is the formal verification of Solana programs.
+
+## Overview
 
 Lusterna **spawns an AI agent as the engine for each pipeline stage** — a headless agent
 session, running inside the toolchain container, drives Charon/Aeneas/Lake and does all the file
