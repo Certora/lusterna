@@ -41,14 +41,23 @@ RUN opam install -y --switch=5.2.0 \
 # the right commit — the two binaries must always match.
 WORKDIR /opt/aeneas
 
-RUN git clone --depth=1 https://github.com/AeneasVerif/aeneas.git .
+# The Aeneas commit to build. `lusterna build-image` sets it to the latest release.
+ARG AENEAS_REV
+ENV AENEAS_REV=${AENEAS_REV}
+
+RUN test -n "$AENEAS_REV" \
+    && git init . \
+    && git remote add origin https://github.com/AeneasVerif/aeneas.git \
+    && git fetch --depth=1 origin "$AENEAS_REV" \
+    && git checkout FETCH_HEAD
 
 # Clone Charon at the pinned commit (reads ./charon-pin internally).
 RUN make setup-charon
 
 # Build the Charon Rust binary.  The Charon repo ships its own
 # rust-toolchain.toml so rustup will download the right toolchain.
-RUN make -C charon build-charon-rust \
+RUN git -C charon submodule update --init --depth=1 \
+    && make -C charon build-charon-rust \
     && cp charon/bin/charon /usr/local/bin/charon \
     && cp charon/bin/charon-driver /usr/local/bin/charon-driver
 
@@ -67,27 +76,21 @@ RUN LEAN_TC=$(cat /opt/aeneas/backends/lean/lean-toolchain) \
     && curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
        | sh -s -- -y --no-modify-path --default-toolchain "$LEAN_TC"
 
-# Pre-fetch Mathlib and pre-compile the Aeneas Lean runtime library so the
-# container can work with --network none at run time AND never pay to compile
-# the Aeneas lib on the first `lake build` of a session.
-# `lake exe cache get` downloads pre-compiled Mathlib .olean files from the CDN
-# (~minutes vs ~hours from source); `lake build` then compiles the Aeneas lib's
-# own modules (which are NOT on the Mathlib CDN) into oleans baked into the image.
-WORKDIR /opt/aeneas/backends/lean
-RUN lake update \
-    && (lake exe cache get || echo "WARNING: Mathlib CDN unavailable; oleans not pre-cached") \
-    && lake build
-
 # ── Lean project template ──────────────────────────────────────────────────────
-# Pre-create a minimal lake project that depends on the bundled Aeneas runtime.
+# Pre-create a minimal lake project that requires Aeneas from git at $AENEAS_REV.
 # `lake update` runs here (with network) so the manifest is resolved and baked
 # into the image.  At agent runtime (--network none) we copy this template into
 # /workspace/out/lean and only overwrite the lakefile with the crate-specific
 # package/lib names — no further network access needed.
+# `lake exe cache get` downloads pre-compiled Mathlib .olean files from the CDN
+# (~minutes vs ~hours from source); `lake build Aeneas` then compiles the Aeneas lib's
+# own modules (which are NOT on the Mathlib CDN) into oleans baked into the image.
 RUN mkdir -p /opt/lean-template \
-    && printf 'import Lake\nopen Lake DSL\nrequire aeneas from "/opt/aeneas/backends/lean"\npackage «template» where\nlean_lib «Template» where\n' \
+    && printf 'import Lake\nopen Lake DSL\nrequire aeneas from git "https://github.com/AeneasVerif/aeneas.git" @ "%s" / "backends/lean"\npackage «template» where\nlean_lib «Template» where\n' "$AENEAS_REV" \
        > /opt/lean-template/lakefile.lean \
-    && cd /opt/lean-template && lake update
+    && cd /opt/lean-template && lake update \
+    && (lake exe cache get || echo "WARNING: Mathlib CDN unavailable; oleans not pre-cached") \
+    && lake build Aeneas
 
 # ── Claude Code engine (Node + CLI) ─────────────────────────────────────────────
 # Lusterna spawns Claude Code HEADLESS inside this container (`docker exec claude -p …`),

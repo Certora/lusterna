@@ -192,10 +192,12 @@ def run(
 
 @main.command("build-image")
 @click.option("--tag", default=config.CONTAINER_IMAGE, show_default=True)
-def build_image(tag: str) -> None:
+@click.option("--aeneas-ref", default="",
+              help="Aeneas branch, tag or commit to build. Default: the latest release.")
+def build_image(tag: str, aeneas_ref: str) -> None:
     """Build the lusterna Docker toolchain image."""
     from . import container as container_mod
-    container_mod.build_image(_DOCKERFILE_DIR, tag=tag)
+    container_mod.build_image(_DOCKERFILE_DIR, tag=tag, aeneas_ref=aeneas_ref)
 
 
 @main.command("list-sessions")

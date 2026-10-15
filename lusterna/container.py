@@ -427,11 +427,35 @@ def exec_stream(
     return proc.returncode, "".join(out_chunks), err
 
 
-def build_image(dockerfile_dir: Path, tag: str = DEFAULT_IMAGE) -> None:
-    """Build the toolchain image from the project Dockerfile."""
+def _aeneas_rev(aeneas_ref: str) -> str:
+    """The commit of *aeneas_ref* (a branch, tag or commit), or of the latest Aeneas release if
+    *aeneas_ref* is empty."""
+    aeneas_git = "https://github.com/AeneasVerif/aeneas.git"
+    if aeneas_ref:
+        r = subprocess.run(["git", "ls-remote", aeneas_git, aeneas_ref, f"{aeneas_ref}^{{}}"],
+                           capture_output=True, text=True, check=True)
+        lines = [line.split() for line in r.stdout.splitlines()]
+        # An annotated tag lists the tag object and then `<tag>^{}`, the commit it points to.
+        # No match means *aeneas_ref* is a commit.
+        sha = next((s for s, ref in lines if ref.endswith("^{}")),
+                   lines[0][0] if lines else aeneas_ref)
+        log.info("Aeneas %s at %s", aeneas_ref, sha)
+    else:
+        r = subprocess.run(["git", "ls-remote", "--tags", "--refs", aeneas_git, "nightly-*"],
+                           capture_output=True, text=True, check=True)
+        # Release tags are `nightly-YYYY.MM.DD-<short sha>`, so the greatest name is the latest.
+        sha, ref = max((line.split() for line in r.stdout.splitlines()), key=lambda f: f[1])
+        log.info("Aeneas release %s at %s", ref.removeprefix("refs/tags/"), sha)
+    return sha
+
+
+def build_image(dockerfile_dir: Path, tag: str = DEFAULT_IMAGE, aeneas_ref: str = "") -> None:
+    """Build the toolchain image from the project Dockerfile, with Aeneas pinned to the commit
+    of *aeneas_ref* (a branch, tag or commit), or of its latest release if *aeneas_ref* is empty."""
+    aeneas_sha = _aeneas_rev(aeneas_ref)
     log.info("Building Docker image %s from %s …", tag, dockerfile_dir)
     r = subprocess.run(
-        ["docker", "build", "-t", tag, str(dockerfile_dir)],
+        ["docker", "build", "--build-arg", f"AENEAS_REV={aeneas_sha}", "-t", tag, str(dockerfile_dir)],
         capture_output=False,
         text=True,
     )
