@@ -1106,7 +1106,7 @@ def _detect_holes(deps: AgentDeps, lean_files: list[str]) -> dict[str, list[str]
     return holes_by_file
 
 
-AENEAS_LEAN = "/opt/aeneas/backends/lean"
+AENEAS_GIT = "https://github.com/AeneasVerif/aeneas.git"
 LEAN_TEMPLATE = "/opt/lean-template"
 
 
@@ -1114,7 +1114,7 @@ def _write_lakefile(deps: AgentDeps, lean_out_dir: str, lib_name: str) -> None:
     """Generate a lakefile.lean and wire up the pre-resolved package manifest.
 
     The Docker image contains /opt/lean-template — a minimal lake project that
-    already ran `lake update` against the bundled Aeneas runtime.  We copy its
+    already ran `lake update` against Aeneas at the image's $AENEAS_REV.  We copy its
     lake-manifest.json and symlink its .lake/packages so `lake build` works
     fully offline.
 
@@ -1125,6 +1125,12 @@ def _write_lakefile(deps: AgentDeps, lean_out_dir: str, lib_name: str) -> None:
     """
     crate = lib_name      # package name — cosmetic; reuse the lib name
 
+    _, rev, _ = exec_in(deps.container_id, ["printenv", "AENEAS_REV"])
+    rev = rev.strip()
+    if not rev:
+        raise RuntimeError("AENEAS_REV is not set in the container; rebuild the image "
+                           "with `lusterna build-image`")
+
     # `@[default_target]` is essential: without it, a bare `lake build` (what check_lean
     # runs) builds NOTHING ("0 jobs") and returns success — silently disconnecting the
     # build oracle so broken specs/proofs pass unchecked. `globs := .andSubmodules` makes
@@ -1133,7 +1139,7 @@ def _write_lakefile(deps: AgentDeps, lean_out_dir: str, lib_name: str) -> None:
     lakefile = (
         "import Lake\n"
         "open Lake DSL\n\n"
-        f'require aeneas from "{AENEAS_LEAN}"\n\n'
+        f'require aeneas from git "{AENEAS_GIT}" @ "{rev}" / "backends/lean"\n\n'
         f'package «{crate}» where\n\n'
         f'@[default_target]\n'
         f'lean_lib «{lib_name}» where\n'

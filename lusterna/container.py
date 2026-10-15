@@ -428,10 +428,18 @@ def exec_stream(
 
 
 def build_image(dockerfile_dir: Path, tag: str = DEFAULT_IMAGE) -> None:
-    """Build the toolchain image from the project Dockerfile."""
+    """Build the toolchain image from the project Dockerfile, with Aeneas pinned to the commit
+    of its latest release."""
+    r = subprocess.run(
+        ["git", "ls-remote", "--tags", "--refs",
+         "https://github.com/AeneasVerif/aeneas.git", "nightly-*"],
+        capture_output=True, text=True, check=True)
+    # Release tags are `nightly-YYYY.MM.DD-<short sha>`, so the greatest name is the latest.
+    sha, ref = max((line.split() for line in r.stdout.splitlines()), key=lambda f: f[1])
+    log.info("Aeneas release %s at %s", ref.removeprefix("refs/tags/"), sha)
     log.info("Building Docker image %s from %s …", tag, dockerfile_dir)
     r = subprocess.run(
-        ["docker", "build", "-t", tag, str(dockerfile_dir)],
+        ["docker", "build", "--build-arg", f"AENEAS_REV={sha}", "-t", tag, str(dockerfile_dir)],
         capture_output=False,
         text=True,
     )
