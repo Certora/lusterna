@@ -1,36 +1,31 @@
 # Lusterna
 
-A harnessed orchestrator for AI Agents to translate Rust programs into formally verified Lean 4 specifications.
-Although it works with general Rust code, its primary use case is the formal verification of Solana programs.
+A harness that uses AI agents to formally verify Rust programs. Lusterna infers properties from the sources,
+translates the code into Lean 4 using [Aeneas](https://github.com/AeneasVerif/aeneas), states the inferred properties as theorems and proves them.
+
+Although it can be used with general Rust code, its primary use case is the formal verification of Solana programs.
 
 ## Overview
 
-Lusterna **spawns an AI agent as the engine for each pipeline stage** — a headless agent
-session, running inside the toolchain container, drives Charon/Aeneas/Lake and does all the file
-and proof work itself. The Python harness is a thin, **trusted spine**: it sequences the stages and
-runs the soundness gates that the agents are not allowed to touch.
+The input is a Rust repository and a short text file that tells Lusterna what to focus on.
+Lusterna works in multiple stages, each stage spawning a separate AI agent to perform a specific task.
+The Python harness runs the stages in order. After each stage, it checks that the agent's results are correct.
 
-Given a Rust repository and an instruction document with a minimal set of hints, Lusterna:
+### Stages
 
-1. **Infers**, from the pristine code, the behavioural properties the target functions satisfy, which
-   functions the verification targets, and the minimal state the properties constrain (the instruction
-   document is only a focus hint; the code is the source of truth). This is the first stage — it also
-   orients: the entry crate and the functions that matter.
-2. **Translates** the target to Lean 4 via [Charon](https://github.com/AeneasVerif/charon) +
-   [Aeneas](https://github.com/AeneasVerif/aeneas), running the toolchain reality-check itself and
-   owning the build-vs-extract strategy — by default lifting only the minimal core into a scoped
-   extraction crate (never mocking the target away)
-3. **Formalises** the properties as Lean 4 theorem statements and builds them with `lake build`,
-   iterating until they compile
-4. Has a **spec-judge** list concrete defects in the theorem statements (checked against the
-   translation and the inferred properties); revises until the list is empty
-5. **Proves** as many statements as it can with Lean 4 tactics against the `lake build` oracle
-6. Runs **`#print axioms`** — the authoritative gate: a theorem is *established* only if its proof
-   depends on nothing beyond the standard axioms (so an untranslated hole, a leftover `sorry`,
-   `native_decide`'s compiler trust, or an assumed axiom all leave it reported as *tainted*, not
-   verified)
-7. Writes a **verification report** — led by a harness-generated verdict block that no agent
-   narrative can override.
+1. **Infer**: Read the source code, choose the functions to verify, and write down the properties
+   that these functions are expected to have.
+2. **Translate**: Translate the chosen functions to Lean 4 with [Charon](https://github.com/AeneasVerif/charon)
+   and [Aeneas](https://github.com/AeneasVerif/aeneas). Code that the properties do not need is left out.
+3. **Formalise**: State the properties as Lean 4 theorems (without proofs) and build them with `lake build`,
+   iterating until they compile. A separate agent then compares the theorems with the translation and
+   the inferred properties. If it finds defects, the theorems are revised.
+4. **Prove**: Prove as many theorems as possible. If a proof depends on `sorry` or on axioms other
+   than Lean's standard ones, the theorem does not count as proved.
+5. **Report**: Write a verification report. The list of proved theorems at the top of the report
+   comes from the harness.
+
+The stages and checks are explained to more detail in [docs/pipeline.md](docs/pipeline.md).
 
 ## Requirements
 
@@ -64,24 +59,21 @@ lusterna run /path/to/rust-repo /path/to/design.md
 
 ## Repository layout
 
-```
+```sh
 lusterna/
-├── cli.py          — Click entry point; manages the container lifecycle
-├── pipeline.py     — The spine: per-stage functions that spawn an AI-agent session and apply
-│                     the trusted gate (the _cc_gate_loop / PROVE best-loop), + run_session
-├── runner.py       — run_cc_stage: launch `claude -p` headless in-container and stream its
-│                     stream-json activity to the host log; mint/resume the session id
-├── briefings.py    — The task briefing per stage (the spawn-model prompt library)
-├── lean.py         — Aeneas/Lean domain logic: translation analysis, lake build, the
-│                     collectAxioms gate (check_axioms), the MetaM check drivers, spec operations
-├── checks/         — harness-owned Lean SOURCE: spec_checks.lean (the MetaM checks) +
-│                     spec_schemas.lean (the @[lusterna_*] schema attributes), shipped per crate
-├── tools.py        — The harness's own file/git IO helpers inside the container (not agent tools)
-├── schemas.py      — AgentDeps (the shared dependency handle)
-├── docs.py         — Aeneas/Lean skill documents appended to the relevant briefings
-├── container.py    — Docker lifecycle: start, push repo, exec, exec_stream, export the run branch
-├── checkpoint.py   — Per-session numbered checkpoints + snapshot(deps) serialisation
-└── config.py       — Env-driven knobs, plus logging setup
+├── cli.py          command-line interface
+├── pipeline.py     runs the stages in order and checks the result of each stage
+├── runner.py       starts an agent session in the container and logs its output
+├── briefings.py    the prompt for each stage
+├── docs.py         adds the texts from docs/ to the prompts
+├── docs/           Aeneas, Lean, and Solana reference texts for the agents
+├── lean.py         Lean builds and the checks on theorems and proofs
+├── checks/         Lean programs that check the theorem statements
+├── container.py    Docker container setup, commands, and export of the result branch
+├── checkpoint.py   saves and loads checkpoints
+├── tools.py        file and git helpers for the harness
+├── schemas.py      shared state passed between the stages
+└── config.py       environment variables and logging setup
 ```
 
 ## Security
