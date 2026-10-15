@@ -1,17 +1,25 @@
 # Lusterna
 
-A harness that uses AI agents to formally verify Rust programs. Lusterna infers properties from the sources,
-translates the code into Lean 4 using [Aeneas](https://github.com/AeneasVerif/aeneas), states the inferred properties as theorems and proves them.
-
-Although it can be used with general Rust code, its primary use case is the formal verification of Solana programs.
+Lusterna is a harness that uses AI agents to formally verify Rust programs.
+Although it can be used with general Rust code, it is primarily designed for Solana programs.
 
 ## Overview
 
-The input is a Rust repository and a short text file that tells Lusterna what to focus on.
-Lusterna works in multiple stages, each stage spawning a separate AI agent to perform a specific task.
-The Python harness runs the stages in order. After each stage, it checks that the agent's results are correct.
+The agents derive the intended behavior of the code, translate the
+code to Lean 4 with [Aeneas](https://github.com/AeneasVerif/aeneas), state the intended behavior as theorems, and prove them.
+The agents' output is not trusted but checked: The Lean kernel checks every proof, the Lusterna harness rejects any result that depends on unproven assumptions, and when the agent has to adapt the Rust code so that Aeneas can translate it, a separate agent rejects any change that alters the behavior of the verified functions.
 
-### Stages
+Properties that do not hold are refuted with a machine-checked counterexample, which typically indicates a bug. For
+Solana programs, the agents also account for runtime semantics that Aeneas does not model out of the box.
+
+> [!NOTE]
+> Lusterna is usable today, but it is experimental and under active development. Its interface, capabilities, and output may change.
+
+### The Lusterna Verification Pipeline
+
+The input to Lusterna is a Rust repository and a short text file that indicates what to focus on.
+Lusterna runs the verification end-to-end as a pipeline of stages, each handled by a separate AI agent.
+The Lusterna Python tool is the harness that orchestrates the stages. It spawns the agents, waits until they finish and, before moving to the next stage, judges each agent's results for defects. If it finds any, it reiterates the stage instead.
 
 1. **Infer**: Read the source code, choose the functions to verify, and write down the properties
    that these functions are expected to have.
@@ -25,7 +33,7 @@ The Python harness runs the stages in order. After each stage, it checks that th
 5. **Report**: Write a verification report. The list of proved theorems at the top of the report
    comes from the harness.
 
-The stages and checks are explained to more detail in [docs/pipeline.md](docs/pipeline.md).
+The stages and checks are explained in more detail in [docs/pipeline.md](docs/pipeline.md).
 
 ## Requirements
 
@@ -55,7 +63,7 @@ lusterna run /path/to/rust-repo /path/to/design.md
 #   git -C /path/to/rust-repo diff lusterna/<session>-base lusterna/<session>
 ```
 
-[docs/usage.md](docs/usage.md) describes the usage to more detail, including the commands, how to resume a run, incremental runs, and the output files.
+[docs/usage.md](docs/usage.md) describes the usage in more detail, including the commands, how to resume a run, incremental runs, and the output files.
 
 ## Repository layout
 
