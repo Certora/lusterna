@@ -29,7 +29,7 @@ existing branches are left untouched. Output is JSON on stdout (`session_id`, `r
 stderr as structured log lines.
 
 ```
-lusterna build-image [--tag TAG]      # build the toolchain image (required before the first run)
+lusterna build-image [--tag TAG] [--aeneas-ref REF]   # build the toolchain image (required before the first run); REF is an Aeneas branch, tag or commit (default: latest release)
 lusterna list-sessions                # sessions that have at least one checkpoint
 lusterna list-checkpoints SESSION_ID  # checkpoints for a session (JSON)
 lusterna show-checkpoint SESSION_ID [--number N]   # a checkpoint's state (JSON)
