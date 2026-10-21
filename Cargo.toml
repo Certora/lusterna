@@ -4,3 +4,22 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+env_logger = "0.11.11"
+log = "0.4.34"
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.21"
+toml_edit = "0.25.17"
+
+[features]
+# Skips the tests that need `lake` on `PATH`
+no-lake = []
+# Builds the integration tests, which need `charon`, `aeneas` and `lake` on
+# `PATH`, `AENEAS_ROOT` set, and network access
+integration-test = []
+
+[[test]]
+name = "translate_setup"
+required-features = ["integration-test"]
+
+[dev-dependencies]
+tempfile = "3.27.0"
