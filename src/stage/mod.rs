@@ -61,7 +61,7 @@ pub fn run<S: Stage>(mut s: S, cfg: &Config) -> Result<S::Output, StageExecution
 
     let mut agent = Agent::with_name(S::name().to_ascii_uppercase());
     for _ in 0..cfg.max_stage_attempts {
-        let summary = agent.run(&prompt)?;
+        let summary = agent.run(prompt)?;
         match s.gate_check(summary) {
             Ok(o) => return Ok(o),
             Err(e) => {
