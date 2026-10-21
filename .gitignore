@@ -16,3 +16,8 @@ LOG*
 
 # Presentation/demo scratch (not part of the package)
 demo/
+
+
+# Added by cargo
+
+/target
