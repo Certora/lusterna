@@ -21,3 +21,4 @@ demo/
 # Added by cargo
 
 /target
+.vscode/
