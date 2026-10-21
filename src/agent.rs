@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     io::{self, BufRead, BufReader, Write},
     process::{Command, ExitStatus, Stdio},
     thread,
@@ -203,6 +204,17 @@ impl Agent {
             return Err(AgentError::Failed { status, stderr });
         }
         let event = result.ok_or(AgentError::NoResult { stderr })?;
+        if let Ok(per_model) =
+            serde_json::from_value::<HashMap<String, ModelUsage>>(event["modelUsage"].clone())
+        {
+            for u in per_model.values() {
+                self.usage.input_tokens += u.input_tokens;
+                self.usage.output_tokens += u.output_tokens;
+                self.usage.cache_read_input_tokens += u.cache_read_input_tokens;
+                self.usage.cache_creation_input_tokens += u.cache_creation_input_tokens;
+                self.usage.cost_usd += u.cost_usd;
+            }
+        }
         let text = event["result"].as_str().unwrap_or_default().to_owned();
         if event["is_error"] == true {
             return Err(AgentError::ResultError { result: text });
