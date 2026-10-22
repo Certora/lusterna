@@ -71,8 +71,9 @@ pub fn add_worktree(repo: &Path, branch: &str, path: &Path, start: &str) -> Resu
 }
 
 /// Stages all changes in `repo`, including untracked files that are not
-/// ignored, and commits them with `message`.
-pub fn commit_all(repo: &Path, message: &str) -> Result<(), GitError> {
+/// ignored, commits them with `message`, and returns the commit hash.
+pub fn commit_all(repo: &Path, message: &str) -> Result<String, GitError> {
     run(repo, &["add".as_ref(), "--all".as_ref()])?;
-    run(repo, &["commit".as_ref(), "-m".as_ref(), message.as_ref()]).map(|_| ())
+    run(repo, &["commit".as_ref(), "-m".as_ref(), message.as_ref()])?;
+    head_rev(repo)
 }

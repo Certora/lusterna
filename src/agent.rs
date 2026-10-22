@@ -53,7 +53,6 @@ pub struct ModelUsage {
 #[derive(Debug)]
 pub struct Agent {
     briefing: Option<String>,
-    name: Option<String>,
     allowed_tools: Vec<String>,
     effort: Option<Effort>,
     max_budged: Option<usize>,
@@ -67,7 +66,6 @@ impl Default for Agent {
     fn default() -> Self {
         Self {
             briefing: None,
-            name: None,
             allowed_tools: DEFAULT_ALLOWED_TOOLS
                 .iter()
                 .map(|s| s.to_string())
@@ -97,13 +95,6 @@ pub enum AgentError {
 }
 
 impl Agent {
-    pub fn with_name(name: String) -> Self {
-        Self {
-            name: Some(name),
-            ..Default::default()
-        }
-    }
-
     pub fn set_briefing(&mut self, briefing: String) {
         self.briefing = Some(briefing)
     }

@@ -1,6 +1,7 @@
 use crate::agent::Effort;
 
 pub(crate) mod agent;
+pub(crate) mod log;
 pub mod stage;
 pub mod utils;
 

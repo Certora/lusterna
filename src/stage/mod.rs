@@ -1,6 +1,10 @@
 pub mod translate;
 
-use std::{error::Error, fmt};
+use std::{
+    error::Error,
+    fmt,
+    time::{Duration, Instant},
+};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -8,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     Config,
     agent::{Agent, AgentError},
+    log::{stage_debug, stage_info},
 };
 pub trait Stage: Sized {
     type Input;
@@ -91,26 +96,65 @@ impl<S: Stage> fmt::Display for AttemptRejected<S> {
 pub fn run<S: Stage>(mut s: S, cfg: &Config) -> Result<S::Output, StageExecutionError<S>> {
     // Run the setup, if it fails, stop here.
     s.setup().map_err(StageExecutionError::SetupError)?;
+    stage_info!(S::name(), "setup completed");
 
     let mut prompt: String = s.base_prompt();
     let mut last_rejection: Option<AttemptRejected<S>> = None;
 
-    let mut agent = Agent::with_name(S::name().to_ascii_uppercase());
-    for _ in 0..cfg.stage_max_attempts {
+    let mut agent = Agent::default();
+    for attempt in 0..cfg.stage_max_attempts {
+        stage_info!(
+            S::name(),
+            "starting attempt {}/{}",
+            attempt,
+            cfg.stage_max_attempts
+        );
+        let t = Instant::now();
         let summary = agent.run(prompt)?;
+        stage_info!(
+            S::name(),
+            "agent finished in {}",
+            humantime::format_duration(Duration::from_secs(t.elapsed().as_secs()))
+        );
+        stage_debug!(S::name(), "agent summary: {}", summary);
         match s.gate_check(&summary) {
-            Ok(o) => match s.judge_prompt(&o, &summary) {
-                Some(judge_prompt) => {
-                    let defects = run_judge::<S>(judge_prompt)?;
-                    if defects.is_empty() {
+            Ok(o) => {
+                stage_info!(S::name(), "gate passed");
+                match s.judge_prompt(&o, &summary) {
+                    Some(judge_prompt) => {
+                        stage_info!(S::name(), "running judge");
+                        let t = Instant::now();
+                        let defects = run_judge::<S>(judge_prompt)?;
+                        stage_info!(
+                            S::name(),
+                            "judge finished in {}",
+                            humantime::format_duration(Duration::from_secs(t.elapsed().as_secs()))
+                        );
+                        if defects.is_empty() {
+                            stage_info!(S::name(), "judge found no defects, continuing");
+                            return Ok(o);
+                        }
+                        stage_info!(S::name(), "judge found defects");
+                        stage_debug!(
+                            S::name(),
+                            "defects:\n{}",
+                            (defects
+                                .iter()
+                                .map(|d| d.to_string())
+                                .collect::<Vec<String>>()
+                                .join("\n"))
+                        );
+                        prompt = defects_feedback_prompt(&defects);
+                        last_rejection = Some(AttemptRejected::Judge(defects))
+                    }
+                    None => {
+                        stage_info!(S::name(), "stage has no judge, continuing");
                         return Ok(o);
                     }
-                    prompt = defects_feedback_prompt(&defects);
-                    last_rejection = Some(AttemptRejected::Judge(defects))
                 }
-                None => return Ok(o),
-            },
+            }
             Err(e) => {
+                stage_info!(S::name(), "Gate failed: {}", e);
                 prompt = S::feedback_prompt(&e);
                 last_rejection = Some(AttemptRejected::Gate(e));
             }
@@ -156,7 +200,7 @@ struct Verdict {
 }
 
 fn run_judge<S: Stage>(judge_prompt: String) -> Result<Vec<Defect>, AgentError> {
-    let mut judge_agent = Agent::with_name(format!("{}_judge", S::name().to_ascii_uppercase()));
+    let mut judge_agent = Agent::default();
     let schema = schemars::schema_for!(Verdict);
     judge_agent.set_json_schema(serde_json::to_string(&schema)?);
 

@@ -1,10 +1,12 @@
 use std::{
     env, fs,
     path::{self, Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, anyhow};
 use clap::{Parser, Subcommand};
+use log::info;
 use lusterna::{
     Config,
     stage::{
@@ -114,6 +116,11 @@ fn translate(
                 .join(format!("{project}_{source_branch}_{target_branch}").replace('/', "-"))
         }
     };
+    info!(
+        "Checking out worktree for branch {} at {}",
+        target_branch,
+        worktree.display()
+    );
     git::add_worktree(&repo_root, &target_branch, &worktree, &source_branch)?;
     let in_worktree = |p: &Path| -> anyhow::Result<PathBuf> {
         let p = canonicalize(p)?;
@@ -126,19 +133,38 @@ fn translate(
         })?;
         Ok(worktree.join(relative))
     };
-    let toolchain = aeneas_root.join("backends/lean/lean-toolchain");
 
+    // get the aeneas revision and the toolchain it uses
+    let aeneas_rev = git::head_rev(&aeneas_root)?;
+    let toolchain_file = aeneas_root.join("backends/lean/lean-toolchain");
+    let lean_toolchain = fs::read_to_string(&toolchain_file)
+        .with_context(|| format!("cannot read `{}`", toolchain_file.display()))?;
+
+    info!(
+        "Found Aeneas revision {}, using same lean toolchain: {}",
+        aeneas_rev, lean_toolchain
+    );
+    info!("Starting translation phase");
+
+    let t = Instant::now();
     let input = TranslateInput {
         workspace_root: in_worktree(&workspace_root)?,
         crate_root: crate_root.as_deref().map(in_worktree).transpose()?,
         entrypoints,
         opaque,
-        aeneas_rev: git::head_rev(&aeneas_root)?,
-        lean_toolchain: fs::read_to_string(&toolchain)
-            .with_context(|| format!("cannot read `{}`", toolchain.display()))?,
+        aeneas_rev,
+        lean_toolchain,
     };
-    let output = stage::run(TranslateStage::new(input), config)?;
-    git::commit_all(&worktree, "lusterna: translate to Lean with Aeneas")?;
+    let translate_stage = TranslateStage::new(input);
+    let output = stage::run(translate_stage, config)?;
+    log::info!(
+        "Finished translation in {:?}",
+        humantime::format_duration(Duration::from_secs(t.elapsed().as_secs()))
+    );
+
+    let sha = git::commit_all(&worktree, "lusterna: translate to Lean with Aeneas")?;
+    log::info!("Committed translation in {}", sha);
+
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }

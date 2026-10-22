@@ -9,6 +9,17 @@ use crate::stage::{Stage, translate::setup::SetupOutcome};
 
 pub use {gate::TranslateGateErr, setup::TranslateSetupErr};
 
+/// Logs at info level with the translate stage's name as the log target.
+macro_rules! translate_info {
+    ($($arg:tt)+) => {
+        $crate::log::stage_info!(
+            <$crate::stage::translate::TranslateStage as $crate::stage::Stage>::name(),
+            $($arg)+
+        )
+    };
+}
+use translate_info;
+
 /// The agent briefing of the translate stage, with `{crate_root}`,
 /// `{entrypoints}` and `{opaque}` standing for the crate root and the
 /// Markdown lists of the Charon `--start-from` and `--opaque` patterns.

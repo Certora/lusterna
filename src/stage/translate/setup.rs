@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::{
-    stage::translate::TranslateInput,
+    stage::translate::{TranslateInput, translate_info},
     utils::{
         cargo::{self, CargoError},
         lean::{self, LakeError},
@@ -94,12 +94,25 @@ pub(super) fn run_setup(input: &TranslateInput) -> Result<SetupOutcome, Translat
         });
     }
     cargo::build(&crate_manifest)?;
+    translate_info!("setup: clean project builds");
+
     cargo::add_feature(&crate_manifest, "lusterna")?;
+    translate_info!(
+        "setup: added 'lusterna' feature to Cargo.toml ({})",
+        crate_manifest.display()
+    );
 
     let extraction_script =
         create_extraction_script(crate_root, &input.entrypoints, &input.opaque)?;
 
+    translate_info!(
+        "setup: created extraction script at {}",
+        extraction_script.display()
+    );
+
     let lean_root = init_lake_project(crate_root, &input.aeneas_rev, &input.lean_toolchain)?;
+
+    translate_info!("setup: initialized lake project at {}", lean_root.display());
 
     Ok(SetupOutcome {
         extraction_script,
@@ -145,7 +158,10 @@ fn init_lake_project(
 ) -> Result<PathBuf, TranslateSetupErr> {
     let lean_root = crate_root.join("lusterna").join("lean");
     fs::create_dir_all(&lean_root)?;
-    fs::write(crate_root.join("lusterna").join(".gitignore"), "/lean/.lake/\n")?;
+    fs::write(
+        crate_root.join("lusterna").join(".gitignore"),
+        "/lean/.lake/\n",
+    )?;
     fs::write(lean_root.join("lakefile.toml"), make_lakefile(aeneas_rev))?;
     fs::write(
         lean_root.join("lean-toolchain"),
