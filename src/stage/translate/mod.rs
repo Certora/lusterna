@@ -23,17 +23,17 @@ use translate_info;
 /// The agent briefing of the translate stage, with `{crate_root}`,
 /// `{entrypoints}` and `{opaque}` standing for the crate root and the
 /// Markdown lists of the Charon `--start-from` and `--opaque` patterns.
-const BRIEFING_TEMPLATE: &'static str = include_str!("res/briefing.md");
+const BRIEFING_TEMPLATE: &str = include_str!("res/briefing.md");
 
 /// The first prompt of the translate stage, with `{crate_root}` standing for
 /// the crate root.
-const BASE_PROMPT_TEMPLATE: &'static str = include_str!("res/prompt.md");
+const BASE_PROMPT_TEMPLATE: &str = include_str!("res/prompt.md");
 
 /// The judge prompt of the translate stage, with `{crate_root}`,
 /// `{setup_commit}`, `{briefing}` and `{agent_summary}` standing for the
 /// crate root, the hash of the setup commit, the agent briefing and the
 /// agent's final message.
-const JUDGE_PROMPT_TEMPLATE: &'static str = include_str!("res/judge.md");
+const JUDGE_PROMPT_TEMPLATE: &str = include_str!("res/judge.md");
 
 pub struct TranslateInput {
     /// Absolute path to the workspace of the Rust project.
@@ -153,7 +153,7 @@ impl Stage for TranslateStage {
         gate_error.to_feedback_prompt()
     }
 
-    fn gate_check(&self, agent_summary: &String) -> Result<Self::Output, Self::GateError> {
+    fn gate_check(&self, agent_summary: &str) -> Result<Self::Output, Self::GateError> {
         let setup_outcome = self.setup_outcome.as_ref().expect("Setup not run");
 
         gate::run_gate(&self.input, setup_outcome)?;

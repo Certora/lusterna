@@ -1,10 +1,6 @@
 pub mod translate;
 
-use std::{
-    error::Error,
-    fmt,
-    time::Instant,
-};
+use std::{error::Error, fmt, time::Instant};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -49,7 +45,7 @@ pub trait Stage: Sized {
     /// executes the stage worked correctly. If a gate check failed, then
     /// this is returned to the
     /// `agent_summary` is the agent's final message.
-    fn gate_check(&self, agent_summary: &String) -> Result<Self::Output, Self::GateError>;
+    fn gate_check(&self, agent_summary: &str) -> Result<Self::Output, Self::GateError>;
 
     /// The prompt for the judge, or `None` if the stage has no judge.
     /// By default, no judge is run.
@@ -127,11 +123,7 @@ pub fn run<S: Stage>(mut s: S, cfg: &Config) -> Result<S::Output, StageExecution
         );
         let t = Instant::now();
         let summary = agent.run_with_hook(prompt, |s| stage_info!(S::name(), "agent: {}", s,))?;
-        stage_info!(
-            S::name(),
-            "agent finished in {}",
-            format_elapsed(t)
-        );
+        stage_info!(S::name(), "agent finished in {}", format_elapsed(t));
         stage_debug!(S::name(), "agent summary: {}", summary);
         match s.gate_check(&summary) {
             Ok(o) => {
@@ -145,13 +137,9 @@ pub fn run<S: Stage>(mut s: S, cfg: &Config) -> Result<S::Output, StageExecution
                         if remaining_budget <= 0.0 {
                             return Err(StageExecutionError::BudgetExhausted(last_rejection));
                         }
-                        let (defects, cost) = run_judge::<S>(judge_prompt, cfg, remaining_budget)?;
+                        let (defects, cost) = run_judge(judge_prompt, cfg, remaining_budget)?;
                         judge_cost += cost;
-                        stage_info!(
-                            S::name(),
-                            "judge finished in {}",
-                            format_elapsed(t)
-                        );
+                        stage_info!(S::name(), "judge finished in {}", format_elapsed(t));
                         if defects.is_empty() {
                             stage_info!(S::name(), "judge found no defects, continuing");
                             return Ok(o);
@@ -182,7 +170,7 @@ pub fn run<S: Stage>(mut s: S, cfg: &Config) -> Result<S::Output, StageExecution
             }
         }
     }
-    return Err(StageExecutionError::MaxRetries(last_rejection));
+    Err(StageExecutionError::MaxRetries(last_rejection))
 }
 
 /// A defect the judge found in a stage's output.
@@ -222,7 +210,7 @@ struct Verdict {
 }
 
 /// Returns the defects the judge found and the judge's cost in USD.
-fn run_judge<S: Stage>(
+fn run_judge(
     judge_prompt: String,
     cfg: &Config,
     max_budget: f64,

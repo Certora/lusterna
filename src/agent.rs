@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    fmt::Display,
     io::{self, BufRead, BufReader, Write},
     process::{Command, ExitStatus, Stdio},
     thread,
@@ -27,14 +28,14 @@ pub enum Effort {
     Max,
 }
 
-impl Effort {
-    pub fn to_string(&self) -> String {
+impl Display for Effort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Effort::Low => "low".to_owned(),
-            Effort::Medium => "medium".to_owned(),
-            Effort::High => "high".to_owned(),
-            Effort::XHigh => "xhigh".to_owned(),
-            Effort::Max => "max".to_owned(),
+            Effort::Low => write!(f, "low"),
+            Effort::Medium => write!(f, "medium"),
+            Effort::High => write!(f, "high"),
+            Effort::XHigh => write!(f, "xhigh"),
+            Effort::Max => write!(f, "max"),
         }
     }
 }

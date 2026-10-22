@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, anyhow, bail};
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use log::{info, warn};
 use lusterna::{
     Config,
@@ -29,72 +29,56 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Translates a Rust crate to Lean with Aeneas
-    Translate {
-        /// Workspace of the Rust project
-        workspace_root: PathBuf,
-        /// Crate inside the workspace, if the workspace has more than one crate
-        #[arg(long)]
-        crate_root: Option<PathBuf>,
-        /// Charon `--start-from` pattern
-        #[arg(long = "entrypoint", required = true)]
-        entrypoints: Vec<String>,
-        /// Charon `--opaque` pattern
-        #[arg(long)]
-        opaque: Vec<String>,
-        /// Aeneas checkout
-        #[arg(long, env = "AENEAS_ROOT")]
-        aeneas_root: PathBuf,
-        /// Branch to start from [default: the checked out branch]
-        #[arg(long)]
-        source_branch: Option<String>,
-        /// New branch to do the work on. Must not exist yet.
-        #[arg(long)]
-        target_branch: String,
-        /// Where to create the worktree of the target branch
-        /// [default: ~/.lusterna/<project>_<source branch>_<target branch>]
-        #[arg(long)]
-        worktree: Option<PathBuf>,
-    },
+    Translate(TranslateArgs),
+}
+
+#[derive(Args)]
+struct TranslateArgs {
+    /// Workspace of the Rust project
+    workspace_root: PathBuf,
+    /// Crate inside the workspace, if the workspace has more than one crate
+    #[arg(long)]
+    crate_root: Option<PathBuf>,
+    /// Charon `--start-from` pattern
+    #[arg(long = "entrypoint", required = true)]
+    entrypoints: Vec<String>,
+    /// Charon `--opaque` pattern
+    #[arg(long)]
+    opaque: Vec<String>,
+    /// Aeneas checkout
+    #[arg(long, env = "AENEAS_ROOT")]
+    aeneas_root: PathBuf,
+    /// Branch to start from [default: the checked out branch]
+    #[arg(long)]
+    source_branch: Option<String>,
+    /// New branch to do the work on. Must not exist yet.
+    #[arg(long)]
+    target_branch: String,
+    /// Where to create the worktree of the target branch
+    /// [default: ~/.lusterna/<project>_<source branch>_<target branch>]
+    #[arg(long)]
+    worktree: Option<PathBuf>,
 }
 
 fn main() -> anyhow::Result<()> {
     env_logger::init();
     let cli = Cli::parse();
     match cli.command {
-        Command::Translate {
-            workspace_root,
-            crate_root,
-            entrypoints,
-            opaque,
-            aeneas_root,
-            source_branch,
-            target_branch,
-            worktree,
-        } => translate(
-            &cli.config,
-            workspace_root,
-            crate_root,
-            entrypoints,
-            opaque,
-            aeneas_root,
-            source_branch,
-            target_branch,
-            worktree,
-        ),
+        Command::Translate(args) => translate(&cli.config, args),
     }
 }
 
-fn translate(
-    config: &Config,
-    workspace_root: PathBuf,
-    crate_root: Option<PathBuf>,
-    entrypoints: Vec<String>,
-    opaque: Vec<String>,
-    aeneas_root: PathBuf,
-    source_branch: Option<String>,
-    target_branch: String,
-    worktree: Option<PathBuf>,
-) -> anyhow::Result<()> {
+fn translate(config: &Config, args: TranslateArgs) -> anyhow::Result<()> {
+    let TranslateArgs {
+        workspace_root,
+        crate_root,
+        entrypoints,
+        opaque,
+        aeneas_root,
+        source_branch,
+        target_branch,
+        worktree,
+    } = args;
     let canonicalize =
         |p: &Path| fs::canonicalize(p).with_context(|| format!("cannot resolve `{}`", p.display()));
     let workspace_root = canonicalize(&workspace_root)?;
