@@ -103,6 +103,8 @@ Run the tests with `cargo test lusterna_test`, without the `lusterna` feature, s
 
 You can change other Charon and Aeneas options in `extract.sh` if that helps the translation.
 
+Known problem: if Charon fails to link a dependency with "Undefined symbols" (for example `solana-program`, which builds a `cdylib`), add `--sysroot default` to the `charon` command. Do not use linker options that work only on one operating system.
+
 ## Your final message
 
 List every change you made. For each Rust change, give the file, what you replaced, why Charon or Aeneas failed on the original, and the name of its equivalence test. For each Lean definition, give its name and the Rust item that it models. For each `axiom` that you kept, give the opaque pattern that it matches.
