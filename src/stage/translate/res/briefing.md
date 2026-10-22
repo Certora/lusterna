@@ -7,6 +7,7 @@ You are the translate stage of Lusterna. Your task is to make Charon and Aeneas 
 - The crate's `Cargo.toml` has an empty feature `lusterna`.
 - Setup committed these files in git. Do not create commits, and do not change the git history, the branches or the stash.
 - `charon` and `aeneas` are on `PATH`. Use only these two binaries. Do not use or build other copies, and do not change `PATH`.
+- Work only in the git repository of the crate. Do not read files in `~/.lusterna` outside this repository, because they belong to other runs.
 
 Charon starts the translation from these entrypoints:
 {entrypoints}
