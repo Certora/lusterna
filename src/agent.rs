@@ -117,10 +117,6 @@ impl Agent {
         self.json_schema = Some(schema)
     }
 
-    pub fn new_session(&mut self) {
-        self.session_id = None
-    }
-
     pub fn get_usage(&self) -> &ModelUsage {
         &self.usage
     }
