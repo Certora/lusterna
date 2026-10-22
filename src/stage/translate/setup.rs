@@ -134,6 +134,7 @@ fn make_lakefile(aeneas_rev: &str) -> String {
 /// - wires the extraction file(s) (possibly not existing yet) to be part of the
 ///   project
 /// - writes the `lean-toolchain` and calls `lake update`
+/// - writes `lusterna/.gitignore`, which ignores the project's `.lake`
 ///
 /// Returns the path to the lean project root.
 /// Returns an error if failed.
@@ -144,6 +145,7 @@ fn init_lake_project(
 ) -> Result<PathBuf, TranslateSetupErr> {
     let lean_root = crate_root.join("lusterna").join("lean");
     fs::create_dir_all(&lean_root)?;
+    fs::write(crate_root.join("lusterna").join(".gitignore"), "/lean/.lake/\n")?;
     fs::write(lean_root.join("lakefile.toml"), make_lakefile(aeneas_rev))?;
     fs::write(
         lean_root.join("lean-toolchain"),
