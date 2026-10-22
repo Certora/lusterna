@@ -32,36 +32,45 @@ pub enum TranslateSetupErr {
         crate_root: PathBuf,
         workspace_root: PathBuf,
     },
+    #[error("`{0}` exists from an earlier run. Delete it and run the stage again")]
+    AlreadyExists(PathBuf),
     #[error(transparent)]
     Cargo(#[from] CargoError),
     #[error(transparent)]
     Lake(#[from] LakeError),
 }
 
-/// The paths that setup created or found in the crate root.
+/// The paths that setup created in the crate root.
 #[derive(Debug, Clone)]
 pub(super) struct SetupOutcome {
     /// Absolute path to `lusterna/extract.sh`
     pub extraction_script: PathBuf,
-    /// Whether `lusterna/extract.sh` existed before setup
-    pub extraction_existed: bool,
     /// Absolute path to the lean project root dir `lusterna/lean`
     pub lean_root: PathBuf,
-    /// Whether `lusterna/lean/lakefile.toml` existed before setup
-    pub lean_existed: bool,
 }
 
 /// Sets up the crate for the agent:
 ///
+/// - checks that `lusterna/extract.sh` and `lusterna/lean` do not exist in the
+///   crate root
 /// - checks that `input.workspace_root` is the root of a Cargo workspace
 /// - checks that the crate root is a crate in that workspace
 /// - builds the crate
 /// - adds the `lusterna` feature to the crate
-/// - creates the extraction script if it does not exist
-/// - creates the lean project if it does not exist
+/// - creates the extraction script
+/// - creates the lean project
 pub(super) fn run_setup(input: &TranslateInput) -> Result<SetupOutcome, TranslateSetupErr> {
     let workspace_root = &input.workspace_root;
     let crate_root = input.crate_root();
+    for path in [
+        crate_root.join("lusterna").join("extract.sh"),
+        crate_root.join("lusterna").join("lean"),
+    ] {
+        if path.exists() {
+            return Err(TranslateSetupErr::AlreadyExists(path));
+        }
+    }
+
     // Check if workspace root is actually a rust workspace
     let ws_manifest = fs::canonicalize(workspace_root.join("Cargo.toml"))
         .map_err(|_| TranslateSetupErr::NotWorkspaceRoot(workspace_root.to_owned()))?;
@@ -87,17 +96,14 @@ pub(super) fn run_setup(input: &TranslateInput) -> Result<SetupOutcome, Translat
     cargo::build(&crate_manifest)?;
     cargo::add_feature(&crate_manifest, "lusterna")?;
 
-    let (extraction_script_path, extraction_script_created) =
+    let extraction_script =
         create_extraction_script(crate_root, &input.entrypoints, &input.opaque)?;
 
-    let (lean_root, lean_root_existed) =
-        init_lake_project(crate_root, &input.aeneas_rev, &input.lean_toolchain)?;
+    let lean_root = init_lake_project(crate_root, &input.aeneas_rev, &input.lean_toolchain)?;
 
     Ok(SetupOutcome {
-        extraction_script: extraction_script_path,
-        extraction_existed: !extraction_script_created,
-        lean_root: lean_root,
-        lean_existed: lean_root_existed,
+        extraction_script,
+        lean_root,
     })
 }
 
@@ -129,23 +135,14 @@ fn make_lakefile(aeneas_rev: &str) -> String {
 ///   project
 /// - writes the `lean-toolchain` and calls `lake update`
 ///
-/// Returns a tuple with the first element the path to the lean project root
-/// and the second a flag indicating whether a project was actually
-/// initialized: `true` if it was and `false` if it already existed.
+/// Returns the path to the lean project root.
 /// Returns an error if failed.
-///
-/// TODO: this fails if the existing lakefile states other dependencies
-/// or a different Aeneas version.
 fn init_lake_project(
     crate_root: &Path,
     aeneas_rev: &str,
     lean_toolchain: &str,
-) -> Result<(PathBuf, bool), TranslateSetupErr> {
+) -> Result<PathBuf, TranslateSetupErr> {
     let lean_root = crate_root.join("lusterna").join("lean");
-    if lean_root.join("lakefile.toml").exists() {
-        return Ok((lean_root, false));
-    }
-
     fs::create_dir_all(&lean_root)?;
     fs::write(lean_root.join("lakefile.toml"), make_lakefile(aeneas_rev))?;
     fs::write(
@@ -155,31 +152,23 @@ fn init_lake_project(
 
     lean::lake_update(&lean_root)?;
 
-    Ok((lean_root, true))
+    Ok(lean_root)
 }
 
 /// Creates the initial extraction script.
-/// Returns a tuple with the first element the path to the script and the
-/// second a flag indicating whether the script was created or already
-/// existed: `true` if it was created and `false` if it already existed.
+/// Returns the path to the script.
 /// Returns an error if creation failed
-///
-/// TODO: this fails if the existing script uses different entry points than
-/// the one we specified here
 fn create_extraction_script(
     crate_root: &Path,
     entrypoints: &[String],
     opaque: &[String],
-) -> Result<(PathBuf, bool), io::Error> {
+) -> Result<PathBuf, io::Error> {
     let path = crate_root.join("lusterna").join("extract.sh");
-    if path.exists() {
-        return Ok((path, false));
-    }
 
     fs::create_dir_all(path.parent().unwrap())?;
     fs::write(&path, make_extraction_script(entrypoints, opaque))?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
-    Ok((path, true))
+    Ok(path)
 }
 
 #[cfg(test)]

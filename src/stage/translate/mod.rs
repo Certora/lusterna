@@ -15,8 +15,7 @@ pub use {gate::TranslateGateErr, setup::TranslateSetupErr};
 const BRIEFING_TEMPLATE: &'static str = include_str!("res/briefing.md");
 
 /// The first prompt of the translate stage, with `{crate_root}` standing for
-/// the crate root and `{script_state}` for a sentence on whether
-/// `lusterna/extract.sh` existed before setup.
+/// the crate root.
 const BASE_PROMPT_TEMPLATE: &'static str = include_str!("res/prompt.md");
 
 pub struct TranslateInput {
@@ -81,18 +80,9 @@ impl TranslateStage {
     }
 }
 
-/// Returns the first prompt for the crate at `crate_root`. `script_existed`
-/// tells whether `lusterna/extract.sh` existed before setup.
-fn make_base_prompt(crate_root: &Path, script_existed: bool) -> String {
-    let script_state = if script_existed {
-        "`lusterna/extract.sh` and the changes in the crate come from an earlier run. \
-         Keep the earlier changes that are still needed and continue from there."
-    } else {
-        "Setup created `lusterna/extract.sh` for this run. The crate has no earlier changes."
-    };
-    BASE_PROMPT_TEMPLATE
-        .replace("{crate_root}", &crate_root.display().to_string())
-        .replace("{script_state}", script_state)
+/// Returns the first prompt for the crate at `crate_root`.
+fn make_base_prompt(crate_root: &Path) -> String {
+    BASE_PROMPT_TEMPLATE.replace("{crate_root}", &crate_root.display().to_string())
 }
 
 /// Returns the agent briefing for the crate at `crate_root` and the given
@@ -138,14 +128,7 @@ impl Stage for TranslateStage {
     }
 
     fn base_prompt(&self) -> String {
-        let crate_root = self.input.crate_root();
-        make_base_prompt(
-            crate_root,
-            self.setup_outcome
-                .as_ref()
-                .expect("Setup not run")
-                .extraction_existed,
-        )
+        make_base_prompt(self.input.crate_root())
     }
 
     fn feedback_prompt(gate_error: &Self::GateError) -> String {
