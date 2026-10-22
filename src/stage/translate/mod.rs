@@ -18,6 +18,11 @@ const BRIEFING_TEMPLATE: &'static str = include_str!("res/briefing.md");
 /// the crate root.
 const BASE_PROMPT_TEMPLATE: &'static str = include_str!("res/prompt.md");
 
+/// The judge prompt of the translate stage, with `{crate_root}`,
+/// `{briefing}` and `{agent_summary}` standing for the crate root, the agent
+/// briefing and the agent's final message.
+const JUDGE_PROMPT_TEMPLATE: &'static str = include_str!("res/judge.md");
+
 pub struct TranslateInput {
     /// Absolute path to the workspace of the Rust project.
     pub workspace_root: PathBuf,
@@ -152,5 +157,14 @@ impl Stage for TranslateStage {
     fn briefing(&self) -> String {
         let crate_root = self.input.crate_root();
         make_briefing(crate_root, &self.input.entrypoints, &self.input.opaque)
+    }
+
+    fn judge_prompt(&self, output: &Self::Output, agent_summary: &String) -> Option<String> {
+        Some(
+            JUDGE_PROMPT_TEMPLATE
+                .replace("{crate_root}", &output.crate_root.display().to_string())
+                .replace("{briefing}", &self.briefing())
+                .replace("{agent_summary}", agent_summary),
+        )
     }
 }
