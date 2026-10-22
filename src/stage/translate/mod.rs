@@ -71,7 +71,8 @@ pub struct TranslateOutput {
     pub crate_root: PathBuf,
     /// Absolute path to the extraction script
     pub extract_script: PathBuf,
-    /// Absolute path to the Aeneas generated extraction
+    /// Absolute path to the directory of the Lean modules that Aeneas
+    /// generated
     pub extracted: PathBuf,
     /// Absolute path to the lean project root dir
     pub lean_root: PathBuf,
@@ -160,7 +161,7 @@ impl Stage for TranslateStage {
         Ok(TranslateOutput {
             crate_root: self.input.crate_root().to_owned(),
             extract_script: setup_outcome.extraction_script.to_owned(),
-            extracted: setup_outcome.lean_root.join("Extraction.lean"),
+            extracted: setup_outcome.lean_root.join("Extraction"),
             lean_root: setup_outcome.lean_root.to_owned(),
             agent_summary: agent_summary.to_string(),
         })

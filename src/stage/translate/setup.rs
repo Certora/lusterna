@@ -18,8 +18,8 @@ use crate::{
 const EXTRACT_SH_TEMPLATE: &str = include_str!("res/extract.sh.template");
 
 /// The `lakefile.toml` of the Lean project, with `{rev}` standing for the
-/// Aeneas git revision. Aeneas names the generated module after the `.llbc`
-/// file in CamelCase, and `extract.sh` writes `extraction.llbc`.
+/// Aeneas git revision. `extract.sh` makes Aeneas write the generated modules
+/// to `Extraction/`.
 const LAKEFILE_TEMPLATE: &str = include_str!("res/lakefile.toml.template");
 
 #[derive(Debug, thiserror::Error)]

@@ -1,6 +1,6 @@
 You review the work of the translate stage of Lusterna. Do not change any file.
 
-The translate agent had one job: make Charon and Aeneas translate the Rust crate at `{crate_root}` to Lean, by changing the Rust code only where the tools fail, and without changing what the code does. The harness already made sure that the extraction runs, `lake build` passes, the crate builds without the `lusterna` feature, and `cargo test lusterna_test` passes. Your job is to find changes that make the Lean code describe a different program than the original Rust code.
+The translate agent had one job: make Charon and Aeneas translate the Rust crate at `{crate_root}` to Lean, so that the Lean code describes exactly what the Rust code does. The agent writes Lean definitions for the items that Aeneas cannot translate, and changes the Rust code only where the tools fail completely. The harness already made sure that the extraction runs, `lake build` passes, the crate builds without the `lusterna` feature, and `cargo test lusterna_test` passes. Your job is to find changes that make the Lean code describe a different program than the original Rust code.
 
 The agent worked under this briefing:
 
@@ -22,13 +22,32 @@ The agent must put every change to the Rust code behind `feature = "lusterna"`.
 
 Do not trust the final message. Compare it with the changes that you find.
 
+## Check the Lean definitions with the greatest care
+
+Aeneas declares each item that it cannot translate as an `axiom` in `lusterna/lean/Extraction/FunsExternal_Template.lean` or `TypesExternal_Template.lean`. The agent copies these files to `FunsExternal.lean` and `TypesExternal.lean` and replaces each `axiom` with a definition.
+
+These definitions are trusted. No test compares them with the Rust code, and every later proof depends on them. A wrong definition makes the proofs describe a program that does not exist. A definition that is more defined than the Rust item can make false theorems provable. You are the only check on these definitions, so this part of the review is the most important.
+
+For each definition in `FunsExternal.lean` and `TypesExternal.lean`, do these steps:
+
+1. Find the Rust item that it models. Use the name and the comment that Aeneas wrote above the `axiom` in the template.
+2. Read the source of the Rust item in the Rust standard library or in the dependency in `~/.cargo/registry/src`. Do not rely on your memory of the item.
+3. Compare the two on every input. Check each `Ok` and `Err` case and each `Some` and `None` case. Check the boundary values, such as zero, the maximum and the minimum value. Check overflow.
+4. Where the Rust item panics, the definition must return `fail`. Where the Rust item does not panic, the definition must not return `fail`.
+5. Compare the type definitions field by field and variant by variant.
+
+Do not accept a definition because it compiles, has the right type or looks reasonable. If you cannot find the source of the Rust item, report the definition.
+
+Also compare the definitions with the template. Each `axiom` in the template must have a definition with the same name and type, or stay an `axiom` that matches an opaque pattern.
+
 ## What to report
 
 Report one defect for each problem. Use one of these kinds:
 
 - `changed_behavior`: for at least one input, a replacement or a mock gives a different result than the original, panics when the original does not (or the reverse), or handles overflow differently. A mock that drops a field or an operation that the entrypoints use is also this kind.
 - `weak_test`: a replacement has no equivalence test, or its test does not call the original and the replacement with the same inputs, or the test does not cover zero, the maximum value, overflow, and empty collections where they apply.
-- `hidden_code`: code that the entrypoints reach is not translated to a Lean definition. Look for `#[charon::opaque]` and other Charon or Aeneas attributes, `--exclude` or similar options in `lusterna/extract.sh`, and `axiom` declarations in `lusterna/lean/Extraction.lean` for items that do not match the opaque patterns.
+- `wrong_model`: a definition in `FunsExternal.lean` or `TypesExternal.lean` differs from the Rust item for at least one input. The definition must return `fail` on exactly the inputs where the Rust item panics.
+- `hidden_code`: code that the entrypoints reach is not translated to a Lean definition. Look for `#[charon::opaque]` and other Charon or Aeneas attributes, and for `--exclude` or similar options in `lusterna/extract.sh`. Also look for `axiom` declarations in `lusterna/lean/Extraction/` for items that do not match the opaque patterns.
 - `changed_original`: the change modifies code that the crate builds without the `lusterna` feature.
 - `broad_change`: a replacement or a mock replaces more than the part that Charon or Aeneas fails on.
 - `wrong_summary`: the final message leaves out a change, lists a change that does not exist, or names the wrong equivalence test.
@@ -38,7 +57,7 @@ Report only problems that you can point to in a specific file and item. Do not r
 ## How to write a defect
 
 - `kind`: one of the kinds above.
-- `detail`: the file, the line, and the item, and what is wrong. For `changed_behavior`, give one input for which the original and the replacement differ, and what each one does with it.
+- `detail`: the file, the line, and the item, and what is wrong. For `changed_behavior`, give one input for which the original and the replacement differ, and what each one does with it. For `wrong_model`, give one input for which the Rust item and the Lean definition differ, and what each one does with it.
 - `fix`: the change that the translate agent must make. Name the file and the item. The agent sees only this text, so the fix must make sense without other context.
 - `theorem`: null.
 

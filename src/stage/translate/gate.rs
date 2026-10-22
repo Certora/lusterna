@@ -57,13 +57,32 @@ pub enum TranslateGateErr {
         "`{crate_root}` uses `feature = \"lusterna\"`, but `cargo test lusterna_test` ran no tests"
     )]
     NoEquivalenceTests { crate_root: PathBuf },
+    #[error("Aeneas wrote `{template}`, but `{external}` does not exist")]
+    MissingExternal { template: PathBuf, external: PathBuf },
+    #[error("`{path}` contains `{word}` on line {line}")]
+    ExternalHole {
+        path: PathBuf,
+        word: &'static str,
+        line: usize,
+    },
 }
+
+/// The modules for which Aeneas writes a `<module>_Template.lean` file with
+/// the declarations that have no body, and which the agent must provide as
+/// `<module>.lean`.
+const EXTERNAL_MODULES: [&str; 2] = ["TypesExternal", "FunsExternal"];
+
+/// Words that must not appear in the files of `EXTERNAL_MODULES`.
+const HOLE_WORDS: [&str; 2] = ["sorry", "admit"];
 
 /// Checks the result of the agent:
 ///
 /// - the extraction script passes the input entrypoints and opaque patterns to
 ///   Charon
 /// - the extraction script runs without error
+/// - for every `<module>_Template.lean` of `EXTERNAL_MODULES` in
+///   `Extraction/`, the file `<module>.lean` exists and contains no
+///   `HOLE_WORDS`
 /// - `lake build` succeeds in the lean root
 /// - the crate builds without the `lusterna` feature
 /// - `cargo test lusterna_test` passes
@@ -82,6 +101,9 @@ pub(super) fn run_gate(
 
     // Running the extraction script must succeed
     run_script(extraction_script)?;
+
+    // The declarations without a body must have definitions
+    check_externals(&lean_root.join("Extraction"))?;
 
     // Running `lake build` must succeed in the lean root
     lean::lake_build(lean_root)?;
@@ -139,8 +161,9 @@ impl TranslateGateErr {
             ),
             TranslateGateErr::Lake(LakeError::Build { lean_root, output }) => format!(
                 "`lake build` in `{}` failed with this output:\n\n```\n{output}\n```\n\n\
-                 Fix the Rust code so that Aeneas generates Lean code that builds. \
-                 Do not edit the generated Lean code.",
+                 Fix the definitions in `Extraction/FunsExternal.lean` and \
+                 `Extraction/TypesExternal.lean`, or the Rust code, so that the Lean project \
+                 builds. Do not edit the files that Aeneas generates.",
                 lean_root.display()
             ),
             TranslateGateErr::Lake(lake_error) => format!(
@@ -190,6 +213,20 @@ impl TranslateGateErr {
                  Add an equivalence test for every replacement, in a \
                  `#[cfg(test)] mod lusterna_test` next to it.",
                 crate_root.display()
+            ),
+            TranslateGateErr::MissingExternal { template, external } => format!(
+                "Aeneas wrote `{}`, but `{}` does not exist.\n\n\
+                 Copy the template to `{}` and replace each `axiom` with a definition that \
+                 models the Rust item exactly. Keep `axiom` only for items that match an \
+                 opaque pattern.",
+                template.display(),
+                external.display(),
+                external.display()
+            ),
+            TranslateGateErr::ExternalHole { path, word, line } => format!(
+                "`{}` contains `{word}` on line {line}.\n\n\
+                 Replace it with a complete definition that models the Rust item exactly.",
+                path.display()
             ),
         }
     }
@@ -265,6 +302,39 @@ fn check_patterns(
         return Err(TranslateGateErr::ArgsNotPassed {
             script: script.to_owned(),
         });
+    }
+    Ok(())
+}
+
+/// Checks that for every `<module>_Template.lean` of `EXTERNAL_MODULES` in
+/// `dir`, the file `<module>.lean` exists and contains none of `HOLE_WORDS`.
+fn check_externals(dir: &Path) -> Result<(), TranslateGateErr> {
+    for module in EXTERNAL_MODULES {
+        let template = dir.join(format!("{module}_Template.lean"));
+        if !template.exists() {
+            continue;
+        }
+        let external = dir.join(format!("{module}.lean"));
+        if !external.exists() {
+            return Err(TranslateGateErr::MissingExternal { template, external });
+        }
+        let content =
+            fs::read_to_string(&external).map_err(|source| TranslateGateErr::ReadSource {
+                path: external.clone(),
+                source,
+            })?;
+        for (i, line) in content.lines().enumerate() {
+            let words = line
+                .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .collect::<Vec<_>>();
+            if let Some(word) = HOLE_WORDS.into_iter().find(|w| words.contains(w)) {
+                return Err(TranslateGateErr::ExternalHole {
+                    path: external,
+                    word,
+                    line: i + 1,
+                });
+            }
+        }
     }
     Ok(())
 }
@@ -411,5 +481,56 @@ mod tests {
             Err(TranslateGateErr::ScriptFailed { stderr, .. }) => assert_eq!(stderr, "oops\n"),
             other => panic!("expected TranslateGateErr::ScriptFailed, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn check_externals_accepts_no_templates() {
+        let dir = tempfile::tempdir().unwrap();
+
+        check_externals(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn check_externals_rejects_missing_external() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("FunsExternal_Template.lean"), "axiom f : Nat\n").unwrap();
+
+        match check_externals(dir.path()) {
+            Err(TranslateGateErr::MissingExternal { external, .. }) => {
+                assert_eq!(external, dir.path().join("FunsExternal.lean"))
+            }
+            other => panic!("expected TranslateGateErr::MissingExternal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn check_externals_rejects_sorry() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("FunsExternal_Template.lean"), "axiom f : Nat\n").unwrap();
+        fs::write(
+            dir.path().join("FunsExternal.lean"),
+            "-- f\ndef f : Nat := sorry\n",
+        )
+        .unwrap();
+
+        match check_externals(dir.path()) {
+            Err(TranslateGateErr::ExternalHole { word, line, .. }) => {
+                assert_eq!((word, line), ("sorry", 2))
+            }
+            other => panic!("expected TranslateGateErr::ExternalHole, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn check_externals_accepts_complete_definitions() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("FunsExternal_Template.lean"), "axiom f : Nat\n").unwrap();
+        fs::write(
+            dir.path().join("FunsExternal.lean"),
+            "def f : Nat := 0\ndef sorry_count : Nat := 0\n",
+        )
+        .unwrap();
+
+        check_externals(dir.path()).unwrap();
     }
 }

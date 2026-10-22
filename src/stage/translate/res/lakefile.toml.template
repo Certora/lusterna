@@ -9,3 +9,4 @@ subDir = "backends/lean"
 
 [[lean_lib]]
 name = "Extraction"
+globs = ["Extraction.+"]

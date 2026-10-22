@@ -76,7 +76,7 @@ fn setup_bootstraps_extraction_of_workspace_member() {
         .output()
         .unwrap();
     assert!(extract.status.success(), "{extract:?}");
-    let extraction = fs::read_to_string(lean_root.join("Extraction.lean")).unwrap();
+    let extraction = fs::read_to_string(lean_root.join("Extraction/Funs.lean")).unwrap();
     assert!(extraction.contains("clamp"), "{extraction}");
 
     eprintln!("running lake build");
