@@ -71,9 +71,21 @@ pub fn add_worktree(repo: &Path, branch: &str, path: &Path, start: &str) -> Resu
 }
 
 /// Stages all changes in `repo`, including untracked files that are not
-/// ignored, commits them with `message`, and returns the commit hash.
+/// ignored, commits them with `message` as `Lusterna <lusterna@agent>`, and
+/// returns the commit hash.
 pub fn commit_all(repo: &Path, message: &str) -> Result<String, GitError> {
     run(repo, &["add".as_ref(), "--all".as_ref()])?;
-    run(repo, &["commit".as_ref(), "-m".as_ref(), message.as_ref()])?;
+    run(
+        repo,
+        &[
+            "-c".as_ref(),
+            "user.name=Lusterna".as_ref(),
+            "-c".as_ref(),
+            "user.email=lusterna@agent".as_ref(),
+            "commit".as_ref(),
+            "-m".as_ref(),
+            message.as_ref(),
+        ],
+    )?;
     head_rev(repo)
 }

@@ -46,19 +46,13 @@ fn setup_bootstraps_extraction_of_workspace_member() {
     );
     let crate_root = workspace_root.join("core");
     eprintln!("copied fixture to {}", workspace_root.display());
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.name", "lusterna"],
-        &["config", "user.email", "lusterna@example.com"],
-    ] {
-        let git = Command::new("git")
-            .arg("-C")
-            .arg(&workspace_root)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(git.status.success(), "{git:?}");
-    }
+    let git = Command::new("git")
+        .arg("-C")
+        .arg(&workspace_root)
+        .args(["init", "-q"])
+        .output()
+        .unwrap();
+    assert!(git.status.success(), "{git:?}");
 
     let mut stage = TranslateStage::new(TranslateInput {
         workspace_root: workspace_root.clone(),
