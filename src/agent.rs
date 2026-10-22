@@ -99,16 +99,16 @@ impl Agent {
         self.briefing = Some(briefing)
     }
 
-    pub fn set_allowed_tools(&mut self, allowed: Vec<String>) {
-        self.allowed_tools = allowed
-    }
-
     pub fn set_max_budget(&mut self, max_budged: usize) {
         self.max_budged = Some(max_budged)
     }
 
     pub fn set_effort(&mut self, effort: Effort) {
         self.effort = Some(effort)
+    }
+
+    pub fn set_model(&mut self, model: String) {
+        self.model = model
     }
 
     /// Makes `run` return the agent's structured output, as JSON matching

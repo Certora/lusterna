@@ -104,6 +104,9 @@ pub fn run<S: Stage>(mut s: S, cfg: &Config) -> Result<S::Output, StageExecution
     let mut agent = Agent::default();
     // set the briefing
     agent.set_briefing(s.briefing());
+    agent.set_max_budget(cfg.stage_max_budget);
+    agent.set_effort(cfg.effort);
+    agent.set_model(cfg.model.clone());
 
     for attempt in 0..cfg.stage_max_attempts {
         stage_info!(
@@ -127,7 +130,7 @@ pub fn run<S: Stage>(mut s: S, cfg: &Config) -> Result<S::Output, StageExecution
                     Some(judge_prompt) => {
                         stage_info!(S::name(), "running judge");
                         let t = Instant::now();
-                        let defects = run_judge::<S>(judge_prompt)?;
+                        let defects = run_judge::<S>(judge_prompt, cfg)?;
                         stage_info!(
                             S::name(),
                             "judge finished in {}",
@@ -202,8 +205,11 @@ struct Verdict {
     defects: Vec<Defect>,
 }
 
-fn run_judge<S: Stage>(judge_prompt: String) -> Result<Vec<Defect>, AgentError> {
+fn run_judge<S: Stage>(judge_prompt: String, cfg: &Config) -> Result<Vec<Defect>, AgentError> {
     let mut judge_agent = Agent::default();
+    judge_agent.set_max_budget(cfg.stage_max_budget);
+    judge_agent.set_effort(cfg.effort);
+    judge_agent.set_model(cfg.model.clone());
     let schema = schemars::schema_for!(Verdict);
     judge_agent.set_json_schema(serde_json::to_string(&schema)?);
 
