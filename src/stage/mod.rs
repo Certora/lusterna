@@ -230,7 +230,11 @@ fn run_judge<S: Stage>(
     judge_agent.set_max_budget(max_budget);
     judge_agent.set_effort(cfg.effort);
     judge_agent.set_model(cfg.model.clone());
-    let schema = schemars::schema_for!(Verdict);
+    // `claude --json-schema` only accepts draft-07 schemas. `schema_for!`
+    // generates a draft 2020-12 schema, which it rejects.
+    let schema = schemars::generate::SchemaSettings::draft07()
+        .into_generator()
+        .into_root_schema_for::<Verdict>();
     judge_agent.set_json_schema(serde_json::to_string(&schema)?);
 
     let judge_output = judge_agent.run(judge_prompt)?;
