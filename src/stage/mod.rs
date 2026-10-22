@@ -3,7 +3,7 @@ pub mod translate;
 use std::{
     error::Error,
     fmt,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use schemars::JsonSchema;
@@ -13,6 +13,7 @@ use crate::{
     Config,
     agent::{Agent, AgentError},
     log::{stage_debug, stage_info},
+    utils::format_elapsed,
 };
 pub trait Stage: Sized {
     type Input;
@@ -129,7 +130,7 @@ pub fn run<S: Stage>(mut s: S, cfg: &Config) -> Result<S::Output, StageExecution
         stage_info!(
             S::name(),
             "agent finished in {}",
-            humantime::format_duration(Duration::from_secs(t.elapsed().as_secs()))
+            format_elapsed(t)
         );
         stage_debug!(S::name(), "agent summary: {}", summary);
         match s.gate_check(&summary) {
@@ -149,7 +150,7 @@ pub fn run<S: Stage>(mut s: S, cfg: &Config) -> Result<S::Output, StageExecution
                         stage_info!(
                             S::name(),
                             "judge finished in {}",
-                            humantime::format_duration(Duration::from_secs(t.elapsed().as_secs()))
+                            format_elapsed(t)
                         );
                         if defects.is_empty() {
                             stage_info!(S::name(), "judge found no defects, continuing");

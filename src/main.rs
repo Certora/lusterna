@@ -1,7 +1,7 @@
 use std::{
     env, fs,
     path::{self, Path, PathBuf},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use anyhow::{Context, anyhow};
@@ -13,7 +13,7 @@ use lusterna::{
         self,
         translate::{TranslateInput, TranslateStage},
     },
-    utils::git,
+    utils::{format_elapsed, git},
 };
 
 #[derive(Parser)]
@@ -160,8 +160,8 @@ fn translate(
     let translate_stage = TranslateStage::new(input);
     let output = stage::run(translate_stage, config)?;
     log::info!(
-        "Finished translation in {:?}",
-        humantime::format_duration(Duration::from_secs(t.elapsed().as_secs()))
+        "Finished translation in {}",
+        format_elapsed(t)
     );
 
     let sha = git::commit_all(&worktree, "lusterna: translate to Lean with Aeneas")?;
