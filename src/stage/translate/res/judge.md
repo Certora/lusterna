@@ -40,6 +40,8 @@ Do not accept a definition because it compiles, has the right type or looks reas
 
 Also compare the definitions with the template. Each `axiom` in the template must have a definition with the same name and type, or stay an `axiom` that matches an opaque pattern.
 
+Read every comment in `FunsExternal.lean` and `TypesExternal.lean`. A comment must be true for the file as the agent wrote it. For example, a comment that says that Aeneas generated the file or that the file is a template is false. A doc comment that names a Rust item must name the item that the definition below it models.
+
 ## What to report
 
 Report one defect for each problem. Use one of these kinds:
@@ -47,6 +49,7 @@ Report one defect for each problem. Use one of these kinds:
 - `changed_behavior`: for at least one input, a replacement or a mock gives a different result than the original, panics when the original does not (or the reverse), or handles overflow differently. A mock that drops a field or an operation that the entrypoints use is also this kind.
 - `weak_test`: a replacement has no equivalence test, or its test does not call the original and the replacement with the same inputs, or the test does not cover zero, the maximum value, overflow, and empty collections where they apply.
 - `wrong_model`: a definition in `FunsExternal.lean` or `TypesExternal.lean` differs from the Rust item for at least one input. The definition must return `fail` on exactly the inputs where the Rust item panics.
+- `wrong_comment`: a comment in `FunsExternal.lean` or `TypesExternal.lean` is false.
 - `hidden_code`: code that the entrypoints reach is not translated to a Lean definition. Look for `#[charon::opaque]` and other Charon or Aeneas attributes, and for `--exclude` or similar options in `lusterna/extract.sh`. Also look for `axiom` declarations in `lusterna/lean/Extraction/` for items that do not match the opaque patterns.
 - `changed_original`: the change modifies code that the crate builds without the `lusterna` feature.
 - `broad_change`: a replacement or a mock replaces more than the part that Charon or Aeneas fails on.
