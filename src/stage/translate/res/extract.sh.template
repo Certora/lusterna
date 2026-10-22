@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+ENTRYPOINTS=({entrypoints})
+OPAQUE=({opaque})
+
+cd "$(dirname "$0")/.."
+
+args=()
+for p in "${ENTRYPOINTS[@]}"; do args+=(--start-from "$p"); done
+for p in "${OPAQUE[@]}"; do args+=(--opaque "$p"); done
+
+charon cargo --preset=aeneas "${args[@]}" --dest-file "$PWD/lusterna/extraction.llbc" -- --features lusterna
+aeneas -backend lean -dest lusterna/lean lusterna/extraction.llbc
