@@ -59,6 +59,7 @@ pub fn workspace_manifest(manifest: &Path) -> Result<PathBuf, CargoError> {
         .args(["locate-project", "--workspace", "--message-format", "plain"])
         .arg("--manifest-path")
         .arg(manifest)
+        .current_dir(manifest.parent().unwrap())
         .output()?;
     if !output.status.success() {
         return Err(CargoError::LocateProject {
@@ -77,6 +78,7 @@ pub fn build(manifest: &Path) -> Result<(), CargoError> {
         .arg("build")
         .arg("--manifest-path")
         .arg(manifest)
+        .current_dir(manifest.parent().unwrap())
         .output()?;
     if !output.status.success() {
         return Err(CargoError::Build {
@@ -95,6 +97,7 @@ pub fn test(manifest: &Path, filter: &str, timeout: Duration) -> Result<usize, C
         .arg("test")
         .arg("--manifest-path")
         .arg(manifest)
+        .current_dir(manifest.parent().unwrap())
         .arg(filter)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
