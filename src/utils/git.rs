@@ -70,6 +70,22 @@ pub fn add_worktree(repo: &Path, branch: &str, path: &Path, start: &str) -> Resu
     .map(|_| ())
 }
 
+/// Returns the paths, relative to the root of the work tree, of the files that
+/// `commit` tracks and that are deleted in the work tree of `repo`.
+pub fn deleted_files(repo: &Path, commit: &str) -> Result<Vec<PathBuf>, GitError> {
+    let out = run(
+        repo,
+        &[
+            "diff".as_ref(),
+            "--name-only".as_ref(),
+            "--no-renames".as_ref(),
+            "--diff-filter=D".as_ref(),
+            commit.as_ref(),
+        ],
+    )?;
+    Ok(out.lines().map(PathBuf::from).collect())
+}
+
 /// Stages all changes in `repo`, including untracked files that are not
 /// ignored, commits them with `message` as `Lusterna <lusterna@agent>`, and
 /// returns the commit hash.

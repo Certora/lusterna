@@ -100,6 +100,7 @@ Run the tests with `cargo test lusterna_test`, without the `lusterna` feature, s
 - Do not use `--exclude` or a new `--opaque` to hide code that the entrypoints reach.
 - Do not edit `lusterna/lean/lakefile.toml`, `lusterna/lean/lean-toolchain` or the Lean files that Aeneas generates.
 - Do not change code that the crate builds without the `lusterna` feature.
+- Do not delete files or directories that you did not create. This includes build output such as `target/`.
 
 You can change other Charon and Aeneas options in `extract.sh` if that helps the translation.
 

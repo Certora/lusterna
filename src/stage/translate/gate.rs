@@ -12,6 +12,7 @@ use crate::{
     },
     utils::{
         cargo::{self, CargoError},
+        git::{self, GitError},
         lean::{self, LakeError},
     },
 };
@@ -57,6 +58,13 @@ pub enum TranslateGateErr {
         "`{crate_root}` uses `feature = \"lusterna\"`, but `cargo test lusterna_test` ran no tests"
     )]
     NoEquivalenceTests { crate_root: PathBuf },
+    #[error(transparent)]
+    Git(#[from] GitError),
+    #[error("files that the setup commit tracks were deleted: {files:?}")]
+    DeletedFiles {
+        files: Vec<PathBuf>,
+        setup_commit: String,
+    },
     #[error("Aeneas wrote `{template}`, but `{external}` does not exist")]
     MissingExternal { template: PathBuf, external: PathBuf },
     #[error("`{path}` contains `{word}` on line {line}")]
@@ -77,6 +85,7 @@ const HOLE_WORDS: [&str; 2] = ["sorry", "admit"];
 
 /// Checks the result of the agent:
 ///
+/// - no file that the setup commit tracks is deleted
 /// - the extraction script passes the input entrypoints and opaque patterns to
 ///   Charon
 /// - the extraction script runs without error
@@ -95,6 +104,15 @@ pub(super) fn run_gate(
     let extraction_script = &setup_outcome.extraction_script;
     let lean_root = &setup_outcome.lean_root;
     let crate_root = input.crate_root();
+
+    // No tracked file may be deleted
+    let files = git::deleted_files(crate_root, &setup_outcome.setup_commit)?;
+    if !files.is_empty() {
+        return Err(TranslateGateErr::DeletedFiles {
+            files,
+            setup_commit: setup_outcome.setup_commit.clone(),
+        });
+    }
 
     // The entrypoints and opaque patterns must match the given inputs
     check_patterns(extraction_script, &input.entrypoints, &input.opaque)?;
@@ -215,6 +233,23 @@ impl TranslateGateErr {
                  Add an equivalence test for every replacement, in a \
                  `#[cfg(test)] mod lusterna_test` next to it.",
                 crate_root.display()
+            ),
+            TranslateGateErr::Git(git_error) => format!(
+                "The harness failed to run git: {git_error}\n\n\
+                 This is not caused by your changes. Stop and report the error."
+            ),
+            TranslateGateErr::DeletedFiles {
+                files,
+                setup_commit,
+            } => format!(
+                "These files were deleted, but you must not delete files that you did not \
+                 create:\n\n{}\n\n\
+                 Restore each one with `git restore --source={setup_commit} -- ':/<file>'`.",
+                files
+                    .iter()
+                    .map(|f| format!("- `{}`", f.display()))
+                    .collect::<Vec<_>>()
+                    .join("\n")
             ),
             TranslateGateErr::MissingExternal { template, external } => format!(
                 "Aeneas wrote `{}`, but `{}` does not exist.\n\n\
