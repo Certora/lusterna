@@ -249,7 +249,9 @@ fn summarize(event: &serde_json::Value) -> Option<String> {
                 let what = input["description"]
                     .as_str()
                     .or(input["command"].as_str())
-                    .or(input["file_path"].as_str())
+                    .or(input["file_path"]
+                        .as_str()
+                        .map(|p| p.rsplit('/').next().unwrap_or(p)))
                     .or(input["pattern"].as_str())
                     .unwrap_or("");
                 Some(short(what))
