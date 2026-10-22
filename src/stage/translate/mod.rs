@@ -5,9 +5,12 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::stage::{Stage, translate::setup::SetupOutcome};
+use crate::stage::{
+    GateStop, Stage,
+    translate::{gate::TranslateGateError, setup::SetupOutcome},
+};
 
-pub use {gate::TranslateGateErr, setup::TranslateSetupErr};
+pub use {gate::TranslateGateFailure, setup::TranslateSetupErr};
 
 /// Logs at info level with the translate stage's name as the log target.
 macro_rules! translate_info {
@@ -133,7 +136,9 @@ impl Stage for TranslateStage {
 
     type SetupError = TranslateSetupErr;
 
-    type GateError = TranslateGateErr;
+    type GateFailure = TranslateGateFailure;
+
+    type GateExecutionError = TranslateGateError;
 
     fn name() -> &'static str {
         "translate"
@@ -149,15 +154,14 @@ impl Stage for TranslateStage {
         make_base_prompt(self.input.crate_root())
     }
 
-    fn feedback_prompt(gate_error: &Self::GateError) -> String {
+    fn feedback_prompt(gate_error: &Self::GateFailure) -> String {
         gate_error.to_feedback_prompt()
     }
 
-    fn gate_check(&self, agent_summary: &str) -> Result<Self::Output, Self::GateError> {
+    fn gate_check(&self, agent_summary: &str) -> Result<Self::Output, GateStop<Self>> {
         let setup_outcome = self.setup_outcome.as_ref().expect("Setup not run");
 
         gate::run_gate(&self.input, setup_outcome)?;
-
         Ok(TranslateOutput {
             crate_root: self.input.crate_root().to_owned(),
             extract_script: setup_outcome.extraction_script.to_owned(),

@@ -55,7 +55,10 @@ mod tests {
     use super::*;
 
     #[test]
-    #[cfg_attr(feature = "no-lake", ignore = "needs `lake`, skipped by the `no-lake` feature")]
+    #[cfg_attr(
+        feature = "no-lake",
+        ignore = "needs `lake`, skipped by the `no-lake` feature"
+    )]
     fn lake_update_succeeds_on_valid_project() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("lakefile.toml"), "name = \"test\"\n").unwrap();

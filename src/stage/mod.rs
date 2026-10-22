@@ -1,6 +1,10 @@
 pub mod translate;
 
-use std::{error::Error, fmt, time::Instant};
+use std::{
+    error::Error,
+    fmt::{self, Display},
+    time::Instant,
+};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -11,6 +15,7 @@ use crate::{
     log::{stage_debug, stage_info},
     utils::format_elapsed,
 };
+
 pub trait Stage: Sized {
     type Input;
 
@@ -18,7 +23,19 @@ pub trait Stage: Sized {
 
     type SetupError: Error;
 
-    type GateError: Error;
+    /// The reason why the gate did not pass.
+    /// The function `[feedback_prompt]` converts this type to a feedback prompt
+    /// that is passed to the agent, so the agent can fix the failure.
+    ///
+    /// The `[GateExecutionError]` on the other hand is used to indicate
+    /// something failed while running the gate checks. This is not passed
+    /// back to agent and instead abort the stage.
+    type GateFailure: Display;
+
+    /// An error that can occur while running the gate.
+    /// This is meant for errors that the agent can not fix, use `[GateFailure]`
+    /// for this instead.
+    type GateExecutionError: Error;
 
     // The stage's name.
     fn name() -> &'static str;
@@ -39,13 +56,13 @@ pub trait Stage: Sized {
     fn briefing(&self) -> String;
 
     /// Returns the feedback prompt for the agent for a failed gate check
-    fn feedback_prompt(gate_error: &Self::GateError) -> String;
+    fn feedback_prompt(gate_error: &Self::GateFailure) -> String;
 
     /// The stage's gate checks. These check evaluate whether the agent that
     /// executes the stage worked correctly. If a gate check failed, then
     /// this is returned to the
     /// `agent_summary` is the agent's final message.
-    fn gate_check(&self, agent_summary: &str) -> Result<Self::Output, Self::GateError>;
+    fn gate_check(&self, agent_summary: &str) -> Result<Self::Output, GateStop<Self>>;
 
     /// The prompt for the judge, or `None` if the stage has no judge.
     /// By default, no judge is run.
@@ -54,10 +71,30 @@ pub trait Stage: Sized {
     }
 }
 
+/// Why a check stopped the gate.
+pub enum GateStop<S: Stage> {
+    Failure(S::GateFailure),
+    Error(S::GateExecutionError),
+}
+
+impl<S: Stage> fmt::Debug for GateStop<S>
+where
+    S::GateFailure: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GateStop::Failure(e) => f.debug_tuple("Failure").field(e).finish(),
+            GateStop::Error(e) => f.debug_tuple("Error").field(e).finish(),
+        }
+    }
+}
+
 #[derive(thiserror::Error)]
 pub enum StageExecutionError<S: Stage> {
     #[error("setup failed: {0}")]
     SetupError(S::SetupError),
+    #[error("failed to execute the gate: {0}")]
+    GateExecutionError(S::GateExecutionError),
     #[error("max attempts reached{}", .0.as_ref().map(|r| format!(", {r}")).unwrap_or_default())]
     MaxRetries(Option<AttemptRejected<S>>),
     #[error("budget exhausted{}", .0.as_ref().map(|r| format!(", {r}")).unwrap_or_default())]
@@ -73,7 +110,7 @@ impl<S: Stage> fmt::Debug for StageExecutionError<S> {
 }
 
 pub enum AttemptRejected<S: Stage> {
-    Gate(S::GateError),
+    Gate(S::GateFailure),
     Judge(Vec<Defect>),
 }
 
@@ -163,11 +200,12 @@ pub fn run<S: Stage>(mut s: S, cfg: &Config) -> Result<S::Output, StageExecution
                     }
                 }
             }
-            Err(e) => {
+            Err(GateStop::Failure(e)) => {
                 stage_info!(S::name(), "Gate failed: {}", e);
                 prompt = S::feedback_prompt(&e);
                 last_rejection = Some(AttemptRejected::Gate(e));
             }
+            Err(GateStop::Error(e)) => return Err(StageExecutionError::GateExecutionError(e)),
         }
     }
     Err(StageExecutionError::MaxRetries(last_rejection))

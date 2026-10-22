@@ -6,9 +6,12 @@ use std::{
 };
 
 use crate::{
-    stage::translate::{
-        TranslateInput,
-        setup::{self, SetupOutcome},
+    stage::{
+        self,
+        translate::{
+            TranslateInput, TranslateStage,
+            setup::{self, SetupOutcome},
+        },
     },
     utils::{
         cargo::{self, CargoError},
@@ -21,53 +24,48 @@ use crate::{
 const EQUIV_TEST_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Debug, thiserror::Error)]
-pub enum TranslateGateErr {
-    #[error("cannot read `{script}`: {source}")]
-    ReadScript {
-        script: PathBuf,
-        #[source]
-        source: io::Error,
-    },
-    #[error("`{script}` must contain this line unchanged: {line}")]
-    MissingLine { script: PathBuf, line: String },
-    #[error(
-        "`{script}` must not set ENTRYPOINTS or OPAQUE or pass --start-from or --opaque here: {line}"
-    )]
-    UnexpectedLine { script: PathBuf, line: String },
-    #[error("`{script}` must have a line that starts with `charon` and passes \"${{args[@]}}\"")]
-    ArgsNotPassed { script: PathBuf },
-    #[error("cannot run `{script}`: {source}")]
-    RunScript {
-        script: PathBuf,
-        #[source]
-        source: io::Error,
-    },
-    #[error("`{script}` failed:\n{stderr}")]
-    ScriptFailed { script: PathBuf, stderr: String },
-    #[error(transparent)]
-    Lake(#[from] LakeError),
-    #[error(transparent)]
-    Cargo(#[from] CargoError),
-    #[error("cannot read `{path}`: {source}")]
-    ReadSource {
-        path: PathBuf,
-        #[source]
-        source: io::Error,
-    },
-    #[error(
-        "`{crate_root}` uses `feature = \"lusterna\"`, but `cargo test lusterna_test` ran no tests"
-    )]
-    NoEquivalenceTests { crate_root: PathBuf },
-    #[error(transparent)]
+pub enum TranslateGateError {
+    #[error("Error running git: {0}")]
     Git(#[from] GitError),
-    #[error("files that the setup commit tracks were deleted: {files:?}")]
+    #[error("IO error: {0}")]
+    Io(#[from] io::Error),
+    #[error("Lake error: {0}")]
+    Lake(#[from] LakeError),
+    #[error("Cargo error: {0}")]
+    Cargo(#[from] CargoError),
+}
+
+#[derive(Debug, derive_more::Display)]
+pub enum TranslateGateFailure {
+    #[display("extraction script misses line: {_0}")]
+    ExtractionScriptMissingLine(String),
+    #[display("extraction script has unexpected line: {_0}")]
+    ExtractionScriptUnexpectedLine(String),
+    #[display("extraction script does not pass args to charon")]
+    ExtractionScriptArgsNotPassed,
+    #[display("extraction script failed")]
+    ExtractionScriptFailed { stderr: String },
+    #[display("lake build failed")]
+    LakeBuildFailed { output: String },
+    #[display("cargo build failed")]
+    CargoBuildFailed { stderr: String },
+    #[display("equivalence tests failed")]
+    EquivalenceTestsFailed { stdout: String, stderr: String },
+    #[display("equivalence tests did not finish within {timeout:?}")]
+    EquivalenceTestsTimeout { timeout: Duration },
+    #[display("no equivalence tests ran")]
+    MissingEquivalenceTests,
+    #[display("{} tracked files deleted", files.len())]
     DeletedFiles {
         files: Vec<PathBuf>,
         setup_commit: String,
     },
-    #[error("Aeneas wrote `{template}`, but `{external}` does not exist")]
-    MissingExternal { template: PathBuf, external: PathBuf },
-    #[error("`{path}` contains `{word}` on line {line}")]
+    #[display("missing external file {}", external.display())]
+    MissingExternal {
+        template: PathBuf,
+        external: PathBuf,
+    },
+    #[display("{word} in {} on line {line}", path.display())]
     ExternalHole {
         path: PathBuf,
         word: &'static str,
@@ -83,15 +81,31 @@ const EXTERNAL_MODULES: [&str; 2] = ["TypesExternal", "FunsExternal"];
 /// Words that must not appear in the files of `EXTERNAL_MODULES`.
 const HOLE_WORDS: [&str; 2] = ["sorry", "admit"];
 
+type GateStop = stage::GateStop<TranslateStage>;
+
+impl From<TranslateGateFailure> for GateStop {
+    fn from(failure: TranslateGateFailure) -> Self {
+        GateStop::Failure(failure)
+    }
+}
+
+impl<E> From<E> for GateStop
+where
+    TranslateGateError: From<E>,
+{
+    fn from(error: E) -> Self {
+        GateStop::Error(error.into())
+    }
+}
+
 /// Checks the result of the agent:
 ///
 /// - no file that the setup commit tracks is deleted
 /// - the extraction script passes the input entrypoints and opaque patterns to
 ///   Charon
 /// - the extraction script runs without error
-/// - for every `<module>_Template.lean` of `EXTERNAL_MODULES` in
-///   `Extraction/`, the file `<module>.lean` exists and contains no
-///   `HOLE_WORDS`
+/// - for every `<module>_Template.lean` of `EXTERNAL_MODULES` in `Extraction/`,
+///   the file `<module>.lean` exists and contains no `HOLE_WORDS`
 /// - `lake build` succeeds in the lean root
 /// - the crate builds without the `lusterna` feature
 /// - `cargo test lusterna_test` passes
@@ -100,7 +114,7 @@ const HOLE_WORDS: [&str; 2] = ["sorry", "admit"];
 pub(super) fn run_gate(
     input: &TranslateInput,
     setup_outcome: &SetupOutcome,
-) -> Result<(), TranslateGateErr> {
+) -> Result<(), GateStop> {
     let extraction_script = &setup_outcome.extraction_script;
     let lean_root = &setup_outcome.lean_root;
     let crate_root = input.crate_root();
@@ -108,10 +122,11 @@ pub(super) fn run_gate(
     // No tracked file may be deleted
     let files = git::deleted_files(crate_root, &setup_outcome.setup_commit)?;
     if !files.is_empty() {
-        return Err(TranslateGateErr::DeletedFiles {
+        return Err(TranslateGateFailure::DeletedFiles {
             files,
             setup_commit: setup_outcome.setup_commit.clone(),
-        });
+        }
+        .into());
     }
 
     // The entrypoints and opaque patterns must match the given inputs
@@ -124,121 +139,87 @@ pub(super) fn run_gate(
     check_externals(&lean_root.join("Extraction"))?;
 
     // Running `lake build` must succeed in the lean root
-    lean::lake_build(lean_root)?;
+    lean::lake_build(lean_root).map_err(|e| match e {
+        LakeError::Build { output, .. } => TranslateGateFailure::LakeBuildFailed { output }.into(),
+        e => GateStop::from(e),
+    })?;
 
     // The crate must build without the `lusterna` feature
     let manifest = crate_root.join("Cargo.toml");
-    cargo::build(&manifest)?;
+    cargo::build(&manifest).map_err(|e| match e {
+        CargoError::Build { stderr, .. } => {
+            TranslateGateFailure::CargoBuildFailed { stderr }.into()
+        }
+        e => GateStop::from(e),
+    })?;
 
     // The equivalence tests must pass, and must exist if the crate uses
     // the `lusterna` feature
-    let passed = cargo::test(&manifest, "lusterna_test", EQUIV_TEST_TIMEOUT)?;
+    let passed =
+        cargo::test(&manifest, "lusterna_test", EQUIV_TEST_TIMEOUT).map_err(|e| match e {
+            CargoError::Test { stdout, stderr, .. } => {
+                TranslateGateFailure::EquivalenceTestsFailed { stdout, stderr }.into()
+            }
+            CargoError::TestTimeout { timeout, .. } => {
+                TranslateGateFailure::EquivalenceTestsTimeout { timeout }.into()
+            }
+            e => GateStop::from(e),
+        })?;
     if passed == 0 && uses_lusterna_feature(&crate_root.join("src"))? {
-        return Err(TranslateGateErr::NoEquivalenceTests {
-            crate_root: crate_root.to_owned(),
-        });
+        return Err(TranslateGateFailure::MissingEquivalenceTests.into());
     }
+
     Ok(())
 }
 
-impl TranslateGateErr {
+impl TranslateGateFailure {
     pub(super) fn to_feedback_prompt(&self) -> String {
         match self {
-            TranslateGateErr::ReadScript { script, source } => format!(
-                "The harness cannot read `{}`: {source}\n\n\
-                 Make sure that the file exists and is readable. Do not delete or move it.",
-                script.display()
-            ),
-            TranslateGateErr::MissingLine { script, line } => format!(
-                "`{}` must contain this line unchanged:\n\n```\n{line}\n```\n\n\
+            TranslateGateFailure::ExtractionScriptMissingLine(line) => format!(
+                "`extraction.sh` must contain this line unchanged:\n\n```\n{line}\n```\n\n\
                  Restore the line. You must not change the entrypoints, the opaque patterns \
                  or the loops that turn them into Charon options.",
-                script.display()
             ),
-            TranslateGateErr::UnexpectedLine { script, line } => format!(
-                "`{}` contains this line, which sets `ENTRYPOINTS` or `OPAQUE` or passes \
+            TranslateGateFailure::ExtractionScriptUnexpectedLine(line) => format!(
+                "`extraction.sh` contains this line, which sets `ENTRYPOINTS` or `OPAQUE` or passes \
                  `--start-from` or `--opaque`:\n\n```\n{line}\n```\n\n\
                  Remove it. Only the lines that setup wrote can set these patterns.",
-                script.display()
             ),
-            TranslateGateErr::ArgsNotPassed { script } => format!(
-                "`{}` has no line that starts with `charon` and passes `\"${{args[@]}}\"`.\n\n\
+            TranslateGateFailure::ExtractionScriptArgsNotPassed => format!(
+                "`extraction.sh` has no line that starts with `charon` and passes `\"${{args[@]}}\"`.\n\n\
                  Restore such a line, so that Charon receives the entrypoints and the opaque \
                  patterns. Do not put anything before `charon` on that line. To set an \
                  environment variable, use `export` on an earlier line.",
-                script.display()
             ),
-            TranslateGateErr::RunScript { script, source } => format!(
-                "The harness cannot run `{}`: {source}\n\n\
-                 Make sure that the file exists, is executable and starts with \
-                 `#!/usr/bin/env bash`.",
-                script.display()
-            ),
-            TranslateGateErr::ScriptFailed { script, stderr } => format!(
-                "`{}` failed with this output:\n\n```\n{stderr}\n```\n\n\
+            TranslateGateFailure::ExtractionScriptFailed { stderr } => format!(
+                "The extraction.sh script failed with this output:\n\n```\n{stderr}\n```\n\n\
                  Fix the first error and run the script again until it passes.",
-                script.display()
             ),
-            TranslateGateErr::Lake(LakeError::Build { lean_root, output }) => format!(
-                "`lake build` in `{}` failed with this output:\n\n```\n{output}\n```\n\n\
-                 Fix the definitions in `Extraction/FunsExternal.lean` and \
-                 `Extraction/TypesExternal.lean`, or the Rust code, so that the Lean project \
-                 builds. Do not edit the files that Aeneas generates.",
-                lean_root.display()
+            TranslateGateFailure::LakeBuildFailed { output } => format!(
+                "`lake build` failed with this output:\n\n```\n{output}\n```\n\n\
+                 Fix the first error and run `lake build` again until it passes.",
             ),
-            TranslateGateErr::Lake(lake_error) => format!(
-                "The harness failed to run Lake: {lake_error}\n\n\
-                 This is not caused by your changes. Stop and report the error."
+            TranslateGateFailure::CargoBuildFailed { stderr } => format!(
+                "`cargo build` failed with this output:\n\n```\n{stderr}\n```\n\n\
+                 Fix the first error and run `cargo build` again until it passes.",
             ),
-            TranslateGateErr::Cargo(CargoError::Build { manifest, stderr }) => format!(
-                "`cargo build` without the `lusterna` feature failed for `{}`:\n\n\
-                 ```\n{stderr}\n```\n\n\
-                 Your changes must not change the code that the crate builds without the \
-                 feature. Fix the `cfg` attributes so that this build works again.",
-                manifest.display()
+            TranslateGateFailure::EquivalenceTestsFailed { stdout, stderr } => format!(
+                "`cargo test lusterna_test` failed with this output:\n\n\
+                 ```\n{stdout}\n{stderr}\n```\n\n\
+                 Fix the first failing test and run `cargo test lusterna_test` again until \
+                 it passes.",
             ),
-            TranslateGateErr::Cargo(CargoError::Test {
-                manifest,
-                filter,
-                stdout,
-                stderr,
-            }) => format!(
-                "`cargo test {filter}` failed for `{}`:\n\n```\n{stdout}\n{stderr}\n```\n\n\
-                 A failing equivalence test means that a replacement does not behave like the \
-                 original. Fix the replacement, not the test, unless the test itself is wrong.",
-                manifest.display()
+            TranslateGateFailure::EquivalenceTestsTimeout { timeout } => format!(
+                "`cargo test lusterna_test` did not finish within {timeout:?}.\n\n\
+                 Make the equivalence tests finish within that time.",
             ),
-            TranslateGateErr::Cargo(CargoError::TestTimeout {
-                manifest,
-                filter,
-                timeout,
-            }) => format!(
-                "`cargo test {filter}` for `{}` did not finish within {timeout:?}.\n\n\
-                 Make the equivalence tests faster, for example with fewer random inputs, \
-                 and make sure that no test loops forever.",
-                manifest.display()
-            ),
-            TranslateGateErr::Cargo(cargo_error) => format!(
-                "The harness failed to run Cargo: {cargo_error}\n\n\
-                 This is not caused by your changes. Stop and report the error."
-            ),
-            TranslateGateErr::ReadSource { path, source } => format!(
-                "The harness cannot read `{}`: {source}\n\n\
-                 Make sure that the source files of the crate are readable.",
-                path.display()
-            ),
-            TranslateGateErr::NoEquivalenceTests { crate_root } => format!(
-                "The crate at `{}` uses `feature = \"lusterna\"`, but `cargo test lusterna_test` \
+            TranslateGateFailure::MissingEquivalenceTests => format!(
+                "The crate uses `feature = \"lusterna\"`, but `cargo test lusterna_test` \
                  ran no tests.\n\n\
                  Add an equivalence test for every replacement, in a \
                  `#[cfg(test)] mod lusterna_test` next to it.",
-                crate_root.display()
             ),
-            TranslateGateErr::Git(git_error) => format!(
-                "The harness failed to run git: {git_error}\n\n\
-                 This is not caused by your changes. Stop and report the error."
-            ),
-            TranslateGateErr::DeletedFiles {
+            TranslateGateFailure::DeletedFiles {
                 files,
                 setup_commit,
             } => format!(
@@ -251,7 +232,7 @@ impl TranslateGateErr {
                     .collect::<Vec<_>>()
                     .join("\n")
             ),
-            TranslateGateErr::MissingExternal { template, external } => format!(
+            TranslateGateFailure::MissingExternal { template, external } => format!(
                 "Aeneas wrote `{}`, but `{}` does not exist.\n\n\
                  Copy the template to `{}` and replace each `axiom` with a definition that \
                  models the Rust item exactly. Keep `axiom` only for items that match an \
@@ -260,7 +241,7 @@ impl TranslateGateErr {
                 external.display(),
                 external.display()
             ),
-            TranslateGateErr::ExternalHole { path, word, line } => format!(
+            TranslateGateFailure::ExternalHole { path, word, line } => format!(
                 "`{}` contains `{word}` on line {line}.\n\n\
                  Replace it with a complete definition that models the Rust item exactly.",
                 path.display()
@@ -271,19 +252,15 @@ impl TranslateGateErr {
 
 /// Returns whether a `.rs` file in `dir` or its subdirectories contains
 /// `feature = "lusterna"`.
-fn uses_lusterna_feature(dir: &Path) -> Result<bool, TranslateGateErr> {
-    let read_err = |path: &Path| {
-        let path = path.to_owned();
-        move |source| TranslateGateErr::ReadSource { path, source }
-    };
-    for entry in fs::read_dir(dir).map_err(read_err(dir))? {
-        let path = entry.map_err(read_err(dir))?.path();
+fn uses_lusterna_feature(dir: &Path) -> Result<bool, TranslateGateError> {
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
         if path.is_dir() {
             if uses_lusterna_feature(&path)? {
                 return Ok(true);
             }
         } else if path.extension().is_some_and(|e| e == "rs") {
-            let content = fs::read_to_string(&path).map_err(read_err(&path))?;
+            let content = fs::read_to_string(&path)?;
             if content.contains(r#"feature = "lusterna""#) {
                 return Ok(true);
             }
@@ -301,11 +278,8 @@ fn check_patterns(
     script: &Path,
     entrypoints: &[String],
     opaque: &[String],
-) -> Result<(), TranslateGateErr> {
-    let content = fs::read_to_string(script).map_err(|source| TranslateGateErr::ReadScript {
-        script: script.to_owned(),
-        source,
-    })?;
+) -> Result<(), GateStop> {
+    let content = fs::read_to_string(script)?;
     let lines: Vec<&str> = content.lines().map(str::trim).collect();
 
     let sets_patterns = |line: &str| {
@@ -318,34 +292,32 @@ fn check_patterns(
     let expected_lines: Vec<&str> = expected.lines().filter(|l| sets_patterns(l)).collect();
 
     if let Some(line) = expected_lines.iter().find(|l| !lines.contains(l)) {
-        return Err(TranslateGateErr::MissingLine {
-            script: script.to_owned(),
-            line: line.to_string(),
-        });
+        return Err(GateStop::Failure(
+            TranslateGateFailure::ExtractionScriptMissingLine(line.to_string()),
+        ));
     }
     if let Some(line) = lines
         .iter()
         .find(|l| sets_patterns(l) && !expected_lines.contains(l))
     {
-        return Err(TranslateGateErr::UnexpectedLine {
-            script: script.to_owned(),
-            line: line.to_string(),
-        });
+        return Err(GateStop::Failure(
+            TranslateGateFailure::ExtractionScriptUnexpectedLine(line.to_string()),
+        ));
     }
     if !lines
         .iter()
         .any(|l| l.starts_with("charon ") && l.contains(r#""${args[@]}""#))
     {
-        return Err(TranslateGateErr::ArgsNotPassed {
-            script: script.to_owned(),
-        });
+        return Err(GateStop::Failure(
+            TranslateGateFailure::ExtractionScriptArgsNotPassed,
+        ));
     }
     Ok(())
 }
 
 /// Checks that for every `<module>_Template.lean` of `EXTERNAL_MODULES` in
 /// `dir`, the file `<module>.lean` exists and contains none of `HOLE_WORDS`.
-fn check_externals(dir: &Path) -> Result<(), TranslateGateErr> {
+fn check_externals(dir: &Path) -> Result<(), GateStop> {
     for module in EXTERNAL_MODULES {
         let template = dir.join(format!("{module}_Template.lean"));
         if !template.exists() {
@@ -353,23 +325,22 @@ fn check_externals(dir: &Path) -> Result<(), TranslateGateErr> {
         }
         let external = dir.join(format!("{module}.lean"));
         if !external.exists() {
-            return Err(TranslateGateErr::MissingExternal { template, external });
+            return Err(GateStop::Failure(TranslateGateFailure::MissingExternal {
+                template,
+                external,
+            }));
         }
-        let content =
-            fs::read_to_string(&external).map_err(|source| TranslateGateErr::ReadSource {
-                path: external.clone(),
-                source,
-            })?;
+        let content = fs::read_to_string(&external)?;
         for (i, line) in content.lines().enumerate() {
             let words = line
                 .split(|c: char| !(c.is_alphanumeric() || c == '_'))
                 .collect::<Vec<_>>();
             if let Some(word) = HOLE_WORDS.into_iter().find(|w| words.contains(w)) {
-                return Err(TranslateGateErr::ExternalHole {
+                return Err(GateStop::Failure(TranslateGateFailure::ExternalHole {
                     path: external,
                     word,
                     line: i + 1,
-                });
+                }));
             }
         }
     }
@@ -378,18 +349,15 @@ fn check_externals(dir: &Path) -> Result<(), TranslateGateErr> {
 
 /// Runs the extraction script `script` and fails with its stderr if it exits
 /// with a non-zero status.
-fn run_script(script: &Path) -> Result<(), TranslateGateErr> {
-    let output = Command::new(script)
-        .output()
-        .map_err(|source| TranslateGateErr::RunScript {
-            script: script.to_owned(),
-            source,
-        })?;
+fn run_script(script: &Path) -> Result<(), GateStop> {
+    let output = Command::new(script).output()?;
+
     if !output.status.success() {
-        return Err(TranslateGateErr::ScriptFailed {
-            script: script.to_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        });
+        return Err(GateStop::Failure(
+            TranslateGateFailure::ExtractionScriptFailed {
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            },
+        ));
     }
     Ok(())
 }
@@ -449,10 +417,10 @@ mod tests {
         );
 
         match check_patterns(&script, &entrypoints, &opaque) {
-            Err(TranslateGateErr::MissingLine { line, .. }) => {
+            Err(GateStop::Failure(TranslateGateFailure::ExtractionScriptMissingLine(line))) => {
                 assert!(line.starts_with("ENTRYPOINTS="), "{line}")
             }
-            other => panic!("expected TranslateGateErr::MissingLine, got {other:?}"),
+            other => panic!("expected ExtractionScriptMissingLine, got {other:?}"),
         }
     }
 
@@ -467,10 +435,10 @@ mod tests {
         let script = write_script(dir.path(), &content);
 
         match check_patterns(&script, &entrypoints, &opaque) {
-            Err(TranslateGateErr::UnexpectedLine { line, .. }) => {
+            Err(GateStop::Failure(TranslateGateFailure::ExtractionScriptUnexpectedLine(line))) => {
                 assert!(line.starts_with("charon "), "{line}")
             }
-            other => panic!("expected TranslateGateErr::UnexpectedLine, got {other:?}"),
+            other => panic!("expected ExtractionScriptUnexpectedLine, got {other:?}"),
         }
     }
 
@@ -483,8 +451,10 @@ mod tests {
         let script = write_script(dir.path(), &content);
 
         match check_patterns(&script, &entrypoints, &opaque) {
-            Err(TranslateGateErr::UnexpectedLine { line, .. }) => assert_eq!(line, "OPAQUE=()"),
-            other => panic!("expected TranslateGateErr::UnexpectedLine, got {other:?}"),
+            Err(GateStop::Failure(TranslateGateFailure::ExtractionScriptUnexpectedLine(line))) => {
+                assert_eq!(line, "OPAQUE=()")
+            }
+            other => panic!("expected ExtractionScriptUnexpectedLine, got {other:?}"),
         }
     }
 
@@ -497,7 +467,9 @@ mod tests {
 
         assert!(matches!(
             check_patterns(&script, &entrypoints, &opaque),
-            Err(TranslateGateErr::ArgsNotPassed { .. })
+            Err(GateStop::Failure(
+                TranslateGateFailure::ExtractionScriptArgsNotPassed
+            ))
         ));
     }
 
@@ -515,8 +487,10 @@ mod tests {
         let script = write_script(dir.path(), "#!/bin/sh\necho oops >&2\nexit 1\n");
 
         match run_script(&script) {
-            Err(TranslateGateErr::ScriptFailed { stderr, .. }) => assert_eq!(stderr, "oops\n"),
-            other => panic!("expected TranslateGateErr::ScriptFailed, got {other:?}"),
+            Err(GateStop::Failure(TranslateGateFailure::ExtractionScriptFailed { stderr })) => {
+                assert_eq!(stderr, "oops\n")
+            }
+            other => panic!("expected ExtractionScriptFailed, got {other:?}"),
         }
     }
 
@@ -530,20 +504,28 @@ mod tests {
     #[test]
     fn check_externals_rejects_missing_external() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("FunsExternal_Template.lean"), "axiom f : Nat\n").unwrap();
+        fs::write(
+            dir.path().join("FunsExternal_Template.lean"),
+            "axiom f : Nat\n",
+        )
+        .unwrap();
 
         match check_externals(dir.path()) {
-            Err(TranslateGateErr::MissingExternal { external, .. }) => {
+            Err(GateStop::Failure(TranslateGateFailure::MissingExternal { external, .. })) => {
                 assert_eq!(external, dir.path().join("FunsExternal.lean"))
             }
-            other => panic!("expected TranslateGateErr::MissingExternal, got {other:?}"),
+            other => panic!("expected MissingExternal, got {other:?}"),
         }
     }
 
     #[test]
     fn check_externals_rejects_sorry() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("FunsExternal_Template.lean"), "axiom f : Nat\n").unwrap();
+        fs::write(
+            dir.path().join("FunsExternal_Template.lean"),
+            "axiom f : Nat\n",
+        )
+        .unwrap();
         fs::write(
             dir.path().join("FunsExternal.lean"),
             "-- f\ndef f : Nat := sorry\n",
@@ -551,17 +533,21 @@ mod tests {
         .unwrap();
 
         match check_externals(dir.path()) {
-            Err(TranslateGateErr::ExternalHole { word, line, .. }) => {
+            Err(GateStop::Failure(TranslateGateFailure::ExternalHole { word, line, .. })) => {
                 assert_eq!((word, line), ("sorry", 2))
             }
-            other => panic!("expected TranslateGateErr::ExternalHole, got {other:?}"),
+            other => panic!("expected ExternalHole, got {other:?}"),
         }
     }
 
     #[test]
     fn check_externals_accepts_complete_definitions() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("FunsExternal_Template.lean"), "axiom f : Nat\n").unwrap();
+        fs::write(
+            dir.path().join("FunsExternal_Template.lean"),
+            "axiom f : Nat\n",
+        )
+        .unwrap();
         fs::write(
             dir.path().join("FunsExternal.lean"),
             "def f : Nat := 0\ndef sorry_count : Nat := 0\n",
