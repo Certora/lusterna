@@ -102,6 +102,9 @@ pub fn run<S: Stage>(mut s: S, cfg: &Config) -> Result<S::Output, StageExecution
     let mut last_rejection: Option<AttemptRejected<S>> = None;
 
     let mut agent = Agent::default();
+    // set the briefing
+    agent.set_briefing(s.briefing());
+
     for attempt in 0..cfg.stage_max_attempts {
         stage_info!(
             S::name(),
