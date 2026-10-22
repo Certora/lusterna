@@ -55,7 +55,7 @@ pub struct Agent {
     briefing: Option<String>,
     allowed_tools: Vec<String>,
     effort: Option<Effort>,
-    max_budged: Option<usize>,
+    max_budged: Option<f64>,
     model: String,
     usage: ModelUsage,
     session_id: Option<Uuid>,
@@ -99,7 +99,7 @@ impl Agent {
         self.briefing = Some(briefing)
     }
 
-    pub fn set_max_budget(&mut self, max_budged: usize) {
+    pub fn set_max_budget(&mut self, max_budged: f64) {
         self.max_budged = Some(max_budged)
     }
 

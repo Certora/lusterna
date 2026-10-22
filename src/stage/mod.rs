@@ -63,6 +63,8 @@ pub enum StageExecutionError<S: Stage> {
     SetupError(S::SetupError),
     #[error("max attempts reached{}", .0.as_ref().map(|r| format!(", {r}")).unwrap_or_default())]
     MaxRetries(Option<AttemptRejected<S>>),
+    #[error("budget exhausted{}", .0.as_ref().map(|r| format!(", {r}")).unwrap_or_default())]
+    BudgetExhausted(Option<AttemptRejected<S>>),
     #[error(transparent)]
     AgentError(#[from] AgentError),
 }
@@ -104,11 +106,16 @@ pub fn run<S: Stage>(mut s: S, cfg: &Config) -> Result<S::Output, StageExecution
     let mut agent = Agent::default();
     // set the briefing
     agent.set_briefing(s.briefing());
-    agent.set_max_budget(cfg.stage_max_budget);
     agent.set_effort(cfg.effort);
     agent.set_model(cfg.model.clone());
+    let mut judge_cost = 0.0;
 
     for attempt in 0..cfg.stage_max_attempts {
+        let remaining = cfg.stage_max_budget as f64 - agent.get_usage().cost_usd - judge_cost;
+        if remaining <= 0.0 {
+            return Err(StageExecutionError::BudgetExhausted(last_rejection));
+        }
+        agent.set_max_budget(remaining);
         stage_info!(
             S::name(),
             "starting attempt {}/{}",
@@ -130,7 +137,13 @@ pub fn run<S: Stage>(mut s: S, cfg: &Config) -> Result<S::Output, StageExecution
                     Some(judge_prompt) => {
                         stage_info!(S::name(), "running judge");
                         let t = Instant::now();
-                        let defects = run_judge::<S>(judge_prompt, cfg)?;
+                        let remaining_budget =
+                            cfg.stage_max_budget as f64 - agent.get_usage().cost_usd - judge_cost;
+                        if remaining_budget <= 0.0 {
+                            return Err(StageExecutionError::BudgetExhausted(last_rejection));
+                        }
+                        let (defects, cost) = run_judge::<S>(judge_prompt, cfg, remaining_budget)?;
+                        judge_cost += cost;
                         stage_info!(
                             S::name(),
                             "judge finished in {}",
@@ -205,9 +218,14 @@ struct Verdict {
     defects: Vec<Defect>,
 }
 
-fn run_judge<S: Stage>(judge_prompt: String, cfg: &Config) -> Result<Vec<Defect>, AgentError> {
+/// Returns the defects the judge found and the judge's cost in USD.
+fn run_judge<S: Stage>(
+    judge_prompt: String,
+    cfg: &Config,
+    max_budget: f64,
+) -> Result<(Vec<Defect>, f64), AgentError> {
     let mut judge_agent = Agent::default();
-    judge_agent.set_max_budget(cfg.stage_max_budget);
+    judge_agent.set_max_budget(max_budget);
     judge_agent.set_effort(cfg.effort);
     judge_agent.set_model(cfg.model.clone());
     let schema = schemars::schema_for!(Verdict);
@@ -215,5 +233,5 @@ fn run_judge<S: Stage>(judge_prompt: String, cfg: &Config) -> Result<Vec<Defect>
 
     let judge_output = judge_agent.run(judge_prompt)?;
     let verdict: Verdict = serde_json::from_str(&judge_output)?;
-    Ok(verdict.defects)
+    Ok((verdict.defects, judge_agent.get_usage().cost_usd))
 }
