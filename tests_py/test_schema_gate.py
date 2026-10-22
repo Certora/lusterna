@@ -71,7 +71,7 @@ def test_conforming_spec_returns_no_failures(stub):
 def test_skipped_record_blocks(stub):
     """A SKIPPED record names a theorem that went UNCHECKED, while the finding list still looks
     complete. Dropping it would let "nothing was checked" reach the gate as "everything conforms" —
-    the same rule tests/checklean/verify.py pins for the judge-facing path."""
+    the same rule tests_py/checklean/verify.py pins for the judge-facing path."""
     stub(f"{COVERED}\n{SKIPPED}\n{lean._GATE_DONE}\n")
     bad = lean.check_spec_gate(_deps(), "lean/Foo/Spec.lean")
     assert [b["rule"] for b in bad] == ["could_not_check"]

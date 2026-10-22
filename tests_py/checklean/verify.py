@@ -3,11 +3,11 @@
 
 Two modes:
 
-  python tests/checklean/verify.py
-      Runs the regression fixture (tests/checklean/*.lean) and asserts the exact expected finding
+  python tests_py/checklean/verify.py
+      Runs the regression fixture (tests_py/checklean/*.lean) and asserts the exact expected finding
       set, including each schema_conformance finding's `rule`. This is what CI should run.
 
-  python tests/checklean/verify.py --file mytheorem.lean --targets Foo.bar,Foo.baz
+  python tests_py/checklean/verify.py --file mytheorem.lean --targets Foo.bar,Foo.baz
                                    [--subjects Foo.transfer] [--deps a.lean b.lean]
       Builds an arbitrary .lean file (plus optional dependency files) as a throwaway crate and
       prints whatever the checks find on the named theorems (`--subjects` adds the target-aware checks, which must

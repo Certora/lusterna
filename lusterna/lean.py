@@ -154,7 +154,7 @@ def _write_lint_tool(deps: AgentDeps, lean_out_dir: str, lib_name: str) -> None:
     unchanged for every crate; placing it under the crate's own lib means `lake build` picks it
     up automatically via the existing `.andSubmodules` glob, no separate build step. The flip side
     of that convenience: the harness's own compile gate now typechecks it, so a Lean/Aeneas
-    metaprogramming-API drift surfaces as a build failure — tests/checklean/verify.py is what
+    metaprogramming-API drift surfaces as a build failure — tests_py/checklean/verify.py is what
     catches that before a campaign does.
 
     Writes TWO files. `LusternaSchemas.lean` registers the two family attributes `@[lusterna]` /
@@ -797,7 +797,7 @@ def check_overflow_posture(deps: AgentDeps) -> dict:
 
 
 # The `LUSTERNA_CHECK {...}` line a check emits. Lean prefixes `#eval` output with a
-# `file:line:col: info:` header, so both are optional — the same shape tests/checklean/verify.py
+# `file:line:col: info:` header, so both are optional — the same shape tests_py/checklean/verify.py
 # parses, deliberately, so the harness reads exactly what an agent reads.
 _CHECK_LINE_RE = re.compile(
     r"(?m)^\s*(?:\S+:\d+:\d+:\s*)?(?:info:\s*)?LUSTERNA_CHECK\s+(\{.*\})\s*$")
@@ -980,7 +980,7 @@ def check_spec_gate(deps: AgentDeps, spec_rel: str) -> list[dict]:
             out.append({"check": rec.get("check", "?"),
                         **{k: rec.get(k, "?") for k in ("theorem", "schema", "rule", "detail")}})
     # A SKIPPED record names a theorem that went UNCHECKED. Honouring it here is the same rule
-    # tests/checklean/verify.py pins for the judge-facing path: "clean" must never mean "never ran",
+    # tests_py/checklean/verify.py pins for the judge-facing path: "clean" must never mean "never ran",
     # so a skip BLOCKS rather than being dropped on the floor.
     for rec in _parse_skip_records(text):
         if rec.get("check") in _GATE_CHECKS:

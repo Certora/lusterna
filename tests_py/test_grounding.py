@@ -5,7 +5,7 @@ theorem that HOLDS references it in a measurement position. These tests pin the 
 container — the name re-scoping (only established theorems reach the Lean driver), the record parsing,
 and the CONSERVATIVE fallbacks (a driver that cannot run, or nothing established, leaves every anchor
 ungrounded — never silently grounded). The Lean `checkAnchorReference` itself is exercised by
-tests/checklean and reused here unchanged.
+tests_py/checklean and reused here unchanged.
 """
 import pytest
 

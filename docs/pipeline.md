@@ -149,9 +149,9 @@ reporting "clean". What the gate cannot establish is whether the theorem *means*
 whether a plain-integer projection faithfully mirrors the real code, whether the property is the one
 that matters — so that judgment of fitness (versus form) stays with SPEC-JUDGE.
 
-`tests/checklean/` is the regression suite for the gate: a fixture crate of theorems that must
+`tests_py/checklean/` is the regression suite for the gate: a fixture crate of theorems that must
 fire and controls that must not (including the accepted misses), run
-against the real toolchain by `python tests/checklean/verify.py`, which drives the checker through
+against the real toolchain by `python tests_py/checklean/verify.py`, which drives the checker through
 the exact same invocation the harness uses in a real run. Cases the check deliberately *skips* are
 pinned there too, so "clean" can never quietly mean "never ran".
 

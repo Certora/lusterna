@@ -8,8 +8,8 @@ silently discarded.
 This drives the real `container.finalize()` decision against a real container — it starts one, seeds a
 run branch through the real `seed_from_ref`, and asserts the container's actual lifecycle outcome
 (`is_running`) in three cases. It needs Docker and the lusterna-toolchain image, so it SKIPS cleanly
-in the container-free `pytest tests/` environment (like tests/checklean/verify.py, which is the other
-toolchain-backed check). Run it explicitly with:  pytest tests/test_teardown_real.py
+in the container-free `pytest tests_py/` environment (like tests_py/checklean/verify.py, which is the other
+toolchain-backed check). Run it explicitly with:  pytest tests_py/test_teardown_real.py
 """
 import atexit
 import shutil
