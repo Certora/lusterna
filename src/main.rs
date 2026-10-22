@@ -1,12 +1,13 @@
 use std::{
     env, fs,
     path::{self, Path, PathBuf},
+    process,
     time::Instant,
 };
 
-use anyhow::{Context, anyhow};
+use anyhow::{Context, anyhow, bail};
 use clap::{Parser, Subcommand};
-use log::info;
+use log::{info, warn};
 use lusterna::{
     Config,
     stage::{
@@ -136,6 +137,27 @@ fn translate(
 
     // get the aeneas revision and the toolchain it uses
     let aeneas_rev = git::head_rev(&aeneas_root)?;
+    let output = process::Command::new("aeneas")
+        .arg("-version")
+        .output()
+        .context("cannot run `aeneas -version`")?;
+    let version = String::from_utf8_lossy(&output.stdout);
+    let built_rev = version.trim().strip_prefix("aeneas ").unwrap_or_default();
+    let (built_rev, dirty) = match built_rev.strip_suffix("-dirty") {
+        Some(rev) => (rev, true),
+        None => (built_rev, false),
+    };
+    if built_rev.is_empty() || !aeneas_rev.starts_with(built_rev) {
+        bail!(
+            "`aeneas` on `PATH` reports version `{}`, but `{}` is at {}. Rebuild Aeneas or check out the matching commit",
+            version.trim(),
+            aeneas_root.display(),
+            aeneas_rev
+        );
+    }
+    if dirty {
+        warn!("`aeneas` on `PATH` was built from a checkout with uncommitted changes");
+    }
     let toolchain_file = aeneas_root.join("backends/lean/lean-toolchain");
     let lean_toolchain = fs::read_to_string(&toolchain_file)
         .with_context(|| format!("cannot read `{}`", toolchain_file.display()))?
@@ -159,10 +181,7 @@ fn translate(
     };
     let translate_stage = TranslateStage::new(input);
     let output = stage::run(translate_stage, config)?;
-    log::info!(
-        "Finished translation in {}",
-        format_elapsed(t)
-    );
+    log::info!("Finished translation in {}", format_elapsed(t));
 
     let sha = git::commit_all(&worktree, "lusterna: translate to Lean with Aeneas")?;
     log::info!("Committed translation in {}", sha);
