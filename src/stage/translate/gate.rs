@@ -33,7 +33,7 @@ pub enum TranslateGateErr {
         "`{script}` must not set ENTRYPOINTS or OPAQUE or pass --start-from or --opaque here: {line}"
     )]
     UnexpectedLine { script: PathBuf, line: String },
-    #[error("the `charon` command in `{script}` must pass \"${{args[@]}}\"")]
+    #[error("`{script}` must have a line that starts with `charon` and passes \"${{args[@]}}\"")]
     ArgsNotPassed { script: PathBuf },
     #[error("cannot run `{script}`: {source}")]
     RunScript {
@@ -144,8 +144,10 @@ impl TranslateGateErr {
                 script.display()
             ),
             TranslateGateErr::ArgsNotPassed { script } => format!(
-                "The `charon` command in `{}` does not pass `\"${{args[@]}}\"`.\n\n\
-                 Add it back, so that Charon receives the entrypoints and the opaque patterns.",
+                "`{}` has no line that starts with `charon` and passes `\"${{args[@]}}\"`.\n\n\
+                 Restore such a line, so that Charon receives the entrypoints and the opaque \
+                 patterns. Do not put anything before `charon` on that line. To set an \
+                 environment variable, use `export` on an earlier line.",
                 script.display()
             ),
             TranslateGateErr::RunScript { script, source } => format!(
