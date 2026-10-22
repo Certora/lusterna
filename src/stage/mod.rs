@@ -54,14 +54,38 @@ pub trait Stage: Sized {
 
 #[derive(thiserror::Error)]
 pub enum StageExecutionError<S: Stage> {
+    #[error("setup failed: {0}")]
     SetupError(S::SetupError),
+    #[error("max attempts reached{}", .0.as_ref().map(|r| format!(", {r}")).unwrap_or_default())]
     MaxRetries(Option<AttemptRejected<S>>),
+    #[error(transparent)]
     AgentError(#[from] AgentError),
+}
+
+impl<S: Stage> fmt::Debug for StageExecutionError<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
 }
 
 pub enum AttemptRejected<S: Stage> {
     Gate(S::GateError),
     Judge(Vec<Defect>),
+}
+
+impl<S: Stage> fmt::Display for AttemptRejected<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AttemptRejected::Gate(e) => write!(f, "last gate error: {e}"),
+            AttemptRejected::Judge(defects) => {
+                write!(f, "last judge defects:")?;
+                for d in defects {
+                    write!(f, "\n- {d}")?;
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 pub fn run<S: Stage>(mut s: S, cfg: &Config) -> Result<S::Output, StageExecutionError<S>> {
@@ -72,7 +96,7 @@ pub fn run<S: Stage>(mut s: S, cfg: &Config) -> Result<S::Output, StageExecution
     let mut last_rejection: Option<AttemptRejected<S>> = None;
 
     let mut agent = Agent::with_name(S::name().to_ascii_uppercase());
-    for _ in 0..cfg.max_stage_attempts {
+    for _ in 0..cfg.stage_max_attempts {
         let summary = agent.run(prompt)?;
         match s.gate_check(&summary) {
             Ok(o) => match s.judge_prompt(&o, &summary) {

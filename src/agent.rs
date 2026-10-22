@@ -16,12 +16,13 @@ const DEFAULT_ALLOWED_TOOLS: &[&str] =
 const DEFAULT_MODEL: &str = "opus";
 
 /// The effort level for the agent
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, clap::ValueEnum)]
 pub enum Effort {
     Low,
     Medium,
     #[default]
     High,
+    #[value(name = "xhigh")]
     XHigh,
     Max,
 }
