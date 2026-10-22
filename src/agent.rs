@@ -59,6 +59,7 @@ pub struct Agent {
     model: String,
     usage: ModelUsage,
     session_id: Option<Uuid>,
+    json_schema: Option<String>,
 }
 
 impl Default for Agent {
@@ -75,6 +76,7 @@ impl Default for Agent {
             usage: Default::default(),
             model: DEFAULT_MODEL.to_string(),
             session_id: None,
+            json_schema: None,
         }
     }
 }
@@ -89,6 +91,8 @@ pub enum AgentError {
     NoResult { stderr: String },
     #[error("the agent run ended with an error: {result}")]
     ResultError { result: String },
+    #[error("JSON: {0}")]
+    Json(#[from] serde_json::Error),
 }
 
 impl Agent {
@@ -113,6 +117,12 @@ impl Agent {
 
     pub fn set_effort(&mut self, effort: Effort) {
         self.effort = Some(effort)
+    }
+
+    /// Makes `run` return the agent's structured output, as JSON matching
+    /// `schema`, instead of its final message.
+    pub fn set_json_schema(&mut self, schema: String) {
+        self.json_schema = Some(schema)
     }
 
     pub fn new_session(&mut self) {
@@ -169,6 +179,9 @@ impl Agent {
         if let Some(budget) = self.max_budged {
             args.extend(["--max-budget-usd".to_owned(), budget.to_string()]);
         }
+        if let Some(schema) = self.json_schema.as_ref() {
+            args.extend(["--json-schema".to_owned(), schema.clone()]);
+        }
         args.push(prompt);
 
         let mut result = None;
@@ -218,6 +231,9 @@ impl Agent {
         let text = event["result"].as_str().unwrap_or_default().to_owned();
         if event["is_error"] == true {
             return Err(AgentError::ResultError { result: text });
+        }
+        if self.json_schema.is_some() {
+            return Ok(event["structured_output"].to_string());
         }
         Ok(text)
     }

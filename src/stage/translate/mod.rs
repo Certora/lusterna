@@ -135,7 +135,7 @@ impl Stage for TranslateStage {
         gate_error.to_feedback_prompt()
     }
 
-    fn gate_check(&self, agent_summary: String) -> Result<Self::Output, Self::GateError> {
+    fn gate_check(&self, agent_summary: &String) -> Result<Self::Output, Self::GateError> {
         let setup_outcome = self.setup_outcome.as_ref().expect("Setup not run");
 
         gate::run_gate(&self.input, setup_outcome)?;
@@ -145,7 +145,7 @@ impl Stage for TranslateStage {
             extract_script: setup_outcome.extraction_script.to_owned(),
             extracted: setup_outcome.lean_root.join("Extraction.lean"),
             lean_root: setup_outcome.lean_root.to_owned(),
-            agent_summary,
+            agent_summary: agent_summary.to_string(),
         })
     }
 
