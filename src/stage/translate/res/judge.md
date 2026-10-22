@@ -16,7 +16,9 @@ This is the agent's final message:
 
 ## Find the changes
 
-The agent must put every change behind `feature = "lusterna"`. Run `grep -rn 'feature = "lusterna"' {crate_root}` to find them. If the crate is in a git repository, `git diff` and `git status` also show them. Setup made these changes, and you must not report them: the `lusterna` feature in `Cargo.toml`, and the `lusterna/` directory except for the changes the agent made to `lusterna/extract.sh`.
+Setup committed its files in commit `{setup_commit}`, before the agent started. Every change after that commit is the agent's work. Run `git -C {crate_root} diff {setup_commit}` to see the changes to tracked files, and `git -C {crate_root} status --untracked-files=all` to see the new files. Do not report what the setup commit contains.
+
+The agent must put every change to the Rust code behind `feature = "lusterna"`.
 
 Do not trust the final message. Compare it with the changes that you find.
 

@@ -8,6 +8,7 @@ use crate::{
     stage::translate::{TranslateInput, translate_info},
     utils::{
         cargo::{self, CargoError},
+        git::{self, GitError},
         lean::{self, LakeError},
     },
 };
@@ -40,6 +41,8 @@ pub enum TranslateSetupErr {
     Cargo(#[from] CargoError),
     #[error(transparent)]
     Lake(#[from] LakeError),
+    #[error(transparent)]
+    Git(#[from] GitError),
 }
 
 /// The paths that setup created in the crate root.
@@ -49,6 +52,8 @@ pub(super) struct SetupOutcome {
     pub extraction_script: PathBuf,
     /// Absolute path to the lean project root dir `lusterna/lean`
     pub lean_root: PathBuf,
+    /// Hash of the commit with the files that setup created and changed
+    pub setup_commit: String,
 }
 
 /// Sets up the crate for the agent:
@@ -62,6 +67,7 @@ pub(super) struct SetupOutcome {
 /// - adds the `lusterna` feature to the crate
 /// - creates the extraction script
 /// - creates the lean project
+/// - commits all changes in the git repository of the crate
 pub(super) fn run_setup(input: &TranslateInput) -> Result<SetupOutcome, TranslateSetupErr> {
     let path = env::var_os("PATH").unwrap_or_default();
     for tool in ["charon", "aeneas"] {
@@ -126,9 +132,13 @@ pub(super) fn run_setup(input: &TranslateInput) -> Result<SetupOutcome, Translat
     let lean_root = init_lake_project(crate_root, &input.aeneas_rev, &input.lean_toolchain)?;
     translate_info!("setup: initialized lake project at {}", lean_root.display());
 
+    let setup_commit = git::commit_all(crate_root, "lusterna: set up translation")?;
+    translate_info!("setup: committed setup in {setup_commit}");
+
     Ok(SetupOutcome {
         extraction_script,
         lean_root,
+        setup_commit,
     })
 }
 

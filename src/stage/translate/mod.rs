@@ -30,8 +30,9 @@ const BRIEFING_TEMPLATE: &'static str = include_str!("res/briefing.md");
 const BASE_PROMPT_TEMPLATE: &'static str = include_str!("res/prompt.md");
 
 /// The judge prompt of the translate stage, with `{crate_root}`,
-/// `{briefing}` and `{agent_summary}` standing for the crate root, the agent
-/// briefing and the agent's final message.
+/// `{setup_commit}`, `{briefing}` and `{agent_summary}` standing for the
+/// crate root, the hash of the setup commit, the agent briefing and the
+/// agent's final message.
 const JUDGE_PROMPT_TEMPLATE: &'static str = include_str!("res/judge.md");
 
 pub struct TranslateInput {
@@ -171,9 +172,11 @@ impl Stage for TranslateStage {
     }
 
     fn judge_prompt(&self, output: &Self::Output, agent_summary: &String) -> Option<String> {
+        let setup_outcome = self.setup_outcome.as_ref().expect("Setup not run");
         Some(
             JUDGE_PROMPT_TEMPLATE
                 .replace("{crate_root}", &output.crate_root.display().to_string())
+                .replace("{setup_commit}", &setup_outcome.setup_commit)
                 .replace("{briefing}", &self.briefing())
                 .replace("{agent_summary}", agent_summary),
         )
