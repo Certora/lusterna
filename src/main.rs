@@ -138,7 +138,9 @@ fn translate(
     let aeneas_rev = git::head_rev(&aeneas_root)?;
     let toolchain_file = aeneas_root.join("backends/lean/lean-toolchain");
     let lean_toolchain = fs::read_to_string(&toolchain_file)
-        .with_context(|| format!("cannot read `{}`", toolchain_file.display()))?;
+        .with_context(|| format!("cannot read `{}`", toolchain_file.display()))?
+        .trim()
+        .to_string();
 
     info!(
         "Found Aeneas revision {}, using same lean toolchain: {}",

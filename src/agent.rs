@@ -188,11 +188,13 @@ impl Agent {
 
         let stdout = cmnd.stdout.take().expect("stdout is piped");
         for line in BufReader::new(stdout).lines() {
-            let line = line?;
-            hook(&line);
-            if let Ok(event) = serde_json::from_str::<serde_json::Value>(&line)
-                && event["type"] == "result"
-            {
+            let Ok(event) = serde_json::from_str::<serde_json::Value>(&line?) else {
+                continue;
+            };
+            if let Some(summary) = summarize(&event) {
+                hook(&summary);
+            }
+            if event["type"] == "result" {
                 result = Some(event);
             }
         }
@@ -225,4 +227,35 @@ impl Agent {
         }
         Ok(text)
     }
+}
+
+/// Returns a one-line summary of the text and tool calls in a `stream-json`
+/// event of `claude`, or `None` if the event has neither.
+fn summarize(event: &serde_json::Value) -> Option<String> {
+    let short = |s: &str| {
+        let line = s.split_whitespace().collect::<Vec<_>>().join(" ");
+        match line.char_indices().nth(200) {
+            Some((i, _)) => format!("{}...", &line[..i]),
+            None => line,
+        }
+    };
+    let parts: Vec<String> = event["message"]["content"]
+        .as_array()?
+        .iter()
+        .filter_map(|b| match b["type"].as_str()? {
+            "text" => Some(b["text"].as_str()?.trim().to_owned()),
+            "tool_use" => {
+                let input = &b["input"];
+                let what = input["description"]
+                    .as_str()
+                    .or(input["command"].as_str())
+                    .or(input["file_path"].as_str())
+                    .or(input["pattern"].as_str())
+                    .unwrap_or("");
+                Some(short(what))
+            }
+            _ => None,
+        })
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(" | "))
 }

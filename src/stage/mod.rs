@@ -118,12 +118,14 @@ pub fn run<S: Stage>(mut s: S, cfg: &Config) -> Result<S::Output, StageExecution
         agent.set_max_budget(remaining);
         stage_info!(
             S::name(),
-            "starting attempt {}/{}",
+            "starting attempt {}/{}, remaining budget: {}/{} USD",
             attempt,
-            cfg.stage_max_attempts
+            cfg.stage_max_attempts,
+            remaining,
+            cfg.stage_max_budget
         );
         let t = Instant::now();
-        let summary = agent.run(prompt)?;
+        let summary = agent.run_with_hook(prompt, |s| stage_info!(S::name(), "agent: {}", s,))?;
         stage_info!(
             S::name(),
             "agent finished in {}",

@@ -93,8 +93,10 @@ pub(super) fn run_setup(input: &TranslateInput) -> Result<SetupOutcome, Translat
             workspace_root: workspace_root.to_owned(),
         });
     }
+
+    translate_info!("setup: checking if the project builds");
     cargo::build(&crate_manifest)?;
-    translate_info!("setup: clean project builds");
+    translate_info!("setup: it builds");
 
     cargo::add_feature(&crate_manifest, "lusterna")?;
     translate_info!(
@@ -110,8 +112,8 @@ pub(super) fn run_setup(input: &TranslateInput) -> Result<SetupOutcome, Translat
         extraction_script.display()
     );
 
+    translate_info!("setup: initializing lake project (may take a minute)");
     let lean_root = init_lake_project(crate_root, &input.aeneas_rev, &input.lean_toolchain)?;
-
     translate_info!("setup: initialized lake project at {}", lean_root.display());
 
     Ok(SetupOutcome {
