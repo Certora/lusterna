@@ -1,5 +1,5 @@
 use std::{
-    fs, io,
+    env, fs, io,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
@@ -34,6 +34,8 @@ pub enum TranslateSetupErr {
     },
     #[error("`{0}` exists from an earlier run. Delete it and run the stage again")]
     AlreadyExists(PathBuf),
+    #[error("`{0}` is not on `PATH`")]
+    NotInPath(&'static str),
     #[error(transparent)]
     Cargo(#[from] CargoError),
     #[error(transparent)]
@@ -51,6 +53,7 @@ pub(super) struct SetupOutcome {
 
 /// Sets up the crate for the agent:
 ///
+/// - checks that `charon` and `aeneas` are on `PATH`
 /// - checks that `lusterna/extract.sh` and `lusterna/lean` do not exist in the
 ///   crate root
 /// - checks that `input.workspace_root` is the root of a Cargo workspace
@@ -60,6 +63,13 @@ pub(super) struct SetupOutcome {
 /// - creates the extraction script
 /// - creates the lean project
 pub(super) fn run_setup(input: &TranslateInput) -> Result<SetupOutcome, TranslateSetupErr> {
+    let path = env::var_os("PATH").unwrap_or_default();
+    for tool in ["charon", "aeneas"] {
+        if !env::split_paths(&path).any(|dir| dir.join(tool).is_file()) {
+            return Err(TranslateSetupErr::NotInPath(tool));
+        }
+    }
+
     let workspace_root = &input.workspace_root;
     let crate_root = input.crate_root();
     for path in [
