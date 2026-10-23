@@ -118,7 +118,7 @@ Run the tests with `cargo test lusterna_test`, without the `lusterna` feature, s
 
 You can change other Charon and Aeneas options in `extract.sh` if that helps the translation.
 
-Known problem: if Charon fails to link a dependency with "Undefined symbols" (for example `solana-program`, which builds a `cdylib`), add `--sysroot default` to the `charon` command. Do not use linker options that work only on one operating system.
+Before the first run of `extract.sh`, read the known problems in the skill `lusterna:aeneas-recipes`.
 
 ## Your final message
 

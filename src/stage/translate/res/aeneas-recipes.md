@@ -1,6 +1,6 @@
 ---
 name: aeneas-recipes
-description: Rewrites for Rust constructs that Charon or Aeneas cannot translate. Also shows how to find out whether Aeneas has a Lean model for a standard library item. Use when Charon or Aeneas fails on Rust code, or when Aeneas declares an item as an axiom.
+description: Rewrites for Rust constructs that Charon or Aeneas cannot translate, and known problems with their fixes. Also shows how to find out whether Aeneas has a Lean model for a standard library item. Use when Charon or Aeneas fails or crashes, or when Aeneas declares an item as an axiom.
 ---
 
 # Aeneas recipes
@@ -38,3 +38,18 @@ Each rewrite must behave exactly like the original for every input.
 ## Mocks
 
 Implement the operations of a mock that the entrypoints reach. If the entrypoints reach a trait impl such as `Display`, `Debug` or a serialization trait, give the mock its own body for it. Do not call the original type from the mock, for example `Original::from_bits(self.0).fmt(f)`, because that brings the original type back into the translation.
+
+## Known problems
+
+Each entry is a fix that worked once. Apply an entry only when its condition holds.
+
+- If Charon fails to link a dependency with "Undefined symbols" (for example `solana-program`), add `--sysroot default` to the `charon` command. If old build output then conflicts, pass a separate `--target-dir` after `--`.
+- If the build of `ahash` fails with an unknown feature `stdsimd`, pass `-Zhost-config -Ztarget-applies-to-host --config target-applies-to-host=false` after `--`, and set `-Zallow-features=<the nightly features that the build needs>` in both `host.rustflags` and `build.rustflags`.
+- The `fixed` crate does not translate. Mock the types of `fixed` that the crate uses, with only the functions that the entrypoints reach.
+- If Charon panics on a `num_enum` derive such as `TryFromPrimitive`, replace the derive with a hand-written impl.
+- If Aeneas fails on a type that the macro `construct_uint!` of the `uint` crate defines, such as `U256`, copy the macro into the crate and rewrite only the parts that fail.
+- If Aeneas crashes while it inlines `{promoted_const}` items, add `--inline-anon-consts` to the `charon` command.
+- If Charon panics with "stack depth limit exceeded", find the item in its trace output. If that item has an iterator chain with closures, replace the chain with a loop.
+- If Aeneas fails after `?` on a `Result<&mut T, E>`, replace the function that returns it with one that returns an index or a plain value.
+- If Aeneas fails to join the branches of an `if` or `match` because a borrow stays open in one branch, end the borrow before the branch. Copy the value, or move the code that uses the borrow into a helper that returns plain values.
+- If Aeneas fails on a function item passed as an `Fn` value, pass a closure that calls it.
