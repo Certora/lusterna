@@ -118,7 +118,7 @@ Run the tests with `cargo test lusterna_test`, without the `lusterna` feature, s
 
 You can change other Charon and Aeneas options in `extract.sh` if that helps the translation.
 
-Before the first run of `extract.sh`, read the known problems in the skill `lusterna:aeneas-recipes`.
+Before the first run of `extract.sh`, read the known problems in the skill `lusterna:aeneas-recipes`. Then look in `Cargo.toml` and `Cargo.lock` for the crates that the known problems name. If the crate depends on one of them, apply the fix for it before the first run, without waiting for the error. Some of these problems make a run of `extract.sh` take much longer. A run often shows only the next problem, so each fix that you wait for costs one more run.
 
 ## Your final message
 
