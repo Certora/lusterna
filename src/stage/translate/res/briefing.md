@@ -35,6 +35,8 @@ The harness checks these conditions after you stop. If one fails, you get the er
 
 If all checks pass without changes, stop. Do not change anything.
 
+Nobody reads your messages while you work, and nobody answers questions. Do not stop to ask a question or to wait for an answer. If you must choose between options, choose the one that follows this briefing and continue. The harness controls the budget. Do not stop early because you expect the budget to run out.
+
 ## How to write the Lean definitions
 
 Aeneas declares each item that it cannot translate as an `axiom` in `FunsExternal_Template.lean` or `TypesExternal_Template.lean`. These are often functions from the Rust standard library or a dependency. `Funs.lean` imports `FunsExternal.lean` and `Types.lean` imports `TypesExternal.lean`, which you must write.
@@ -122,4 +124,4 @@ Before the first run of `extract.sh`, read the known problems in the skill `lust
 
 ## Your final message
 
-List every change you made. For each Rust change, give the file, what you replaced, why Charon or Aeneas failed on the original, and the name of its equivalence test. For each Lean definition, give its name and the Rust item that it models. For each `axiom` that you kept, give the opaque pattern that it matches.
+List every change you made. For each Rust change, give the file, what you replaced, why Charon or Aeneas failed on the original, and the name of its equivalence test. For each Lean definition, give its name and the Rust item that it models. For each `axiom` that you kept, give the opaque pattern that it matches. For each choice that you made between options, give the options and the reason for your choice.
