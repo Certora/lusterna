@@ -87,6 +87,8 @@ fn total_lusterna(v: &[u64]) -> u64 {
 
 If only a part of a larger function fails, first move that part, unchanged, into a new function. Call the new function where the part was. You must not make other changes to the code that the crate builds without the `lusterna` feature. Then replace the new function as in the example. If the failure involves the control flow of a function, replace the whole function. For example, a borrow that stays open in only one branch of an `if` can need this.
 
+Under the feature, code that the entrypoints do not reach does not need to work. A change for the feature can break such code, for example a handler that calls a function with a changed signature. Then give that code the body `unimplemented!()` behind the feature.
+
 Write each kind of replacement only once. If the same construct fails in several places, write one replacement and call it from all of them. If many call sites fail because of what one function returns, replace that function, not the call sites. Before you write a new replacement, look for an existing one that fits.
 
 A replacement must behave exactly like the original for every input: the same results, the same panics, and the same overflow behavior. For example, do not replace `+` with `wrapping_add`.
@@ -130,7 +132,7 @@ Run the tests with `cargo test lusterna_test`, without the `lusterna` feature, s
 - Do not change the entrypoints or the opaque patterns. If a pattern matches nothing, say so in your final message.
 - Do not use `--exclude` or a new `--opaque` to hide code that the entrypoints reach.
 - Do not edit `lusterna/lean/lakefile.toml`, `lusterna/lean/lean-toolchain` or the Lean files that Aeneas generates.
-- Do not change code that the crate builds without the `lusterna` feature, except to move a failing part into a new function as described above.
+- Do not change code that the crate builds without the `lusterna` feature, except to move a failing part into a new function as described above. You can also rename a local variable or a parameter that has the same name as a module. Lean reads a path that starts with that name as a field of the variable.
 - Do not delete files or directories that you did not create. This includes build output such as `target/`.
 
 You can change other Charon and Aeneas options in `extract.sh` if that helps the translation.
