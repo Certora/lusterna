@@ -190,7 +190,7 @@ pub fn run<S: Stage>(mut s: S, cfg: &Config) -> Result<S::Output, StageExecution
                         if remaining_budget <= 0.0 {
                             return Err(StageExecutionError::BudgetExhausted(last_rejection));
                         }
-                        let (defects, cost) = run_judge(judge_prompt, cfg, remaining_budget)?;
+                        let (defects, cost) = run_judge::<S>(judge_prompt, cfg, remaining_budget)?;
                         judge_cost += cost;
                         stage_info!(S::name(), "judge finished in {}", format_elapsed(t));
                         if defects.is_empty() {
@@ -264,7 +264,7 @@ struct Verdict {
 }
 
 /// Returns the defects the judge found and the judge's cost in USD.
-fn run_judge(
+fn run_judge<S: Stage>(
     judge_prompt: String,
     cfg: &Config,
     max_budget: f64,
@@ -280,7 +280,8 @@ fn run_judge(
         .into_root_schema_for::<Verdict>();
     judge_agent.set_json_schema(serde_json::to_string(&schema)?);
 
-    let judge_output = judge_agent.run(judge_prompt)?;
+    let judge_output =
+        judge_agent.run_with_hook(judge_prompt, |s| stage_info!(S::name(), "judge: {}", s))?;
     let verdict: Verdict = serde_json::from_str(&judge_output)?;
     Ok((verdict.defects, judge_agent.get_usage().cost_usd))
 }
