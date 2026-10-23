@@ -81,12 +81,22 @@ fn total_lusterna(v: &[u64]) -> u64 {
 }
 ```
 
-If Charon or Aeneas cannot translate a type, add a mock type with the same name behind `#[cfg(feature = "lusterna")]`. The mock must keep the values and operations that the entrypoints use, and nothing else.
-
 A replacement must behave exactly like the original for every input: the same results, the same panics, and the same overflow behavior. For example, do not replace `+` with `wrapping_add`.
 
 Common constructs that Aeneas cannot translate: iterator adaptor chains, closures, `Option` and `Result` combinators such as `map` and `and_then`, and globals of function type.
 This list is just a heuristic and neither a ground truth nor exhaustive, it depends on the Aeneas version you run against. You must evaluate errors case by case.
+
+## Mock or Lean definitions
+
+For a type from a dependency, you can write Lean definitions for its axioms. You can also replace the type with a mock. If one of these is true, use a mock:
+
+- Charon or Aeneas fails on the type itself or on the traits that it implements, for example on mutually recursive traits.
+- Many axioms come from the type, and each one needs its own Lean definition.
+- The values of the type have a simple representation, for example a fixed-point number as a `u128` of its bits.
+
+If Aeneas translates the type and only a few of its functions are axioms, write Lean definitions.
+
+A mock has the same name as the original type and represents values in the same way. Implement only the functions and trait impls that the entrypoints reach. Put the mock in its own module behind `#[cfg(any(test, feature = "lusterna"))]`. Use it in place of the original type only behind `#[cfg(feature = "lusterna")]`, so that the equivalence tests can call both. Each function of the mock must behave exactly like the original function and needs an equivalence test.
 
 ## Equivalence tests
 
