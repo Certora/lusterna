@@ -50,6 +50,7 @@ Each entry is a fix that worked once. Apply an entry only when its condition hol
 - If Aeneas fails on a type that the macro `construct_uint!` of the `uint` crate defines, such as `U256`, copy the macro into the crate and rewrite only the parts that fail.
 - If Aeneas crashes while it inlines `{promoted_const}` items, add `--inline-anon-consts` to the `charon` command.
 - If Charon panics with "stack depth limit exceeded", find the item in its trace output. If that item has an iterator chain with closures, replace the chain with a loop.
+- If Aeneas fails on a loop whose body returns early, for example with `?` or `require!`, move the loop unchanged into its own function. Replace that function with a recursive one that handles one element per call and returns the same error at the same element.
 - If Aeneas fails after `?` on a `Result<&mut T, E>`, replace the function that returns it with one that returns an index or a plain value.
 - If Aeneas fails to join the branches of an `if` or `match` because a borrow stays open in one branch, end the borrow before the branch. Copy the value, or move the code that uses the borrow into a helper that returns plain values.
 - If Aeneas fails on a function item passed as an `Fn` value, pass a closure that calls it.
