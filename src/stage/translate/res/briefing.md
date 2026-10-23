@@ -92,6 +92,19 @@ A replacement must behave exactly like the original for every input: the same re
 Common constructs that Aeneas cannot translate: iterator adaptor chains, closures, `Option` and `Result` combinators such as `map` and `and_then`, and globals of function type.
 This list is just a heuristic and neither a ground truth nor exhaustive, it depends on the Aeneas version you run against. You must evaluate errors case by case. The skill `lusterna:aeneas-recipes` gives rewrites for these constructs.
 
+## Logging macros
+
+Logging macros such as `println!`, `log::info!` or the `msg!` of Solana programs bring `alloc::fmt::format` and the opaque `Display` and `Debug` impls into the translation. You can replace a macro whose only effect is to write log output. Do not replace a macro with another effect, such as `require!`, `assert!` or `panic!`. Replace the macro once, where the crate defines or imports it, so that the call sites do not change. Under `#[cfg(feature = "lusterna")]`, define a macro with the same name that evaluates each argument and does nothing else. For example:
+
+```rust
+#[cfg(feature = "lusterna")]
+macro_rules! msg {
+    ($($arg:expr),* $(,)?) => {{ $(let _ = &$arg;)* }};
+}
+```
+
+The replacement must evaluate each argument, because an argument can panic. A test cannot see log output, so these replacements need no equivalence test. List each replaced macro in your final message.
+
 ## Mock or Lean definitions
 
 For a type from a dependency, you can write Lean definitions for its axioms. You can also replace the type with a mock. If one of these is true, use a mock:
