@@ -22,7 +22,9 @@ To see the constructs that Aeneas rejects, run `grep -n 'not supported\|unsuppor
 
 ## Pattern names
 
-A `--start-from` pattern resolves in the crate that Charon builds, so it starts with `crate::`. An `--opaque` or `--exclude` pattern uses the real name of the crate, for example `core::fmt::Formatter`.
+A `--start-from` pattern resolves in the crate that Charon builds, so it starts with `crate::`. An `--opaque`, `--include` or `--exclude` pattern uses the real name of the crate, for example `core::fmt::Formatter`.
+
+The `rust_fun` attribute above an `axiom` gives the Rust name of the item. Patterns cannot name an inherent impl block. For a method in one, replace the impl block with `_`. For example, the pattern for `core::num::{u64}::abs_diff` is `core::num::_::abs_diff`.
 
 ## Rewrites
 

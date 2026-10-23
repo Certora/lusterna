@@ -41,6 +41,8 @@ Nobody reads your messages while you work, and nobody answers questions. Do not 
 
 Aeneas declares each item that it cannot translate as an `axiom` in `FunsExternal_Template.lean` or `TypesExternal_Template.lean`. These are often functions from the Rust standard library or a dependency. `Funs.lean` imports `FunsExternal.lean` and `Types.lean` imports `TypesExternal.lean`, which you must write.
 
+Before you write definitions by hand, let Charon translate the items. Add `--include <pattern>` to the `charon` command in `extract.sh` for each `axiom` in `FunsExternal_Template.lean` that does not match an opaque pattern. The skill `lusterna:aeneas-recipes` explains how to write the pattern. Add all patterns, then run `extract.sh` once. Aeneas then writes these items into `Funs.lean`, and their axioms go away. If Charon or Aeneas fails on an item, remove its `--include` and write the definition by hand.
+
 1. Copy each `<name>_Template.lean` to `<name>.lean` in the same directory.
 2. In `<name>.lean`, replace each `axiom` with a `def` (or a type definition) of the same name and type.
 3. Keep an `axiom` only for an item that matches an opaque pattern.
