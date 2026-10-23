@@ -86,6 +86,33 @@ pub fn deleted_files(repo: &Path, commit: &str) -> Result<Vec<PathBuf>, GitError
     Ok(out.lines().map(PathBuf::from).collect())
 }
 
+/// Returns the paths, relative to the root of the work tree, of the files that
+/// `commit` tracks and that differ from it in the work tree of `repo`.
+pub fn changed_files(repo: &Path, commit: &str) -> Result<Vec<PathBuf>, GitError> {
+    let out = run(
+        repo,
+        &[
+            "diff".as_ref(),
+            "--name-only".as_ref(),
+            "--no-renames".as_ref(),
+            commit.as_ref(),
+        ],
+    )?;
+    Ok(out.lines().map(PathBuf::from).collect())
+}
+
+/// Returns the content of `path`, relative to the root of the work tree, at
+/// `commit` in `repo`, without leading and trailing whitespace.
+pub fn show_file(repo: &Path, commit: &str, path: &Path) -> Result<String, GitError> {
+    run(
+        repo,
+        &[
+            "show".as_ref(),
+            format!("{commit}:{}", path.display()).as_ref(),
+        ],
+    )
+}
+
 /// Stages all changes in `repo`, including untracked files that are not
 /// ignored, commits them with `message` as `Lusterna <lusterna@agent>`, and
 /// returns the commit hash.

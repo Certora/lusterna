@@ -12,9 +12,13 @@ use lusterna::{
     Config,
     stage::{
         self,
+        pre_translate::{PreTranslateInput, PreTranslateStage},
         translate::{TranslateInput, TranslateStage},
     },
-    utils::{format_elapsed, git},
+    utils::{
+        cargo::{self, CargoError},
+        format_elapsed, git,
+    },
 };
 
 #[derive(Parser)]
@@ -152,12 +156,37 @@ fn translate(config: &Config, args: TranslateArgs) -> anyhow::Result<()> {
         "Found Aeneas revision {}, using same lean toolchain: {}",
         aeneas_rev, lean_toolchain
     );
+    let workspace_root = in_worktree(&workspace_root)?;
+    let crate_root = crate_root.as_deref().map(in_worktree).transpose()?;
+    let manifest = crate_root
+        .as_deref()
+        .unwrap_or(&workspace_root)
+        .join("Cargo.toml");
+    match cargo::build(&manifest) {
+        Ok(()) => info!("Crate builds, skipping pre-translate phase"),
+        Err(CargoError::Build { stderr, .. }) => {
+            info!("Crate does not build, starting pre-translate phase");
+            let t = Instant::now();
+            let input = PreTranslateInput {
+                workspace_root: workspace_root.clone(),
+                manifest,
+                build_stderr: stderr,
+            };
+            stage::run(PreTranslateStage::new(input), config)?;
+            log::info!("Finished pre-translate in {}", format_elapsed(t));
+
+            let sha = git::commit_all(&worktree, "lusterna: make the crate build on the host")?;
+            log::info!("Committed pre-translate in {}", sha);
+        }
+        Err(e) => return Err(e.into()),
+    }
+
     info!("Starting translation phase");
 
     let t = Instant::now();
     let input = TranslateInput {
-        workspace_root: in_worktree(&workspace_root)?,
-        crate_root: crate_root.as_deref().map(in_worktree).transpose()?,
+        workspace_root,
+        crate_root,
         entrypoints,
         opaque,
         aeneas_rev,

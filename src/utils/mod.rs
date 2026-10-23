@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-pub(crate) mod cargo;
+pub mod cargo;
 pub mod git;
 pub(crate) mod lean;
 
