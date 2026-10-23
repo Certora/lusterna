@@ -171,15 +171,17 @@ impl Agent {
         if let Some(schema) = self.json_schema.as_ref() {
             args.extend(["--json-schema".to_owned(), schema.clone()]);
         }
-        args.push(prompt);
-
         let mut result = None;
 
         let mut cmnd = Command::new("claude")
             .args(args)
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
+
+        let mut stdin = cmnd.stdin.take().expect("stdin is piped");
+        let stdin = thread::spawn(move || stdin.write_all(prompt.as_bytes()));
 
         let mut stderr = cmnd.stderr.take().expect("stderr is piped");
         let stderr = thread::spawn(move || {
@@ -201,6 +203,7 @@ impl Agent {
         }
 
         let status = cmnd.wait()?;
+        stdin.join().expect("stdin writer panicked")?;
         let stderr = stderr.join().expect("stderr reader panicked")?;
         drop(briefing_file);
 
