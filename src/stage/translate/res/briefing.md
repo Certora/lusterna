@@ -22,7 +22,7 @@ The harness checks these conditions after you stop. If one fails, you get the er
 1. `lusterna/extract.sh` exits with status 0.
 2. For each `<name>_Template.lean` in `lusterna/lean/Extraction/`, the file `<name>.lean` exists and contains no `sorry` or `admit`.
 3. `lake build` in `lusterna/lean` exits with status 0.
-4. In `extract.sh`, the `ENTRYPOINTS=` and `OPAQUE=` lines and the two `for` loops are unchanged, no other line passes `--start-from` or `--opaque`, and the `charon` command passes `"${args[@]}"`.
+4. In `extract.sh`, the `ENTRYPOINTS=` and `OPAQUE=` lines and the two `for` loops are unchanged, no other line passes `--start-from` or `--opaque`, and the `charon` command passes `"${args[@]}"` and `--release`.
 5. `cargo build` without the `lusterna` feature succeeds.
 6. `cargo test lusterna_test` without the `lusterna` feature passes within 10 minutes. If the crate uses `feature = "lusterna"`, it must run at least one test.
 

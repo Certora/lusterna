@@ -43,6 +43,8 @@ pub enum TranslateGateFailure {
     ExtractionScriptUnexpectedLine(String),
     #[display("extraction script does not pass args to charon")]
     ExtractionScriptArgsNotPassed,
+    #[display("extraction script does not pass --release to charon")]
+    ExtractionScriptNotRelease,
     #[display("extraction script failed")]
     ExtractionScriptFailed { stderr: String },
     #[display("lake build failed")]
@@ -191,6 +193,11 @@ impl TranslateGateFailure {
                  patterns. Do not put anything before `charon` on that line. To set an \
                  environment variable, use `export` on an earlier line.",
             ),
+            TranslateGateFailure::ExtractionScriptNotRelease => format!(
+                "The `charon` command in `extraction.sh` does not pass `--release` to cargo.\n\n\
+                 Add `--release` after `--` on that line, so that Charon compiles the crate \
+                 with the overflow checks of the release build.",
+            ),
             TranslateGateFailure::ExtractionScriptFailed { stderr } => format!(
                 "The extraction.sh script failed with this output:\n\n```\n{stderr}\n```\n\n\
                  Fix the first error and run the script again until it passes.",
@@ -273,7 +280,7 @@ fn uses_lusterna_feature(dir: &Path) -> Result<bool, TranslateGateError> {
 /// and `opaque` to Charon. The lines of `make_extraction_script` that set
 /// `ENTRYPOINTS` or `OPAQUE` or pass `--start-from` or `--opaque` must appear
 /// unchanged, no other line may do so, and the `charon` command must pass
-/// `"${args[@]}"`.
+/// `"${args[@]}"` and `--release`.
 fn check_patterns(
     script: &Path,
     entrypoints: &[String],
@@ -310,6 +317,14 @@ fn check_patterns(
     {
         return Err(GateStop::Failure(
             TranslateGateFailure::ExtractionScriptArgsNotPassed,
+        ));
+    }
+    if !lines
+        .iter()
+        .any(|l| l.starts_with("charon ") && l.split_whitespace().any(|w| w == "--release"))
+    {
+        return Err(GateStop::Failure(
+            TranslateGateFailure::ExtractionScriptNotRelease,
         ));
     }
     Ok(())
@@ -469,6 +484,21 @@ mod tests {
             check_patterns(&script, &entrypoints, &opaque),
             Err(GateStop::Failure(
                 TranslateGateFailure::ExtractionScriptArgsNotPassed
+            ))
+        ));
+    }
+
+    #[test]
+    fn check_patterns_rejects_charon_without_release() {
+        let dir = tempfile::tempdir().unwrap();
+        let (entrypoints, opaque) = patterns();
+        let content = make_extraction_script(&entrypoints, &opaque).replace("--release ", "");
+        let script = write_script(dir.path(), &content);
+
+        assert!(matches!(
+            check_patterns(&script, &entrypoints, &opaque),
+            Err(GateStop::Failure(
+                TranslateGateFailure::ExtractionScriptNotRelease
             ))
         ));
     }
