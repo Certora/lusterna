@@ -13,7 +13,7 @@ use lusterna::{
     stage::{
         self,
         pre_translate::{PreTranslateInput, PreTranslateStage},
-        translate::{DEFAULT_OPAQUE, TranslateInput, TranslateStage},
+        translate::{DEFAULT_OPAQUE, SOLANA_OPAQUE, TranslateInput, TranslateStage},
     },
     utils::{
         cargo::{self, CargoError},
@@ -87,9 +87,6 @@ fn translate(config: &Config, args: TranslateArgs) -> anyhow::Result<()> {
         target_branch,
         worktree,
     } = args;
-    let mut opaque =
-        opaque.unwrap_or_else(|| DEFAULT_OPAQUE.lines().map(str::to_owned).collect());
-    opaque.extend(add_opaque);
     let canonicalize =
         |p: &Path| fs::canonicalize(p).with_context(|| format!("cannot resolve `{}`", p.display()));
     let workspace_root = canonicalize(&workspace_root)?;
@@ -176,7 +173,7 @@ fn translate(config: &Config, args: TranslateArgs) -> anyhow::Result<()> {
             let t = Instant::now();
             let input = PreTranslateInput {
                 workspace_root: workspace_root.clone(),
-                manifest,
+                manifest: manifest.clone(),
                 build_stderr: stderr,
             };
             stage::run(PreTranslateStage::new(input), config)?;
@@ -187,6 +184,19 @@ fn translate(config: &Config, args: TranslateArgs) -> anyhow::Result<()> {
         }
         Err(e) => return Err(e.into()),
     }
+
+    let mut opaque = match opaque {
+        Some(opaque) => opaque,
+        None => {
+            let mut opaque: Vec<String> = DEFAULT_OPAQUE.lines().map(str::to_owned).collect();
+            // Add addition opaque patterns if we are running on a solana program
+            if cargo::lock_has_package(&manifest, "solana-program")? {
+                opaque.extend(SOLANA_OPAQUE.lines().map(str::to_owned));
+            }
+            opaque
+        }
+    };
+    opaque.extend(add_opaque);
 
     info!("Starting translation phase");
 

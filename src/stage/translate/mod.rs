@@ -45,6 +45,10 @@ const JUDGE_PROMPT_TEMPLATE: &str = include_str!("res/judge.md");
 /// The default Charon `--opaque` patterns, one per line.
 pub const DEFAULT_OPAQUE: &str = include_str!("res/default-opaque.txt");
 
+/// The default Charon `--opaque` patterns for crates that depend on
+/// `solana-program`, one per line.
+pub const SOLANA_OPAQUE: &str = include_str!("res/solana-opaque.txt");
+
 pub struct TranslateInput {
     /// Absolute path to the workspace of the Rust project.
     pub workspace_root: PathBuf,

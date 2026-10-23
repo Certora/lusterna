@@ -125,7 +125,7 @@ Run the tests with `cargo test lusterna_test`, without the `lusterna` feature, s
 
 ## What you must not do
 
-- Do not change the entrypoints or the opaque patterns. If a pattern matches nothing, stop and say so.
+- Do not change the entrypoints or the opaque patterns. If a pattern matches nothing, say so in your final message.
 - Do not use `--exclude` or a new `--opaque` to hide code that the entrypoints reach.
 - Do not edit `lusterna/lean/lakefile.toml`, `lusterna/lean/lean-toolchain` or the Lean files that Aeneas generates.
 - Do not change code that the crate builds without the `lusterna` feature, except to move a failing part into a new function as described above.
