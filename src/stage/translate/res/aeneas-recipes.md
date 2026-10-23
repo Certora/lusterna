@@ -57,3 +57,5 @@ Each entry is a fix that worked once. Apply an entry only when its condition hol
 - If Aeneas fails after `?` on a `Result<&mut T, E>`, replace the function that returns it with one that returns an index or a plain value.
 - If Aeneas fails to join the branches of an `if` or `match` because a borrow stays open in one branch, end the borrow before the branch. Copy the value, or move the code that uses the borrow into a helper that returns plain values.
 - If Aeneas fails on a function item passed as an `Fn` value, pass a closure that calls it.
+- An `Iterator` instance in `Funs.lean` can have fields that the Lean model of the trait does not have. If `lake build` fails on these fields, add `-filter-trait-methods` to the `aeneas` command.
+- If `lake build` fails where a local variable or a parameter has the same name as a module, rename the variable. For example, Lean reads `market.ops.f` as a field of a parameter named `market`.
