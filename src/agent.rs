@@ -276,6 +276,9 @@ fn summarize(event: &serde_json::Value) -> Option<String> {
             None => line,
         }
     };
+    if event["type"] != "assistant" {
+        return None;
+    }
     let parts: Vec<String> = event["message"]["content"]
         .as_array()?
         .iter()
@@ -290,6 +293,7 @@ fn summarize(event: &serde_json::Value) -> Option<String> {
                         .as_str()
                         .map(|p| p.rsplit('/').next().unwrap_or(p)))
                     .or(input["pattern"].as_str())
+                    .or(input["skill"].as_str())
                     .unwrap_or("");
                 Some(short(what))
             }
