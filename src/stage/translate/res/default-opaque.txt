@@ -9,3 +9,7 @@
 {impl core::fmt::Pointer for _}
 {impl core::error::Error for _}
 {impl alloc::string::ToString for _}
+core::mem::size_of
+core::any::type_name
+alloc::fmt::format
+solana_program::pubkey::_::create_program_address

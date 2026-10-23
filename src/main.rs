@@ -46,14 +46,10 @@ struct TranslateArgs {
     /// Charon `--start-from` pattern
     #[arg(long = "entrypoint", required = true)]
     entrypoints: Vec<String>,
-    /// Charon `--opaque` pattern. Replaces the default patterns, which make
-    /// the impls of the `core::fmt` traits, `core::error::Error` and
-    /// `alloc::string::ToString` opaque.
+    /// Charon `--opaque` pattern. Replaces the tested default patterns.
     #[arg(long, conflicts_with = "add_opaque")]
     opaque: Option<Vec<String>>,
-    /// Charon `--opaque` pattern to add to the default patterns, which make
-    /// the impls of the `core::fmt` traits, `core::error::Error` and
-    /// `alloc::string::ToString` opaque.
+    /// Charon `--opaque` pattern to add to the tested default patterns.
     #[arg(long)]
     add_opaque: Vec<String>,
     /// Aeneas checkout
