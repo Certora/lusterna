@@ -47,7 +47,7 @@ Each entry is a fix that worked once. Apply an entry only when its condition hol
 
 - If the build of `ahash` fails with an unknown feature `stdsimd`, pass `-Zhost-config -Ztarget-applies-to-host --config target-applies-to-host=false` after `--`, and set `-Zallow-features=<the nightly features that the build needs>` in both `host.rustflags` and `build.rustflags`.
 - The `fixed` crate does not translate. Mock the types of `fixed` that the crate uses, with only the functions that the entrypoints reach.
-- If Charon panics on a `num_enum` derive such as `TryFromPrimitive`, replace the derive with a hand-written impl.
+- If the entrypoints reach an enum that derives a `num_enum` trait such as `TryFromPrimitive`, replace the derive with a hand-written impl. Do this before the first run. Otherwise Charon panics with "stack depth limit exceeded" at a closure that uses `TryFromPrimitiveError`.
 - If Aeneas fails on a type that the macro `construct_uint!` of the `uint` crate defines, such as `U256`, copy the macro into the crate and rewrite only the parts that fail.
 - If Aeneas crashes while it inlines `{promoted_const}` items, add `--inline-anon-consts` to the `charon` command.
 - If Charon panics with "stack depth limit exceeded", find the item in its trace output. If that item has an iterator chain with closures, replace the chain with a loop.
