@@ -88,7 +88,7 @@ Write each kind of replacement only once. If the same construct fails in several
 A replacement must behave exactly like the original for every input: the same results, the same panics, and the same overflow behavior. For example, do not replace `+` with `wrapping_add`.
 
 Common constructs that Aeneas cannot translate: iterator adaptor chains, closures, `Option` and `Result` combinators such as `map` and `and_then`, and globals of function type.
-This list is just a heuristic and neither a ground truth nor exhaustive, it depends on the Aeneas version you run against. You must evaluate errors case by case.
+This list is just a heuristic and neither a ground truth nor exhaustive, it depends on the Aeneas version you run against. You must evaluate errors case by case. The skill `lusterna:aeneas-recipes` gives rewrites for these constructs.
 
 ## Mock or Lean definitions
 

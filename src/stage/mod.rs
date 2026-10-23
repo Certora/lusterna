@@ -56,6 +56,12 @@ pub trait Stage: Sized {
     /// The stages briefing for the agent
     fn briefing(&self) -> String;
 
+    /// The name and the `SKILL.md` content of each skill of the agent.
+    /// By default, the agent has no skills.
+    fn skills(&self) -> Vec<(&'static str, String)> {
+        Vec::new()
+    }
+
     /// Returns the feedback prompt for the agent for a failed gate check
     fn feedback_prompt(gate_error: &Self::GateFailure) -> String;
 
@@ -141,6 +147,9 @@ pub fn run<S: Stage>(mut s: S, cfg: &Config) -> Result<S::Output, StageExecution
     let mut agent = Agent::default();
     // set the briefing
     agent.set_briefing(s.briefing());
+    for (name, content) in s.skills() {
+        agent.add_skill(name, content);
+    }
     agent.set_effort(cfg.effort);
     agent.set_model(cfg.model.clone());
     let mut judge_cost = 0.0;

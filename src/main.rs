@@ -189,6 +189,7 @@ fn translate(config: &Config, args: TranslateArgs) -> anyhow::Result<()> {
         crate_root,
         entrypoints,
         opaque,
+        aeneas_root: canonicalize(&aeneas_root)?,
         aeneas_rev,
         lean_toolchain,
     };

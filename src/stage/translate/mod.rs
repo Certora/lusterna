@@ -32,6 +32,10 @@ const BRIEFING_TEMPLATE: &str = include_str!("res/briefing.md");
 /// the crate root.
 const BASE_PROMPT_TEMPLATE: &str = include_str!("res/prompt.md");
 
+/// The `SKILL.md` of the skill `aeneas-recipes`, with `{aeneas_root}`
+/// standing for the Aeneas checkout.
+const AENEAS_RECIPES_SKILL: &str = include_str!("res/aeneas-recipes.md");
+
 /// The judge prompt of the translate stage, with `{crate_root}`,
 /// `{setup_commit}`, `{briefing}` and `{agent_summary}` standing for the
 /// crate root, the hash of the setup commit, the agent briefing and the
@@ -52,6 +56,9 @@ pub struct TranslateInput {
 
     /// The opaque pattern passed to Aeneas/Charon to left opaque
     pub opaque: Vec<String>,
+
+    /// Absolute path to the Aeneas checkout
+    pub aeneas_root: PathBuf,
 
     /// The Aeneas git revision the Lean project depends on
     pub aeneas_rev: String,
@@ -174,6 +181,16 @@ impl Stage for TranslateStage {
     fn briefing(&self) -> String {
         let crate_root = self.input.crate_root();
         make_briefing(crate_root, &self.input.entrypoints, &self.input.opaque)
+    }
+
+    fn skills(&self) -> Vec<(&'static str, String)> {
+        vec![(
+            "aeneas-recipes",
+            AENEAS_RECIPES_SKILL.replace(
+                "{aeneas_root}",
+                &self.input.aeneas_root.display().to_string(),
+            ),
+        )]
     }
 
     fn judge_prompt(&self, output: &Self::Output, agent_summary: &String) -> Option<String> {

@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     fmt::Display,
+    fs,
     io::{self, BufRead, BufReader, Write},
     process::{Command, ExitStatus, Stdio},
     thread,
@@ -8,7 +9,7 @@ use std::{
 
 use serde::Deserialize;
 use std::io::Read;
-use tempfile::NamedTempFile;
+use tempfile::{NamedTempFile, TempDir};
 use uuid::Uuid;
 
 const DEFAULT_ALLOWED_TOOLS: &[&str] =
@@ -61,6 +62,8 @@ pub struct Agent {
     usage: ModelUsage,
     session_id: Option<Uuid>,
     json_schema: Option<String>,
+    /// The name and the `SKILL.md` content of each skill
+    skills: Vec<(String, String)>,
 }
 
 impl Default for Agent {
@@ -77,6 +80,7 @@ impl Default for Agent {
             model: DEFAULT_MODEL.to_string(),
             session_id: None,
             json_schema: None,
+            skills: Vec::new(),
         }
     }
 }
@@ -116,6 +120,15 @@ impl Agent {
     /// `schema`, instead of its final message.
     pub fn set_json_schema(&mut self, schema: String) {
         self.json_schema = Some(schema)
+    }
+
+    /// Makes the skill `name` with the `SKILL.md` content `content` available
+    /// to the agent as `lusterna:<name>`.
+    pub fn add_skill(&mut self, name: &str, content: String) {
+        if !self.allowed_tools.iter().any(|t| t == "Skill") {
+            self.allowed_tools.push("Skill".to_owned());
+        }
+        self.skills.push((name.to_owned(), content))
     }
 
     pub fn get_usage(&self) -> &ModelUsage {
@@ -171,6 +184,25 @@ impl Agent {
         if let Some(schema) = self.json_schema.as_ref() {
             args.extend(["--json-schema".to_owned(), schema.clone()]);
         }
+        let mut plugin_dir = None;
+        if !self.skills.is_empty() {
+            let dir = TempDir::new()?;
+            fs::create_dir(dir.path().join(".claude-plugin"))?;
+            fs::write(
+                dir.path().join(".claude-plugin").join("plugin.json"),
+                r#"{"name": "lusterna"}"#,
+            )?;
+            for (name, content) in &self.skills {
+                let skill_dir = dir.path().join("skills").join(name);
+                fs::create_dir_all(&skill_dir)?;
+                fs::write(skill_dir.join("SKILL.md"), content)?;
+            }
+            args.extend([
+                "--plugin-dir".into(),
+                dir.path().to_string_lossy().into_owned(),
+            ]);
+            plugin_dir = Some(dir);
+        }
         let mut result = None;
 
         let mut cmnd = Command::new("claude")
@@ -206,6 +238,7 @@ impl Agent {
         stdin.join().expect("stdin writer panicked")?;
         let stderr = stderr.join().expect("stderr reader panicked")?;
         drop(briefing_file);
+        drop(plugin_dir);
 
         if !status.success() {
             return Err(AgentError::Failed { status, stderr });
