@@ -43,7 +43,6 @@ Implement the operations of a mock that the entrypoints reach. If the entrypoint
 
 Each entry is a fix that worked once. Apply an entry only when its condition holds.
 
-- If Charon fails to link a dependency with "Undefined symbols" (for example `solana-program`), add `--sysroot default` to the `charon` command. If old build output then conflicts, pass a separate `--target-dir` after `--`.
 - If the build of `ahash` fails with an unknown feature `stdsimd`, pass `-Zhost-config -Ztarget-applies-to-host --config target-applies-to-host=false` after `--`, and set `-Zallow-features=<the nightly features that the build needs>` in both `host.rustflags` and `build.rustflags`.
 - The `fixed` crate does not translate. Mock the types of `fixed` that the crate uses, with only the functions that the entrypoints reach.
 - If Charon panics on a `num_enum` derive such as `TryFromPrimitive`, replace the derive with a hand-written impl.

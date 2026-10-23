@@ -9,7 +9,7 @@ use anyhow::{Context, anyhow, bail};
 use clap::{Args, Parser, Subcommand};
 use log::{info, warn};
 use lusterna::{
-    Config,
+    config::{Config, Platform},
     stage::{
         self,
         pre_translate::{PreTranslateInput, PreTranslateStage},
@@ -185,12 +185,17 @@ fn translate(config: &Config, args: TranslateArgs) -> anyhow::Result<()> {
         Err(e) => return Err(e.into()),
     }
 
+    let platform = if cargo::lock_has_package(&manifest, "solana-program")? {
+        Platform::Solana
+    } else {
+        Platform::Generic
+    };
     let mut opaque = match opaque {
         Some(opaque) => opaque,
         None => {
             let mut opaque: Vec<String> = DEFAULT_OPAQUE.lines().map(str::to_owned).collect();
             // Add addition opaque patterns if we are running on a solana program
-            if cargo::lock_has_package(&manifest, "solana-program")? {
+            if let Platform::Solana = platform {
                 opaque.extend(SOLANA_OPAQUE.lines().map(str::to_owned));
             }
             opaque
@@ -209,6 +214,7 @@ fn translate(config: &Config, args: TranslateArgs) -> anyhow::Result<()> {
         aeneas_root: canonicalize(&aeneas_root)?,
         aeneas_rev,
         lean_toolchain,
+        platform,
     };
     let translate_stage = TranslateStage::new(input);
     let output = stage::run(translate_stage, config)?;

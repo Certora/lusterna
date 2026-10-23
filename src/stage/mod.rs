@@ -11,8 +11,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Config,
     agent::{Agent, AgentError},
+    config::Config,
     log::{stage_debug, stage_info},
     utils::format_elapsed,
 };
