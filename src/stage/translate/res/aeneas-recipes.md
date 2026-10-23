@@ -26,6 +26,8 @@ A `--start-from` pattern resolves in the crate that Charon builds, so it starts 
 
 The `rust_fun` attribute above an `axiom` gives the Rust name of the item. Patterns cannot name an inherent impl block. For a method in one, replace the impl block with `_`. For example, the pattern for `core::num::{u64}::abs_diff` is `core::num::_::abs_diff`.
 
+Patterns cannot contain tuple types such as `(_, _)` or array types such as `[_; _]`. For such a pattern, Charon prints `failed to parse pattern` and the run fails. Do not add `--include` for methods of the `Iterator` trait, because Aeneas then crashes on the trait. Write the Lean definitions of these items by hand.
+
 ## Rewrites
 
 Each rewrite must behave exactly like the original for every input.
