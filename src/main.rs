@@ -13,7 +13,7 @@ use lusterna::{
     stage::{
         self,
         pre_translate::{PreTranslateInput, PreTranslateStage},
-        translate::{TranslateInput, TranslateStage},
+        translate::{DEFAULT_OPAQUE, TranslateInput, TranslateStage},
     },
     utils::{
         cargo::{self, CargoError},
@@ -46,9 +46,16 @@ struct TranslateArgs {
     /// Charon `--start-from` pattern
     #[arg(long = "entrypoint", required = true)]
     entrypoints: Vec<String>,
-    /// Charon `--opaque` pattern
+    /// Charon `--opaque` pattern. Replaces the default patterns, which make
+    /// the impls of the `core::fmt` traits, `core::error::Error` and
+    /// `alloc::string::ToString` opaque.
+    #[arg(long, conflicts_with = "add_opaque")]
+    opaque: Option<Vec<String>>,
+    /// Charon `--opaque` pattern to add to the default patterns, which make
+    /// the impls of the `core::fmt` traits, `core::error::Error` and
+    /// `alloc::string::ToString` opaque.
     #[arg(long)]
-    opaque: Vec<String>,
+    add_opaque: Vec<String>,
     /// Aeneas checkout
     #[arg(long, env = "AENEAS_ROOT")]
     aeneas_root: PathBuf,
@@ -78,11 +85,15 @@ fn translate(config: &Config, args: TranslateArgs) -> anyhow::Result<()> {
         crate_root,
         entrypoints,
         opaque,
+        add_opaque,
         aeneas_root,
         source_branch,
         target_branch,
         worktree,
     } = args;
+    let mut opaque =
+        opaque.unwrap_or_else(|| DEFAULT_OPAQUE.lines().map(str::to_owned).collect());
+    opaque.extend(add_opaque);
     let canonicalize =
         |p: &Path| fs::canonicalize(p).with_context(|| format!("cannot resolve `{}`", p.display()));
     let workspace_root = canonicalize(&workspace_root)?;

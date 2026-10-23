@@ -42,6 +42,9 @@ const AENEAS_RECIPES_SKILL: &str = include_str!("res/aeneas-recipes.md");
 /// agent's final message.
 const JUDGE_PROMPT_TEMPLATE: &str = include_str!("res/judge.md");
 
+/// The default Charon `--opaque` patterns, one per line.
+pub const DEFAULT_OPAQUE: &str = include_str!("res/default-opaque.txt");
+
 pub struct TranslateInput {
     /// Absolute path to the workspace of the Rust project.
     pub workspace_root: PathBuf,
