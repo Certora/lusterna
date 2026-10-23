@@ -19,6 +19,9 @@ const BRIEFING_TEMPLATE: &str = include_str!("res/briefing.md");
 /// failed `cargo build`.
 const BASE_PROMPT_TEMPLATE: &str = include_str!("res/prompt.md");
 
+/// The `SKILL.md` of the skill `solana-host-build`.
+const SOLANA_HOST_BUILD_SKILL: &str = include_str!("res/solana-host-build.md");
+
 pub struct PreTranslateInput {
     /// Absolute path to the workspace of the Rust project.
     pub workspace_root: PathBuf,
@@ -110,6 +113,10 @@ impl Stage for PreTranslateStage {
                 &self.input.workspace_root.display().to_string(),
             )
             .replace("{manifest}", &self.input.manifest.display().to_string())
+    }
+
+    fn skills(&self) -> Vec<(&'static str, String)> {
+        vec![("solana-host-build", SOLANA_HOST_BUILD_SKILL.to_owned())]
     }
 
     fn feedback_prompt(gate_error: &Self::GateFailure) -> String {

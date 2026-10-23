@@ -10,6 +10,8 @@ Later stages run `cargo build`, `cargo test` and Charon on this crate for the ho
 
 ## How to fix a dependency
 
+If the crate is a Solana program, read the skill `lusterna:solana-host-build` first.
+
 1. Find the package that fails to compile and the source that cargo uses for it. `cargo metadata --manifest-path {manifest}` shows the source of each package. Cargo keeps the code of git dependencies in `~/.cargo/git/checkouts` and the code of crates.io dependencies in `~/.cargo/registry/src`.
 2. Copy the source of the package to `{workspace_root}/lusterna/patches/<package>`. If its `Cargo.toml` uses `workspace = true`, copy its whole workspace to `{workspace_root}/lusterna/patches/<workspace>` instead.
 3. In the copy, make the smallest change that makes the package compile on the host. Remove or change only code that does not change what the package computes, for example a compile-time assertion of a type size.
