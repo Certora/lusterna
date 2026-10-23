@@ -1,7 +1,8 @@
 use std::{
-    fs, io,
+    fs,
+    io::{self, Read},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     time::Duration,
 };
 
@@ -22,6 +23,10 @@ use crate::{
 
 /// How long `cargo test lusterna_test` may run in the gate check.
 const EQUIV_TEST_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+/// How many bytes from the end of the extraction script's stderr the gate
+/// keeps.
+const EXTRACTION_STDERR_LIMIT: usize = 64 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum TranslateGateError {
@@ -362,15 +367,37 @@ fn check_externals(dir: &Path) -> Result<(), GateStop> {
     Ok(())
 }
 
-/// Runs the extraction script `script` and fails with its stderr if it exits
-/// with a non-zero status.
+/// Runs the extraction script `script` and fails with the end of its stderr if
+/// it exits with a non-zero status.
+///
+/// Charon and Aeneas can print gigabytes of output on a large crate, so stdout
+/// is discarded and only the last `EXTRACTION_STDERR_LIMIT` bytes of stderr
+/// are kept in memory.
 fn run_script(script: &Path) -> Result<(), GateStop> {
-    let output = Command::new(script).output()?;
+    let mut child = Command::new(script)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut stderr = child.stderr.take().expect("stderr is piped");
+    let mut tail = Vec::new();
+    let mut buf = [0; 8192];
+    loop {
+        let n = stderr.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        tail.extend_from_slice(&buf[..n]);
+        if tail.len() > 2 * EXTRACTION_STDERR_LIMIT {
+            tail.drain(..tail.len() - EXTRACTION_STDERR_LIMIT);
+        }
+    }
+    let status = child.wait()?;
 
-    if !output.status.success() {
+    if !status.success() {
+        let start = tail.len().saturating_sub(EXTRACTION_STDERR_LIMIT);
         return Err(GateStop::Failure(
             TranslateGateFailure::ExtractionScriptFailed {
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                stderr: String::from_utf8_lossy(&tail[start..]).into_owned(),
             },
         ));
     }
