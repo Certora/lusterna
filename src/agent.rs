@@ -91,6 +91,8 @@ pub enum AgentError {
     Io(#[from] io::Error),
     #[error("`claude` failed with {status}:\n{stderr}")]
     Failed { status: ExitStatus, stderr: String },
+    #[error("`claude` reached its maximum budget")]
+    BudgetExhausted,
     #[error("`claude` printed no result event:\n{stderr}")]
     NoResult { stderr: String },
     #[error("the agent run ended with an error: {result}")]
@@ -241,6 +243,12 @@ impl Agent {
         drop(plugin_dir);
 
         if !status.success() {
+            if result
+                .as_ref()
+                .is_some_and(|e| e["subtype"] == "error_max_budget_usd")
+            {
+                return Err(AgentError::BudgetExhausted);
+            }
             return Err(AgentError::Failed { status, stderr });
         }
         let event = result.ok_or(AgentError::NoResult { stderr })?;

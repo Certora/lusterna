@@ -169,7 +169,13 @@ pub fn run<S: Stage>(mut s: S, cfg: &Config) -> Result<S::Output, StageExecution
             cfg.stage_max_budget
         );
         let t = Instant::now();
-        let summary = agent.run_with_hook(prompt, |s| stage_info!(S::name(), "agent: {}", s,))?;
+        let summary = match agent.run_with_hook(prompt, |s| stage_info!(S::name(), "agent: {}", s,))
+        {
+            Err(AgentError::BudgetExhausted) => {
+                return Err(StageExecutionError::BudgetExhausted(last_rejection));
+            }
+            r => r?,
+        };
         stage_info!(S::name(), "agent finished in {}", format_elapsed(t));
         stage_debug!(S::name(), "agent summary: {}", summary);
         match s.gate_check(&summary) {
