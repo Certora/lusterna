@@ -65,6 +65,9 @@ struct TranslateArgs {
     /// [default: ~/.lusterna/<project>_<source branch>_<target branch>]
     #[arg(long)]
     worktree: Option<PathBuf>,
+    /// Stop after the pre-translate stage
+    #[arg(long, help_heading = "Dev options")]
+    stop_after_pre_translate: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -86,6 +89,7 @@ fn translate(config: &Config, args: TranslateArgs) -> anyhow::Result<()> {
         source_branch,
         target_branch,
         worktree,
+        stop_after_pre_translate,
     } = args;
     let canonicalize =
         |p: &Path| fs::canonicalize(p).with_context(|| format!("cannot resolve `{}`", p.display()));
@@ -183,6 +187,9 @@ fn translate(config: &Config, args: TranslateArgs) -> anyhow::Result<()> {
             log::info!("Committed pre-translate in {}", sha);
         }
         Err(e) => return Err(e.into()),
+    }
+    if stop_after_pre_translate {
+        return Ok(());
     }
 
     let platform = if cargo::lock_has_package(&manifest, "solana-program")? {
