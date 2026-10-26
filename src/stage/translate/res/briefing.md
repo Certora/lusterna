@@ -121,6 +121,8 @@ If Aeneas translates the type and only a few of its functions are axioms, write 
 
 A mock has the same name as the original type and represents values in the same way. Implement only the functions and trait impls that the entrypoints reach. Put the mock in its own module behind `#[cfg(any(test, feature = "lusterna"))]`. Use it in place of the original type only behind `#[cfg(feature = "lusterna")]`, so that the equivalence tests can call both. Each function of the mock must behave exactly like the original function and needs an equivalence test.
 
+A trait impl that matches an opaque pattern, such as `Display` or `Debug`, stays an `axiom`, so Aeneas never translates its body. If the mock needs such an impl only to compile, give it the shortest body that compiles, for example `#[derive(Debug)]`. Do not port the formatting code of the original, and do not test the impl.
+
 ## Equivalence tests
 
 For every replacement, add a test in a `#[cfg(test)] mod lusterna_test` next to it. The harness runs only the tests whose path contains `lusterna_test`. The test calls the original and the replacement with the same inputs and compares the results. Use many random inputs and add the edge cases: zero, the maximum value, values that overflow, and empty collections. If a dependency for random inputs is not available, use a loop over a simple seeded generator.
