@@ -9,7 +9,7 @@ description: Known problems and fixes for the translation of a Solana program wi
 
 Each entry is a fix that worked once. Apply an entry only when its condition holds.
 
-- Before the first run, add `--sysroot default` to the `charon` command, and pass a separate `--target-dir` after `--`. Without `--sysroot default`, Charon fails to link `solana-program` with "Undefined symbols". Without the separate target directory, the build output of `cargo build` conflicts with the Charon build.
+- Before the first run, pass a separate `--target-dir` after `--` in the `charon` command. Without it, the build output of `cargo build` conflicts with the Charon build.
 - If the entrypoints reach `Ref` or `RefMut`, the Lean code loses every write through the `RefMut`. An example is `load_mut` of the Anchor `AccountLoader`, or a crate trait that wraps it. Aeneas translates a method that takes `&self` as a function that cannot change `self`, so no Lean definition can fix this. Mock the loader type as follows:
   - Keep all account values in one store that the functions take by `&mut`, with one entry for each account key. A loader is a key or an index into this store. Two loaders for the same account must reach the same entry. An instruction can pass the same account in several places, for example once in a list of accounts and once on its own. Do not copy an account value into a loader.
   - `load_mut` returns `&mut T` into the store, and `load` returns `&T`.
