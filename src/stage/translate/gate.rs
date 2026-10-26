@@ -300,7 +300,7 @@ fn check_patterns(
             || line.contains("--start-from")
             || line.contains("--opaque")
     };
-    let expected = setup::make_extraction_script(entrypoints, opaque);
+    let expected = setup::make_extraction_script(entrypoints, opaque, &[]);
     let expected_lines: Vec<&str> = expected.lines().filter(|l| sets_patterns(l)).collect();
 
     if let Some(line) = expected_lines.iter().find(|l| !lines.contains(l)) {
@@ -431,7 +431,10 @@ mod tests {
     fn check_patterns_accepts_generated_script() {
         let dir = tempfile::tempdir().unwrap();
         let (entrypoints, opaque) = patterns();
-        let script = write_script(dir.path(), &make_extraction_script(&entrypoints, &opaque));
+        let script = write_script(
+            dir.path(),
+            &make_extraction_script(&entrypoints, &opaque, &[]),
+        );
 
         check_patterns(&script, &entrypoints, &opaque).unwrap();
     }
@@ -440,7 +443,7 @@ mod tests {
     fn check_patterns_accepts_other_charon_options() {
         let dir = tempfile::tempdir().unwrap();
         let (entrypoints, opaque) = patterns();
-        let content = make_extraction_script(&entrypoints, &opaque).replace(
+        let content = make_extraction_script(&entrypoints, &opaque, &[]).replace(
             "charon cargo --preset=aeneas",
             "charon cargo --preset=aeneas --hide-marker-traits",
         );
@@ -455,7 +458,7 @@ mod tests {
         let (entrypoints, opaque) = patterns();
         let script = write_script(
             dir.path(),
-            &make_extraction_script(&["crate::other".to_owned()], &opaque),
+            &make_extraction_script(&["crate::other".to_owned()], &opaque, &[]),
         );
 
         match check_patterns(&script, &entrypoints, &opaque) {
@@ -470,7 +473,7 @@ mod tests {
     fn check_patterns_rejects_extra_opaque_option() {
         let dir = tempfile::tempdir().unwrap();
         let (entrypoints, opaque) = patterns();
-        let content = make_extraction_script(&entrypoints, &opaque).replace(
+        let content = make_extraction_script(&entrypoints, &opaque, &[]).replace(
             "charon cargo --preset=aeneas",
             "charon cargo --preset=aeneas --opaque crate::x",
         );
@@ -489,7 +492,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (entrypoints, opaque) = patterns();
         let content =
-            make_extraction_script(&entrypoints, &opaque).replace("\ncd ", "\nOPAQUE=()\ncd ");
+            make_extraction_script(&entrypoints, &opaque, &[]).replace("\ncd ", "\nOPAQUE=()\ncd ");
         let script = write_script(dir.path(), &content);
 
         match check_patterns(&script, &entrypoints, &opaque) {
@@ -504,7 +507,8 @@ mod tests {
     fn check_patterns_rejects_charon_without_args() {
         let dir = tempfile::tempdir().unwrap();
         let (entrypoints, opaque) = patterns();
-        let content = make_extraction_script(&entrypoints, &opaque).replace(r#""${args[@]}""#, "");
+        let content =
+            make_extraction_script(&entrypoints, &opaque, &[]).replace(r#""${args[@]}""#, "");
         let script = write_script(dir.path(), &content);
 
         assert!(matches!(
@@ -519,7 +523,7 @@ mod tests {
     fn check_patterns_rejects_charon_without_release() {
         let dir = tempfile::tempdir().unwrap();
         let (entrypoints, opaque) = patterns();
-        let content = make_extraction_script(&entrypoints, &opaque).replace("--release ", "");
+        let content = make_extraction_script(&entrypoints, &opaque, &[]).replace("--release ", "");
         let script = write_script(dir.path(), &content);
 
         assert!(matches!(

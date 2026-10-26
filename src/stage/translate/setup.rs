@@ -5,6 +5,7 @@ use std::{
 };
 
 use crate::{
+    config::Platform,
     stage::translate::{TranslateInput, translate_info},
     utils::{
         cargo::{self, CargoError},
@@ -13,8 +14,9 @@ use crate::{
     },
 };
 
-/// The extraction script `lusterna/extract.sh`, with `{entrypoints}` and
-/// `{opaque}` standing for the bash-quoted patterns.
+/// The extraction script `lusterna/extract.sh`, with `{entrypoints}`,
+/// `{opaque}` and `{charon_args}` standing for the bash-quoted patterns and
+/// the extra `charon` arguments.
 const EXTRACT_SH_TEMPLATE: &str = include_str!("res/extract.sh.template");
 
 /// The `lakefile.toml` of the Lean project, with `{rev}` standing for the
@@ -120,8 +122,13 @@ pub(super) fn run_setup(input: &TranslateInput) -> Result<SetupOutcome, Translat
         crate_manifest.display()
     );
 
+    // If we are on solana, add "--sysroot default" to prevent charon from crashing
+    let charon_args = match input.platform {
+        Platform::Generic => vec![],
+        Platform::Solana => vec!["--sysroot".to_owned(), "default".to_owned()],
+    };
     let extraction_script =
-        create_extraction_script(crate_root, &input.entrypoints, &input.opaque)?;
+        create_extraction_script(crate_root, &input.entrypoints, &input.opaque, &charon_args)?;
 
     translate_info!(
         "setup: created extraction script at {}",
@@ -143,8 +150,12 @@ pub(super) fn run_setup(input: &TranslateInput) -> Result<SetupOutcome, Translat
 }
 
 /// Returns the content of `lusterna/extract.sh` for the given Charon
-/// `--start-from` and `--opaque` patterns.
-pub(super) fn make_extraction_script(entrypoints: &[String], opaque: &[String]) -> String {
+/// `--start-from` and `--opaque` patterns and extra `charon` arguments.
+pub(super) fn make_extraction_script(
+    entrypoints: &[String],
+    opaque: &[String],
+    charon_args: &[String],
+) -> String {
     let quote = |patterns: &[String]| {
         patterns
             .iter()
@@ -155,6 +166,7 @@ pub(super) fn make_extraction_script(entrypoints: &[String], opaque: &[String]) 
     EXTRACT_SH_TEMPLATE
         .replace("{entrypoints}", &quote(entrypoints))
         .replace("{opaque}", &quote(opaque))
+        .replace("{charon_args}", &quote(charon_args))
 }
 
 /// Returns the content of the Lean project's `lakefile.toml` for the given
@@ -203,11 +215,15 @@ fn create_extraction_script(
     crate_root: &Path,
     entrypoints: &[String],
     opaque: &[String],
+    charon_args: &[String],
 ) -> Result<PathBuf, io::Error> {
     let path = crate_root.join("lusterna").join("extract.sh");
 
     fs::create_dir_all(path.parent().unwrap())?;
-    fs::write(&path, make_extraction_script(entrypoints, opaque))?;
+    fs::write(
+        &path,
+        make_extraction_script(entrypoints, opaque, charon_args),
+    )?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
     Ok(path)
 }
@@ -248,7 +264,7 @@ mod tests {
         ];
         let opaque = vec!["crate::a b".to_owned(), "'".to_owned()];
 
-        let script = make_extraction_script(&entrypoints, &opaque);
+        let script = make_extraction_script(&entrypoints, &opaque, &[]);
 
         assert_eq!(bash_array(&script, "ENTRYPOINTS"), entrypoints);
         assert_eq!(bash_array(&script, "OPAQUE"), opaque);
@@ -256,7 +272,7 @@ mod tests {
 
     #[test]
     fn extract_sh_allows_empty_patterns() {
-        let script = make_extraction_script(&[], &[]);
+        let script = make_extraction_script(&[], &[], &[]);
 
         assert!(bash_array(&script, "ENTRYPOINTS").is_empty());
         assert!(bash_array(&script, "OPAQUE").is_empty());

@@ -12,4 +12,3 @@
 core::mem::size_of
 core::any::type_name
 alloc::fmt::format
-solana_program::pubkey::_::create_program_address

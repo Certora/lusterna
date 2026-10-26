@@ -5,9 +5,12 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::stage::{
-    GateStop, Stage,
-    translate::{gate::TranslateGateError, setup::SetupOutcome},
+use crate::{
+    config::Platform,
+    stage::{
+        GateStop, Stage,
+        translate::{gate::TranslateGateError, setup::SetupOutcome},
+    },
 };
 
 pub use {gate::TranslateGateFailure, setup::TranslateSetupErr};
@@ -25,7 +28,9 @@ use translate_info;
 
 /// The agent briefing of the translate stage, with `{crate_root}`,
 /// `{entrypoints}` and `{opaque}` standing for the crate root and the
-/// Markdown lists of the Charon `--start-from` and `--opaque` patterns.
+/// Markdown lists of the Charon `--start-from` and `--opaque` patterns, and
+/// `{solana_skill}` standing for the sentence that names the skill
+/// `solana-translate`, or nothing.
 const BRIEFING_TEMPLATE: &str = include_str!("res/briefing.md");
 
 /// The first prompt of the translate stage, with `{crate_root}` standing for
@@ -36,6 +41,9 @@ const BASE_PROMPT_TEMPLATE: &str = include_str!("res/prompt.md");
 /// standing for the Aeneas checkout.
 const AENEAS_RECIPES_SKILL: &str = include_str!("res/aeneas-recipes.md");
 
+/// The `SKILL.md` of the skill `solana-translate`.
+const SOLANA_TRANSLATE_SKILL: &str = include_str!("res/solana-translate.md");
+
 /// The judge prompt of the translate stage, with `{crate_root}`,
 /// `{setup_commit}`, `{briefing}` and `{agent_summary}` standing for the
 /// crate root, the hash of the setup commit, the agent briefing and the
@@ -44,6 +52,10 @@ const JUDGE_PROMPT_TEMPLATE: &str = include_str!("res/judge.md");
 
 /// The default Charon `--opaque` patterns, one per line.
 pub const DEFAULT_OPAQUE: &str = include_str!("res/default-opaque.txt");
+
+/// The default Charon `--opaque` patterns for crates that depend on
+/// `solana-program`, one per line.
+pub const SOLANA_OPAQUE: &str = include_str!("res/solana-opaque.txt");
 
 pub struct TranslateInput {
     /// Absolute path to the workspace of the Rust project.
@@ -69,6 +81,9 @@ pub struct TranslateInput {
     /// The Lean toolchain of that Aeneas revision, as in its
     /// `backends/lean/lean-toolchain`
     pub lean_toolchain: String,
+
+    /// The platform of the crate
+    pub platform: Platform,
 }
 
 impl TranslateInput {
@@ -122,7 +137,12 @@ fn make_base_prompt(crate_root: &Path) -> String {
 /// `crate_root` must not contain `{entrypoints}` or `{opaque}`, and the
 /// entrypoints must not contain `{opaque}`, because each value is inserted
 /// before the next placeholder is replaced.
-fn make_briefing(crate_root: &Path, entrypoints: &[String], opaque: &[String]) -> String {
+fn make_briefing(
+    crate_root: &Path,
+    entrypoints: &[String],
+    opaque: &[String],
+    platform: Platform,
+) -> String {
     let list = |patterns: &[String]| {
         if patterns.is_empty() {
             return "(none)".to_owned();
@@ -137,6 +157,13 @@ fn make_briefing(crate_root: &Path, entrypoints: &[String], opaque: &[String]) -
         .replace("{crate_root}", &crate_root.display().to_string())
         .replace("{entrypoints}", &list(entrypoints))
         .replace("{opaque}", &list(opaque))
+        .replace(
+            "{solana_skill}",
+            match platform {
+                Platform::Generic => "",
+                Platform::Solana => " Also read the skill `lusterna:solana-translate`.",
+            },
+        )
 }
 
 impl Stage for TranslateStage {
@@ -183,17 +210,26 @@ impl Stage for TranslateStage {
 
     fn briefing(&self) -> String {
         let crate_root = self.input.crate_root();
-        make_briefing(crate_root, &self.input.entrypoints, &self.input.opaque)
+        make_briefing(
+            crate_root,
+            &self.input.entrypoints,
+            &self.input.opaque,
+            self.input.platform,
+        )
     }
 
     fn skills(&self) -> Vec<(&'static str, String)> {
-        vec![(
+        let mut skills = vec![(
             "aeneas-recipes",
             AENEAS_RECIPES_SKILL.replace(
                 "{aeneas_root}",
                 &self.input.aeneas_root.display().to_string(),
             ),
-        )]
+        )];
+        if let Platform::Solana = self.input.platform {
+            skills.push(("solana-translate", SOLANA_TRANSLATE_SKILL.to_owned()));
+        }
+        skills
     }
 
     fn judge_prompt(&self, output: &Self::Output, agent_summary: &String) -> Option<String> {

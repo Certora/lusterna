@@ -9,11 +9,11 @@ use anyhow::{Context, anyhow, bail};
 use clap::{Args, Parser, Subcommand};
 use log::{info, warn};
 use lusterna::{
-    Config,
+    config::{Config, Platform},
     stage::{
         self,
         pre_translate::{PreTranslateInput, PreTranslateStage},
-        translate::{DEFAULT_OPAQUE, TranslateInput, TranslateStage},
+        translate::{DEFAULT_OPAQUE, SOLANA_OPAQUE, TranslateInput, TranslateStage},
     },
     utils::{
         cargo::{self, CargoError},
@@ -65,6 +65,9 @@ struct TranslateArgs {
     /// [default: ~/.lusterna/<project>_<source branch>_<target branch>]
     #[arg(long)]
     worktree: Option<PathBuf>,
+    /// Stop after the pre-translate stage
+    #[arg(long, help_heading = "Dev options")]
+    stop_after_pre_translate: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -86,10 +89,8 @@ fn translate(config: &Config, args: TranslateArgs) -> anyhow::Result<()> {
         source_branch,
         target_branch,
         worktree,
+        stop_after_pre_translate,
     } = args;
-    let mut opaque =
-        opaque.unwrap_or_else(|| DEFAULT_OPAQUE.lines().map(str::to_owned).collect());
-    opaque.extend(add_opaque);
     let canonicalize =
         |p: &Path| fs::canonicalize(p).with_context(|| format!("cannot resolve `{}`", p.display()));
     let workspace_root = canonicalize(&workspace_root)?;
@@ -176,7 +177,7 @@ fn translate(config: &Config, args: TranslateArgs) -> anyhow::Result<()> {
             let t = Instant::now();
             let input = PreTranslateInput {
                 workspace_root: workspace_root.clone(),
-                manifest,
+                manifest: manifest.clone(),
                 build_stderr: stderr,
             };
             stage::run(PreTranslateStage::new(input), config)?;
@@ -187,6 +188,27 @@ fn translate(config: &Config, args: TranslateArgs) -> anyhow::Result<()> {
         }
         Err(e) => return Err(e.into()),
     }
+    if stop_after_pre_translate {
+        return Ok(());
+    }
+
+    let platform = if cargo::lock_has_package(&manifest, "solana-program")? {
+        Platform::Solana
+    } else {
+        Platform::Generic
+    };
+    let mut opaque = match opaque {
+        Some(opaque) => opaque,
+        None => {
+            let mut opaque: Vec<String> = DEFAULT_OPAQUE.lines().map(str::to_owned).collect();
+            // Add addition opaque patterns if we are running on a solana program
+            if let Platform::Solana = platform {
+                opaque.extend(SOLANA_OPAQUE.lines().map(str::to_owned));
+            }
+            opaque
+        }
+    };
+    opaque.extend(add_opaque);
 
     info!("Starting translation phase");
 
@@ -199,6 +221,7 @@ fn translate(config: &Config, args: TranslateArgs) -> anyhow::Result<()> {
         aeneas_root: canonicalize(&aeneas_root)?,
         aeneas_rev,
         lean_toolchain,
+        platform,
     };
     let translate_stage = TranslateStage::new(input);
     let output = stage::run(translate_stage, config)?;

@@ -22,7 +22,11 @@ To see the constructs that Aeneas rejects, run `grep -n 'not supported\|unsuppor
 
 ## Pattern names
 
-A `--start-from` pattern resolves in the crate that Charon builds, so it starts with `crate::`. An `--opaque` or `--exclude` pattern uses the real name of the crate, for example `core::fmt::Formatter`.
+A `--start-from` pattern resolves in the crate that Charon builds, so it starts with `crate::`. An `--opaque`, `--include` or `--exclude` pattern uses the real name of the crate, for example `core::fmt::Formatter`.
+
+The `rust_fun` attribute above an `axiom` gives the Rust name of the item. Patterns cannot name an inherent impl block. For a method in one, replace the impl block with `_`. For example, the pattern for `core::num::{u64}::abs_diff` is `core::num::_::abs_diff`.
+
+Patterns cannot contain tuple types such as `(_, _)` or array types such as `[_; _]`. For such a pattern, Charon prints `failed to parse pattern` and the run fails. Do not add `--include` for methods of the `Iterator` trait, because Aeneas then crashes on the trait. Write the Lean definitions of these items by hand.
 
 ## Rewrites
 
@@ -43,10 +47,9 @@ Implement the operations of a mock that the entrypoints reach. If the entrypoint
 
 Each entry is a fix that worked once. Apply an entry only when its condition holds.
 
-- If Charon fails to link a dependency with "Undefined symbols" (for example `solana-program`), add `--sysroot default` to the `charon` command. If old build output then conflicts, pass a separate `--target-dir` after `--`.
 - If the build of `ahash` fails with an unknown feature `stdsimd`, pass `-Zhost-config -Ztarget-applies-to-host --config target-applies-to-host=false` after `--`, and set `-Zallow-features=<the nightly features that the build needs>` in both `host.rustflags` and `build.rustflags`.
 - The `fixed` crate does not translate. Mock the types of `fixed` that the crate uses, with only the functions that the entrypoints reach.
-- If Charon panics on a `num_enum` derive such as `TryFromPrimitive`, replace the derive with a hand-written impl.
+- If the entrypoints reach an enum that derives a `num_enum` trait such as `TryFromPrimitive`, replace the derive with a hand-written impl. Do this before the first run. Otherwise Charon panics with "stack depth limit exceeded" at a closure that uses `TryFromPrimitiveError`.
 - If Aeneas fails on a type that the macro `construct_uint!` of the `uint` crate defines, such as `U256`, copy the macro into the crate and rewrite only the parts that fail.
 - If Aeneas crashes while it inlines `{promoted_const}` items, add `--inline-anon-consts` to the `charon` command.
 - If Charon panics with "stack depth limit exceeded", find the item in its trace output. If that item has an iterator chain with closures, replace the chain with a loop.
@@ -54,3 +57,5 @@ Each entry is a fix that worked once. Apply an entry only when its condition hol
 - If Aeneas fails after `?` on a `Result<&mut T, E>`, replace the function that returns it with one that returns an index or a plain value.
 - If Aeneas fails to join the branches of an `if` or `match` because a borrow stays open in one branch, end the borrow before the branch. Copy the value, or move the code that uses the borrow into a helper that returns plain values.
 - If Aeneas fails on a function item passed as an `Fn` value, pass a closure that calls it.
+- An `Iterator` instance in `Funs.lean` can have fields that the Lean model of the trait does not have. If `lake build` fails on these fields, add `-filter-trait-methods` to the `aeneas` command.
+- If `lake build` fails where a local variable or a parameter has the same name as a module, rename the variable. For example, Lean reads `market.ops.f` as a field of a parameter named `market`.

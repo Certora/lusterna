@@ -51,6 +51,12 @@ pub enum CargoError {
         #[source]
         source: io::Error,
     },
+    #[error("cannot read `{lock}`: {source}")]
+    ReadLock {
+        lock: PathBuf,
+        #[source]
+        source: io::Error,
+    },
 }
 
 /// Returns the path of the workspace `Cargo.toml` that `manifest` belongs to.
@@ -70,6 +76,18 @@ pub fn workspace_manifest(manifest: &Path) -> Result<PathBuf, CargoError> {
     Ok(PathBuf::from(
         String::from_utf8_lossy(&output.stdout).trim(),
     ))
+}
+
+/// Returns whether the `Cargo.lock` of the workspace of `manifest` has a
+/// package named `name`.
+pub fn lock_has_package(manifest: &Path, name: &str) -> Result<bool, CargoError> {
+    let lock = workspace_manifest(manifest)?.with_file_name("Cargo.lock");
+    let content = fs::read_to_string(&lock).map_err(|source| CargoError::ReadLock {
+        lock: lock.clone(),
+        source,
+    })?;
+    let entry = format!("name = \"{name}\"");
+    Ok(content.lines().any(|l| l.trim() == entry))
 }
 
 /// Builds the package of `manifest`.
