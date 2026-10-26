@@ -28,7 +28,7 @@ The harness checks these conditions after you stop. If one fails, you get the er
 
 ## How to work
 
-1. Run `lusterna/extract.sh`. If it fails, collect all errors of the run and fix them together, each with the smallest change that works. Then run the script again. Repeat until it passes. A Charon run takes minutes. If Charon passed and only Aeneas failed, run only the `aeneas` line of `extract.sh` until Aeneas passes. If you changed Rust code since the last Charon run, run the whole script.
+1. Apply the fixes of the known problems (see the end of "What you must not do"). Then run `lusterna/extract.sh`. If it fails, collect all errors of the run and fix them together, each with the smallest change that works. Then run the script again. Repeat until it passes. A Charon run takes minutes. If Charon passed and only Aeneas failed, run only the `aeneas` line of `extract.sh` until Aeneas passes. If you changed Rust code since the last Charon run, run the whole script.
 2. If Aeneas wrote `_Template.lean` files, write the Lean definitions (see the next section).
 3. Run `lake build` in `lusterna/lean` and fix the errors.
 4. If you changed Rust code, run `cargo test lusterna_test` and make sure that your equivalence tests pass. Other tests of the crate can fail already before your changes, and you do not need to fix them.
