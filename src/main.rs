@@ -55,6 +55,9 @@ struct TranslateArgs {
     /// Aeneas checkout
     #[arg(long, env = "AENEAS_ROOT")]
     aeneas_root: PathBuf,
+    /// Solanalib checkout. Required if the crate is a Solana program.
+    #[arg(long, env = "SOLANALIB_ROOT")]
+    solanalib_root: Option<PathBuf>,
     /// Branch to start from [default: the checked out branch]
     #[arg(long)]
     source_branch: Option<String>,
@@ -86,6 +89,7 @@ fn translate(config: &Config, args: TranslateArgs) -> anyhow::Result<()> {
         opaque,
         add_opaque,
         aeneas_root,
+        solanalib_root,
         source_branch,
         target_branch,
         worktree,
@@ -193,7 +197,19 @@ fn translate(config: &Config, args: TranslateArgs) -> anyhow::Result<()> {
     }
 
     let platform = if cargo::lock_has_package(&manifest, "solana-program")? {
-        Platform::Solana
+        let solanalib_root = solanalib_root
+            .context("the crate is a Solana program, so `--solanalib-root` is required")?;
+        let packages = aeneas_root.join("backends/lean/.lake/packages");
+        if !packages.is_dir() {
+            bail!(
+                "`{}` does not exist. Run `lake update` in `{}` once",
+                packages.display(),
+                aeneas_root.join("backends/lean").display()
+            );
+        }
+        Platform::Solana {
+            solanalib_root: canonicalize(&solanalib_root)?,
+        }
     } else {
         Platform::Generic
     };
@@ -202,7 +218,7 @@ fn translate(config: &Config, args: TranslateArgs) -> anyhow::Result<()> {
         None => {
             let mut opaque: Vec<String> = DEFAULT_OPAQUE.lines().map(str::to_owned).collect();
             // Add addition opaque patterns if we are running on a solana program
-            if let Platform::Solana = platform {
+            if let Platform::Solana { .. } = platform {
                 opaque.extend(SOLANA_OPAQUE.lines().map(str::to_owned));
             }
             opaque

@@ -41,7 +41,8 @@ const BASE_PROMPT_TEMPLATE: &str = include_str!("res/prompt.md");
 /// standing for the Aeneas checkout.
 const AENEAS_RECIPES_SKILL: &str = include_str!("res/aeneas-recipes.md");
 
-/// The `SKILL.md` of the skill `solana-translate`.
+/// The `SKILL.md` of the skill `solana-translate`, with `{solanalib_root}`
+/// standing for the Solanalib checkout.
 const SOLANA_TRANSLATE_SKILL: &str = include_str!("res/solana-translate.md");
 
 /// The judge prompt of the translate stage, with `{crate_root}`,
@@ -141,7 +142,7 @@ fn make_briefing(
     crate_root: &Path,
     entrypoints: &[String],
     opaque: &[String],
-    platform: Platform,
+    platform: &Platform,
 ) -> String {
     let list = |patterns: &[String]| {
         if patterns.is_empty() {
@@ -161,7 +162,7 @@ fn make_briefing(
             "{solana_skill}",
             match platform {
                 Platform::Generic => "",
-                Platform::Solana => " Also read the skill `lusterna:solana-translate`.",
+                Platform::Solana { .. } => " Also read the skill `lusterna:solana-translate`.",
             },
         )
 }
@@ -214,7 +215,7 @@ impl Stage for TranslateStage {
             crate_root,
             &self.input.entrypoints,
             &self.input.opaque,
-            self.input.platform,
+            &self.input.platform,
         )
     }
 
@@ -226,8 +227,12 @@ impl Stage for TranslateStage {
                 &self.input.aeneas_root.display().to_string(),
             ),
         )];
-        if let Platform::Solana = self.input.platform {
-            skills.push(("solana-translate", SOLANA_TRANSLATE_SKILL.to_owned()));
+        if let Platform::Solana { solanalib_root } = &self.input.platform {
+            skills.push((
+                "solana-translate",
+                SOLANA_TRANSLATE_SKILL
+                    .replace("{solanalib_root}", &solanalib_root.display().to_string()),
+            ));
         }
         skills
     }

@@ -24,6 +24,11 @@ const EXTRACT_SH_TEMPLATE: &str = include_str!("res/extract.sh.template");
 /// to `Extraction/`.
 const LAKEFILE_TEMPLATE: &str = include_str!("res/lakefile.toml.template");
 
+/// The `lakefile.toml` of the Lean project of a Solana crate, with
+/// `{aeneas_root}` and `{solanalib_root}` standing for the Aeneas and
+/// Solanalib checkouts.
+const LAKEFILE_SOLANA_TEMPLATE: &str = include_str!("res/lakefile-solana.toml.template");
+
 #[derive(Debug, thiserror::Error)]
 pub enum TranslateSetupErr {
     #[error("IO error: {0}")]
@@ -125,7 +130,7 @@ pub(super) fn run_setup(input: &TranslateInput) -> Result<SetupOutcome, Translat
     // If we are on solana, add "--sysroot default" to prevent charon from crashing
     let charon_args = match input.platform {
         Platform::Generic => vec![],
-        Platform::Solana => vec!["--sysroot".to_owned(), "default".to_owned()],
+        Platform::Solana { .. } => vec!["--sysroot".to_owned(), "default".to_owned()],
     };
     let extraction_script =
         create_extraction_script(crate_root, &input.entrypoints, &input.opaque, &charon_args)?;
@@ -136,7 +141,13 @@ pub(super) fn run_setup(input: &TranslateInput) -> Result<SetupOutcome, Translat
     );
 
     translate_info!("setup: initializing lake project (may take a minute)");
-    let lean_root = init_lake_project(crate_root, &input.aeneas_rev, &input.lean_toolchain)?;
+    let lakefile = match &input.platform {
+        Platform::Generic => make_lakefile(&input.aeneas_rev),
+        Platform::Solana { solanalib_root } => {
+            make_solana_lakefile(&input.aeneas_root, solanalib_root)
+        }
+    };
+    let lean_root = init_lake_project(crate_root, &lakefile, &input.lean_toolchain)?;
     translate_info!("setup: initialized lake project at {}", lean_root.display());
 
     let setup_commit = git::commit_all(crate_root, "lusterna: set up translation")?;
@@ -175,11 +186,16 @@ fn make_lakefile(aeneas_rev: &str) -> String {
     LAKEFILE_TEMPLATE.replace("{rev}", aeneas_rev)
 }
 
+/// Returns the content of the Lean project's `lakefile.toml` for a Solana
+/// crate, which requires Aeneas and SolanalibAeneas from the given checkouts.
+fn make_solana_lakefile(aeneas_root: &Path, solanalib_root: &Path) -> String {
+    LAKEFILE_SOLANA_TEMPLATE
+        .replace("{aeneas_root}", &aeneas_root.display().to_string())
+        .replace("{solanalib_root}", &solanalib_root.display().to_string())
+}
+
 /// Creates the lean project in `lusterna/lean` of the crate root:
-/// - writes a `lakefile.toml`
-/// - sets up the dependency to Aeneas for the needed ref
-/// - wires the extraction file(s) (possibly not existing yet) to be part of the
-///   project
+/// - writes `lakefile` as `lakefile.toml`
 /// - writes the `lean-toolchain` and calls `lake update`
 /// - writes `lusterna/.gitignore`, which ignores the project's `.lake` and
 ///   `lusterna/extraction.llbc`
@@ -188,7 +204,7 @@ fn make_lakefile(aeneas_rev: &str) -> String {
 /// Returns an error if failed.
 fn init_lake_project(
     crate_root: &Path,
-    aeneas_rev: &str,
+    lakefile: &str,
     lean_toolchain: &str,
 ) -> Result<PathBuf, TranslateSetupErr> {
     let lean_root = crate_root.join("lusterna").join("lean");
@@ -197,7 +213,7 @@ fn init_lake_project(
         crate_root.join("lusterna").join(".gitignore"),
         "/lean/.lake/\n/extraction.llbc\n",
     )?;
-    fs::write(lean_root.join("lakefile.toml"), make_lakefile(aeneas_rev))?;
+    fs::write(lean_root.join("lakefile.toml"), lakefile)?;
     fs::write(
         lean_root.join("lean-toolchain"),
         format!("{}\n", lean_toolchain.trim()),
@@ -286,5 +302,23 @@ mod tests {
         assert_eq!(aeneas["name"].as_str(), Some("aeneas"));
         assert_eq!(aeneas["rev"].as_str(), Some("abc123"));
         assert_eq!(aeneas["subDir"].as_str(), Some("backends/lean"));
+    }
+
+    #[test]
+    fn solana_lakefile_requires_local_checkouts() {
+        let doc: DocumentMut = make_solana_lakefile(Path::new("/a"), Path::new("/s"))
+            .parse()
+            .unwrap();
+
+        assert_eq!(
+            doc["packagesDir"].as_str(),
+            Some("/a/backends/lean/.lake/packages")
+        );
+        let aeneas = &doc["require"][0];
+        assert_eq!(aeneas["name"].as_str(), Some("aeneas"));
+        assert_eq!(aeneas["path"].as_str(), Some("/a/backends/lean"));
+        let solanalib = &doc["require"][1];
+        assert_eq!(solanalib["name"].as_str(), Some("solanalibAeneas"));
+        assert_eq!(solanalib["path"].as_str(), Some("/s/aeneas"));
     }
 }

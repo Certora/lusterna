@@ -38,7 +38,13 @@ For each definition in `FunsExternal.lean` and `TypesExternal.lean`, do these st
 
 Do not accept a definition because it compiles, has the right type or looks reasonable. If you cannot find the source of the Rust item, report the definition.
 
-Also compare the definitions with the template. Each `axiom` in the template must have a definition with the same name and type, or stay an `axiom` that matches an opaque pattern.
+Also compare the definitions with the template. Each `axiom` in the template must have one of these:
+
+- a definition with the same name and type
+- an `axiom` that matches an opaque pattern
+- a definition in the imported library `SolanalibAeneas`. Do not review the definitions in `SolanalibAeneas`.
+
+Report a mock of the Anchor `AccountLoader`, `Ref`, `RefMut` or `Pubkey` as `broad_change`. The agent can replace `e?` on a `Result<RefMut<_>>` with `match e { Ok(v) => v, Err(e) => return Err(From::from(e)) }` under the `lusterna` feature. This replacement needs no equivalence test. Report any other change in such a statement as `changed_behavior`.
 
 Read every comment in `FunsExternal.lean` and `TypesExternal.lean`. A comment must be true for the file as the agent wrote it. For example, a comment that says that Aeneas generated the file or that the file is a template is false. A doc comment that names a Rust item must name the item that the definition below it models.
 
