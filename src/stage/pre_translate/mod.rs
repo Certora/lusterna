@@ -22,6 +22,12 @@ const BASE_PROMPT_TEMPLATE: &str = include_str!("res/prompt.md");
 /// The `SKILL.md` of the skill `solana-host-build`.
 const SOLANA_HOST_BUILD_SKILL: &str = include_str!("res/solana-host-build.md");
 
+/// The judge prompt of the pre-translate stage, with `{workspace_root}`,
+/// `{base_commit}`, `{briefing}` and `{agent_summary}` standing for the
+/// workspace root, the hash of `HEAD` when setup ran, the agent briefing and
+/// the agent's final message.
+const JUDGE_PROMPT_TEMPLATE: &str = include_str!("res/judge.md");
+
 pub struct PreTranslateInput {
     /// Absolute path to the workspace of the Rust project.
     pub workspace_root: PathBuf,
@@ -61,6 +67,11 @@ fn differs_only_in_patch(old: &str, new: &str) -> bool {
     matches!((without_patch(old), without_patch(new)), (Some(a), Some(b)) if a == b)
 }
 
+/// An agent makes the crate build on the host without changing what it
+/// computes on its target. The gate checks that `cargo build` passes and that
+/// no tracked file changed except `.rs` files, `Cargo.lock` and the `patch`
+/// table of the workspace `Cargo.toml`. The judge checks each change against
+/// the rules of the briefing.
 pub struct PreTranslateStage {
     /// Hash of `HEAD` when setup ran
     base_commit: Option<String>,
@@ -123,7 +134,8 @@ impl Stage for PreTranslateStage {
         match gate_error {
             PreTranslateGateFailure::ChangedFiles { files, base_commit } => format!(
                 "These files changed, but you must not change files that git tracks, except \
-                 `Cargo.lock` and the `[patch]` table of the workspace `Cargo.toml`:\n\n{}\n\n\
+                 `.rs` files, `Cargo.lock` and the `[patch]` table of the workspace \
+                 `Cargo.toml`:\n\n{}\n\n\
                  Restore each one with `git restore --source={base_commit} -- ':/<file>'`.",
                 files
                     .iter()
@@ -141,8 +153,8 @@ impl Stage for PreTranslateStage {
     fn gate_check(&self, _agent_summary: &str) -> Result<(), GateStop<Self>> {
         let base_commit = self.base_commit.as_ref().expect("Setup not run");
 
-        // No tracked file may change, except `Cargo.lock` and the `patch` table
-        // of the workspace `Cargo.toml`
+        // No tracked file may change, except `.rs` files, `Cargo.lock` and the
+        // `patch` table of the workspace `Cargo.toml`
         let toplevel =
             git::toplevel(&self.input.workspace_root).map_err(|e| GateStop::Error(e.into()))?;
         let workspace_manifest = self.input.workspace_root.join("Cargo.toml");
@@ -150,7 +162,8 @@ impl Stage for PreTranslateStage {
         for f in
             git::changed_files(&toplevel, base_commit).map_err(|e| GateStop::Error(e.into()))?
         {
-            if f.file_name() == Some("Cargo.lock".as_ref()) {
+            if f.file_name() == Some("Cargo.lock".as_ref()) || f.extension() == Some("rs".as_ref())
+            {
                 continue;
             }
             if toplevel.join(&f) == workspace_manifest {
@@ -178,5 +191,19 @@ impl Stage for PreTranslateStage {
             }
             e => GateStop::Error(e.into()),
         })
+    }
+
+    fn judge_prompt(&self, _output: &Self::Output, agent_summary: &String) -> Option<String> {
+        let base_commit = self.base_commit.as_ref().expect("Setup not run");
+        Some(
+            JUDGE_PROMPT_TEMPLATE
+                .replace(
+                    "{workspace_root}",
+                    &self.input.workspace_root.display().to_string(),
+                )
+                .replace("{base_commit}", base_commit)
+                .replace("{briefing}", &self.briefing())
+                .replace("{agent_summary}", agent_summary),
+        )
     }
 }
