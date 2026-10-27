@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::{agent::Effort, stage::translate::Replacement};
+use crate::agent::Effort;
 
 pub const DEFAULT_STAGE_MAX_ATTEMPTS: usize = 5;
 pub const DEFAULT_MAX_BUDGED_USD: usize = 50;
@@ -52,7 +52,5 @@ pub enum Platform {
     Solana {
         /// Absolute path to the Solanalib checkout.
         solanalib_root: PathBuf,
-        /// The crates that `lusterna-stubs` replaces in the Charon build.
-        replacements: Vec<Replacement>,
     },
 }

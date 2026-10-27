@@ -13,9 +13,7 @@ use lusterna::{
     stage::{
         self,
         pre_translate::{PreTranslateInput, PreTranslateStage},
-        translate::{
-            DEFAULT_OPAQUE, SOLANA_OPAQUE, TranslateInput, TranslateStage, load_replacements,
-        },
+        translate::{DEFAULT_OPAQUE, TranslateInput, TranslateStage, solana_opaque},
     },
     utils::{
         cargo::{self, CargoError},
@@ -211,7 +209,6 @@ fn translate(config: &Config, args: TranslateArgs) -> anyhow::Result<()> {
         }
         Platform::Solana {
             solanalib_root: canonicalize(&solanalib_root)?,
-            replacements: load_replacements()?,
         }
     } else {
         Platform::Generic
@@ -221,9 +218,8 @@ fn translate(config: &Config, args: TranslateArgs) -> anyhow::Result<()> {
         None => {
             let mut opaque: Vec<String> = DEFAULT_OPAQUE.lines().map(str::to_owned).collect();
             // Add addition opaque patterns if we are running on a solana program
-            if let Platform::Solana { replacements, .. } = &platform {
-                opaque.extend(SOLANA_OPAQUE.lines().map(str::to_owned));
-                opaque.extend(replacements.iter().filter_map(|r| r.opaque_pattern()));
+            if let Platform::Solana { .. } = platform {
+                opaque.extend(solana_opaque());
             }
             opaque
         }

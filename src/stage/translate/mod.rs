@@ -14,11 +14,7 @@ use crate::{
     },
 };
 
-pub use {
-    gate::TranslateGateFailure,
-    replacements::{Replacement, ReplacementsError, load as load_replacements},
-    setup::TranslateSetupErr,
-};
+pub use {gate::TranslateGateFailure, replacements::ReplacementsError, setup::TranslateSetupErr};
 
 /// Logs at info level with the translate stage's name as the log target.
 macro_rules! translate_info {
@@ -65,7 +61,18 @@ pub const DEFAULT_OPAQUE: &str = include_str!("res/default-opaque.txt");
 
 /// The default Charon `--opaque` patterns for crates that depend on
 /// `solana-program`, one per line.
-pub const SOLANA_OPAQUE: &str = include_str!("res/solana-opaque.txt");
+const SOLANA_OPAQUE: &str = include_str!("res/solana-opaque.txt");
+
+/// The default Charon `--opaque` patterns for crates that depend on
+/// `solana-program`: `SOLANA_OPAQUE` and the items of the crates that
+/// `lusterna-stubs` replaces.
+pub fn solana_opaque() -> Vec<String> {
+    SOLANA_OPAQUE
+        .lines()
+        .map(str::to_owned)
+        .chain(replacements::opaque_patterns())
+        .collect()
+}
 
 pub struct TranslateInput {
     /// Absolute path to the workspace of the Rust project.
@@ -236,8 +243,8 @@ impl Stage for TranslateStage {
                 &self.input.aeneas_root.display().to_string(),
             ),
         )];
-        if let Platform::Solana { replacements, .. } = &self.input.platform {
-            let replaced = replacements
+        if let Platform::Solana { .. } = &self.input.platform {
+            let replaced = replacements::all()
                 .iter()
                 .map(|r| format!("`{}`", r.krate))
                 .collect::<Vec<_>>()

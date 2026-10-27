@@ -169,17 +169,22 @@ pub fn test(manifest: &Path, filter: &str, timeout: Duration) -> Result<usize, C
         .sum())
 }
 
-/// Adds the feature `name` with no dependencies to `manifest`, unless it
-/// already has a feature of that name.
-pub fn add_feature(manifest: &Path, name: &str) -> Result<(), CargoError> {
+/// Reads and parses `manifest`.
+fn read_manifest(manifest: &Path) -> Result<DocumentMut, CargoError> {
     let text = fs::read_to_string(manifest).map_err(|source| CargoError::ReadManifest {
         manifest: manifest.to_owned(),
         source,
     })?;
-    let mut doc: DocumentMut = text.parse().map_err(|source| CargoError::ParseManifest {
+    text.parse().map_err(|source| CargoError::ParseManifest {
         manifest: manifest.to_owned(),
         source,
-    })?;
+    })
+}
+
+/// Adds the feature `name` with no dependencies to `manifest`, unless it
+/// already has a feature of that name.
+pub fn add_feature(manifest: &Path, name: &str) -> Result<(), CargoError> {
+    let mut doc = read_manifest(manifest)?;
 
     let features = doc
         .entry("features")
@@ -197,6 +202,31 @@ pub fn add_feature(manifest: &Path, name: &str) -> Result<(), CargoError> {
         manifest: manifest.to_owned(),
         source,
     })
+}
+
+/// The `overflow-checks` and `debug-assertions` settings that the release
+/// profile of the workspace manifest `manifest` gives to the package
+/// `package`. `[profile.release.package.<package>]` overrides
+/// `[profile.release.package."*"]`, which overrides `[profile.release]`.
+/// Both are off if no table sets them.
+pub fn release_settings(manifest: &Path, package: &str) -> Result<(bool, bool), CargoError> {
+    let doc = read_manifest(manifest)?;
+    let release = doc.get("profile").and_then(|p| p.get("release"));
+    let packages = release.and_then(|r| r.get("package"));
+    let tables = [
+        release,
+        packages.and_then(|p| p.get("*")),
+        packages.and_then(|p| p.get(package)),
+    ];
+    let setting = |key: &str| {
+        tables
+            .iter()
+            .flatten()
+            .filter_map(|t| t.get(key).and_then(|v| v.as_bool()))
+            .next_back()
+            .unwrap_or(false)
+    };
+    Ok((setting("overflow-checks"), setting("debug-assertions")))
 }
 
 #[cfg(test)]
@@ -290,5 +320,32 @@ mod tests {
         add_feature(&manifest, "lusterna").unwrap();
 
         assert_eq!(fs::read_to_string(&manifest).unwrap(), text);
+    }
+
+    #[test]
+    fn release_settings_default_to_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = write_crate(dir.path(), "a", "");
+
+        assert_eq!(
+            release_settings(&manifest, "fixed").unwrap(),
+            (false, false)
+        );
+    }
+
+    #[test]
+    fn release_settings_take_the_most_specific_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = dir.path().join("Cargo.toml");
+        fs::write(
+            &manifest,
+            "[profile.release]\noverflow-checks = true\n\
+             [profile.release.package.\"*\"]\ndebug-assertions = true\n\
+             [profile.release.package.fixed]\noverflow-checks = false\n",
+        )
+        .unwrap();
+
+        assert_eq!(release_settings(&manifest, "fixed").unwrap(), (false, true));
+        assert_eq!(release_settings(&manifest, "other").unwrap(), (true, true));
     }
 }
