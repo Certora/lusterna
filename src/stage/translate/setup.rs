@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     config::Platform,
-    stage::translate::{ReplacementsError, TranslateInput, replacements, translate_info},
+    stage::translate::{StubsError, TranslateInput, stubs, translate_info},
     utils::{
         cargo::{self, CargoError},
         git::{self, GitError},
@@ -57,7 +57,7 @@ impl CharonBuild {
         };
         if let Platform::Solana { .. } = platform {
             build.charon_args = vec!["--sysroot".to_owned(), "default".to_owned()];
-            build.cargo_args.extend(replacements::patch_args());
+            build.cargo_args.extend(stubs::patch_args());
         }
         Ok(build)
     }
@@ -95,7 +95,7 @@ pub enum TranslateSetupErr {
     #[error(transparent)]
     Git(#[from] GitError),
     #[error(transparent)]
-    Replacements(#[from] ReplacementsError),
+    Stubs(#[from] StubsError),
 }
 
 /// The paths that setup created in the crate root.
@@ -195,7 +195,7 @@ pub(super) fn run_setup(input: &TranslateInput) -> Result<SetupOutcome, Translat
         fs::create_dir_all(&extraction)?;
         fs::write(
             extraction.join("Lusterna.lean"),
-            replacements::lean_module(&replacements::all(), &ws_manifest)?,
+            stubs::lean_module(&stubs::all(), &ws_manifest)?,
         )?;
     }
     translate_info!("setup: initialized lake project at {}", lean_root.display());

@@ -1,6 +1,6 @@
 mod gate;
-mod replacements;
 mod setup;
+mod stubs;
 
 use std::path::{Path, PathBuf};
 
@@ -14,7 +14,7 @@ use crate::{
     },
 };
 
-pub use {gate::TranslateGateFailure, replacements::ReplacementsError, setup::TranslateSetupErr};
+pub use {gate::TranslateGateFailure, setup::TranslateSetupErr, stubs::StubsError};
 
 /// Logs at info level with the translate stage's name as the log target.
 macro_rules! translate_info {
@@ -70,7 +70,7 @@ pub fn solana_opaque() -> Vec<String> {
     SOLANA_OPAQUE
         .lines()
         .map(str::to_owned)
-        .chain(replacements::opaque_patterns())
+        .chain(stubs::opaque_patterns())
         .collect()
 }
 
@@ -244,7 +244,7 @@ impl Stage for TranslateStage {
             ),
         )];
         if let Platform::Solana { .. } = &self.input.platform {
-            let replaced = replacements::all()
+            let replaced = stubs::all()
                 .iter()
                 .map(|r| format!("`{}`", r.krate))
                 .collect::<Vec<_>>()

@@ -8,9 +8,9 @@
 # overflow settings that the release profile gives to the crate. A crate
 # without `lean` has no items in the extraction, for example a proc macro.
 
-[[replacement]]
+[[stub]]
 crate = "fixed"
 lean = "LusternaLib.Fixed"
 
-[[replacement]]
+[[stub]]
 crate = "fixed-macro-impl"
