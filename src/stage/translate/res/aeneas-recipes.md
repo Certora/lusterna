@@ -47,7 +47,6 @@ Implement the operations of a mock that the entrypoints reach. If the entrypoint
 
 Each entry is a fix that worked once. Apply an entry only when its condition holds.
 
-- The build of `ahash` 0.7.6 can fail with an unknown feature `stdsimd`. Then change `ahash` to 0.7.8 in the copy of `Cargo.lock` that `extract.sh` makes for the Charon build. Change its `version`, its `checksum` to `891477e0c6a8957309ee5c45a6368af3ae14bb510732d2684ffa19af310920f9`, and each `"ahash 0.7.6"` in the `dependencies` lists.
 - The `fixed` crate does not translate. Mock the types of `fixed` that the crate uses, with only the functions that the entrypoints reach.
 - Charon can panic with "stack depth limit exceeded" at a closure that uses `TryFromPrimitiveError`. Then the entrypoints reach an enum that derives a `num_enum` trait such as `TryFromPrimitive`. Find that enum in the Charon trace before the panic. Replace its derive with a hand-written impl, then run again. Do not replace the derive on enums that the entrypoints do not reach.
 - If Aeneas fails on a type that the macro `construct_uint!` of the `uint` crate defines, such as `U256`, copy the macro into the crate and rewrite only the parts that fail.

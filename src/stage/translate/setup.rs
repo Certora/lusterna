@@ -22,6 +22,17 @@ use crate::{
 /// Charon build.
 const EXTRACT_SH_TEMPLATE: &str = include_str!("res/extract.sh.template");
 
+/// `lusterna/rustc`, the `RUSTC` of the Charon build. It runs the `rustc` in
+/// `PATH` and removes `-nightly` from the version that it prints, so that the
+/// build scripts of the dependencies take the code paths for a stable
+/// compiler.
+///
+/// Charon builds with a pinned nightly `rustc`. Some build scripts
+/// turn on nightly features when the version says nightly, and the build of
+/// the dependency fails if Charon's nightly no longer has such a feature, for
+/// example `stdsimd` in `ahash`.
+const RUSTC_SH: &str = include_str!("res/rustc.sh");
+
 /// The `Cargo.lock` that the Charon build uses, relative to the crate root.
 /// `extract.sh` copies the workspace `Cargo.lock` to it, so that changes for
 /// the Charon build do not change the workspace one.
@@ -285,7 +296,7 @@ fn init_lake_project(
     Ok(lean_root)
 }
 
-/// Creates the initial extraction script.
+/// Creates the initial extraction script and `lusterna/rustc`.
 /// Returns the path to the script.
 /// Returns an error if creation failed
 fn create_extraction_script(
@@ -299,6 +310,9 @@ fn create_extraction_script(
     fs::create_dir_all(path.parent().unwrap())?;
     fs::write(&path, make_extraction_script(entrypoints, opaque, build))?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
+    let rustc = crate_root.join("lusterna").join("rustc");
+    fs::write(&rustc, RUSTC_SH)?;
+    fs::set_permissions(&rustc, fs::Permissions::from_mode(0o755))?;
     Ok(path)
 }
 
