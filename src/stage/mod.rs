@@ -170,6 +170,11 @@ pub fn run<S: Stage>(mut s: S, cfg: &Config) -> Result<S::Output, StageExecution
             agent.get_usage().cost_usd,
             judge_cost
         );
+        if attempt > 0 {
+            prompt.push_str(
+                "\nIn your final message, list every change that you made since the start of the stage.\n",
+            );
+        }
         let t = Instant::now();
         let summary = match agent.run_with_hook(prompt, |s| stage_info!(S::name(), "agent: {}", s,))
         {
