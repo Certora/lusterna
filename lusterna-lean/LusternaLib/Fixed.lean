@@ -9,7 +9,7 @@ public import LusternaLib.Fixed.Fraction
 * `LusternaLib.Fixed.Model`: the type and its operations, for the
   overflow settings of the package `fixed`.
 * `LusternaLib.Fixed.Glue`: the items that Aeneas leaves opaque, under
-  their Aeneas names, and the class `Profile` of their overflow settings.
+  their Aeneas names.
 * `LusternaLib.Fixed.Fraction`: the operations as operations on
   `Solanalib.Fraction 60`.
 -/

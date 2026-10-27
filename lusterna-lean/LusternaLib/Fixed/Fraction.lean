@@ -34,13 +34,13 @@ theorem eq_wrap_of_wrapOrFail {flag : Bool} {n : Nat} {r : U68F60}
   unfold wrapOrFail at h
   split at h <;> simp_all
 
-theorem toFraction_add {c : Config} {a b r : U68F60} (h : add c a b = ok r)
+theorem toFraction_add {c : OverflowSettings} {a b r : U68F60} (h : add c a b = ok r)
     (hfit : val a + val b < 2 ^ 128) : toFraction r = toFraction a + toFraction b := by
   obtain rfl := eq_wrap_of_wrapOrFail h
   ext
   simp [toFraction, val_wrap_of_lt hfit]
 
-theorem toFraction_sub {c : Config} {a b r : U68F60} (h : sub c a b = ok r)
+theorem toFraction_sub {c : OverflowSettings} {a b r : U68F60} (h : sub c a b = ok r)
     (hle : val b ≤ val a) : toFraction r = toFraction a - toFraction b := by
   unfold sub at h
   simp only [hle, ite_true, Result.ok.injEq] at h
@@ -51,7 +51,7 @@ theorem toFraction_sub {c : Config} {a b r : U68F60} (h : sub c a b = ok r)
   push_cast [hle]
   rfl
 
-theorem toFraction_mul {c : Config} {a b r : U68F60} (h : mul c a b = ok r)
+theorem toFraction_mul {c : OverflowSettings} {a b r : U68F60} (h : mul c a b = ok r)
     (hfit : val a * val b / scale < 2 ^ 128) :
     toFraction r = toFraction a *↓ toFraction b := by
   obtain rfl := eq_wrap_of_wrapOrFail h
@@ -60,7 +60,7 @@ theorem toFraction_mul {c : Config} {a b r : U68F60} (h : mul c a b = ok r)
   rw [Int.fdiv_eq_ediv_of_nonneg _ (by positivity)]
   norm_cast
 
-theorem toFraction_div {c : Config} {a b r : U68F60} (h : div c a b = ok r)
+theorem toFraction_div {c : OverflowSettings} {a b r : U68F60} (h : div c a b = ok r)
     (hfit : val a * scale / val b < 2 ^ 128) :
     toFraction r = toFraction a /↓ toFraction b := by
   unfold div at h

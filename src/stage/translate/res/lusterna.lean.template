@@ -1,5 +1,4 @@
 module
-public import LusternaLib
-@[expose] public section
+{imports}@[expose] public section
 
-{instances}
+{instance}

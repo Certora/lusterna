@@ -7,8 +7,9 @@ use std::{
 const LUSTERNA_STUBS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/lusterna-stubs");
 
 /// The Lean module `Extraction/Lusterna.lean` of a Solana crate, with
-/// `{instances}` standing for the instances of the `lean` classes of the
-/// replacements.
+/// `{imports}` standing for the imports of the `lean` modules of the
+/// replacements and `{instance}` for the instance of
+/// `Lusterna.OverflowSettings`.
 const LUSTERNA_LEAN_TEMPLATE: &str = include_str!("res/lusterna.lean.template");
 
 #[derive(Debug, thiserror::Error)]
@@ -23,6 +24,10 @@ pub enum ReplacementsError {
     },
     #[error("`{path}`: every `[[replacement]]` needs a string `crate`")]
     MissingCrate { path: PathBuf },
+    #[error(
+        "the release profile gives `{first}` and `{second}` different overflow settings, but the Lean models take one `Lusterna.OverflowSettings`"
+    )]
+    DifferentSettings { first: String, second: String },
 }
 
 /// A crate that `lusterna-stubs` replaces in the Charon build of a Solana
@@ -31,9 +36,8 @@ pub enum ReplacementsError {
 pub struct Replacement {
     /// The name of the crate, and of its stub crate in `lusterna-stubs`.
     pub krate: String,
-    /// The `LusternaLib` class that the Lean models of the items of the
-    /// crate take their overflow settings from, if the crate has items in the
-    /// extraction.
+    /// The `LusternaLib` module with the Lean models of the items of the
+    /// crate, if the crate has items in the extraction.
     pub lean: Option<String>,
 }
 
@@ -87,21 +91,42 @@ pub fn patch_args(replacements: &[Replacement]) -> Vec<String> {
         .collect()
 }
 
-/// The content of `Extraction/Lusterna.lean`: an instance of the `lean` class
-/// of each replacement, with the settings that the release profile of the
-/// workspace manifest `manifest` gives to the crate.
-pub fn lean_module(replacements: &[Replacement], manifest: &toml_edit::DocumentMut) -> String {
-    let instances = replacements
-        .iter()
-        .filter_map(|r| {
-            let lean = r.lean.as_ref()?;
-            let (overflow_checks, debug_assertions) = release_settings(manifest, &r.krate);
-            Some(format!(
-                "instance : {lean} := {{ overflowChecks := {overflow_checks}, debugAssertions := {debug_assertions} }}\n"
-            ))
+/// The content of `Extraction/Lusterna.lean`: an import of the `lean` module
+/// of each replacement, and an instance of `Lusterna.OverflowSettings` with
+/// the settings that the release profile of the workspace manifest
+/// `manifest` gives to these crates. Fails if it gives them different
+/// settings.
+pub fn lean_module(
+    replacements: &[Replacement],
+    manifest: &toml_edit::DocumentMut,
+) -> Result<String, ReplacementsError> {
+    let mut imports = String::new();
+    let mut settings: Option<(&str, (bool, bool))> = None;
+    for r in replacements {
+        let Some(lean) = &r.lean else { continue };
+        imports.push_str(&format!("public import {lean}\n"));
+        let s = release_settings(manifest, &r.krate);
+        match settings {
+            Some((first, f)) if f != s => {
+                return Err(ReplacementsError::DifferentSettings {
+                    first: first.to_owned(),
+                    second: r.krate.clone(),
+                });
+            }
+            Some(_) => {}
+            None => settings = Some((&r.krate, s)),
+        }
+    }
+    let instance = settings
+        .map(|(_, (overflow_checks, debug_assertions))| {
+            format!(
+                "instance : Lusterna.OverflowSettings := {{ overflowChecks := {overflow_checks}, debugAssertions := {debug_assertions} }}\n"
+            )
         })
-        .collect::<String>();
-    LUSTERNA_LEAN_TEMPLATE.replace("{instances}", &instances)
+        .unwrap_or_default();
+    Ok(LUSTERNA_LEAN_TEMPLATE
+        .replace("{imports}", &imports)
+        .replace("{instance}", &instance))
 }
 
 /// The `overflow-checks` and `debug-assertions` settings that the release
@@ -156,11 +181,11 @@ mod tests {
     }
 
     #[test]
-    fn lean_module_declares_instances_for_crates_with_models() {
+    fn lean_module_imports_models_and_declares_settings() {
         let replacements = [
             Replacement {
                 krate: "fixed".to_owned(),
-                lean: Some("Lusterna.Fixed.Profile".to_owned()),
+                lean: Some("LusternaLib.Fixed".to_owned()),
             },
             Replacement {
                 krate: "fixed-macro-impl".to_owned(),
@@ -169,13 +194,12 @@ mod tests {
         ];
         let m = manifest("[profile.release.package.fixed]\ndebug-assertions = true\n");
 
-        let module = lean_module(&replacements, &m);
+        let module = lean_module(&replacements, &m).unwrap();
 
-        assert!(
-            module.contains(
-                "instance : Lusterna.Fixed.Profile := { overflowChecks := false, debugAssertions := true }\n"
-            )
-        );
+        assert!(module.contains("public import LusternaLib.Fixed\n"));
+        assert!(module.contains(
+            "instance : Lusterna.OverflowSettings := { overflowChecks := false, debugAssertions := true }\n"
+        ));
         assert!(!module.contains("fixed-macro-impl"));
     }
 

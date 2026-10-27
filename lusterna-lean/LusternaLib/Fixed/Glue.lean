@@ -7,8 +7,8 @@ public import LusternaLib.Fixed.Model
 Each item of `lusterna-stubs`'s `fixed` that Aeneas leaves opaque, under the
 name and with the type that Aeneas gives it, defined from the model in
 `LusternaLib.Fixed.Model`. The items whose behavior on overflow depends
-on the overflow settings take them from an instance of `Profile`, which the
-importing project declares.
+on the overflow settings take them from the instance of
+`Lusterna.OverflowSettings`.
 
 This module does not define these items. The crate's `FunsExternal.lean`
 defines them or keeps them as axioms:
@@ -26,10 +26,6 @@ defines them or keeps them as axioms:
 @[expose] public section
 
 open Aeneas Aeneas.Std Result
-
-/-- The overflow settings that the profile of the build gives to the package
-`fixed`. -/
-class Lusterna.Fixed.Profile extends Lusterna.Config
 
 def fixed.types.U68F60.ZERO : Result fixed.types.U68F60 :=
   ok Lusterna.Fixed.zero
@@ -76,11 +72,11 @@ def fixed.types.U68F60.is_zero (a : fixed.types.U68F60) : Result Bool :=
 def fixed.types.U68F60.floor (a : fixed.types.U68F60) : Result fixed.types.U68F60 :=
   ok (Lusterna.Fixed.int a)
 
-def fixed.types.U68F60.ceil [p : Lusterna.Fixed.Profile] (a : fixed.types.U68F60) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.ceil p.toConfig a
+def fixed.types.U68F60.ceil [s : Lusterna.OverflowSettings] (a : fixed.types.U68F60) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.ceil s a
 
-def fixed.types.U68F60.round [p : Lusterna.Fixed.Profile] (a : fixed.types.U68F60) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.round p.toConfig a
+def fixed.types.U68F60.round [s : Lusterna.OverflowSettings] (a : fixed.types.U68F60) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.round s a
 
 def fixed.types.U68F60.checked_add (a b : fixed.types.U68F60) : Result (Option fixed.types.U68F60) :=
   ok (Lusterna.Fixed.checkedAdd a b)
@@ -106,77 +102,77 @@ def fixed.types.U68F60.saturating_mul (a b : fixed.types.U68F60) : Result fixed.
 def fixed.types.U68F60.abs_diff (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
   ok (Lusterna.Fixed.absDiff a b)
 
-def fixed.types.U68F60.Insts.CoreOpsArithAddU68F60U68F60.add [p : Lusterna.Fixed.Profile] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.add p.toConfig a b
+def fixed.types.U68F60.Insts.CoreOpsArithAddU68F60U68F60.add [s : Lusterna.OverflowSettings] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.add s a b
 
-def fixed.types.U68F60.Insts.CoreOpsArithAddShared0U68F60U68F60.add [p : Lusterna.Fixed.Profile] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.add p.toConfig a b
+def fixed.types.U68F60.Insts.CoreOpsArithAddShared0U68F60U68F60.add [s : Lusterna.OverflowSettings] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.add s a b
 
-def Shared0U68F60.Insts.CoreOpsArithAddU68F60U68F60.add [p : Lusterna.Fixed.Profile] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.add p.toConfig a b
+def Shared0U68F60.Insts.CoreOpsArithAddU68F60U68F60.add [s : Lusterna.OverflowSettings] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.add s a b
 
-def Shared1U68F60.Insts.CoreOpsArithAddShared0U68F60U68F60.add [p : Lusterna.Fixed.Profile] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.add p.toConfig a b
+def Shared1U68F60.Insts.CoreOpsArithAddShared0U68F60U68F60.add [s : Lusterna.OverflowSettings] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.add s a b
 
-def fixed.types.U68F60.Insts.CoreOpsArithAddAssignU68F60.add_assign [p : Lusterna.Fixed.Profile] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.add p.toConfig a b
+def fixed.types.U68F60.Insts.CoreOpsArithAddAssignU68F60.add_assign [s : Lusterna.OverflowSettings] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.add s a b
 
-def fixed.types.U68F60.Insts.CoreOpsArithAddAssignShared0U68F60.add_assign [p : Lusterna.Fixed.Profile] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.add p.toConfig a b
+def fixed.types.U68F60.Insts.CoreOpsArithAddAssignShared0U68F60.add_assign [s : Lusterna.OverflowSettings] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.add s a b
 
-def fixed.types.U68F60.Insts.CoreOpsArithSubU68F60U68F60.sub [p : Lusterna.Fixed.Profile] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.sub p.toConfig a b
+def fixed.types.U68F60.Insts.CoreOpsArithSubU68F60U68F60.sub [s : Lusterna.OverflowSettings] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.sub s a b
 
-def fixed.types.U68F60.Insts.CoreOpsArithSubShared0U68F60U68F60.sub [p : Lusterna.Fixed.Profile] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.sub p.toConfig a b
+def fixed.types.U68F60.Insts.CoreOpsArithSubShared0U68F60U68F60.sub [s : Lusterna.OverflowSettings] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.sub s a b
 
-def Shared0U68F60.Insts.CoreOpsArithSubU68F60U68F60.sub [p : Lusterna.Fixed.Profile] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.sub p.toConfig a b
+def Shared0U68F60.Insts.CoreOpsArithSubU68F60U68F60.sub [s : Lusterna.OverflowSettings] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.sub s a b
 
-def Shared1U68F60.Insts.CoreOpsArithSubShared0U68F60U68F60.sub [p : Lusterna.Fixed.Profile] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.sub p.toConfig a b
+def Shared1U68F60.Insts.CoreOpsArithSubShared0U68F60U68F60.sub [s : Lusterna.OverflowSettings] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.sub s a b
 
-def fixed.types.U68F60.Insts.CoreOpsArithSubAssignU68F60.sub_assign [p : Lusterna.Fixed.Profile] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.sub p.toConfig a b
+def fixed.types.U68F60.Insts.CoreOpsArithSubAssignU68F60.sub_assign [s : Lusterna.OverflowSettings] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.sub s a b
 
-def fixed.types.U68F60.Insts.CoreOpsArithSubAssignShared0U68F60.sub_assign [p : Lusterna.Fixed.Profile] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.sub p.toConfig a b
+def fixed.types.U68F60.Insts.CoreOpsArithSubAssignShared0U68F60.sub_assign [s : Lusterna.OverflowSettings] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.sub s a b
 
-def fixed.types.U68F60.Insts.CoreOpsArithMulU68F60U68F60.mul [p : Lusterna.Fixed.Profile] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.mul p.toConfig a b
+def fixed.types.U68F60.Insts.CoreOpsArithMulU68F60U68F60.mul [s : Lusterna.OverflowSettings] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.mul s a b
 
-def fixed.types.U68F60.Insts.CoreOpsArithMulShared0U68F60U68F60.mul [p : Lusterna.Fixed.Profile] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.mul p.toConfig a b
+def fixed.types.U68F60.Insts.CoreOpsArithMulShared0U68F60U68F60.mul [s : Lusterna.OverflowSettings] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.mul s a b
 
-def Shared0U68F60.Insts.CoreOpsArithMulU68F60U68F60.mul [p : Lusterna.Fixed.Profile] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.mul p.toConfig a b
+def Shared0U68F60.Insts.CoreOpsArithMulU68F60U68F60.mul [s : Lusterna.OverflowSettings] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.mul s a b
 
-def Shared1U68F60.Insts.CoreOpsArithMulShared0U68F60U68F60.mul [p : Lusterna.Fixed.Profile] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.mul p.toConfig a b
+def Shared1U68F60.Insts.CoreOpsArithMulShared0U68F60U68F60.mul [s : Lusterna.OverflowSettings] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.mul s a b
 
-def fixed.types.U68F60.Insts.CoreOpsArithMulAssignU68F60.mul_assign [p : Lusterna.Fixed.Profile] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.mul p.toConfig a b
+def fixed.types.U68F60.Insts.CoreOpsArithMulAssignU68F60.mul_assign [s : Lusterna.OverflowSettings] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.mul s a b
 
-def fixed.types.U68F60.Insts.CoreOpsArithMulAssignShared0U68F60.mul_assign [p : Lusterna.Fixed.Profile] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.mul p.toConfig a b
+def fixed.types.U68F60.Insts.CoreOpsArithMulAssignShared0U68F60.mul_assign [s : Lusterna.OverflowSettings] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.mul s a b
 
-def fixed.types.U68F60.Insts.CoreOpsArithDivU68F60U68F60.div [p : Lusterna.Fixed.Profile] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.div p.toConfig a b
+def fixed.types.U68F60.Insts.CoreOpsArithDivU68F60U68F60.div [s : Lusterna.OverflowSettings] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.div s a b
 
-def fixed.types.U68F60.Insts.CoreOpsArithDivShared0U68F60U68F60.div [p : Lusterna.Fixed.Profile] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.div p.toConfig a b
+def fixed.types.U68F60.Insts.CoreOpsArithDivShared0U68F60U68F60.div [s : Lusterna.OverflowSettings] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.div s a b
 
-def Shared0U68F60.Insts.CoreOpsArithDivU68F60U68F60.div [p : Lusterna.Fixed.Profile] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.div p.toConfig a b
+def Shared0U68F60.Insts.CoreOpsArithDivU68F60U68F60.div [s : Lusterna.OverflowSettings] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.div s a b
 
-def Shared1U68F60.Insts.CoreOpsArithDivShared0U68F60U68F60.div [p : Lusterna.Fixed.Profile] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.div p.toConfig a b
+def Shared1U68F60.Insts.CoreOpsArithDivShared0U68F60U68F60.div [s : Lusterna.OverflowSettings] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.div s a b
 
-def fixed.types.U68F60.Insts.CoreOpsArithDivAssignU68F60.div_assign [p : Lusterna.Fixed.Profile] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.div p.toConfig a b
+def fixed.types.U68F60.Insts.CoreOpsArithDivAssignU68F60.div_assign [s : Lusterna.OverflowSettings] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.div s a b
 
-def fixed.types.U68F60.Insts.CoreOpsArithDivAssignShared0U68F60.div_assign [p : Lusterna.Fixed.Profile] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.div p.toConfig a b
+def fixed.types.U68F60.Insts.CoreOpsArithDivAssignShared0U68F60.div_assign [s : Lusterna.OverflowSettings] (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.div s a b
 
 def fixed.types.U68F60.Insts.CoreOpsArithRemU68F60U68F60.rem (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
   Lusterna.Fixed.rem a b
@@ -190,20 +186,20 @@ def Shared0U68F60.Insts.CoreOpsArithRemU68F60U68F60.rem (a b : fixed.types.U68F6
 def Shared1U68F60.Insts.CoreOpsArithRemShared0U68F60U68F60.rem (a b : fixed.types.U68F60) : Result fixed.types.U68F60 :=
   Lusterna.Fixed.rem a b
 
-def fixed.types.U68F60.Insts.CoreOpsArithMulU128U68F60.mul [p : Lusterna.Fixed.Profile] (a : fixed.types.U68F60) (n : Std.U128) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.mulInt p.toConfig a n
+def fixed.types.U68F60.Insts.CoreOpsArithMulU128U68F60.mul [s : Lusterna.OverflowSettings] (a : fixed.types.U68F60) (n : Std.U128) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.mulInt s a n
 
 def fixed.types.U68F60.Insts.CoreOpsArithDivU128U68F60.div (a : fixed.types.U68F60) (n : Std.U128) : Result fixed.types.U68F60 :=
   Lusterna.Fixed.divInt a n
 
-def fixed.types.U68F60.Insts.CoreOpsArithMulAssignU128.mul_assign [p : Lusterna.Fixed.Profile] (a : fixed.types.U68F60) (n : Std.U128) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.mulInt p.toConfig a n
+def fixed.types.U68F60.Insts.CoreOpsArithMulAssignU128.mul_assign [s : Lusterna.OverflowSettings] (a : fixed.types.U68F60) (n : Std.U128) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.mulInt s a n
 
 def fixed.types.U68F60.Insts.CoreOpsArithDivAssignU128.div_assign (a : fixed.types.U68F60) (n : Std.U128) : Result fixed.types.U68F60 :=
   Lusterna.Fixed.divInt a n
 
-def U128.Insts.CoreOpsArithMulU68F60U68F60.mul [p : Lusterna.Fixed.Profile] (n : Std.U128) (a : fixed.types.U68F60) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.mulInt p.toConfig a n
+def U128.Insts.CoreOpsArithMulU68F60U68F60.mul [s : Lusterna.OverflowSettings] (n : Std.U128) (a : fixed.types.U68F60) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.mulInt s a n
 
 def fixed.types.U68F60.Insts.CoreCloneClone.clone (a : fixed.types.U68F60) : Result fixed.types.U68F60 :=
   ok a
@@ -253,14 +249,14 @@ def fixed.types.U68F60.Insts.FixedTraitsFromFixed.checked_from_fixed (a : fixed.
 def fixed.types.U68F60.Insts.FixedTraitsFromFixed.saturating_from_fixed (a : fixed.types.U68F60) : Result fixed.types.U68F60 :=
   ok a
 
-def U8.Insts.FixedTraitsToFixed.to_fixed [p : Lusterna.Fixed.Profile] (n : Std.U8) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.ofNat p.toConfig n.val
+def U8.Insts.FixedTraitsToFixed.to_fixed [s : Lusterna.OverflowSettings] (n : Std.U8) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.ofNat s n.val
 
 def U8.Insts.FixedTraitsToFixed.checked_to_fixed (n : Std.U8) : Result (Option fixed.types.U68F60) :=
   ok (Lusterna.Fixed.checkedOfNat n.val)
 
-def U8.Insts.FixedTraitsFromFixed.from_fixed [p : Lusterna.Fixed.Profile] (a : fixed.types.U68F60) : Result Std.U8 :=
-  Lusterna.Fixed.toUScalar p.toConfig .U8 a
+def U8.Insts.FixedTraitsFromFixed.from_fixed [s : Lusterna.OverflowSettings] (a : fixed.types.U68F60) : Result Std.U8 :=
+  Lusterna.Fixed.toUScalar s .U8 a
 
 def U8.Insts.FixedTraitsFromFixed.checked_from_fixed (a : fixed.types.U68F60) : Result (Option Std.U8) :=
   ok (Lusterna.Fixed.checkedToUScalar .U8 a)
@@ -268,14 +264,14 @@ def U8.Insts.FixedTraitsFromFixed.checked_from_fixed (a : fixed.types.U68F60) : 
 def U8.Insts.FixedTraitsFromFixed.saturating_from_fixed (a : fixed.types.U68F60) : Result Std.U8 :=
   ok (Lusterna.Fixed.saturatingToUScalar .U8 a)
 
-def U16.Insts.FixedTraitsToFixed.to_fixed [p : Lusterna.Fixed.Profile] (n : Std.U16) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.ofNat p.toConfig n.val
+def U16.Insts.FixedTraitsToFixed.to_fixed [s : Lusterna.OverflowSettings] (n : Std.U16) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.ofNat s n.val
 
 def U16.Insts.FixedTraitsToFixed.checked_to_fixed (n : Std.U16) : Result (Option fixed.types.U68F60) :=
   ok (Lusterna.Fixed.checkedOfNat n.val)
 
-def U16.Insts.FixedTraitsFromFixed.from_fixed [p : Lusterna.Fixed.Profile] (a : fixed.types.U68F60) : Result Std.U16 :=
-  Lusterna.Fixed.toUScalar p.toConfig .U16 a
+def U16.Insts.FixedTraitsFromFixed.from_fixed [s : Lusterna.OverflowSettings] (a : fixed.types.U68F60) : Result Std.U16 :=
+  Lusterna.Fixed.toUScalar s .U16 a
 
 def U16.Insts.FixedTraitsFromFixed.checked_from_fixed (a : fixed.types.U68F60) : Result (Option Std.U16) :=
   ok (Lusterna.Fixed.checkedToUScalar .U16 a)
@@ -283,14 +279,14 @@ def U16.Insts.FixedTraitsFromFixed.checked_from_fixed (a : fixed.types.U68F60) :
 def U16.Insts.FixedTraitsFromFixed.saturating_from_fixed (a : fixed.types.U68F60) : Result Std.U16 :=
   ok (Lusterna.Fixed.saturatingToUScalar .U16 a)
 
-def U32.Insts.FixedTraitsToFixed.to_fixed [p : Lusterna.Fixed.Profile] (n : Std.U32) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.ofNat p.toConfig n.val
+def U32.Insts.FixedTraitsToFixed.to_fixed [s : Lusterna.OverflowSettings] (n : Std.U32) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.ofNat s n.val
 
 def U32.Insts.FixedTraitsToFixed.checked_to_fixed (n : Std.U32) : Result (Option fixed.types.U68F60) :=
   ok (Lusterna.Fixed.checkedOfNat n.val)
 
-def U32.Insts.FixedTraitsFromFixed.from_fixed [p : Lusterna.Fixed.Profile] (a : fixed.types.U68F60) : Result Std.U32 :=
-  Lusterna.Fixed.toUScalar p.toConfig .U32 a
+def U32.Insts.FixedTraitsFromFixed.from_fixed [s : Lusterna.OverflowSettings] (a : fixed.types.U68F60) : Result Std.U32 :=
+  Lusterna.Fixed.toUScalar s .U32 a
 
 def U32.Insts.FixedTraitsFromFixed.checked_from_fixed (a : fixed.types.U68F60) : Result (Option Std.U32) :=
   ok (Lusterna.Fixed.checkedToUScalar .U32 a)
@@ -298,14 +294,14 @@ def U32.Insts.FixedTraitsFromFixed.checked_from_fixed (a : fixed.types.U68F60) :
 def U32.Insts.FixedTraitsFromFixed.saturating_from_fixed (a : fixed.types.U68F60) : Result Std.U32 :=
   ok (Lusterna.Fixed.saturatingToUScalar .U32 a)
 
-def U64.Insts.FixedTraitsToFixed.to_fixed [p : Lusterna.Fixed.Profile] (n : Std.U64) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.ofNat p.toConfig n.val
+def U64.Insts.FixedTraitsToFixed.to_fixed [s : Lusterna.OverflowSettings] (n : Std.U64) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.ofNat s n.val
 
 def U64.Insts.FixedTraitsToFixed.checked_to_fixed (n : Std.U64) : Result (Option fixed.types.U68F60) :=
   ok (Lusterna.Fixed.checkedOfNat n.val)
 
-def U64.Insts.FixedTraitsFromFixed.from_fixed [p : Lusterna.Fixed.Profile] (a : fixed.types.U68F60) : Result Std.U64 :=
-  Lusterna.Fixed.toUScalar p.toConfig .U64 a
+def U64.Insts.FixedTraitsFromFixed.from_fixed [s : Lusterna.OverflowSettings] (a : fixed.types.U68F60) : Result Std.U64 :=
+  Lusterna.Fixed.toUScalar s .U64 a
 
 def U64.Insts.FixedTraitsFromFixed.checked_from_fixed (a : fixed.types.U68F60) : Result (Option Std.U64) :=
   ok (Lusterna.Fixed.checkedToUScalar .U64 a)
@@ -313,14 +309,14 @@ def U64.Insts.FixedTraitsFromFixed.checked_from_fixed (a : fixed.types.U68F60) :
 def U64.Insts.FixedTraitsFromFixed.saturating_from_fixed (a : fixed.types.U68F60) : Result Std.U64 :=
   ok (Lusterna.Fixed.saturatingToUScalar .U64 a)
 
-def U128.Insts.FixedTraitsToFixed.to_fixed [p : Lusterna.Fixed.Profile] (n : Std.U128) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.ofNat p.toConfig n.val
+def U128.Insts.FixedTraitsToFixed.to_fixed [s : Lusterna.OverflowSettings] (n : Std.U128) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.ofNat s n.val
 
 def U128.Insts.FixedTraitsToFixed.checked_to_fixed (n : Std.U128) : Result (Option fixed.types.U68F60) :=
   ok (Lusterna.Fixed.checkedOfNat n.val)
 
-def U128.Insts.FixedTraitsFromFixed.from_fixed [p : Lusterna.Fixed.Profile] (a : fixed.types.U68F60) : Result Std.U128 :=
-  Lusterna.Fixed.toUScalar p.toConfig .U128 a
+def U128.Insts.FixedTraitsFromFixed.from_fixed [s : Lusterna.OverflowSettings] (a : fixed.types.U68F60) : Result Std.U128 :=
+  Lusterna.Fixed.toUScalar s .U128 a
 
 def U128.Insts.FixedTraitsFromFixed.checked_from_fixed (a : fixed.types.U68F60) : Result (Option Std.U128) :=
   ok (Lusterna.Fixed.checkedToUScalar .U128 a)
@@ -328,14 +324,14 @@ def U128.Insts.FixedTraitsFromFixed.checked_from_fixed (a : fixed.types.U68F60) 
 def U128.Insts.FixedTraitsFromFixed.saturating_from_fixed (a : fixed.types.U68F60) : Result Std.U128 :=
   ok (Lusterna.Fixed.saturatingToUScalar .U128 a)
 
-def Usize.Insts.FixedTraitsToFixed.to_fixed [p : Lusterna.Fixed.Profile] (n : Std.Usize) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.ofNat p.toConfig n.val
+def Usize.Insts.FixedTraitsToFixed.to_fixed [s : Lusterna.OverflowSettings] (n : Std.Usize) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.ofNat s n.val
 
 def Usize.Insts.FixedTraitsToFixed.checked_to_fixed (n : Std.Usize) : Result (Option fixed.types.U68F60) :=
   ok (Lusterna.Fixed.checkedOfNat n.val)
 
-def Usize.Insts.FixedTraitsFromFixed.from_fixed [p : Lusterna.Fixed.Profile] (a : fixed.types.U68F60) : Result Std.Usize :=
-  Lusterna.Fixed.toUScalar p.toConfig .Usize a
+def Usize.Insts.FixedTraitsFromFixed.from_fixed [s : Lusterna.OverflowSettings] (a : fixed.types.U68F60) : Result Std.Usize :=
+  Lusterna.Fixed.toUScalar s .Usize a
 
 def Usize.Insts.FixedTraitsFromFixed.checked_from_fixed (a : fixed.types.U68F60) : Result (Option Std.Usize) :=
   ok (Lusterna.Fixed.checkedToUScalar .Usize a)
@@ -343,14 +339,14 @@ def Usize.Insts.FixedTraitsFromFixed.checked_from_fixed (a : fixed.types.U68F60)
 def Usize.Insts.FixedTraitsFromFixed.saturating_from_fixed (a : fixed.types.U68F60) : Result Std.Usize :=
   ok (Lusterna.Fixed.saturatingToUScalar .Usize a)
 
-def I8.Insts.FixedTraitsToFixed.to_fixed [p : Lusterna.Fixed.Profile] (n : Std.I8) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.ofInt p.toConfig n.val
+def I8.Insts.FixedTraitsToFixed.to_fixed [s : Lusterna.OverflowSettings] (n : Std.I8) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.ofInt s n.val
 
 def I8.Insts.FixedTraitsToFixed.checked_to_fixed (n : Std.I8) : Result (Option fixed.types.U68F60) :=
   ok (Lusterna.Fixed.checkedOfInt n.val)
 
-def I8.Insts.FixedTraitsFromFixed.from_fixed [p : Lusterna.Fixed.Profile] (a : fixed.types.U68F60) : Result Std.I8 :=
-  Lusterna.Fixed.toIScalar p.toConfig .I8 a
+def I8.Insts.FixedTraitsFromFixed.from_fixed [s : Lusterna.OverflowSettings] (a : fixed.types.U68F60) : Result Std.I8 :=
+  Lusterna.Fixed.toIScalar s .I8 a
 
 def I8.Insts.FixedTraitsFromFixed.checked_from_fixed (a : fixed.types.U68F60) : Result (Option Std.I8) :=
   ok (Lusterna.Fixed.checkedToIScalar .I8 a)
@@ -358,14 +354,14 @@ def I8.Insts.FixedTraitsFromFixed.checked_from_fixed (a : fixed.types.U68F60) : 
 def I8.Insts.FixedTraitsFromFixed.saturating_from_fixed (a : fixed.types.U68F60) : Result Std.I8 :=
   ok (Lusterna.Fixed.saturatingToIScalar .I8 a)
 
-def I16.Insts.FixedTraitsToFixed.to_fixed [p : Lusterna.Fixed.Profile] (n : Std.I16) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.ofInt p.toConfig n.val
+def I16.Insts.FixedTraitsToFixed.to_fixed [s : Lusterna.OverflowSettings] (n : Std.I16) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.ofInt s n.val
 
 def I16.Insts.FixedTraitsToFixed.checked_to_fixed (n : Std.I16) : Result (Option fixed.types.U68F60) :=
   ok (Lusterna.Fixed.checkedOfInt n.val)
 
-def I16.Insts.FixedTraitsFromFixed.from_fixed [p : Lusterna.Fixed.Profile] (a : fixed.types.U68F60) : Result Std.I16 :=
-  Lusterna.Fixed.toIScalar p.toConfig .I16 a
+def I16.Insts.FixedTraitsFromFixed.from_fixed [s : Lusterna.OverflowSettings] (a : fixed.types.U68F60) : Result Std.I16 :=
+  Lusterna.Fixed.toIScalar s .I16 a
 
 def I16.Insts.FixedTraitsFromFixed.checked_from_fixed (a : fixed.types.U68F60) : Result (Option Std.I16) :=
   ok (Lusterna.Fixed.checkedToIScalar .I16 a)
@@ -373,14 +369,14 @@ def I16.Insts.FixedTraitsFromFixed.checked_from_fixed (a : fixed.types.U68F60) :
 def I16.Insts.FixedTraitsFromFixed.saturating_from_fixed (a : fixed.types.U68F60) : Result Std.I16 :=
   ok (Lusterna.Fixed.saturatingToIScalar .I16 a)
 
-def I32.Insts.FixedTraitsToFixed.to_fixed [p : Lusterna.Fixed.Profile] (n : Std.I32) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.ofInt p.toConfig n.val
+def I32.Insts.FixedTraitsToFixed.to_fixed [s : Lusterna.OverflowSettings] (n : Std.I32) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.ofInt s n.val
 
 def I32.Insts.FixedTraitsToFixed.checked_to_fixed (n : Std.I32) : Result (Option fixed.types.U68F60) :=
   ok (Lusterna.Fixed.checkedOfInt n.val)
 
-def I32.Insts.FixedTraitsFromFixed.from_fixed [p : Lusterna.Fixed.Profile] (a : fixed.types.U68F60) : Result Std.I32 :=
-  Lusterna.Fixed.toIScalar p.toConfig .I32 a
+def I32.Insts.FixedTraitsFromFixed.from_fixed [s : Lusterna.OverflowSettings] (a : fixed.types.U68F60) : Result Std.I32 :=
+  Lusterna.Fixed.toIScalar s .I32 a
 
 def I32.Insts.FixedTraitsFromFixed.checked_from_fixed (a : fixed.types.U68F60) : Result (Option Std.I32) :=
   ok (Lusterna.Fixed.checkedToIScalar .I32 a)
@@ -388,14 +384,14 @@ def I32.Insts.FixedTraitsFromFixed.checked_from_fixed (a : fixed.types.U68F60) :
 def I32.Insts.FixedTraitsFromFixed.saturating_from_fixed (a : fixed.types.U68F60) : Result Std.I32 :=
   ok (Lusterna.Fixed.saturatingToIScalar .I32 a)
 
-def I64.Insts.FixedTraitsToFixed.to_fixed [p : Lusterna.Fixed.Profile] (n : Std.I64) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.ofInt p.toConfig n.val
+def I64.Insts.FixedTraitsToFixed.to_fixed [s : Lusterna.OverflowSettings] (n : Std.I64) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.ofInt s n.val
 
 def I64.Insts.FixedTraitsToFixed.checked_to_fixed (n : Std.I64) : Result (Option fixed.types.U68F60) :=
   ok (Lusterna.Fixed.checkedOfInt n.val)
 
-def I64.Insts.FixedTraitsFromFixed.from_fixed [p : Lusterna.Fixed.Profile] (a : fixed.types.U68F60) : Result Std.I64 :=
-  Lusterna.Fixed.toIScalar p.toConfig .I64 a
+def I64.Insts.FixedTraitsFromFixed.from_fixed [s : Lusterna.OverflowSettings] (a : fixed.types.U68F60) : Result Std.I64 :=
+  Lusterna.Fixed.toIScalar s .I64 a
 
 def I64.Insts.FixedTraitsFromFixed.checked_from_fixed (a : fixed.types.U68F60) : Result (Option Std.I64) :=
   ok (Lusterna.Fixed.checkedToIScalar .I64 a)
@@ -403,14 +399,14 @@ def I64.Insts.FixedTraitsFromFixed.checked_from_fixed (a : fixed.types.U68F60) :
 def I64.Insts.FixedTraitsFromFixed.saturating_from_fixed (a : fixed.types.U68F60) : Result Std.I64 :=
   ok (Lusterna.Fixed.saturatingToIScalar .I64 a)
 
-def I128.Insts.FixedTraitsToFixed.to_fixed [p : Lusterna.Fixed.Profile] (n : Std.I128) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.ofInt p.toConfig n.val
+def I128.Insts.FixedTraitsToFixed.to_fixed [s : Lusterna.OverflowSettings] (n : Std.I128) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.ofInt s n.val
 
 def I128.Insts.FixedTraitsToFixed.checked_to_fixed (n : Std.I128) : Result (Option fixed.types.U68F60) :=
   ok (Lusterna.Fixed.checkedOfInt n.val)
 
-def I128.Insts.FixedTraitsFromFixed.from_fixed [p : Lusterna.Fixed.Profile] (a : fixed.types.U68F60) : Result Std.I128 :=
-  Lusterna.Fixed.toIScalar p.toConfig .I128 a
+def I128.Insts.FixedTraitsFromFixed.from_fixed [s : Lusterna.OverflowSettings] (a : fixed.types.U68F60) : Result Std.I128 :=
+  Lusterna.Fixed.toIScalar s .I128 a
 
 def I128.Insts.FixedTraitsFromFixed.checked_from_fixed (a : fixed.types.U68F60) : Result (Option Std.I128) :=
   ok (Lusterna.Fixed.checkedToIScalar .I128 a)
@@ -418,14 +414,14 @@ def I128.Insts.FixedTraitsFromFixed.checked_from_fixed (a : fixed.types.U68F60) 
 def I128.Insts.FixedTraitsFromFixed.saturating_from_fixed (a : fixed.types.U68F60) : Result Std.I128 :=
   ok (Lusterna.Fixed.saturatingToIScalar .I128 a)
 
-def Isize.Insts.FixedTraitsToFixed.to_fixed [p : Lusterna.Fixed.Profile] (n : Std.Isize) : Result fixed.types.U68F60 :=
-  Lusterna.Fixed.ofInt p.toConfig n.val
+def Isize.Insts.FixedTraitsToFixed.to_fixed [s : Lusterna.OverflowSettings] (n : Std.Isize) : Result fixed.types.U68F60 :=
+  Lusterna.Fixed.ofInt s n.val
 
 def Isize.Insts.FixedTraitsToFixed.checked_to_fixed (n : Std.Isize) : Result (Option fixed.types.U68F60) :=
   ok (Lusterna.Fixed.checkedOfInt n.val)
 
-def Isize.Insts.FixedTraitsFromFixed.from_fixed [p : Lusterna.Fixed.Profile] (a : fixed.types.U68F60) : Result Std.Isize :=
-  Lusterna.Fixed.toIScalar p.toConfig .Isize a
+def Isize.Insts.FixedTraitsFromFixed.from_fixed [s : Lusterna.OverflowSettings] (a : fixed.types.U68F60) : Result Std.Isize :=
+  Lusterna.Fixed.toIScalar s .Isize a
 
 def Isize.Insts.FixedTraitsFromFixed.checked_from_fixed (a : fixed.types.U68F60) : Result (Option Std.Isize) :=
   ok (Lusterna.Fixed.checkedToIScalar .Isize a)

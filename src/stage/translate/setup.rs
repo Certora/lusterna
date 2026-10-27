@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     config::Platform,
-    stage::translate::{TranslateInput, replacements, translate_info},
+    stage::translate::{ReplacementsError, TranslateInput, replacements, translate_info},
     utils::{
         cargo::{self, CargoError},
         git::{self, GitError},
@@ -57,6 +57,8 @@ pub enum TranslateSetupErr {
     Lake(#[from] LakeError),
     #[error(transparent)]
     Git(#[from] GitError),
+    #[error(transparent)]
+    Replacements(#[from] ReplacementsError),
     #[error("cannot parse `{path}`: {source}")]
     ParseManifest {
         path: PathBuf,
@@ -194,7 +196,7 @@ pub(super) fn run_setup(input: &TranslateInput) -> Result<SetupOutcome, Translat
         fs::create_dir_all(&extraction)?;
         fs::write(
             extraction.join("Lusterna.lean"),
-            replacements::lean_module(replacements, &manifest),
+            replacements::lean_module(replacements, &manifest)?,
         )?;
         let mut gitignore = fs::read_to_string(crate_root.join("lusterna/.gitignore"))?;
         gitignore.push_str("/charon/\n");

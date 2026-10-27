@@ -1,6 +1,6 @@
 module
 public import Aeneas
-public import LusternaLib.Config
+public import LusternaLib.OverflowSettings
 
 /-!
 # Model of `fixed::types::U68F60`
@@ -9,7 +9,7 @@ public import LusternaLib.Config
 a `U128` of its bits. Its value is `bits / 2^60`.
 
 The behavior on overflow depends on two settings of the package `fixed` in
-the target crate, given as a `Config`:
+the target crate, given as an `OverflowSettings`:
 
 * `overflowChecks`: `+` and `-` on `U68F60`, and `*` with a `u128`, fail on
   overflow. Otherwise they wrap.
@@ -63,21 +63,21 @@ def delta : U68F60 := wrap 1
 def maxValue : U68F60 := wrap (2 ^ 128 - 1)
 
 /-- `self + rhs` -/
-def add (c : Config) (a b : U68F60) : Result U68F60 :=
+def add (c : OverflowSettings) (a b : U68F60) : Result U68F60 :=
   wrapOrFail c.overflowChecks (val a + val b)
 
 /-- `self - rhs` -/
-def sub (c : Config) (a b : U68F60) : Result U68F60 :=
+def sub (c : OverflowSettings) (a b : U68F60) : Result U68F60 :=
   if val b ≤ val a then ok (wrap (val a - val b))
   else if c.overflowChecks then fail .integerOverflow
   else ok (wrap (val a + 2 ^ 128 - val b))
 
 /-- `self * rhs`, rounded down. -/
-def mul (c : Config) (a b : U68F60) : Result U68F60 :=
+def mul (c : OverflowSettings) (a b : U68F60) : Result U68F60 :=
   wrapOrFail c.debugAssertions (val a * val b / scale)
 
 /-- `self / rhs`, rounded down. Fails if `rhs` is zero. -/
-def div (c : Config) (a b : U68F60) : Result U68F60 :=
+def div (c : OverflowSettings) (a b : U68F60) : Result U68F60 :=
   if val b = 0 then fail .divisionByZero
   else wrapOrFail c.debugAssertions (val a * scale / val b)
 
@@ -86,7 +86,7 @@ def rem (a b : U68F60) : Result U68F60 :=
   if val b = 0 then fail .divisionByZero else ok (wrap (val a % val b))
 
 /-- `self * rhs` for an integer `rhs`. -/
-def mulInt (c : Config) (a : U68F60) (n : Std.U128) : Result U68F60 :=
+def mulInt (c : OverflowSettings) (a : U68F60) (n : Std.U128) : Result U68F60 :=
   wrapOrFail c.overflowChecks (val a * n.val)
 
 /-- `self / rhs` for an integer `rhs`, rounded down. Fails if `rhs` is zero. -/
@@ -105,12 +105,12 @@ def int (a : U68F60) : U68F60 := wrap (val a / scale * scale)
 def frac (a : U68F60) : U68F60 := wrap (val a % scale)
 
 /-- Rounded up. -/
-def ceil (c : Config) (a : U68F60) : Result U68F60 :=
+def ceil (c : OverflowSettings) (a : U68F60) : Result U68F60 :=
   if val a % scale = 0 then ok (int a)
   else wrapOrFail c.debugAssertions (val (int a) + scale)
 
 /-- Rounded to the nearest, with ties away from zero. -/
-def round (c : Config) (a : U68F60) : Result U68F60 :=
+def round (c : OverflowSettings) (a : U68F60) : Result U68F60 :=
   if val a % scale < scale / 2 then ok (int a)
   else wrapOrFail c.debugAssertions (val (int a) + scale)
 
@@ -138,7 +138,7 @@ def saturatingMul (a b : U68F60) : U68F60 :=
 def absDiff (a b : U68F60) : U68F60 := wrap (max (val a) (val b) - min (val a) (val b))
 
 /-- The number with the value of the natural number `n`. -/
-def ofNat (c : Config) (n : Nat) : Result U68F60 :=
+def ofNat (c : OverflowSettings) (n : Nat) : Result U68F60 :=
   if n < 2 ^ 68 ∨ c.debugAssertions = false then ok (wrap (n * scale))
   else fail .integerOverflow
 
@@ -146,7 +146,7 @@ def checkedOfNat (n : Nat) : Option U68F60 :=
   if n < 2 ^ 68 then some (wrap (n * scale)) else none
 
 /-- The number with the value of the integer `n`. -/
-def ofInt (c : Config) (n : Int) : Result U68F60 :=
+def ofInt (c : OverflowSettings) (n : Int) : Result U68F60 :=
   if 0 ≤ n ∧ n < 2 ^ 68 then ok (wrap (n.toNat * scale))
   else if c.debugAssertions then fail .integerOverflow
   else ok ⟨⟨BitVec.ofInt _ (n * (scale : Int))⟩⟩
@@ -155,7 +155,7 @@ def checkedOfInt (n : Int) : Option U68F60 :=
   if 0 ≤ n ∧ n < 2 ^ 68 then some (wrap (n.toNat * scale)) else none
 
 /-- The integer part as a `UScalar ty`. -/
-def toUScalar (c : Config) (ty : UScalarTy) (a : U68F60) : Result (UScalar ty) :=
+def toUScalar (c : OverflowSettings) (ty : UScalarTy) (a : U68F60) : Result (UScalar ty) :=
   let i := val a / scale
   if i < 2 ^ ty.numBits ∨ c.debugAssertions = false then ok ⟨BitVec.ofNat _ i⟩
   else fail .integerOverflow
@@ -168,7 +168,7 @@ def saturatingToUScalar (ty : UScalarTy) (a : U68F60) : UScalar ty :=
   ⟨BitVec.ofNat _ (min (val a / scale) (2 ^ ty.numBits - 1))⟩
 
 /-- The integer part as an `IScalar ty`. -/
-def toIScalar (c : Config) (ty : IScalarTy) (a : U68F60) : Result (IScalar ty) :=
+def toIScalar (c : OverflowSettings) (ty : IScalarTy) (a : U68F60) : Result (IScalar ty) :=
   let i := val a / scale
   if i < 2 ^ (ty.numBits - 1) ∨ c.debugAssertions = false then ok ⟨BitVec.ofNat _ i⟩
   else fail .integerOverflow
