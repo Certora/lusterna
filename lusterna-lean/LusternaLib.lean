@@ -2,6 +2,7 @@ module
 public import LusternaLib.Anchor.AccountLoader
 public import LusternaLib.OverflowSettings
 public import LusternaLib.Core.Cell
+public import LusternaLib.Core.CellLinter
 public import LusternaLib.Fixed
 public import LusternaLib.SolanaProgram.Pubkey
 

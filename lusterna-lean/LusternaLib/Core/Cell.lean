@@ -35,8 +35,13 @@ def core.cell.Ref.Insts.CoreOpsDerefDeref.deref {T : Type} (r : core.cell.Ref T)
 def core.cell.RefMut.Insts.CoreOpsDerefDeref.deref {T : Type} (r : core.cell.RefMut T) :
   Result T := .ok r.val
 
+/-- Used by `deref_mut`, so that `#print axioms` lists it for every
+declaration that depends on `deref_mut`. -/
+axiom Lusterna.refMutWriteDropped : True
+
 /-- `<RefMut<'_, T> as DerefMut>::deref_mut`. Both back functions return `r`
 unchanged, so writes through the result are dropped. -/
 def core.cell.RefMut.Insts.CoreOpsDerefDerefMut.deref_mut {T : Type}  (r : core.cell.RefMut T) :
   Result (T × (T → core.cell.RefMut T) × (core.cell.RefMut T → core.cell.RefMut T)) :=
+    have _ := Lusterna.refMutWriteDropped
     .ok (r.val, fun _ => r, fun _ => r)
