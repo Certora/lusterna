@@ -4,6 +4,7 @@ pub mod translate;
 use std::{
     error::Error,
     fmt::{self, Display},
+    path::Path,
     time::Instant,
 };
 
@@ -136,7 +137,12 @@ impl<S: Stage> fmt::Display for AttemptRejected<S> {
     }
 }
 
-pub fn run<S: Stage>(mut s: S, cfg: &Config) -> Result<S::Output, StageExecutionError<S>> {
+/// Runs the stage `s`. The agent and the judge run in `dir`.
+pub fn run<S: Stage>(
+    mut s: S,
+    cfg: &Config,
+    dir: &Path,
+) -> Result<S::Output, StageExecutionError<S>> {
     // Run the setup, if it fails, stop here.
     s.setup().map_err(StageExecutionError::SetupError)?;
     stage_info!(S::name(), "setup completed");
@@ -152,6 +158,7 @@ pub fn run<S: Stage>(mut s: S, cfg: &Config) -> Result<S::Output, StageExecution
     }
     agent.set_effort(cfg.effort);
     agent.set_model(cfg.model.clone());
+    agent.set_dir(dir.to_owned());
     let mut judge_cost = 0.0;
 
     for attempt in 0..cfg.stage_max_attempts {
@@ -204,7 +211,8 @@ pub fn run<S: Stage>(mut s: S, cfg: &Config) -> Result<S::Output, StageExecution
                             agent.get_usage().cost_usd,
                             judge_cost
                         );
-                        let (defects, cost) = run_judge::<S>(judge_prompt, cfg, remaining_budget)?;
+                        let (defects, cost) =
+                            run_judge::<S>(judge_prompt, cfg, remaining_budget, dir)?;
                         judge_cost += cost;
                         stage_info!(S::name(), "judge finished in {}", format_elapsed(t));
                         if defects.is_empty() {
@@ -296,11 +304,13 @@ fn run_judge<S: Stage>(
     judge_prompt: String,
     cfg: &Config,
     max_budget: f64,
+    dir: &Path,
 ) -> Result<(Vec<Defect>, f64), AgentError> {
     let mut judge_agent = Agent::default();
     judge_agent.set_max_budget(max_budget);
     judge_agent.set_effort(cfg.effort);
     judge_agent.set_model(cfg.model.clone());
+    judge_agent.set_dir(dir.to_owned());
     // `claude --json-schema` only accepts draft-07 schemas. `schema_for!`
     // generates a draft 2020-12 schema, which it rejects.
     let schema = schemars::generate::SchemaSettings::draft07()

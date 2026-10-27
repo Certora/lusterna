@@ -3,6 +3,7 @@ use std::{
     fmt::Display,
     fs,
     io::{self, BufRead, BufReader, Write},
+    path::PathBuf,
     process::{Command, ExitStatus, Stdio},
     thread,
 };
@@ -64,6 +65,8 @@ pub struct Agent {
     json_schema: Option<String>,
     /// The name and the `SKILL.md` content of each skill
     skills: Vec<(String, String)>,
+    /// The working directory of `claude`
+    dir: Option<PathBuf>,
 }
 
 impl Default for Agent {
@@ -81,6 +84,7 @@ impl Default for Agent {
             session_id: None,
             json_schema: None,
             skills: Vec::new(),
+            dir: None,
         }
     }
 }
@@ -116,6 +120,10 @@ impl Agent {
 
     pub fn set_model(&mut self, model: String) {
         self.model = model
+    }
+
+    pub fn set_dir(&mut self, dir: PathBuf) {
+        self.dir = Some(dir)
     }
 
     /// Makes `run` return the agent's structured output, as JSON matching
@@ -176,6 +184,8 @@ impl Agent {
             self.allowed_tools.join(","),
             "--model".into(),
             self.model.clone(),
+            "--setting-sources".into(),
+            "project,local".into(),
         ]);
         if let Some(effort) = self.effort {
             args.extend(["--effort".to_owned(), effort.to_string()]);
@@ -208,12 +218,15 @@ impl Agent {
         }
         let mut result = None;
 
-        let mut cmnd = Command::new("claude")
-            .args(args)
+        let mut cmnd = Command::new("claude");
+        cmnd.args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
+            .stderr(Stdio::piped());
+        if let Some(dir) = &self.dir {
+            cmnd.current_dir(dir);
+        }
+        let mut cmnd = cmnd.spawn()?;
 
         let mut stdin = cmnd.stdin.take().expect("stdin is piped");
         let stdin = thread::spawn(move || stdin.write_all(prompt.as_bytes()));

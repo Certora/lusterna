@@ -184,7 +184,7 @@ fn translate(config: &Config, args: TranslateArgs) -> anyhow::Result<()> {
                 manifest: manifest.clone(),
                 build_stderr: stderr,
             };
-            stage::run(PreTranslateStage::new(input), config)?;
+            stage::run(PreTranslateStage::new(input), config, &worktree)?;
             log::info!("Finished pre-translate in {}", format_elapsed(t));
 
             let sha = git::commit_all(&worktree, "lusterna: make the crate build on the host")?;
@@ -240,7 +240,7 @@ fn translate(config: &Config, args: TranslateArgs) -> anyhow::Result<()> {
         platform,
     };
     let translate_stage = TranslateStage::new(input);
-    let output = stage::run(translate_stage, config)?;
+    let output = stage::run(translate_stage, config, &worktree)?;
     log::info!("Finished translation in {}", format_elapsed(t));
 
     let sha = git::commit_all(&worktree, "lusterna: translate to Lean with Aeneas")?;
