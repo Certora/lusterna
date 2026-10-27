@@ -12,7 +12,7 @@ venv/
 .env
 tmp
 .log
-LOG*
+*.tmp
 
 # Presentation/demo scratch (not part of the package)
 demo/
