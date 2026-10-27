@@ -12,4 +12,4 @@ path = "{solanalib_root}/aeneas"
 
 [[lean_lib]]
 name = "Extraction"
-globs = ["Extraction.TypesExternal", "Extraction.Types", "Extraction.FunsExternal", "Extraction.Funs"]
+globs = ["Extraction.Lusterna", "Extraction.TypesExternal", "Extraction.Types", "Extraction.FunsExternal", "Extraction.Funs"]

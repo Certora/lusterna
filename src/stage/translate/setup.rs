@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     config::Platform,
-    stage::translate::{TranslateInput, translate_info},
+    stage::translate::{TranslateInput, replacements, translate_info},
     utils::{
         cargo::{self, CargoError},
         git::{self, GitError},
@@ -15,9 +15,16 @@ use crate::{
 };
 
 /// The extraction script `lusterna/extract.sh`, with `{entrypoints}`,
-/// `{opaque}` and `{charon_args}` standing for the bash-quoted patterns and
-/// the extra `charon` arguments.
+/// `{opaque}`, `{charon_args}` and `{cargo_args}` standing for the
+/// bash-quoted patterns and the extra `charon` and `cargo` arguments, and
+/// `{charon_lock}` standing for the line that creates the `Cargo.lock` of the
+/// Charon build, or nothing.
 const EXTRACT_SH_TEMPLATE: &str = include_str!("res/extract.sh.template");
+
+/// The `Cargo.lock` that the Charon build of a Solana crate uses, relative to
+/// the crate root. `extract.sh` copies the workspace `Cargo.lock` to it, so
+/// that the patches of the Charon build do not change the workspace one.
+const CHARON_LOCK: &str = "lusterna/charon/Cargo.lock";
 
 /// The `lakefile.toml` of the Lean project, with `{rev}` standing for the
 /// Aeneas git revision. `extract.sh` makes Aeneas write the generated modules
@@ -50,6 +57,12 @@ pub enum TranslateSetupErr {
     Lake(#[from] LakeError),
     #[error(transparent)]
     Git(#[from] GitError),
+    #[error("cannot parse `{path}`: {source}")]
+    ParseManifest {
+        path: PathBuf,
+        #[source]
+        source: toml_edit::TomlError,
+    },
 }
 
 /// The paths that setup created in the crate root.
@@ -132,8 +145,29 @@ pub(super) fn run_setup(input: &TranslateInput) -> Result<SetupOutcome, Translat
         Platform::Generic => vec![],
         Platform::Solana { .. } => vec!["--sysroot".to_owned(), "default".to_owned()],
     };
-    let extraction_script =
-        create_extraction_script(crate_root, &input.entrypoints, &input.opaque, &charon_args)?;
+    // On Solana, the Charon build uses the `lusterna-stubs` crates in place of
+    // the crates of the same name, with its own `Cargo.lock`
+    let (cargo_args, charon_lock) = match &input.platform {
+        Platform::Generic => (vec![], None),
+        Platform::Solana { replacements, .. } => {
+            let mut args = replacements::patch_args(replacements);
+            args.extend([
+                "-Zlockfile-path".to_owned(),
+                "--config".to_owned(),
+                format!("resolver.lockfile-path=\"{CHARON_LOCK}\""),
+            ]);
+            let workspace_lock = ws_manifest.with_file_name("Cargo.lock");
+            (args, Some(relative_path(crate_root, &workspace_lock)?))
+        }
+    };
+    let extraction_script = create_extraction_script(
+        crate_root,
+        &input.entrypoints,
+        &input.opaque,
+        &charon_args,
+        &cargo_args,
+        charon_lock.as_deref(),
+    )?;
 
     translate_info!(
         "setup: created extraction script at {}",
@@ -143,11 +177,29 @@ pub(super) fn run_setup(input: &TranslateInput) -> Result<SetupOutcome, Translat
     translate_info!("setup: initializing lake project (may take a minute)");
     let lakefile = match &input.platform {
         Platform::Generic => make_lakefile(&input.aeneas_rev),
-        Platform::Solana { solanalib_root } => {
+        Platform::Solana { solanalib_root, .. } => {
             make_solana_lakefile(&input.aeneas_root, solanalib_root)
         }
     };
     let lean_root = init_lake_project(crate_root, &lakefile, &input.lean_toolchain)?;
+    if let Platform::Solana { replacements, .. } = &input.platform {
+        let manifest: toml_edit::DocumentMut =
+            fs::read_to_string(&ws_manifest)?
+                .parse()
+                .map_err(|source| TranslateSetupErr::ParseManifest {
+                    path: ws_manifest.clone(),
+                    source,
+                })?;
+        let extraction = lean_root.join("Extraction");
+        fs::create_dir_all(&extraction)?;
+        fs::write(
+            extraction.join("Lusterna.lean"),
+            replacements::lean_module(replacements, &manifest),
+        )?;
+        let mut gitignore = fs::read_to_string(crate_root.join("lusterna/.gitignore"))?;
+        gitignore.push_str("/charon/\n");
+        fs::write(crate_root.join("lusterna/.gitignore"), gitignore)?;
+    }
     translate_info!("setup: initialized lake project at {}", lean_root.display());
 
     let setup_commit = git::commit_all(crate_root, "lusterna: set up translation")?;
@@ -161,23 +213,57 @@ pub(super) fn run_setup(input: &TranslateInput) -> Result<SetupOutcome, Translat
 }
 
 /// Returns the content of `lusterna/extract.sh` for the given Charon
-/// `--start-from` and `--opaque` patterns and extra `charon` arguments.
+/// `--start-from` and `--opaque` patterns and extra `charon` and `cargo`
+/// arguments. If `charon_lock` is given, the script first copies that
+/// `Cargo.lock`, relative to the crate root, to `CHARON_LOCK`.
 pub(super) fn make_extraction_script(
     entrypoints: &[String],
     opaque: &[String],
     charon_args: &[String],
+    cargo_args: &[String],
+    charon_lock: Option<&str>,
 ) -> String {
+    let quote_one = |s: &str| format!("'{}'", s.replace('\'', r"'\''"));
     let quote = |patterns: &[String]| {
         patterns
             .iter()
-            .map(|p| format!("'{}'", p.replace('\'', r"'\''")))
+            .map(|p| quote_one(p))
             .collect::<Vec<_>>()
             .join(" ")
     };
+    let charon_lock = charon_lock.map_or(String::new(), |lock| {
+        format!(
+            "mkdir -p {} && cp {} {}",
+            quote_one(Path::new(CHARON_LOCK).parent().unwrap().to_str().unwrap()),
+            quote_one(lock),
+            quote_one(CHARON_LOCK)
+        )
+    });
     EXTRACT_SH_TEMPLATE
         .replace("{entrypoints}", &quote(entrypoints))
         .replace("{opaque}", &quote(opaque))
         .replace("{charon_args}", &quote(charon_args))
+        .replace("{cargo_args}", &quote(cargo_args))
+        .replace("{charon_lock}", &charon_lock)
+}
+
+/// Returns `path` relative to the directory `dir`. Both must exist.
+fn relative_path(dir: &Path, path: &Path) -> Result<String, io::Error> {
+    let dir = fs::canonicalize(dir)?;
+    let path = fs::canonicalize(path)?;
+    let common = dir
+        .components()
+        .zip(path.components())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let mut relative = PathBuf::new();
+    for _ in common..dir.components().count() {
+        relative.push("..");
+    }
+    for component in path.components().skip(common) {
+        relative.push(component);
+    }
+    Ok(relative.display().to_string())
 }
 
 /// Returns the content of the Lean project's `lakefile.toml` for the given
@@ -232,13 +318,15 @@ fn create_extraction_script(
     entrypoints: &[String],
     opaque: &[String],
     charon_args: &[String],
+    cargo_args: &[String],
+    charon_lock: Option<&str>,
 ) -> Result<PathBuf, io::Error> {
     let path = crate_root.join("lusterna").join("extract.sh");
 
     fs::create_dir_all(path.parent().unwrap())?;
     fs::write(
         &path,
-        make_extraction_script(entrypoints, opaque, charon_args),
+        make_extraction_script(entrypoints, opaque, charon_args, cargo_args, charon_lock),
     )?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
     Ok(path)
@@ -280,7 +368,7 @@ mod tests {
         ];
         let opaque = vec!["crate::a b".to_owned(), "'".to_owned()];
 
-        let script = make_extraction_script(&entrypoints, &opaque, &[]);
+        let script = make_extraction_script(&entrypoints, &opaque, &[], &[], None);
 
         assert_eq!(bash_array(&script, "ENTRYPOINTS"), entrypoints);
         assert_eq!(bash_array(&script, "OPAQUE"), opaque);
@@ -288,7 +376,7 @@ mod tests {
 
     #[test]
     fn extract_sh_allows_empty_patterns() {
-        let script = make_extraction_script(&[], &[], &[]);
+        let script = make_extraction_script(&[], &[], &[], &[], None);
 
         assert!(bash_array(&script, "ENTRYPOINTS").is_empty());
         assert!(bash_array(&script, "OPAQUE").is_empty());
@@ -320,5 +408,28 @@ mod tests {
         let solanalib = &doc["require"][1];
         assert_eq!(solanalib["name"].as_str(), Some("solanalibAeneas"));
         assert_eq!(solanalib["path"].as_str(), Some("/s/aeneas"));
+    }
+
+    #[test]
+    fn extract_sh_copies_charon_lock_and_passes_cargo_args() {
+        let cargo_args = vec!["--config".to_owned(), "a.b=\"c d\"".to_owned()];
+        let script = make_extraction_script(&[], &[], &[], &cargo_args, Some("../../Cargo.lock"));
+
+        assert_eq!(bash_array(&script, "CARGO_ARGS"), cargo_args);
+        assert!(script.contains(
+            "mkdir -p 'lusterna/charon' && cp '../../Cargo.lock' 'lusterna/charon/Cargo.lock'"
+        ));
+    }
+
+    #[test]
+    fn relative_path_goes_up_to_the_common_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let crate_root = dir.path().join("programs/klend");
+        fs::create_dir_all(&crate_root).unwrap();
+        fs::write(dir.path().join("Cargo.lock"), "").unwrap();
+
+        let relative = relative_path(&crate_root, &dir.path().join("Cargo.lock")).unwrap();
+
+        assert_eq!(relative, "../../Cargo.lock");
     }
 }

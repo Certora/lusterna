@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::agent::Effort;
+use crate::{agent::Effort, stage::translate::Replacement};
 
 pub const DEFAULT_STAGE_MAX_ATTEMPTS: usize = 5;
 pub const DEFAULT_MAX_BUDGED_USD: usize = 50;
@@ -46,10 +46,13 @@ pub enum Platform {
     Generic,
     /// A Solana program, that is, a crate whose workspace `Cargo.lock` has
     /// `solana-program`. The default opaque patterns also include the Solana
-    /// ones, the Lean project requires `SolanalibAeneas`, and the translate
-    /// agent gets the skill `solana-translate`.
+    /// ones and the items of the replaced crates, the Lean project requires
+    /// `SolanalibAeneas`, and the translate agent gets the skill
+    /// `solana-translate`.
     Solana {
         /// Absolute path to the Solanalib checkout.
         solanalib_root: PathBuf,
+        /// The crates that `lusterna-stubs` replaces in the Charon build.
+        replacements: Vec<Replacement>,
     },
 }

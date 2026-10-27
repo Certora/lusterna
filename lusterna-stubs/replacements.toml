@@ -1,0 +1,16 @@
+# The crates that lusterna-stubs replaces in the Charon build of a Solana
+# crate. Each one has a stub crate of the same name in a folder of the same
+# name.
+#
+# `lean`: the class of `SolanalibAeneas` that the Lean models of the items of
+# the crate take their overflow settings from. lusterna makes the items of
+# such a crate opaque, and declares an instance of the class with the
+# overflow settings that the release profile gives to the crate. A crate
+# without `lean` has no items in the extraction, for example a proc macro.
+
+[[replacement]]
+crate = "fixed"
+lean = "Solanalib.Aeneas.Fixed.Profile"
+
+[[replacement]]
+crate = "fixed-macro-impl"

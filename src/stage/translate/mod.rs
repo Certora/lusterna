@@ -1,4 +1,5 @@
 mod gate;
+mod replacements;
 mod setup;
 
 use std::path::{Path, PathBuf};
@@ -13,7 +14,11 @@ use crate::{
     },
 };
 
-pub use {gate::TranslateGateFailure, setup::TranslateSetupErr};
+pub use {
+    gate::TranslateGateFailure,
+    replacements::{Replacement, ReplacementsError, load as load_replacements},
+    setup::TranslateSetupErr,
+};
 
 /// Logs at info level with the translate stage's name as the log target.
 macro_rules! translate_info {
@@ -42,7 +47,8 @@ const BASE_PROMPT_TEMPLATE: &str = include_str!("res/prompt.md");
 const AENEAS_RECIPES_SKILL: &str = include_str!("res/aeneas-recipes.md");
 
 /// The `SKILL.md` of the skill `solana-translate`, with `{solanalib_root}`
-/// standing for the Solanalib checkout.
+/// standing for the Solanalib checkout and `{replaced_crates}` for the list
+/// of the crates that `lusterna-stubs` replaces.
 const SOLANA_TRANSLATE_SKILL: &str = include_str!("res/solana-translate.md");
 
 /// The judge prompt of the translate stage, with `{crate_root}`,
@@ -227,11 +233,21 @@ impl Stage for TranslateStage {
                 &self.input.aeneas_root.display().to_string(),
             ),
         )];
-        if let Platform::Solana { solanalib_root } = &self.input.platform {
+        if let Platform::Solana {
+            solanalib_root,
+            replacements,
+        } = &self.input.platform
+        {
+            let replaced = replacements
+                .iter()
+                .map(|r| format!("`{}`", r.krate))
+                .collect::<Vec<_>>()
+                .join(", ");
             skills.push((
                 "solana-translate",
                 SOLANA_TRANSLATE_SKILL
-                    .replace("{solanalib_root}", &solanalib_root.display().to_string()),
+                    .replace("{solanalib_root}", &solanalib_root.display().to_string())
+                    .replace("{replaced_crates}", &replaced),
             ));
         }
         skills

@@ -1,3 +1,6 @@
+[workspace]
+members = ["lusterna-stubs/fixed", "lusterna-stubs/fixed-macro-impl"]
+
 [package]
 name = "lusterna"
 version = "0.1.0"
