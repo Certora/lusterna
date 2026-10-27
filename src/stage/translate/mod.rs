@@ -51,9 +51,9 @@ const SOLANA_TRANSLATE_SKILL: &str = include_str!("res/solana-translate.md");
 const LUSTERNA_LEAN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/lusterna-lean");
 
 /// The judge prompt of the translate stage, with `{crate_root}`,
-/// `{setup_commit}`, `{briefing}` and `{agent_summary}` standing for the
-/// crate root, the hash of the setup commit, the agent briefing and the
-/// agent's final message.
+/// `{setup_commit}`, `{briefing}`, `{skills}` and `{agent_summary}` standing
+/// for the crate root, the hash of the setup commit, the agent briefing, the
+/// `SKILL.md` content of the agent's skills and the agent's final message.
 const JUDGE_PROMPT_TEMPLATE: &str = include_str!("res/judge.md");
 
 /// The default Charon `--opaque` patterns, one per line.
@@ -266,6 +266,15 @@ impl Stage for TranslateStage {
                 .replace("{crate_root}", &output.crate_root.display().to_string())
                 .replace("{setup_commit}", &setup_outcome.setup_commit)
                 .replace("{briefing}", &self.briefing())
+                .replace(
+                    "{skills}",
+                    &self
+                        .skills()
+                        .into_iter()
+                        .map(|(_, content)| content)
+                        .collect::<Vec<_>>()
+                        .join("\n\n"),
+                )
                 .replace("{agent_summary}", agent_summary),
         )
     }
