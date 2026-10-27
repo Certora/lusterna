@@ -19,12 +19,12 @@ use crate::{
 /// `{opaque}`, `{charon_args}` and `{cargo_args}` standing for the
 /// bash-quoted patterns and the extra `charon` and `cargo` arguments, and
 /// `{charon_lock}` standing for the line that creates the `Cargo.lock` of the
-/// Charon build, or nothing.
+/// Charon build.
 const EXTRACT_SH_TEMPLATE: &str = include_str!("res/extract.sh.template");
 
-/// The `Cargo.lock` that the Charon build of a Solana crate uses, relative to
-/// the crate root. `extract.sh` copies the workspace `Cargo.lock` to it, so
-/// that the patches of the Charon build do not change the workspace one.
+/// The `Cargo.lock` that the Charon build uses, relative to the crate root.
+/// `extract.sh` copies the workspace `Cargo.lock` to it, so that changes for
+/// the Charon build do not change the workspace one.
 const CHARON_LOCK: &str = "lusterna/charon/Cargo.lock";
 
 /// The extra arguments and the `Cargo.lock` of the Charon build in
@@ -37,34 +37,29 @@ pub(super) struct CharonBuild {
     cargo_args: Vec<String>,
     /// The `Cargo.lock`, relative to the crate root, that `extract.sh` copies
     /// to `CHARON_LOCK` before the build.
-    lock: Option<PathBuf>,
+    lock: PathBuf,
 }
 
 impl CharonBuild {
     /// The Charon build of the crate at `crate_root` in the workspace of
-    /// `ws_manifest`. On Solana, it passes `--sysroot default` to Charon, and
-    /// it builds with the `lusterna-stubs` crates in place of the crates of
-    /// the same name and with `CHARON_LOCK`.
+    /// `ws_manifest`. It builds with `CHARON_LOCK`. On Solana, it also passes
+    /// `--sysroot default` to Charon, and it builds with the `lusterna-stubs`
+    /// crates in place of the crates of the same name.
     fn new(platform: &Platform, crate_root: &Path, ws_manifest: &Path) -> Result<Self, io::Error> {
-        Ok(match platform {
-            Platform::Generic => Self::default(),
-            Platform::Solana { .. } => {
-                let mut cargo_args = replacements::patch_args();
-                cargo_args.extend([
-                    "-Zlockfile-path".to_owned(),
-                    "--config".to_owned(),
-                    format!("resolver.lockfile-path=\"{CHARON_LOCK}\""),
-                ]);
-                Self {
-                    charon_args: vec!["--sysroot".to_owned(), "default".to_owned()],
-                    cargo_args,
-                    lock: Some(relative_path(
-                        crate_root,
-                        &ws_manifest.with_file_name("Cargo.lock"),
-                    )?),
-                }
-            }
-        })
+        let mut build = Self {
+            charon_args: Vec::new(),
+            cargo_args: vec![
+                "-Zlockfile-path".to_owned(),
+                "--config".to_owned(),
+                format!("resolver.lockfile-path=\"{CHARON_LOCK}\""),
+            ],
+            lock: relative_path(crate_root, &ws_manifest.with_file_name("Cargo.lock"))?,
+        };
+        if let Platform::Solana { .. } = platform {
+            build.charon_args = vec!["--sysroot".to_owned(), "default".to_owned()];
+            build.cargo_args.extend(replacements::patch_args());
+        }
+        Ok(build)
     }
 }
 
@@ -230,14 +225,12 @@ pub(super) fn make_extraction_script(
             .collect::<Vec<_>>()
             .join(" ")
     };
-    let charon_lock = build.lock.as_ref().map_or(String::new(), |lock| {
-        format!(
-            "mkdir -p {} && cp {} {}",
-            quote_one(Path::new(CHARON_LOCK).parent().unwrap().to_str().unwrap()),
-            quote_one(&lock.display().to_string()),
-            quote_one(CHARON_LOCK)
-        )
-    });
+    let charon_lock = format!(
+        "mkdir -p {} && cp {} {}",
+        quote_one(Path::new(CHARON_LOCK).parent().unwrap().to_str().unwrap()),
+        quote_one(&build.lock.display().to_string()),
+        quote_one(CHARON_LOCK)
+    );
     EXTRACT_SH_TEMPLATE
         .replace("{entrypoints}", &quote(entrypoints))
         .replace("{opaque}", &quote(opaque))
@@ -398,7 +391,7 @@ mod tests {
         let cargo_args = vec!["--config".to_owned(), "a.b=\"c d\"".to_owned()];
         let build = CharonBuild {
             cargo_args: cargo_args.clone(),
-            lock: Some(PathBuf::from("../../Cargo.lock")),
+            lock: PathBuf::from("../../Cargo.lock"),
             ..CharonBuild::default()
         };
         let script = make_extraction_script(&[], &[], &build);
