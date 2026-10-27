@@ -213,6 +213,9 @@ def fixed.types.U68F60.Insts.CoreCmpPartialEqU68F60.eq (a b : fixed.types.U68F60
 def fixed.types.U68F60.Insts.CoreCmpPartialOrdU68F60.partial_cmp (a b : fixed.types.U68F60) : Result (Option Ordering) :=
   ok (some (compare (Lusterna.Fixed.val a) (Lusterna.Fixed.val b)))
 
+def fixed.types.U68F60.Insts.CoreCmpOrd.cmp (a b : fixed.types.U68F60) : Result Ordering :=
+  ok (compare (Lusterna.Fixed.val a) (Lusterna.Fixed.val b))
+
 def fixed.types.U68F60.Insts.CoreCmpPartialEqU64.eq (a : fixed.types.U68F60) (n : Std.U64) : Result Bool :=
   ok (decide (Lusterna.Fixed.val a = n.val * Lusterna.Fixed.scale))
 
