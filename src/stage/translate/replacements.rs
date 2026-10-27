@@ -31,7 +31,7 @@ pub enum ReplacementsError {
 pub struct Replacement {
     /// The name of the crate, and of its stub crate in `lusterna-stubs`.
     pub krate: String,
-    /// The `SolanalibAeneas` class that the Lean models of the items of the
+    /// The `LusternaLib` class that the Lean models of the items of the
     /// crate take their overflow settings from, if the crate has items in the
     /// extraction.
     pub lean: Option<String>,
@@ -160,7 +160,7 @@ mod tests {
         let replacements = [
             Replacement {
                 krate: "fixed".to_owned(),
-                lean: Some("Solanalib.Aeneas.Fixed.Profile".to_owned()),
+                lean: Some("Lusterna.Fixed.Profile".to_owned()),
             },
             Replacement {
                 krate: "fixed-macro-impl".to_owned(),
@@ -173,7 +173,7 @@ mod tests {
 
         assert!(
             module.contains(
-                "instance : Solanalib.Aeneas.Fixed.Profile := { overflowChecks := false, debugAssertions := true }\n"
+                "instance : Lusterna.Fixed.Profile := { overflowChecks := false, debugAssertions := true }\n"
             )
         );
         assert!(!module.contains("fixed-macro-impl"));

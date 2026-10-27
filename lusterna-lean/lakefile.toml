@@ -1,0 +1,31 @@
+# LusternaLib: Lean definitions for the Rust items that lusterna leaves
+# opaque in Solana programs. Each definition has the name and type that
+# Aeneas gives the item, so the `FunsExternal.lean` and `TypesExternal.lean`
+# of an extracted crate can import it instead of redefining it.
+#
+# The paths of `solanalib` and `aeneas` below are for a build of this
+# package on its own, with both checkouts next to the lusterna checkout. A
+# project that requires this package and also requires `solanalib` and
+# `aeneas` itself uses its own paths for them.
+
+name = "lusternaLib"
+defaultTargets = ["LusternaLib"]
+testDriver = "LusternaLibTest"
+
+[leanOptions]
+pp.unicode.fun = true
+autoImplicit = false
+
+[[require]]
+name = "solanalib"
+path = "../../../leanprover-solanalib"
+
+[[require]]
+name = "aeneas"
+path = "../../../aeneas/backends/lean"
+
+[[lean_lib]]
+name = "LusternaLib"
+
+[[lean_lib]]
+name = "LusternaLibTest"

@@ -47,7 +47,7 @@ pub enum Platform {
     /// A Solana program, that is, a crate whose workspace `Cargo.lock` has
     /// `solana-program`. The default opaque patterns also include the Solana
     /// ones and the items of the replaced crates, the Lean project requires
-    /// `SolanalibAeneas`, and the translate agent gets the skill
+    /// `LusternaLib`, and the translate agent gets the skill
     /// `solana-translate`.
     Solana {
         /// Absolute path to the Solanalib checkout.

@@ -46,10 +46,13 @@ const BASE_PROMPT_TEMPLATE: &str = include_str!("res/prompt.md");
 /// standing for the Aeneas checkout.
 const AENEAS_RECIPES_SKILL: &str = include_str!("res/aeneas-recipes.md");
 
-/// The `SKILL.md` of the skill `solana-translate`, with `{solanalib_root}`
-/// standing for the Solanalib checkout and `{replaced_crates}` for the list
-/// of the crates that `lusterna-stubs` replaces.
+/// The `SKILL.md` of the skill `solana-translate`, with
+/// `{lusterna_lean_root}` standing for `LUSTERNA_LEAN` and `{replaced_crates}`
+/// for the list of the crates that `lusterna-stubs` replaces.
 const SOLANA_TRANSLATE_SKILL: &str = include_str!("res/solana-translate.md");
+
+/// The Lean package `LusternaLib`.
+const LUSTERNA_LEAN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/lusterna-lean");
 
 /// The judge prompt of the translate stage, with `{crate_root}`,
 /// `{setup_commit}`, `{briefing}` and `{agent_summary}` standing for the
@@ -233,11 +236,7 @@ impl Stage for TranslateStage {
                 &self.input.aeneas_root.display().to_string(),
             ),
         )];
-        if let Platform::Solana {
-            solanalib_root,
-            replacements,
-        } = &self.input.platform
-        {
+        if let Platform::Solana { replacements, .. } = &self.input.platform {
             let replaced = replacements
                 .iter()
                 .map(|r| format!("`{}`", r.krate))
@@ -246,7 +245,7 @@ impl Stage for TranslateStage {
             skills.push((
                 "solana-translate",
                 SOLANA_TRANSLATE_SKILL
-                    .replace("{solanalib_root}", &solanalib_root.display().to_string())
+                    .replace("{lusterna_lean_root}", LUSTERNA_LEAN)
                     .replace("{replaced_crates}", &replaced),
             ));
         }

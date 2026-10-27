@@ -273,11 +273,13 @@ fn make_lakefile(aeneas_rev: &str) -> String {
 }
 
 /// Returns the content of the Lean project's `lakefile.toml` for a Solana
-/// crate, which requires Aeneas and SolanalibAeneas from the given checkouts.
+/// crate, which requires Aeneas and Solanalib from the given checkouts, and
+/// `LusternaLib`.
 fn make_solana_lakefile(aeneas_root: &Path, solanalib_root: &Path) -> String {
     LAKEFILE_SOLANA_TEMPLATE
         .replace("{aeneas_root}", &aeneas_root.display().to_string())
         .replace("{solanalib_root}", &solanalib_root.display().to_string())
+        .replace("{lusterna_lean_root}", super::LUSTERNA_LEAN)
 }
 
 /// Creates the lean project in `lusterna/lean` of the crate root:
@@ -406,8 +408,14 @@ mod tests {
         assert_eq!(aeneas["name"].as_str(), Some("aeneas"));
         assert_eq!(aeneas["path"].as_str(), Some("/a/backends/lean"));
         let solanalib = &doc["require"][1];
-        assert_eq!(solanalib["name"].as_str(), Some("solanalibAeneas"));
-        assert_eq!(solanalib["path"].as_str(), Some("/s/aeneas"));
+        assert_eq!(solanalib["name"].as_str(), Some("solanalib"));
+        assert_eq!(solanalib["path"].as_str(), Some("/s"));
+        let lusterna_lib = &doc["require"][2];
+        assert_eq!(lusterna_lib["name"].as_str(), Some("lusternaLib"));
+        assert_eq!(
+            lusterna_lib["path"].as_str(),
+            Some(super::super::LUSTERNA_LEAN)
+        );
     }
 
     #[test]

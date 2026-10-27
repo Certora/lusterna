@@ -2,7 +2,7 @@
 # crate. Each one has a stub crate of the same name in a folder of the same
 # name.
 #
-# `lean`: the class of `SolanalibAeneas` that the Lean models of the items of
+# `lean`: the class of `LusternaLib` that the Lean models of the items of
 # the crate take their overflow settings from. lusterna makes the items of
 # such a crate opaque, and declares an instance of the class with the
 # overflow settings that the release profile gives to the crate. A crate
@@ -10,7 +10,7 @@
 
 [[replacement]]
 crate = "fixed"
-lean = "Solanalib.Aeneas.Fixed.Profile"
+lean = "Lusterna.Fixed.Profile"
 
 [[replacement]]
 crate = "fixed-macro-impl"

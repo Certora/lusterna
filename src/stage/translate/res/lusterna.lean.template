@@ -1,5 +1,5 @@
 module
-public import SolanalibAeneas
+public import LusternaLib
 @[expose] public section
 
 {instances}
