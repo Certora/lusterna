@@ -10,6 +10,7 @@ description: Known problems and fixes for the translation of a Solana program wi
 Each entry is a fix that worked once. When the condition of an entry holds, apply the entry.
 
 - Before the first run, pass a separate `--target-dir` after `--` in the `charon` command. Without it, the build output of `cargo build` conflicts with the Charon build.
+- The build of `ahash` 0.7.6 can fail with an unknown feature `stdsimd`. Then change `ahash` to 0.7.8 in the copy of `Cargo.lock` that `extract.sh` makes for the Charon build. Change its `version`, its `checksum` to `891477e0c6a8957309ee5c45a6368af3ae14bb510732d2684ffa19af310920f9`, and each `"ahash 0.7.6"` in the `dependencies` lists.
 - Do not mock the Anchor `AccountLoader`, `Ref`, `RefMut` or `Pubkey`. Do not change the Rust code that uses them. Only the fixes below for `?`, a live `RefMut` and a `&dyn Trait` parameter can change it. The Lean project requires the library `LusternaLib` in `{lusterna_lean_root}`. It defines these items:
   - `core.cell.Ref` and `core.cell.RefMut`, with `deref` and `deref_mut`
   - `solana_program.pubkey.Pubkey`, with `eq`, `default` and `new_from_array`
