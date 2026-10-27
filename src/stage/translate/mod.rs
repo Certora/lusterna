@@ -1,5 +1,6 @@
 mod gate;
 mod setup;
+mod stubs;
 
 use std::path::{Path, PathBuf};
 
@@ -13,7 +14,7 @@ use crate::{
     },
 };
 
-pub use {gate::TranslateGateFailure, setup::TranslateSetupErr};
+pub use {gate::TranslateGateFailure, setup::TranslateSetupErr, stubs::StubsError};
 
 /// Logs at info level with the translate stage's name as the log target.
 macro_rules! translate_info {
@@ -41,13 +42,18 @@ const BASE_PROMPT_TEMPLATE: &str = include_str!("res/prompt.md");
 /// standing for the Aeneas checkout.
 const AENEAS_RECIPES_SKILL: &str = include_str!("res/aeneas-recipes.md");
 
-/// The `SKILL.md` of the skill `solana-translate`.
+/// The `SKILL.md` of the skill `solana-translate`, with
+/// `{lusterna_lean_root}` standing for `LUSTERNA_LEAN` and `{replaced_crates}`
+/// for the list of the crates that `lusterna-stubs` replaces.
 const SOLANA_TRANSLATE_SKILL: &str = include_str!("res/solana-translate.md");
 
+/// The Lean package `LusternaLib`.
+const LUSTERNA_LEAN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/lusterna-lean");
+
 /// The judge prompt of the translate stage, with `{crate_root}`,
-/// `{setup_commit}`, `{briefing}` and `{agent_summary}` standing for the
-/// crate root, the hash of the setup commit, the agent briefing and the
-/// agent's final message.
+/// `{setup_commit}`, `{briefing}`, `{skills}` and `{agent_summary}` standing
+/// for the crate root, the hash of the setup commit, the agent briefing, the
+/// `SKILL.md` content of the agent's skills and the agent's final message.
 const JUDGE_PROMPT_TEMPLATE: &str = include_str!("res/judge.md");
 
 /// The default Charon `--opaque` patterns, one per line.
@@ -55,7 +61,18 @@ pub const DEFAULT_OPAQUE: &str = include_str!("res/default-opaque.txt");
 
 /// The default Charon `--opaque` patterns for crates that depend on
 /// `solana-program`, one per line.
-pub const SOLANA_OPAQUE: &str = include_str!("res/solana-opaque.txt");
+const SOLANA_OPAQUE: &str = include_str!("res/solana-opaque.txt");
+
+/// The default Charon `--opaque` patterns for crates that depend on
+/// `solana-program`: `SOLANA_OPAQUE` and the items of the crates that
+/// `lusterna-stubs` replaces.
+pub fn solana_opaque() -> Vec<String> {
+    SOLANA_OPAQUE
+        .lines()
+        .map(str::to_owned)
+        .chain(stubs::opaque_patterns())
+        .collect()
+}
 
 pub struct TranslateInput {
     /// Absolute path to the workspace of the Rust project.
@@ -141,7 +158,7 @@ fn make_briefing(
     crate_root: &Path,
     entrypoints: &[String],
     opaque: &[String],
-    platform: Platform,
+    platform: &Platform,
 ) -> String {
     let list = |patterns: &[String]| {
         if patterns.is_empty() {
@@ -161,7 +178,7 @@ fn make_briefing(
             "{solana_skill}",
             match platform {
                 Platform::Generic => "",
-                Platform::Solana => " Also read the skill `lusterna:solana-translate`.",
+                Platform::Solana { .. } => " Also read the skill `lusterna:solana-translate`.",
             },
         )
 }
@@ -214,7 +231,7 @@ impl Stage for TranslateStage {
             crate_root,
             &self.input.entrypoints,
             &self.input.opaque,
-            self.input.platform,
+            &self.input.platform,
         )
     }
 
@@ -226,8 +243,18 @@ impl Stage for TranslateStage {
                 &self.input.aeneas_root.display().to_string(),
             ),
         )];
-        if let Platform::Solana = self.input.platform {
-            skills.push(("solana-translate", SOLANA_TRANSLATE_SKILL.to_owned()));
+        if let Platform::Solana { .. } = &self.input.platform {
+            let replaced = stubs::all()
+                .iter()
+                .map(|r| format!("`{}`", r.krate))
+                .collect::<Vec<_>>()
+                .join(", ");
+            skills.push((
+                "solana-translate",
+                SOLANA_TRANSLATE_SKILL
+                    .replace("{lusterna_lean_root}", LUSTERNA_LEAN)
+                    .replace("{replaced_crates}", &replaced),
+            ));
         }
         skills
     }
@@ -239,6 +266,15 @@ impl Stage for TranslateStage {
                 .replace("{crate_root}", &output.crate_root.display().to_string())
                 .replace("{setup_commit}", &setup_outcome.setup_commit)
                 .replace("{briefing}", &self.briefing())
+                .replace(
+                    "{skills}",
+                    &self
+                        .skills()
+                        .into_iter()
+                        .map(|(_, content)| content)
+                        .collect::<Vec<_>>()
+                        .join("\n\n"),
+                )
                 .replace("{agent_summary}", agent_summary),
         )
     }

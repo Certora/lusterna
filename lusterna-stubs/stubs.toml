@@ -1,0 +1,16 @@
+# The crates that lusterna-stubs replaces in the Charon build of a Solana
+# crate. Each one has a stub crate of the same name in a folder of the same
+# name.
+#
+# `lean`: the module of `LusternaLib` with the Lean models of the items of
+# the crate. lusterna makes the items of such a crate opaque, imports the
+# module, and declares the instance of `Lusterna.OverflowSettings` with the
+# overflow settings that the release profile gives to the crate. A crate
+# without `lean` has no items in the extraction, for example a proc macro.
+
+[[stub]]
+crate = "fixed"
+lean = "LusternaLib.Fixed"
+
+[[stub]]
+crate = "fixed-macro-impl"

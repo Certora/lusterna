@@ -7,12 +7,32 @@ description: Known problems and fixes for the translation of a Solana program wi
 
 ## Known problems
 
-Each entry is a fix that worked once. Apply an entry only when its condition holds.
+Each entry is a fix that worked once. When the condition of an entry holds, apply the entry.
 
 - Before the first run, pass a separate `--target-dir` after `--` in the `charon` command. Without it, the build output of `cargo build` conflicts with the Charon build.
-- If the entrypoints reach `Ref` or `RefMut`, the Lean code loses every write through the `RefMut`. An example is `load_mut` of the Anchor `AccountLoader`, or a crate trait that wraps it. Aeneas translates a method that takes `&self` as a function that cannot change `self`, so no Lean definition can fix this. Mock the loader type as follows:
-  - Keep all account values in one store that the functions take by `&mut`, with one entry for each account key. A loader is a key or an index into this store. Two loaders for the same account must reach the same entry. An instruction can pass the same account in several places, for example once in a list of accounts and once on its own. Do not copy an account value into a loader.
-  - `load_mut` returns `&mut T` into the store, and `load` returns `&T`.
-  - Keep each check that the original makes as data in the store. When a check fails, return the same error or panic in the same way. Keep the checks that the original makes when it builds the loader, such as the owner and discriminator checks in `try_from`. Also keep the checks in `load_mut`, such as `AccountNotMutable`.
-  - The original can hold two loads of the same account at the same time. Then the second load fails with a borrow error, and the mock must fail in the same way.
-  - Add equivalence tests where the same account appears in two places, and tests where each check fails. Compare the account state also after an error.
+- Do not mock the Anchor `AccountLoader`, `Ref`, `RefMut` or `Pubkey`. Do not change the Rust code that uses them. Only the fixes below for `?`, a live `RefMut` and a `&dyn Trait` parameter can change it. The Lean project requires the library `LusternaLib` in `{lusterna_lean_root}`. It defines these items:
+  - `core.cell.Ref` and `core.cell.RefMut`, with `deref` and `deref_mut`
+  - `solana_program.pubkey.Pubkey`, with `eq`, `default` and `new_from_array`
+  - the type `anchor_lang.accounts.account_loader.AccountLoader`
+
+  Add `public import LusternaLib` to `TypesExternal.lean` and `FunsExternal.lean`. Delete the axioms of the items that it defines. Then define `AccountLoader.load`, `AccountLoader.load_mut` and `key` of the `Key` impl. Use `load`, `loadMut` and `key` in `Lusterna.Anchor.AccountLoader`. The module doc of `{lusterna_lean_root}/LusternaLib/Anchor/AccountLoader.lean` shows how.
+- Do not mock these crates: {replaced_crates}. `extract.sh` builds the crate with stubs of them, and their items are opaque. `LusternaLib` defines the Lean models of these items. `lusterna/lean/Extraction/Lusterna.lean` gives them the overflow settings of the release profile of the crate. Do not edit it. These entries replace the entries for the same crates in the skill `lusterna:aeneas-recipes`.
+  - Add `public import Extraction.Lusterna` to `TypesExternal.lean` and `FunsExternal.lean`. Delete the axioms of the items that `LusternaLib` defines.
+  - Some items stay axioms, because their types name trait structures that Aeneas writes into the crate's own `Types.lean`. Define each one from the method of the trait instance that it gets. For `fixed`, these are `from_num`, `checked_from_num`, `to_num`, `checked_to_num` and `saturating_to_num` of `fixed.types.U68F60`. An example is `def fixed.types.U68F60.from_num {Src : Type} (inst : fixed.traits.ToFixed Src) (src : Src) := inst.to_fixed src`.
+  - If the Charon build fails with "lusterna: `fixed!` is not available in the Charon build", the crate uses `fixed!` or a macro of `fixed_macro::types`, for example `fraction!` in `use fixed_macro::types::U68F60 as fraction`. For each use, keep the original expression under `#[cfg(not(feature = "lusterna"))]`, and add `U68F60::from_bits(<bits>)` under `#[cfg(feature = "lusterna")]`. Get `<bits>` from `to_bits()` of the original expression in a test build. Add a test that asserts that both are equal.
+  - A stub has only the items that its crate doc in `lusterna-stubs` lists. If the Charon build fails because the crate uses another item, stop and report the item in the final message.
+- If `lake build` fails at `core.result.Result.Insts.CoreOpsTry.branch` on a `core.cell.RefMut` type, the Rust code applies `?` to a `Result<RefMut<_>>`. An example is `loader.get_mut()?`. Aeneas translates the same code with a `match` instead of `?`. For each such `?`, keep the original statement under `#[cfg(not(feature = "lusterna"))]`, and add the statement with a `match` under `#[cfg(feature = "lusterna")]`:
+
+  ```rust
+  #[cfg(not(feature = "lusterna"))]
+  let mut reserve = reserve.get_mut()?;
+  #[cfg(feature = "lusterna")]
+  let mut reserve = match reserve.get_mut() {
+      Ok(v) => v,
+      Err(e) => return Err(From::from(e)),
+  };
+  ```
+
+  Change nothing else in the statement. If the `?` is inside a larger expression, first move the expression with the `?` into a new `let` in both versions. This rewrite needs no equivalence test.
+- Aeneas can fail at a `match` with "Unreachable" or with an error about joining branches. The cause can be a live `RefMut` from `load_mut`, or from a crate method that wraps it. Do not debug this in the Aeneas trace. Move the `load_mut` call and the code that uses the `RefMut` into a new function, so that the `RefMut` ends at the function boundary. Do this for each `RefMut` that is live across a `match`.
+- Aeneas translates a method that takes `&self` as a function that cannot change `self`. So the Lean code loses every write through the `RefMut` of `load_mut`, or of a crate method that wraps it. In the final message, list every entrypoint that reaches `load_mut`, or a crate method that wraps it. These entrypoints write through a loader. Two loaders can be the same account. Also list each function that writes through one loader and then reads through another loader of the same account type.

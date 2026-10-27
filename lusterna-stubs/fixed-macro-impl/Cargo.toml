@@ -1,0 +1,9 @@
+[package]
+name = "fixed-macro-impl"
+version = "1.2.0"
+edition = "2018"
+rust-version = "1.74"
+description = "Stub of fixed-macro-impl, from lusterna-stubs"
+
+[lib]
+proc-macro = true

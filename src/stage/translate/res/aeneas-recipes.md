@@ -41,21 +41,21 @@ Each rewrite must behave exactly like the original for every input.
 
 ## Mocks
 
-Implement the operations of a mock that the entrypoints reach. If the entrypoints reach a trait impl such as `Display`, `Debug` or a serialization trait, give the mock its own body for it. Do not call the original type from the mock, for example `Original::from_bits(self.0).fmt(f)`, because that brings the original type back into the translation.
+Implement the operations of a mock that the entrypoints reach. If the entrypoints reach a trait impl such as a serialization trait, give the mock its own body for it. For `Display` and `Debug`, see the briefing. Do not call the original type from the mock, for example `Original::from_bits(self.0).fmt(f)`, because that brings the original type back into the translation.
 
 ## Known problems
 
 Each entry is a fix that worked once. Apply an entry only when its condition holds.
 
-- If the build of `ahash` fails with an unknown feature `stdsimd`, pass `-Zhost-config -Ztarget-applies-to-host --config target-applies-to-host=false` after `--`, and set `-Zallow-features=<the nightly features that the build needs>` in both `host.rustflags` and `build.rustflags`.
 - The `fixed` crate does not translate. Mock the types of `fixed` that the crate uses, with only the functions that the entrypoints reach.
-- If the entrypoints reach an enum that derives a `num_enum` trait such as `TryFromPrimitive`, replace the derive with a hand-written impl. Do this before the first run. Otherwise Charon panics with "stack depth limit exceeded" at a closure that uses `TryFromPrimitiveError`.
+- Charon can panic with "stack depth limit exceeded" at a closure that uses `TryFromPrimitiveError`. Then the entrypoints reach an enum that derives a `num_enum` trait such as `TryFromPrimitive`. Find that enum in the Charon trace before the panic. Replace its derive with a hand-written impl, then run again. Do not replace the derive on enums that the entrypoints do not reach.
 - If Aeneas fails on a type that the macro `construct_uint!` of the `uint` crate defines, such as `U256`, copy the macro into the crate and rewrite only the parts that fail.
 - If Aeneas crashes while it inlines `{promoted_const}` items, add `--inline-anon-consts` to the `charon` command.
 - If Charon panics with "stack depth limit exceeded", find the item in its trace output. If that item has an iterator chain with closures, replace the chain with a loop.
 - If Aeneas fails on a loop whose body returns early, for example with `?` or `require!`, move the loop unchanged into its own function. Replace that function with a recursive one that handles one element per call and returns the same error at the same element.
 - If Aeneas fails after `?` on a `Result<&mut T, E>`, replace the function that returns it with one that returns an index or a plain value.
 - If Aeneas fails to join the branches of an `if` or `match` because a borrow stays open in one branch, end the borrow before the branch. Copy the value, or move the code that uses the borrow into a helper that returns plain values.
+- If Aeneas fails with "Function pointers are not supported yet", the code calls a method through a `&dyn Trait` parameter. Under the feature, make the function generic with one type parameter for each `&dyn Trait` parameter, for example `repay: &R, withdraw: &W` with `R: Trait, W: Trait`. Callers then compile unchanged. Test the generic version against the original, also with two arguments that are the same value.
 - If Aeneas fails on a function item passed as an `Fn` value, pass a closure that calls it.
 - An `Iterator` instance in `Funs.lean` can have fields that the Lean model of the trait does not have. If `lake build` fails on these fields, add `-filter-trait-methods` to the `aeneas` command.
 - If `lake build` fails where a local variable or a parameter has the same name as a module, rename the variable. For example, Lean reads `market.ops.f` as a field of a parameter named `market`.

@@ -8,6 +8,12 @@ The agent worked under this briefing:
 {briefing}
 </briefing>
 
+The agent had these skills. Their rules apply like the rules of the briefing:
+
+<skills>
+{skills}
+</skills>
+
 This is the agent's final message:
 
 <agent_summary>
@@ -38,7 +44,11 @@ For each definition in `FunsExternal.lean` and `TypesExternal.lean`, do these st
 
 Do not accept a definition because it compiles, has the right type or looks reasonable. If you cannot find the source of the Rust item, report the definition.
 
-Also compare the definitions with the template. Each `axiom` in the template must have a definition with the same name and type, or stay an `axiom` that matches an opaque pattern.
+Also compare the definitions with the template. Each `axiom` in the template must have one of these:
+
+- a definition with the same name and type
+- an `axiom` that matches an opaque pattern
+- a definition in the imported library `LusternaLib`, or in `lusterna/lean/Extraction/Lusterna.lean`, which setup wrote. Do not look for these definitions and do not review them. The gate ran `lake build`, so every `axiom` of the template that `FunsExternal.lean` and `TypesExternal.lean` do not declare has a definition there.
 
 Read every comment in `FunsExternal.lean` and `TypesExternal.lean`. A comment must be true for the file as the agent wrote it. For example, a comment that says that Aeneas generated the file or that the file is a template is false. A doc comment that names a Rust item must name the item that the definition below it models.
 

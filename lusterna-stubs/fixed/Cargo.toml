@@ -1,0 +1,18 @@
+[package]
+name = "fixed"
+version = "1.23.1"
+edition = "2021"
+rust-version = "1.74"
+description = "Stub of fixed for the type U68F60, from lusterna-stubs"
+
+[lib]
+doctest = false
+
+[features]
+std = []
+serde = []
+serde-str = []
+
+[dev-dependencies]
+proptest = "1"
+fixed_real = { package = "fixed", version = "=1.23.1" }

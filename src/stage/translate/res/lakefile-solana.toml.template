@@ -1,0 +1,19 @@
+name = "Extraction"
+defaultTargets = ["Extraction"]
+packagesDir = "{aeneas_root}/backends/lean/.lake/packages"
+
+[[require]]
+name = "aeneas"
+path = "{aeneas_root}/backends/lean"
+
+[[require]]
+name = "solanalib"
+path = "{solanalib_root}"
+
+[[require]]
+name = "lusternaLib"
+path = "{lusterna_lean_root}"
+
+[[lean_lib]]
+name = "Extraction"
+globs = ["Extraction.Lusterna", "Extraction.TypesExternal", "Extraction.Types", "Extraction.FunsExternal", "Extraction.Funs"]

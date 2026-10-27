@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::agent::Effort;
 
 pub const DEFAULT_STAGE_MAX_ATTEMPTS: usize = 5;
@@ -36,14 +38,19 @@ impl Default for Config {
 }
 
 /// The platform that the crate is written for. It selects the default opaque
-/// patterns and the skills that the translate agent gets.
-#[derive(Clone, Copy)]
+/// patterns, the Lean project and the skills that the translate agent gets.
+#[derive(Clone)]
 pub enum Platform {
     /// A crate with no specific platform. The default opaque patterns are
     /// the general ones, and the translate agent gets no platform skill.
     Generic,
     /// A Solana program, that is, a crate whose workspace `Cargo.lock` has
     /// `solana-program`. The default opaque patterns also include the Solana
-    /// ones, and the translate agent gets the skill `solana-translate`.
-    Solana,
+    /// ones and the items of the replaced crates, the Lean project requires
+    /// `LusternaLib`, and the translate agent gets the skill
+    /// `solana-translate`.
+    Solana {
+        /// Absolute path to the Solanalib checkout.
+        solanalib_root: PathBuf,
+    },
 }
