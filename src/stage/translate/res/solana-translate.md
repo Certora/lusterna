@@ -12,7 +12,7 @@ Each entry is a fix that worked once. When the condition of an entry holds, appl
 - Before the first run, pass a separate `--target-dir` after `--` in the `charon` command. Without it, the build output of `cargo build` conflicts with the Charon build.
 - Do not mock the Anchor `AccountLoader`, `Ref`, `RefMut` or `Pubkey`. Do not change the Rust code that uses them, except for the `?` rewrite below. The Lean project requires the library `LusternaLib` in `{lusterna_lean_root}`. It defines these items:
   - `core.cell.Ref` and `core.cell.RefMut`, with `deref` and `deref_mut`
-  - `solana_program.pubkey.Pubkey`, with `eq` and `new_from_array`
+  - `solana_program.pubkey.Pubkey`, with `eq`, `default` and `new_from_array`
   - the type `anchor_lang.accounts.account_loader.AccountLoader`
 
   Add `public import LusternaLib` to `TypesExternal.lean` and `FunsExternal.lean`. Delete the axioms of the items that it defines. Then define `AccountLoader.load`, `AccountLoader.load_mut` and `key` of the `Key` impl. Use `load`, `loadMut` and `key` in `Lusterna.Anchor.AccountLoader`. The module doc of `{lusterna_lean_root}/LusternaLib/Anchor/AccountLoader.lean` shows how.

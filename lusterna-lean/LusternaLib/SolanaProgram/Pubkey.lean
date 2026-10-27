@@ -25,6 +25,13 @@ def solana_program.pubkey.Pubkey.Insts.CoreCmpPartialEqPubkey.eq
     (a b : solana_program.pubkey.Pubkey) : Result Bool :=
   .ok (decide (a.key = b.key))
 
+/-- `<Pubkey as Default>::default`. -/
+def solana_program.pubkey.Pubkey.Insts.CoreDefaultDefault.default :
+    Result solana_program.pubkey.Pubkey :=
+  .ok {
+    key := ⟨⟨(List.replicate 32 (0 : UInt8)).toArray⟩⟩
+    size_eq := by simp [ByteArray.size] }
+
 /-- `Pubkey::new_from_array`. -/
 def solana_program.pubkey.Pubkey.new_from_array (bytes : Array U8 32#usize) :
     Result solana_program.pubkey.Pubkey :=
