@@ -162,11 +162,13 @@ pub fn run<S: Stage>(mut s: S, cfg: &Config) -> Result<S::Output, StageExecution
         agent.set_max_budget(remaining);
         stage_info!(
             S::name(),
-            "starting attempt {}/{}, remaining budget: {}/{} USD",
+            "starting attempt {}/{}, remaining budget: {:.2}/{} USD (agent spent: {:.2} USD, judge spent: {:.2} USD)",
             attempt,
             cfg.stage_max_attempts,
             remaining,
-            cfg.stage_max_budget
+            cfg.stage_max_budget,
+            agent.get_usage().cost_usd,
+            judge_cost
         );
         let t = Instant::now();
         let summary = match agent.run_with_hook(prompt, |s| stage_info!(S::name(), "agent: {}", s,))
@@ -183,18 +185,26 @@ pub fn run<S: Stage>(mut s: S, cfg: &Config) -> Result<S::Output, StageExecution
                 stage_info!(S::name(), "gate passed");
                 match s.judge_prompt(&o, &summary) {
                     Some(judge_prompt) => {
-                        stage_info!(S::name(), "running judge");
                         let t = Instant::now();
                         let remaining_budget =
                             cfg.stage_max_budget as f64 - agent.get_usage().cost_usd - judge_cost;
                         if remaining_budget <= 0.0 {
                             return Err(StageExecutionError::BudgetExhausted(last_rejection));
                         }
+                        stage_info!(
+                            S::name(),
+                            "running judge, remaining budget: {:.2}/{} USD (agent spent: {:.2} USD, judge spent: {:.2} USD)",
+                            remaining_budget,
+                            cfg.stage_max_budget,
+                            agent.get_usage().cost_usd,
+                            judge_cost
+                        );
                         let (defects, cost) = run_judge::<S>(judge_prompt, cfg, remaining_budget)?;
                         judge_cost += cost;
                         stage_info!(S::name(), "judge finished in {}", format_elapsed(t));
                         if defects.is_empty() {
                             stage_info!(S::name(), "judge found no defects, continuing");
+                            log_stage_spent::<S>(cfg, agent.get_usage().cost_usd, judge_cost);
                             return Ok(o);
                         }
                         stage_info!(S::name(), "judge found defects");
@@ -212,6 +222,7 @@ pub fn run<S: Stage>(mut s: S, cfg: &Config) -> Result<S::Output, StageExecution
                     }
                     None => {
                         stage_info!(S::name(), "stage has no judge, continuing");
+                        log_stage_spent::<S>(cfg, agent.get_usage().cost_usd, judge_cost);
                         return Ok(o);
                     }
                 }
@@ -240,6 +251,18 @@ impl fmt::Display for Defect {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}: {}", self.kind, self.detail)
     }
+}
+
+/// Logs what the stage spent of its budget.
+fn log_stage_spent<S: Stage>(cfg: &Config, agent_cost: f64, judge_cost: f64) {
+    stage_info!(
+        S::name(),
+        "stage spent {:.2}/{} USD (agent: {:.2} USD, judge: {:.2} USD)",
+        agent_cost + judge_cost,
+        cfg.stage_max_budget,
+        agent_cost,
+        judge_cost
+    );
 }
 
 /// Returns the feedback prompt for the agent for the defects the judge found

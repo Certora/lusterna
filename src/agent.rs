@@ -181,6 +181,7 @@ impl Agent {
             args.extend(["--effort".to_owned(), effort.to_string()]);
         }
         if let Some(budget) = self.max_budged {
+            let budget = budget + self.usage.cost_usd;
             args.extend(["--max-budget-usd".to_owned(), budget.to_string()]);
         }
         if let Some(schema) = self.json_schema.as_ref() {
@@ -255,6 +256,9 @@ impl Agent {
         if let Ok(per_model) =
             serde_json::from_value::<HashMap<String, ModelUsage>>(event["modelUsage"].clone())
         {
+            // `modelUsage` of a resumed session includes all previous runs of
+            // the session, so it replaces the usage instead of adding to it.
+            self.usage = ModelUsage::default();
             for u in per_model.values() {
                 self.usage.input_tokens += u.input_tokens;
                 self.usage.output_tokens += u.output_tokens;
