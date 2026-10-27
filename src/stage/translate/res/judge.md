@@ -42,7 +42,7 @@ Also compare the definitions with the template. Each `axiom` in the template mus
 
 - a definition with the same name and type
 - an `axiom` that matches an opaque pattern
-- a definition in the imported library `LusternaLib`, or in `lusterna/lean/Extraction/Lusterna.lean`, which setup wrote. Do not review these definitions.
+- a definition in the imported library `LusternaLib`, or in `lusterna/lean/Extraction/Lusterna.lean`, which setup wrote. Do not look for these definitions and do not review them. The gate ran `lake build`, so every `axiom` of the template that `FunsExternal.lean` and `TypesExternal.lean` do not declare has a definition there.
 
 Report a mock of the Anchor `AccountLoader`, `Ref`, `RefMut` or `Pubkey` as `broad_change`. The agent can replace `e?` on a `Result<RefMut<_>>` with `match e { Ok(v) => v, Err(e) => return Err(From::from(e)) }` under the `lusterna` feature. This replacement needs no equivalence test. Report any other change in such a statement as `changed_behavior`.
 
