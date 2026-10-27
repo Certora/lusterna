@@ -46,7 +46,7 @@ Before you write definitions by hand, let Charon translate the items. Add `--inc
 1. Copy each `<name>_Template.lean` to `<name>.lean` in the same directory.
 2. In `<name>.lean`, replace each `axiom` with a `def` (or a type definition) of the same name and type.
 3. Keep an `axiom` only for an item that matches an opaque pattern.
-4. Remove the comment lines at the top of `<name>.lean` that say that Aeneas generated the file or that the file is a template. You write this file, so these lines are false.
+4. Remove the comments that Aeneas wrote at the top of `<name>.lean`: the lines that say that Aeneas generated the file or that the file is a template, and the comments about the `-max-heartbeats` and `-max-recdepth` options. You write this file, so these comments are false.
 
 Each definition must model the Rust item exactly, for every input. Read the source of the Rust item in the standard library or the dependency before you write the definition. The definition must return the same value, return `fail` exactly where the Rust item panics, and have the same overflow behavior. Use the operations of the Aeneas library (`Aeneas.Std`) where it has them. Do not make a definition total where the Rust item can panic, and do not leave out a case.
 
