@@ -8,17 +8,17 @@ The agent worked under this briefing:
 {briefing}
 </briefing>
 
-This is the agent's final message:
+This is the agent's report:
 
-<agent_summary>
-{agent_summary}
-</agent_summary>
+<report>
+{report}
+</report>
 
 ## Find the changes
 
 Every change after commit `{base_commit}` is the agent's work. Run `git -C {workspace_root} diff {base_commit}` to see the changes to tracked files, and `git -C {workspace_root} status --untracked-files=all` to see the new files. A patched copy of a dependency is under `{workspace_root}/lusterna/patches`. Compare it with the source that cargo used before, in `~/.cargo/registry/src` or `~/.cargo/git/checkouts`.
 
-Do not trust the final message. Compare it with the changes that you find.
+Do not trust the report. Compare it with the changes that you find.
 
 ## What to report
 
@@ -30,7 +30,7 @@ Report one defect for each problem. Use one of these kinds:
   - A form selected with `cfg_attr(not(target_os = "solana"), …)` that behaves differently from the form on the target.
   - A patched dependency that changes what it computes.
 - `not_smallest`: a smaller change obeys the rules. Examples: a patched dependency where a `Cargo.lock` bump or a gate at the crate's call site works.
-- `wrong_summary`: the final message leaves out a change, or lists a change that does not exist.
+- `wrong_report`: the report leaves out a change, or lists a change that does not exist.
 
 Report only problems that you can point to in a specific file and item. Do not report style or naming.
 

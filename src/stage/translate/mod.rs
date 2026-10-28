@@ -1,4 +1,5 @@
 mod gate;
+mod report;
 mod setup;
 mod stubs;
 
@@ -14,7 +15,12 @@ use crate::{
     },
 };
 
-pub use {gate::TranslateGateFailure, setup::TranslateSetupErr, stubs::StubsError};
+pub use {
+    gate::TranslateGateFailure,
+    report::{TranslateBlocker, TranslateReport},
+    setup::TranslateSetupErr,
+    stubs::StubsError,
+};
 
 /// Logs at info level with the translate stage's name as the log target.
 macro_rules! translate_info {
@@ -51,9 +57,9 @@ const SOLANA_TRANSLATE_SKILL: &str = include_str!("res/solana-translate.md");
 const LUSTERNA_LEAN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/lusterna-lean");
 
 /// The judge prompt of the translate stage, with `{crate_root}`,
-/// `{setup_commit}`, `{briefing}`, `{skills}` and `{agent_summary}` standing
-/// for the crate root, the hash of the setup commit, the agent briefing, the
-/// `SKILL.md` content of the agent's skills and the agent's final message.
+/// `{setup_commit}`, `{briefing}`, `{skills}` and `{report}` standing for the
+/// crate root, the hash of the setup commit, the agent briefing, the
+/// `SKILL.md` content of the agent's skills and the agent's report.
 const JUDGE_PROMPT_TEMPLATE: &str = include_str!("res/judge.md");
 
 /// The default Charon `--opaque` patterns, one per line.
@@ -121,8 +127,8 @@ pub struct TranslateOutput {
     pub extracted: PathBuf,
     /// Absolute path to the lean project root dir
     pub lean_root: PathBuf,
-    /// The summary of the agent that passed the checks.
-    pub agent_summary: String,
+    /// The report of the agent that passed the checks.
+    pub report: TranslateReport,
 }
 
 pub struct TranslateStage {
@@ -188,6 +194,10 @@ impl Stage for TranslateStage {
 
     type Output = TranslateOutput;
 
+    type Report = TranslateReport;
+
+    type Blocker = TranslateBlocker;
+
     type SetupError = TranslateSetupErr;
 
     type GateFailure = TranslateGateFailure;
@@ -212,7 +222,7 @@ impl Stage for TranslateStage {
         gate_error.to_feedback_prompt()
     }
 
-    fn gate_check(&self, agent_summary: &str) -> Result<Self::Output, GateStop<Self>> {
+    fn gate_check(&self, report: &TranslateReport) -> Result<Self::Output, GateStop<Self>> {
         let setup_outcome = self.setup_outcome.as_ref().expect("Setup not run");
 
         gate::run_gate(&self.input, setup_outcome)?;
@@ -221,7 +231,7 @@ impl Stage for TranslateStage {
             extract_script: setup_outcome.extraction_script.to_owned(),
             extracted: setup_outcome.lean_root.join("Extraction"),
             lean_root: setup_outcome.lean_root.to_owned(),
-            agent_summary: agent_summary.to_string(),
+            report: report.clone(),
         })
     }
 
@@ -259,7 +269,7 @@ impl Stage for TranslateStage {
         skills
     }
 
-    fn judge_prompt(&self, output: &Self::Output, agent_summary: &String) -> Option<String> {
+    fn judge_prompt(&self, output: &Self::Output, report: &TranslateReport) -> Option<String> {
         let setup_outcome = self.setup_outcome.as_ref().expect("Setup not run");
         Some(
             JUDGE_PROMPT_TEMPLATE
@@ -275,7 +285,10 @@ impl Stage for TranslateStage {
                         .collect::<Vec<_>>()
                         .join("\n\n"),
                 )
-                .replace("{agent_summary}", agent_summary),
+                .replace(
+                    "{report}",
+                    &serde_json::to_string_pretty(report).expect("the report serializes"),
+                ),
         )
     }
 }

@@ -107,7 +107,7 @@ macro_rules! msg {
 }
 ```
 
-The replacement must evaluate each argument, because an argument can panic. A test cannot see log output, so these replacements need no equivalence test. List each replaced macro in your final message.
+The replacement must evaluate each argument, because an argument can panic. A test cannot see log output, so these replacements need no equivalence test. List each replaced macro in `rust_changes` of your report.
 
 ## Mock or Lean definitions
 
@@ -131,7 +131,7 @@ Run the tests with `cargo test lusterna_test`, without the `lusterna` feature, s
 
 ## What you must not do
 
-- Do not change the entrypoints or the opaque patterns. If a pattern matches nothing, say so in your final message.
+- Do not change the entrypoints or the opaque patterns. If a pattern matches nothing, list it in `unmatched_opaque_patterns` of your report.
 - Do not use `--exclude` or a new `--opaque` to hide code that the entrypoints reach.
 - Do not edit `lusterna/lean/lakefile.toml`, `lusterna/lean/lean-toolchain` or the Lean files that Aeneas generates.
 - Do not change code that the crate builds without the `lusterna` feature, except to move a failing part into a new function as described above. You can also rename a local variable or a parameter that has the same name as a module. Lean reads a path that starts with that name as a field of the variable.
@@ -141,6 +141,8 @@ You can change other Charon and Aeneas options in `extract.sh` if that helps the
 
 Before the first run of `extract.sh`, read the known problems in the skill `lusterna:aeneas-recipes`.{solana_skill} Then look in `Cargo.toml` and `Cargo.lock` for the crates that the known problems name. If the crate depends on one of them, apply the fix for it before the first run, without waiting for the error. Some of these problems make a run of `extract.sh` take much longer. A run often shows only the next problem, so each fix that you wait for costs one more run.
 
-## Your final message
+## Your result
 
-List every change you made. For each Rust change, give the file, what you replaced, why Charon or Aeneas failed on the original, and the name of its equivalence test. For each Lean definition, give its name and the Rust item that it models. For each `axiom` that you kept, give the opaque pattern that it matches. For each choice that you made between options, give the options and the reason for your choice.
+When you are done, return `Ok` with your report. Fill each field as its description says, and list every change that you made.
+
+Return `Err` only for a reason that the result schema lists. Then the stage stops, and nobody continues your work. For every other problem, keep working.

@@ -14,11 +14,11 @@ The agent had these skills. Their rules apply like the rules of the briefing:
 {skills}
 </skills>
 
-This is the agent's final message:
+This is the agent's report:
 
-<agent_summary>
-{agent_summary}
-</agent_summary>
+<report>
+{report}
+</report>
 
 ## Find the changes
 
@@ -26,7 +26,7 @@ Setup committed its files in commit `{setup_commit}`, before the agent started. 
 
 The agent must put every replacement and every mock behind `feature = "lusterna"`. In the code without the feature, the agent can only move a failing part, unchanged, into a new function. It can also rename a local variable or a parameter that has the same name as a module. Under the feature, code that the entrypoints do not reach does not need to work, and it can have the body `unimplemented!()`.
 
-Do not trust the final message. Compare it with the changes that you find.
+Do not trust the report. Compare it with the changes that you find.
 
 ## Check the Lean definitions with the greatest care
 
@@ -64,7 +64,7 @@ Report one defect for each problem. Use one of these kinds:
 - `changed_original`: the change modifies code that the crate builds without the `lusterna` feature. Moving a failing part, unchanged, into a new function that is called where the part was is allowed. So is renaming a local variable or a parameter that has the same name as a module.
 - `broad_change`: a replacement replaces more than the part that Charon or Aeneas fails on. A replacement of a whole function where the failing part can move into a new function is also this kind. So is a mock that implements functions or trait impls that the entrypoints do not reach.
 - `duplicate_replacement`: two replacements fix the same construct, and one of them can serve both places.
-- `wrong_summary`: the final message leaves out a change, lists a change that does not exist, or names the wrong equivalence test.
+- `wrong_report`: the report leaves out a change, lists a change that does not exist, or names the wrong equivalence test.
 
 Report only problems that you can point to in a specific file and item. Do not report style, naming, performance, or test results.
 

@@ -1,9 +1,11 @@
 use std::{fs, path::PathBuf};
 
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use toml_edit::DocumentMut;
 
 use crate::{
-    stage::{GateStop, Stage},
+    stage::{GateStop, Never, Stage},
     utils::{
         cargo::{self, CargoError},
         git::{self, GitError},
@@ -23,9 +25,9 @@ const BASE_PROMPT_TEMPLATE: &str = include_str!("res/prompt.md");
 const SOLANA_HOST_BUILD_SKILL: &str = include_str!("res/solana-host-build.md");
 
 /// The judge prompt of the pre-translate stage, with `{workspace_root}`,
-/// `{base_commit}`, `{briefing}` and `{agent_summary}` standing for the
-/// workspace root, the hash of `HEAD` when setup ran, the agent briefing and
-/// the agent's final message.
+/// `{base_commit}`, `{briefing}` and `{report}` standing for the workspace
+/// root, the hash of `HEAD` when setup ran, the agent briefing and the agent's
+/// report.
 const JUDGE_PROMPT_TEMPLATE: &str = include_str!("res/judge.md");
 
 pub struct PreTranslateInput {
@@ -35,6 +37,23 @@ pub struct PreTranslateInput {
     pub manifest: PathBuf,
     /// The stderr of the failed `cargo build` of the crate.
     pub build_stderr: String,
+}
+
+/// Every change that the agent made since the start of the stage.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct PreTranslateReport {
+    /// Each change, including each patched copy of a dependency.
+    pub changes: Vec<PreTranslateChange>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct PreTranslateChange {
+    /// The file, relative to the workspace root.
+    pub file: String,
+    /// What changed.
+    pub change: String,
+    /// Why the crate needs the change to build on the host.
+    pub reason: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -96,6 +115,10 @@ impl Stage for PreTranslateStage {
 
     type Output = ();
 
+    type Report = PreTranslateReport;
+
+    type Blocker = Never;
+
     type SetupError = GitError;
 
     type GateFailure = PreTranslateGateFailure;
@@ -150,7 +173,7 @@ impl Stage for PreTranslateStage {
         }
     }
 
-    fn gate_check(&self, _agent_summary: &str) -> Result<(), GateStop<Self>> {
+    fn gate_check(&self, _report: &PreTranslateReport) -> Result<(), GateStop<Self>> {
         let base_commit = self.base_commit.as_ref().expect("Setup not run");
 
         // No tracked file may change, except `.rs` files, `Cargo.lock` and the
@@ -193,7 +216,7 @@ impl Stage for PreTranslateStage {
         })
     }
 
-    fn judge_prompt(&self, _output: &Self::Output, agent_summary: &String) -> Option<String> {
+    fn judge_prompt(&self, _output: &Self::Output, report: &PreTranslateReport) -> Option<String> {
         let base_commit = self.base_commit.as_ref().expect("Setup not run");
         Some(
             JUDGE_PROMPT_TEMPLATE
@@ -203,7 +226,37 @@ impl Stage for PreTranslateStage {
                 )
                 .replace("{base_commit}", base_commit)
                 .replace("{briefing}", &self.briefing())
-                .replace("{agent_summary}", agent_summary),
+                .replace(
+                    "{report}",
+                    &serde_json::to_string_pretty(report).expect("the report serializes"),
+                ),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn judge_prompt_contains_the_report() {
+        let mut stage = PreTranslateStage::new(PreTranslateInput {
+            workspace_root: PathBuf::from("/ws"),
+            manifest: PathBuf::from("/ws/Cargo.toml"),
+            build_stderr: String::new(),
+        });
+        stage.base_commit = Some("abc123".to_owned());
+        let report = PreTranslateReport {
+            changes: vec![PreTranslateChange {
+                file: "src/lib.rs".to_owned(),
+                change: "gated a size check".to_owned(),
+                reason: "it fails on the host".to_owned(),
+            }],
+        };
+
+        let prompt = stage.judge_prompt(&(), &report).unwrap();
+
+        assert!(prompt.contains(&serde_json::to_string_pretty(&report).unwrap()));
+        assert!(!prompt.contains("{report}"));
     }
 }

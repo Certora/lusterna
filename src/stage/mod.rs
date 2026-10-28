@@ -9,7 +9,7 @@ use std::{
 };
 
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{
     agent::{Agent, AgentError},
@@ -22,6 +22,13 @@ pub trait Stage: Sized {
     type Input;
 
     type Output: Serialize;
+
+    /// What the agent did, which it returns when it finishes the stage.
+    type Report: Serialize + DeserializeOwned + JsonSchema;
+
+    /// The reasons for which the agent can stop the stage. Use [`Never`] for
+    /// a stage that the agent cannot stop.
+    type Blocker: Display + DeserializeOwned + JsonSchema;
 
     type SetupError: Error;
 
@@ -69,14 +76,42 @@ pub trait Stage: Sized {
     /// The stage's gate checks. These check evaluate whether the agent that
     /// executes the stage worked correctly. If a gate check failed, then
     /// this is returned to the
-    /// `agent_summary` is the agent's final message.
-    fn gate_check(&self, agent_summary: &str) -> Result<Self::Output, GateStop<Self>>;
+    /// `report` is the agent's report.
+    fn gate_check(&self, report: &Self::Report) -> Result<Self::Output, GateStop<Self>>;
 
     /// The prompt for the judge, or `None` if the stage has no judge.
     /// By default, no judge is run.
-    fn judge_prompt(&self, _output: &Self::Output, _agent_summary: &String) -> Option<String> {
+    fn judge_prompt(&self, _output: &Self::Output, _report: &Self::Report) -> Option<String> {
         None
     }
+}
+
+/// The blocker type of a stage that the agent cannot stop.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub enum Never {}
+
+impl Display for Never {
+    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {}
+    }
+}
+
+// The agent's structured output: its report, or the reason why it stopped
+// the stage. `--json-schema` requires an object at the top level, so the
+// `Result` is in a field.
+#[derive(Deserialize, JsonSchema)]
+struct AgentResult<R, B> {
+    result: Result<R, B>,
+}
+
+/// Returns the JSON schema of `T` for `claude --json-schema`, which only
+/// accepts draft-07 schemas. `schema_for!` generates a draft 2020-12 schema,
+/// which it rejects.
+fn json_schema<T: JsonSchema>() -> Result<String, serde_json::Error> {
+    let schema = schemars::generate::SchemaSettings::draft07()
+        .into_generator()
+        .into_root_schema_for::<T>();
+    serde_json::to_string(&schema)
 }
 
 /// Why a check stopped the gate.
@@ -107,6 +142,8 @@ pub enum StageExecutionError<S: Stage> {
     MaxRetries(Option<AttemptRejected<S>>),
     #[error("budget exhausted{}", .0.as_ref().map(|r| format!(", {r}")).unwrap_or_default())]
     BudgetExhausted(Option<AttemptRejected<S>>),
+    #[error("the agent stopped the stage: {0}")]
+    Blocked(S::Blocker),
     #[error(transparent)]
     AgentError(#[from] AgentError),
 }
@@ -159,6 +196,9 @@ pub fn run<S: Stage>(
     agent.set_effort(cfg.effort);
     agent.set_model(cfg.model.clone());
     agent.set_dir(dir.to_owned());
+    agent.set_json_schema(
+        json_schema::<AgentResult<S::Report, S::Blocker>>().map_err(AgentError::from)?,
+    );
     let mut judge_cost = 0.0;
 
     for attempt in 0..cfg.stage_max_attempts {
@@ -179,11 +219,11 @@ pub fn run<S: Stage>(
         );
         if attempt > 0 {
             prompt.push_str(
-                "\nIn your final message, list every change that you made since the start of the stage.\n",
+                "\nIn your report, list every change that you made since the start of the stage.\n",
             );
         }
         let t = Instant::now();
-        let summary = match agent.run_with_hook(prompt, |s| stage_info!(S::name(), "agent: {}", s,))
+        let output = match agent.run_with_hook(prompt, |s| stage_info!(S::name(), "agent: {}", s,))
         {
             Err(AgentError::BudgetExhausted) => {
                 return Err(StageExecutionError::BudgetExhausted(last_rejection));
@@ -191,11 +231,24 @@ pub fn run<S: Stage>(
             r => r?,
         };
         stage_info!(S::name(), "agent finished in {}", format_elapsed(t));
-        stage_debug!(S::name(), "agent summary: {}", summary);
-        match s.gate_check(&summary) {
+        let result: AgentResult<S::Report, S::Blocker> =
+            serde_json::from_str(&output).map_err(AgentError::from)?;
+        let report = match result.result {
+            Ok(report) => report,
+            Err(blocker) => {
+                log_stage_spent::<S>(cfg, agent.get_usage().cost_usd, judge_cost);
+                return Err(StageExecutionError::Blocked(blocker));
+            }
+        };
+        stage_debug!(
+            S::name(),
+            "agent report: {}",
+            serde_json::to_string_pretty(&report).map_err(AgentError::from)?
+        );
+        match s.gate_check(&report) {
             Ok(o) => {
                 stage_info!(S::name(), "gate passed");
-                match s.judge_prompt(&o, &summary) {
+                match s.judge_prompt(&o, &report) {
                     Some(judge_prompt) => {
                         let t = Instant::now();
                         let remaining_budget =
@@ -311,15 +364,64 @@ fn run_judge<S: Stage>(
     judge_agent.set_effort(cfg.effort);
     judge_agent.set_model(cfg.model.clone());
     judge_agent.set_dir(dir.to_owned());
-    // `claude --json-schema` only accepts draft-07 schemas. `schema_for!`
-    // generates a draft 2020-12 schema, which it rejects.
-    let schema = schemars::generate::SchemaSettings::draft07()
-        .into_generator()
-        .into_root_schema_for::<Verdict>();
-    judge_agent.set_json_schema(serde_json::to_string(&schema)?);
+    judge_agent.set_json_schema(json_schema::<Verdict>()?);
 
     let judge_output =
         judge_agent.run_with_hook(judge_prompt, |s| stage_info!(S::name(), "judge: {}", s))?;
     let verdict: Verdict = serde_json::from_str(&judge_output)?;
     Ok((verdict.defects, judge_agent.get_usage().cost_usd))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::stage::{
+        pre_translate::PreTranslateReport,
+        translate::{TranslateBlocker, TranslateReport},
+    };
+
+    type TranslateResult = AgentResult<TranslateReport, TranslateBlocker>;
+    type PreTranslateResult = AgentResult<PreTranslateReport, Never>;
+
+    #[test]
+    fn agent_result_schemas_are_draft_07_objects() {
+        for schema in [
+            json_schema::<TranslateResult>().unwrap(),
+            json_schema::<PreTranslateResult>().unwrap(),
+        ] {
+            let schema: serde_json::Value = serde_json::from_str(&schema).unwrap();
+            assert_eq!(schema["$schema"], "http://json-schema.org/draft-07/schema#");
+            assert_eq!(schema["type"], "object");
+        }
+    }
+
+    #[test]
+    fn agent_result_without_blocker_parses_a_report() {
+        let result: PreTranslateResult =
+            serde_json::from_str(r#"{"result": {"Ok": {"changes": []}}}"#).unwrap();
+        assert!(result.result.is_ok());
+    }
+
+    #[test]
+    fn agent_result_parses_a_report_and_a_blocker() {
+        let report: TranslateResult = serde_json::from_str(
+            r#"{"result": {"Ok": {
+                "extract_changes": [], "rust_changes": [], "lean_definitions": [],
+                "kept_axioms": [], "unmatched_opaque_patterns": [], "notes": []
+            }}}"#,
+        )
+        .unwrap();
+        assert!(report.result.is_ok());
+
+        let blocker: TranslateResult = serde_json::from_str(
+            r#"{"result": {"Err": {"missing_stub_item": {
+                "crate": "uint", "item": "From<i32>", "used_by": "decimal-wad src/rate.rs"
+            }}}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            blocker.result,
+            Err(TranslateBlocker::MissingStubItem { .. })
+        ));
+    }
 }
