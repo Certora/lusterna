@@ -125,7 +125,7 @@ A trait impl that matches an opaque pattern, such as `Display` or `Debug`, stays
 
 ## Equivalence tests
 
-For every replacement, add a test in a `#[cfg(test)] mod lusterna_test` next to it. The harness runs only the tests whose path contains `lusterna_test`. The test calls the original and the replacement with the same inputs and compares the results. Use many random inputs and add the edge cases: zero, the maximum value, values that overflow, and empty collections. If a dependency for random inputs is not available, use a loop over a simple seeded generator.
+For every replacement, add a test in a `#[cfg(test)] mod lusterna_test` next to it. The harness runs only the tests whose path contains `lusterna_test`. The test calls the original and the replacement with the same inputs and compares the results. Use many random inputs from the `proptest` crate, and add the edge cases: zero, the maximum value, values that overflow, and empty collections. If the crate does not list `proptest` in `[dev-dependencies]`, add it there.
 
 Run the tests with `cargo test lusterna_test`, without the `lusterna` feature, so that the original code is the real one.
 
