@@ -4,7 +4,6 @@ use std::{
     path::PathBuf,
 };
 
-use charon_lib::export::{CharonVersion, CrateData};
 use clap::Parser;
 
 #[derive(Parser)]
@@ -24,14 +23,7 @@ fn main() -> anyhow::Result<()> {
         None => Box::new(BufWriter::new(io::stdout().lock())),
     };
     match llbc_rewrite::run(&cli.llbc)? {
-        Some(translated) => serde_json::to_writer(
-            &mut writer,
-            &CrateData {
-                charon_version: CharonVersion(charon_lib::VERSION.to_owned()),
-                translated,
-                has_errors: false,
-            },
-        )?,
+        Some(crate_data) => serde_json::to_writer(&mut writer, &crate_data)?,
         None => writer.write_all(&fs::read(&cli.llbc)?)?,
     }
     writer.flush()?;

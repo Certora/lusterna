@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use charon_lib::ullbc_ast::TranslatedCrate;
+use charon_lib::{export::CrateData, options::SerializationFormat, ullbc_ast::TranslatedCrate};
 
 mod dyn_param_to_type_param;
 
@@ -19,8 +19,8 @@ const RULES: &[fn(&TranslatedCrate) -> Result<Option<TranslatedCrate>, RewriteEr
 const MAX_ITERS: usize = 100;
 
 /// If no rewrite rule was applied, return `Ok(None)`
-pub fn run(llbc: &Path) -> anyhow::Result<Option<TranslatedCrate>> {
-    let mut current = charon_lib::deserialize_llbc(llbc)?;
+pub fn run(llbc: &Path) -> anyhow::Result<Option<CrateData>> {
+    let mut current = CrateData::deserialize_from_file(llbc, SerializationFormat::Json)?;
     let mut applied = false;
     let mut changed = true;
     let mut i = 0;
@@ -28,8 +28,8 @@ pub fn run(llbc: &Path) -> anyhow::Result<Option<TranslatedCrate>> {
         i += 1;
         changed = false;
         for rule in RULES {
-            if let Some(next) = rule(&current)? {
-                current = next;
+            if let Some(next) = rule(&current.translated)? {
+                current.translated = next;
                 changed = true;
                 applied = true;
             }

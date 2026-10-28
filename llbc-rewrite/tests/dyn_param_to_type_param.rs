@@ -75,7 +75,9 @@ fn assert_rewritten(dir: &Path, translated: TranslatedCrate) {
 fn rewrite(name: &str) -> (tempfile::TempDir, Option<TranslatedCrate>) {
     let dir = tempfile::tempdir().unwrap();
     let llbc = charon(dir.path(), name);
-    let result = llbc_rewrite::run(&llbc).unwrap();
+    let result = llbc_rewrite::run(&llbc)
+        .unwrap()
+        .map(|crate_data| crate_data.translated);
     (dir, result)
 }
 
