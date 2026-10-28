@@ -66,3 +66,24 @@ example :
 example :
     core.result.Result.ok (.Err 1 : core.result.Result Nat Nat) = .ok none ∧
     core.result.Result.is_err (.Err 1 : core.result.Result Nat Nat) = .ok true := ⟨rfl, rfl⟩
+
+/-- `u64::try_from(u128)` fails above `u64::MAX`. -/
+example : U64.Insts.CoreConvertTryFromU128TryFromIntError.try_from 18446744073709551616#u128 =
+    .ok (.Err ()) := by
+  simp [U64.Insts.CoreConvertTryFromU128TryFromIntError.try_from, core.num.tryFromUScalar,
+    U64.max_eq]
+
+/-- `u64::try_from(i64)` fails on a negative value. -/
+example : U64.Insts.CoreConvertTryFromI64TryFromIntError.try_from (-1)#i64 = .ok (.Err ()) := by
+  simp [U64.Insts.CoreConvertTryFromI64TryFromIntError.try_from, core.num.tryFromIScalarToUScalar]
+
+/-- `saturating_mul` stops at `MAX` for unsigned and at `MIN` for signed types. -/
+example : core.num.U8.saturating_mul 16#u8 16#u8 = .ok 255#u8 := by
+  simp [core.num.U8.saturating_mul, UScalar.saturating_mul, U8.max_eq]
+  decide
+example : core.num.I8.saturating_mul (-16)#i8 16#i8 = .ok (-128)#i8 := by
+  simp [core.num.I8.saturating_mul, IScalar.saturating_mul, I8.max_eq, I8.min_eq]
+  decide
+
+/-- `max_value` is `MAX`. -/
+example : core.num.U64.max_value = .ok core.num.U64.MAX := rfl
