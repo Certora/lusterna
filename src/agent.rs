@@ -145,11 +145,6 @@ impl Agent {
         &self.usage
     }
 
-    /// Return the agents final message
-    pub fn run(&mut self, prompt: String) -> Result<String, AgentError> {
-        self.run_with_hook(prompt, |_| {})
-    }
-
     pub fn run_with_hook(
         &mut self,
         prompt: String,
