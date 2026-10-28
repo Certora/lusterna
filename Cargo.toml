@@ -1,5 +1,15 @@
 [workspace]
-members = ["llbc-rewrite","lusterna-stubs/fixed", "lusterna-stubs/fixed-macro-impl", "lusterna-stubs/uint"]
+members = [
+  "llbc-rewrite",
+  "lusterna-stubs/fixed",
+  "lusterna-stubs/fixed-macro-impl",
+  "lusterna-stubs/uint",
+]
+
+[workspace.dependencies]
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+anyhow = "1.0.104"
 
 [package]
 name = "lusterna"
@@ -7,7 +17,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1.0.104"
+anyhow = { workspace = true }
 clap = { version = "4.6.7", features = ["derive", "env"] }
 derive_more = { version = "2.1.1", features = ["display"] }
 env_logger = "0.11.11"
@@ -15,9 +25,9 @@ humantime = "2.4.0"
 log = "0.4.34"
 schemars = "1.2.3"
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
+serde_json = { workspace = true }
 tempfile = "3.27.0"
-thiserror = "2.0.21"
+thiserror = { workspace = true }
 toml_edit = "0.25.17"
 uuid = { version = "1.28.0", features = ["v4"] }
 
