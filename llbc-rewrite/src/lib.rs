@@ -16,12 +16,16 @@ pub trait RewriteRule {
 const RULES: &[fn(&TranslatedCrate) -> Result<Option<TranslatedCrate>, RewriteError>] =
     &[DynParamToTypeParam::apply];
 
+const MAX_ITERS: usize = 100;
+
 /// If no rewrite rule was applied, return `Ok(None)`
 pub fn run(llbc: &Path) -> anyhow::Result<Option<TranslatedCrate>> {
     let mut current = charon_lib::deserialize_llbc(llbc)?;
     let mut applied = false;
     let mut changed = true;
-    while changed {
+    let mut i = 0;
+    while changed && i < MAX_ITERS {
+        i += 1;
         changed = false;
         for rule in RULES {
             if let Some(next) = rule(&current)? {
