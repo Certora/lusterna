@@ -17,10 +17,17 @@ use crate::{
 
 /// The extraction script `lusterna/extract.sh`, with `{entrypoints}`,
 /// `{opaque}`, `{charon_args}` and `{cargo_args}` standing for the
-/// bash-quoted patterns and the extra `charon` and `cargo` arguments, and
+/// bash-quoted patterns and the extra `charon` and `cargo` arguments,
 /// `{charon_lock}` standing for the line that creates the `Cargo.lock` of the
-/// Charon build.
+/// Charon build, `{llbc_rewrite}` for the line that runs `LLBC_REWRITE` or
+/// nothing, and `{aeneas_llbc}` for the LLBC file that Aeneas reads.
 const EXTRACT_SH_TEMPLATE: &str = include_str!("res/extract.sh.template");
+
+/// The `llbc-rewrite` binary of this workspace.
+const LLBC_REWRITE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/target/release/llbc-rewrite");
+
+/// The output of `LLBC_REWRITE` in `extract.sh`, relative to the crate root.
+pub(super) const REWRITTEN_LLBC: &str = "lusterna/rewritten.llbc";
 
 /// `lusterna/rustc`, the `RUSTC` of the Charon build. It runs the `rustc` in
 /// `PATH` and removes `-nightly` from the version that it prints, so that the
@@ -185,8 +192,13 @@ pub(super) fn run_setup(input: &TranslateInput) -> Result<SetupOutcome, Translat
     );
 
     let charon_build = CharonBuild::new(&input.platform, crate_root, &ws_manifest)?;
-    let extraction_script =
-        create_extraction_script(crate_root, &input.entrypoints, &input.opaque, &charon_build)?;
+    let extraction_script = create_extraction_script(
+        crate_root,
+        &input.entrypoints,
+        &input.opaque,
+        &charon_build,
+        input.skip_llbc_rewrites,
+    )?;
 
     translate_info!(
         "setup: created extraction script at {}",
@@ -221,12 +233,21 @@ pub(super) fn run_setup(input: &TranslateInput) -> Result<SetupOutcome, Translat
     })
 }
 
+/// Returns the line of `extract.sh` that runs `LLBC_REWRITE` on the Charon
+/// output and writes `REWRITTEN_LLBC`.
+pub(super) fn llbc_rewrite_line() -> String {
+    format!("\"{LLBC_REWRITE}\" lusterna/extraction.llbc --out {REWRITTEN_LLBC}")
+}
+
 /// Returns the content of `lusterna/extract.sh` for the given Charon
-/// `--start-from` and `--opaque` patterns and Charon build.
+/// `--start-from` and `--opaque` patterns and Charon build. Unless
+/// `skip_llbc_rewrites`, Aeneas reads the Charon output rewritten by
+/// `LLBC_REWRITE`.
 pub(super) fn make_extraction_script(
     entrypoints: &[String],
     opaque: &[String],
     build: &CharonBuild,
+    skip_llbc_rewrites: bool,
 ) -> String {
     let quote_one = |s: &str| format!("'{}'", s.replace('\'', r"'\''"));
     let quote = |patterns: &[String]| {
@@ -242,12 +263,19 @@ pub(super) fn make_extraction_script(
         quote_one(&build.lock.display().to_string()),
         quote_one(CHARON_LOCK)
     );
+    let (llbc_rewrite, aeneas_llbc) = if skip_llbc_rewrites {
+        (String::new(), "lusterna/extraction.llbc")
+    } else {
+        (llbc_rewrite_line(), REWRITTEN_LLBC)
+    };
     EXTRACT_SH_TEMPLATE
         .replace("{entrypoints}", &quote(entrypoints))
         .replace("{opaque}", &quote(opaque))
         .replace("{charon_args}", &quote(&build.charon_args))
         .replace("{cargo_args}", &quote(&build.cargo_args))
         .replace("{charon_lock}", &charon_lock)
+        .replace("{llbc_rewrite}", &llbc_rewrite)
+        .replace("{aeneas_llbc}", aeneas_llbc)
 }
 
 /// Returns the content of the Lean project's `lakefile.toml` for the given
@@ -270,7 +298,8 @@ fn make_solana_lakefile(aeneas_root: &Path, solanalib_root: &Path) -> String {
 /// - writes `lakefile` as `lakefile.toml`
 /// - writes the `lean-toolchain` and calls `lake update`
 /// - writes `lusterna/.gitignore`, which ignores the project's `.lake`,
-///   `lusterna/extraction.llbc` and the folder of `CHARON_LOCK`
+///   `lusterna/extraction.llbc`, `REWRITTEN_LLBC` and the folder of
+///   `CHARON_LOCK`
 ///
 /// Returns the path to the lean project root.
 /// Returns an error if failed.
@@ -283,7 +312,7 @@ fn init_lake_project(
     fs::create_dir_all(&lean_root)?;
     fs::write(
         crate_root.join("lusterna").join(".gitignore"),
-        "/lean/.lake/\n/extraction.llbc\n/charon/\n",
+        "/lean/.lake/\n/extraction.llbc\n/rewritten.llbc\n/charon/\n",
     )?;
     fs::write(lean_root.join("lakefile.toml"), lakefile)?;
     fs::write(
@@ -304,11 +333,15 @@ fn create_extraction_script(
     entrypoints: &[String],
     opaque: &[String],
     build: &CharonBuild,
+    skip_llbc_rewrites: bool,
 ) -> Result<PathBuf, io::Error> {
     let path = crate_root.join("lusterna").join("extract.sh");
 
     fs::create_dir_all(path.parent().unwrap())?;
-    fs::write(&path, make_extraction_script(entrypoints, opaque, build))?;
+    fs::write(
+        &path,
+        make_extraction_script(entrypoints, opaque, build, skip_llbc_rewrites),
+    )?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
     let rustc = crate_root.join("lusterna").join("rustc");
     fs::write(&rustc, RUSTC_SH)?;
@@ -352,7 +385,7 @@ mod tests {
         ];
         let opaque = vec!["crate::a b".to_owned(), "'".to_owned()];
 
-        let script = make_extraction_script(&entrypoints, &opaque, &CharonBuild::default());
+        let script = make_extraction_script(&entrypoints, &opaque, &CharonBuild::default(), false);
 
         assert_eq!(bash_array(&script, "ENTRYPOINTS"), entrypoints);
         assert_eq!(bash_array(&script, "OPAQUE"), opaque);
@@ -360,7 +393,7 @@ mod tests {
 
     #[test]
     fn extract_sh_allows_empty_patterns() {
-        let script = make_extraction_script(&[], &[], &CharonBuild::default());
+        let script = make_extraction_script(&[], &[], &CharonBuild::default(), false);
 
         assert!(bash_array(&script, "ENTRYPOINTS").is_empty());
         assert!(bash_array(&script, "OPAQUE").is_empty());
@@ -408,7 +441,7 @@ mod tests {
             lock: PathBuf::from("../../Cargo.lock"),
             ..CharonBuild::default()
         };
-        let script = make_extraction_script(&[], &[], &build);
+        let script = make_extraction_script(&[], &[], &build, false);
 
         assert_eq!(bash_array(&script, "CARGO_ARGS"), cargo_args);
         assert!(script.contains(

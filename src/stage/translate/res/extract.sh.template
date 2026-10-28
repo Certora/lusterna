@@ -16,4 +16,5 @@ for p in "${OPAQUE[@]}"; do args+=(--opaque "$p"); done
 
 export RUSTC="$PWD/lusterna/rustc"
 charon cargo --preset=aeneas "${CHARON_ARGS[@]}" "${args[@]}" --dest-file "$PWD/lusterna/extraction.llbc" -- --release --features lusterna "${CARGO_ARGS[@]}"
-aeneas -backend lean -split-files -subdir Extraction -dest lusterna/lean lusterna/extraction.llbc
+{llbc_rewrite}
+aeneas -backend lean -split-files -subdir Extraction -dest lusterna/lean {aeneas_llbc}

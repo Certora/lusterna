@@ -2,7 +2,7 @@ You are the translate stage of Lusterna. Your task is to make Charon and Aeneas 
 
 ## What is already set up
 
-- `lusterna/extract.sh` runs Charon and then Aeneas on the crate, with the feature `lusterna` enabled. Aeneas writes the Lean modules `Types.lean` and `Funs.lean` to `lusterna/lean/Extraction/`. If some items have no body, Aeneas also writes `TypesExternal_Template.lean` and `FunsExternal_Template.lean` there.
+- `lusterna/extract.sh` runs Charon and then Aeneas on the crate, with the feature `lusterna` enabled. Aeneas writes the Lean modules `Types.lean` and `Funs.lean` to `lusterna/lean/Extraction/`. If some items have no body, Aeneas also writes `TypesExternal_Template.lean` and `FunsExternal_Template.lean` there.{llbc_rewrite}
 - `lusterna/lean` is a Lake project that depends on the Aeneas Lean library.
 - The crate's `Cargo.toml` has an empty feature `lusterna`.
 - Setup committed these files in git. Do not create commits, and do not change the git history, the branches or the stash.

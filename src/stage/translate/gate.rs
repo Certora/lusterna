@@ -28,6 +28,9 @@ const EQUIV_TEST_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// keeps.
 const EXTRACTION_STDERR_LIMIT: usize = 64 * 1024;
 
+/// The exit code of `llbc-rewrite` on an error.
+const LLBC_REWRITE_EXIT_CODE: i32 = 70;
+
 #[derive(Debug, thiserror::Error)]
 pub enum TranslateGateError {
     #[error("Error running git: {0}")]
@@ -38,6 +41,8 @@ pub enum TranslateGateError {
     Lake(#[from] LakeError),
     #[error("Cargo error: {0}")]
     Cargo(#[from] CargoError),
+    #[error("llbc-rewrite failed:\n{stderr}")]
+    LlbcRewrite { stderr: String },
 }
 
 #[derive(Debug, derive_more::Display)]
@@ -50,6 +55,8 @@ pub enum TranslateGateFailure {
     ExtractionScriptArgsNotPassed,
     #[display("extraction script does not pass --release to charon")]
     ExtractionScriptNotRelease,
+    #[display("extraction script does not run llbc-rewrite before aeneas")]
+    ExtractionScriptNoLlbcRewrite(String),
     #[display("extraction script failed")]
     ExtractionScriptFailed { stderr: String },
     #[display("lake build failed")]
@@ -110,6 +117,8 @@ where
 /// - no file that the setup commit tracks is deleted
 /// - the extraction script passes the input entrypoints and opaque patterns to
 ///   Charon
+/// - unless `input.skip_llbc_rewrites`, the extraction script runs
+///   `llbc-rewrite` and Aeneas reads its output
 /// - the extraction script runs without error
 /// - for every `<module>_Template.lean` of `EXTERNAL_MODULES` in `Extraction/`,
 ///   the file `<module>.lean` exists and contains no `HOLE_WORDS`
@@ -138,6 +147,11 @@ pub(super) fn run_gate(
 
     // The entrypoints and opaque patterns must match the given inputs
     check_patterns(extraction_script, &input.entrypoints, &input.opaque)?;
+
+    // Aeneas must read the output of `llbc-rewrite`
+    if !input.skip_llbc_rewrites {
+        check_llbc_rewrite(extraction_script)?;
+    }
 
     // Running the extraction script must succeed
     run_script(extraction_script)?;
@@ -202,6 +216,14 @@ impl TranslateGateFailure {
                 "The `charon` command in `extraction.sh` does not pass `--release` to cargo.\n\n\
                  Add `--release` after `--` on that line, so that Charon compiles the crate \
                  with the overflow checks of the release build.",
+            ),
+            TranslateGateFailure::ExtractionScriptNoLlbcRewrite(line) => format!(
+                "`extraction.sh` must contain this line unchanged, and the `aeneas` command \
+                 must read `{}`:\n\n```\n{line}\n```\n\n\
+                 Restore both. If Aeneas fails on a function that `llbc-rewrite` changed, \
+                 change the Rust code of that function so that the rewrite no longer applies \
+                 to it.",
+                setup::REWRITTEN_LLBC
             ),
             TranslateGateFailure::ExtractionScriptFailed { stderr } => format!(
                 "The extraction.sh script failed with this output:\n\n```\n{stderr}\n```\n\n\
@@ -300,7 +322,8 @@ fn check_patterns(
             || line.contains("--start-from")
             || line.contains("--opaque")
     };
-    let expected = setup::make_extraction_script(entrypoints, opaque, &CharonBuild::default());
+    let expected =
+        setup::make_extraction_script(entrypoints, opaque, &CharonBuild::default(), false);
     let expected_lines: Vec<&str> = expected.lines().filter(|l| sets_patterns(l)).collect();
 
     if let Some(line) = expected_lines.iter().find(|l| !lines.contains(l)) {
@@ -330,6 +353,25 @@ fn check_patterns(
     {
         return Err(GateStop::Failure(
             TranslateGateFailure::ExtractionScriptNotRelease,
+        ));
+    }
+    Ok(())
+}
+
+/// Checks that the extraction script `script` contains the line
+/// `setup::llbc_rewrite_line` and that the `aeneas` command reads
+/// `setup::REWRITTEN_LLBC`.
+fn check_llbc_rewrite(script: &Path) -> Result<(), GateStop> {
+    let content = fs::read_to_string(script)?;
+    let lines: Vec<&str> = content.lines().map(str::trim).collect();
+    let line = setup::llbc_rewrite_line();
+    if !lines.contains(&line.as_str())
+        || !lines
+            .iter()
+            .any(|l| l.starts_with("aeneas ") && l.contains(setup::REWRITTEN_LLBC))
+    {
+        return Err(GateStop::Failure(
+            TranslateGateFailure::ExtractionScriptNoLlbcRewrite(line),
         ));
     }
     Ok(())
@@ -368,7 +410,8 @@ fn check_externals(dir: &Path) -> Result<(), GateStop> {
 }
 
 /// Runs the extraction script `script` and fails with the end of its stderr if
-/// it exits with a non-zero status.
+/// it exits with a non-zero status. The failure is an error if the status is
+/// `LLBC_REWRITE_EXIT_CODE`.
 ///
 /// Charon and Aeneas can print gigabytes of output on a large crate, so stdout
 /// is discarded and only the last `EXTRACTION_STDERR_LIMIT` bytes of stderr
@@ -395,10 +438,12 @@ fn run_script(script: &Path) -> Result<(), GateStop> {
 
     if !status.success() {
         let start = tail.len().saturating_sub(EXTRACTION_STDERR_LIMIT);
+        let stderr = String::from_utf8_lossy(&tail[start..]).into_owned();
+        if status.code() == Some(LLBC_REWRITE_EXIT_CODE) {
+            return Err(GateStop::Error(TranslateGateError::LlbcRewrite { stderr }));
+        }
         return Err(GateStop::Failure(
-            TranslateGateFailure::ExtractionScriptFailed {
-                stderr: String::from_utf8_lossy(&tail[start..]).into_owned(),
-            },
+            TranslateGateFailure::ExtractionScriptFailed { stderr },
         ));
     }
     Ok(())
@@ -433,7 +478,7 @@ mod tests {
         let (entrypoints, opaque) = patterns();
         let script = write_script(
             dir.path(),
-            &make_extraction_script(&entrypoints, &opaque, &CharonBuild::default()),
+            &make_extraction_script(&entrypoints, &opaque, &CharonBuild::default(), false),
         );
 
         check_patterns(&script, &entrypoints, &opaque).unwrap();
@@ -443,7 +488,7 @@ mod tests {
     fn check_patterns_accepts_other_charon_options() {
         let dir = tempfile::tempdir().unwrap();
         let (entrypoints, opaque) = patterns();
-        let content = make_extraction_script(&entrypoints, &opaque, &CharonBuild::default())
+        let content = make_extraction_script(&entrypoints, &opaque, &CharonBuild::default(), false)
             .replace(
                 "charon cargo --preset=aeneas",
                 "charon cargo --preset=aeneas --hide-marker-traits",
@@ -463,6 +508,7 @@ mod tests {
                 &["crate::other".to_owned()],
                 &opaque,
                 &CharonBuild::default(),
+                false,
             ),
         );
 
@@ -478,7 +524,7 @@ mod tests {
     fn check_patterns_rejects_extra_opaque_option() {
         let dir = tempfile::tempdir().unwrap();
         let (entrypoints, opaque) = patterns();
-        let content = make_extraction_script(&entrypoints, &opaque, &CharonBuild::default())
+        let content = make_extraction_script(&entrypoints, &opaque, &CharonBuild::default(), false)
             .replace(
                 "charon cargo --preset=aeneas",
                 "charon cargo --preset=aeneas --opaque crate::x",
@@ -497,7 +543,7 @@ mod tests {
     fn check_patterns_rejects_second_array_assignment() {
         let dir = tempfile::tempdir().unwrap();
         let (entrypoints, opaque) = patterns();
-        let content = make_extraction_script(&entrypoints, &opaque, &CharonBuild::default())
+        let content = make_extraction_script(&entrypoints, &opaque, &CharonBuild::default(), false)
             .replace("\ncd ", "\nOPAQUE=()\ncd ");
         let script = write_script(dir.path(), &content);
 
@@ -513,7 +559,7 @@ mod tests {
     fn check_patterns_rejects_charon_without_args() {
         let dir = tempfile::tempdir().unwrap();
         let (entrypoints, opaque) = patterns();
-        let content = make_extraction_script(&entrypoints, &opaque, &CharonBuild::default())
+        let content = make_extraction_script(&entrypoints, &opaque, &CharonBuild::default(), false)
             .replace(r#""${args[@]}""#, "");
         let script = write_script(dir.path(), &content);
 
@@ -529,7 +575,7 @@ mod tests {
     fn check_patterns_rejects_charon_without_release() {
         let dir = tempfile::tempdir().unwrap();
         let (entrypoints, opaque) = patterns();
-        let content = make_extraction_script(&entrypoints, &opaque, &CharonBuild::default())
+        let content = make_extraction_script(&entrypoints, &opaque, &CharonBuild::default(), false)
             .replace("--release ", "");
         let script = write_script(dir.path(), &content);
 

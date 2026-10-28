@@ -35,9 +35,10 @@ use translate_info;
 
 /// The agent briefing of the translate stage, with `{crate_root}`,
 /// `{entrypoints}` and `{opaque}` standing for the crate root and the
-/// Markdown lists of the Charon `--start-from` and `--opaque` patterns, and
+/// Markdown lists of the Charon `--start-from` and `--opaque` patterns,
 /// `{solana_skill}` standing for the sentence that names the skill
-/// `solana-translate`, or nothing.
+/// `solana-translate`, or nothing, and `{llbc_rewrite}` for the sentences that
+/// describe the `llbc-rewrite` step of `extract.sh`, or nothing.
 const BRIEFING_TEMPLATE: &str = include_str!("res/briefing.md");
 
 /// The first prompt of the translate stage, with `{crate_root}` standing for
@@ -107,6 +108,9 @@ pub struct TranslateInput {
 
     /// The platform of the crate
     pub platform: Platform,
+
+    /// Whether Aeneas reads the Charon output without `llbc-rewrite`
+    pub skip_llbc_rewrites: bool,
 }
 
 impl TranslateInput {
@@ -154,8 +158,9 @@ fn make_base_prompt(crate_root: &Path) -> String {
     BASE_PROMPT_TEMPLATE.replace("{crate_root}", &crate_root.display().to_string())
 }
 
-/// Returns the agent briefing for the crate at `crate_root` and the given
-/// Charon `--start-from` and `--opaque` patterns.
+/// Returns the agent briefing for the crate at `crate_root`, the given
+/// Charon `--start-from` and `--opaque` patterns, and whether `extract.sh`
+/// skips `llbc-rewrite`.
 ///
 /// `crate_root` must not contain `{entrypoints}` or `{opaque}`, and the
 /// entrypoints must not contain `{opaque}`, because each value is inserted
@@ -165,6 +170,7 @@ fn make_briefing(
     entrypoints: &[String],
     opaque: &[String],
     platform: &Platform,
+    skip_llbc_rewrites: bool,
 ) -> String {
     let list = |patterns: &[String]| {
         if patterns.is_empty() {
@@ -185,6 +191,21 @@ fn make_briefing(
             match platform {
                 Platform::Generic => "",
                 Platform::Solana { .. } => " Also read the skill `lusterna:solana-translate`.",
+            },
+        )
+        .replace(
+            "{llbc_rewrite}",
+            if skip_llbc_rewrites {
+                ""
+            } else {
+                " Between the two, `llbc-rewrite` rewrites the Charon output \
+                 `lusterna/extraction.llbc` to `lusterna/rewritten.llbc`, which Aeneas reads. \
+                 Do not change the `llbc-rewrite` line, and keep `lusterna/rewritten.llbc` as the input \
+                 of `aeneas`. If Aeneas fails, run the `aeneas` line on \
+                 `lusterna/extraction.llbc`. If the error then goes away or changes, the rewrite \
+                 caused it: change the Rust code of that function so that the rewrite no longer \
+                 applies to it. If \
+                 `llbc-rewrite` itself fails, stop and write your report."
             },
         )
 }
@@ -242,6 +263,7 @@ impl Stage for TranslateStage {
             &self.input.entrypoints,
             &self.input.opaque,
             &self.input.platform,
+            self.input.skip_llbc_rewrites,
         )
     }
 

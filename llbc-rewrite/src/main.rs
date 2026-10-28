@@ -2,9 +2,14 @@ use std::{
     fs::{self, File},
     io::{self, BufWriter, Write},
     path::PathBuf,
+    process::ExitCode,
 };
 
 use clap::Parser;
+
+/// The exit code on an error. The translate stage of `lusterna` ends the run
+/// when `extract.sh` exits with it.
+const ERROR_EXIT_CODE: u8 = 70;
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -16,7 +21,17 @@ struct Cli {
     out: Option<PathBuf>,
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("Error: {e:?}");
+            ExitCode::from(ERROR_EXIT_CODE)
+        }
+    }
+}
+
+fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let mut writer: Box<dyn Write> = match &cli.out {
         Some(path) => Box::new(BufWriter::new(File::create(path)?)),
