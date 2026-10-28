@@ -68,9 +68,11 @@ struct TranslateArgs {
     /// [default: ~/.lusterna/<project>_<source branch>_<target branch>]
     #[arg(long)]
     worktree: Option<PathBuf>,
-    /// Run Aeneas on the Charon output without `llbc-rewrite`
+    /// Run Aeneas on the Charon output rewritten by `llbc-rewrite`. This can
+    /// reduce the runtime and token use of the translate stage.
+    /// Experimental: it can break the build and make the translation unsound.
     #[arg(long)]
-    skip_llbc_rewrites: bool,
+    llbc_rewrites: bool,
     /// Stop after the pre-translate stage
     #[arg(long, help_heading = "Dev options")]
     stop_after_pre_translate: bool,
@@ -96,7 +98,7 @@ fn translate(config: &Config, args: TranslateArgs) -> anyhow::Result<()> {
         source_branch,
         target_branch,
         worktree,
-        skip_llbc_rewrites,
+        llbc_rewrites,
         stop_after_pre_translate,
     } = args;
     let canonicalize =
@@ -242,7 +244,7 @@ fn translate(config: &Config, args: TranslateArgs) -> anyhow::Result<()> {
         aeneas_rev,
         lean_toolchain,
         platform,
-        skip_llbc_rewrites,
+        skip_llbc_rewrites: !llbc_rewrites,
     };
     let translate_stage = TranslateStage::new(input);
     let output = stage::run(translate_stage, config, &worktree)?;
