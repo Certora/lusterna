@@ -87,3 +87,12 @@ example : core.num.I8.saturating_mul (-16)#i8 16#i8 = .ok (-128)#i8 := by
 
 /-- `max_value` is `MAX`. -/
 example : core.num.U64.max_value = .ok core.num.U64.MAX := rfl
+
+/-- An exhausted `a..=b` no longer contains `b`. -/
+example :
+    core.ops.range.RangeInclusive.contains core.cmp.PartialOrdU64 core.cmp.PartialOrdU64
+      core.cmp.PartialOrdU64 ⟨1#u64, 5#u64, true⟩ 5#u64 = .ok false ∧
+    core.ops.range.RangeInclusive.contains core.cmp.PartialOrdU64 core.cmp.PartialOrdU64
+      core.cmp.PartialOrdU64 ⟨1#u64, 5#u64, false⟩ 5#u64 = .ok true := by
+  simp [core.ops.range.RangeInclusive.contains, core.cmp.impls.PartialOrdU64.le,
+    core.cmp.impls.PartialOrdU64.lt]
