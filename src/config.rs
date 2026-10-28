@@ -6,7 +6,7 @@ pub const DEFAULT_STAGE_MAX_ATTEMPTS: usize = 5;
 pub const DEFAULT_MAX_BUDGED_USD: usize = 50;
 
 pub const DEFAULT_MODEL: &str = "opus";
-pub const DEFAULT_EFFORT: Effort = Effort::High;
+pub const DEFAULT_EFFORT: Effort = Effort::Medium;
 
 #[derive(clap::Args)]
 pub struct Config {

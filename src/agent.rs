@@ -22,8 +22,8 @@ const DEFAULT_MODEL: &str = "opus";
 #[derive(Debug, Clone, Copy, Default, clap::ValueEnum)]
 pub enum Effort {
     Low,
-    Medium,
     #[default]
+    Medium,
     High,
     #[value(name = "xhigh")]
     XHigh,
