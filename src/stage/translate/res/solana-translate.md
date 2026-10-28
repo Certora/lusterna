@@ -14,9 +14,10 @@ Each entry is a fix that worked once. When the condition of an entry holds, appl
   - `core.cell.Ref` and `core.cell.RefMut`, with `deref` and `deref_mut`
   - `solana_program.pubkey.Pubkey`, with `eq`, `default` and `new_from_array`
   - the type `anchor_lang.accounts.account_loader.AccountLoader`
-  - `core.option.Option` `unwrap_or_else`, `unwrap_or_default`, `ok_or_else`, `and_then` and `or_else`, and its `Try::branch` and `FromResidual::from_residual`. Do not add `--include` for these.
+  - `core.option.Option` `unwrap_or_else`, `unwrap_or_default`, `ok_or_else`, `and_then` and `or_else`, and its `Try::branch` and `FromResidual::from_residual`
+  - `core.result.Result` `ok`, `is_err` and `map`
 
-  Add `public import LusternaLib` to `TypesExternal.lean` and `FunsExternal.lean`. Delete the axioms of the items that it defines. Then define `AccountLoader.load`, `AccountLoader.load_mut` and `key` of the `Key` impl. Use `load`, `loadMut` and `key` in `Lusterna.Anchor.AccountLoader`. The module doc of `{lusterna_lean_root}/LusternaLib/Anchor/AccountLoader.lean` shows how.
+  Do not add `--include` for the `Option` and `Result` items. Add `public import LusternaLib` to `TypesExternal.lean` and `FunsExternal.lean`. Delete the axioms of the items that it defines. Then define `AccountLoader.load`, `AccountLoader.load_mut` and `key` of the `Key` impl. Use `load`, `loadMut` and `key` in `Lusterna.Anchor.AccountLoader`. The module doc of `{lusterna_lean_root}/LusternaLib/Anchor/AccountLoader.lean` shows how.
 - Do not mock these crates: {replaced_crates}. `extract.sh` builds the crate with stubs of them, and their items are opaque. `LusternaLib` defines the Lean models of these items. `lusterna/lean/Extraction/Lusterna.lean` imports the models and gives the models that need them the overflow settings of the release profile of the crate. Do not edit it. These entries replace the entries for the same crates in the skill `lusterna:aeneas-recipes`.
   - Add `public import Extraction.Lusterna` to `TypesExternal.lean` and `FunsExternal.lean`. Delete the axioms of the items that `LusternaLib` defines.
   - Some items stay axioms, because their types name trait structures that Aeneas writes into the crate's own `Types.lean`. Define each one from the method of the trait instance that it gets. For `fixed`, these are `from_num`, `checked_from_num`, `to_num`, `checked_to_num` and `saturating_to_num` of `fixed.types.U68F60`. An example is `def fixed.types.U68F60.from_num {Src : Type} (inst : fixed.traits.ToFixed Src) (src : Src) := inst.to_fixed src`.

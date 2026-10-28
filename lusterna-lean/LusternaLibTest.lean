@@ -61,3 +61,8 @@ example :
 example :
     core.option.Option.unwrap_or_default { default := .ok false } (none : Option Bool) =
       .ok false := rfl
+
+/-- `Result::ok` drops the error, and `is_err` sees it. -/
+example :
+    core.result.Result.ok (.Err 1 : core.result.Result Nat Nat) = .ok none ∧
+    core.result.Result.is_err (.Err 1 : core.result.Result Nat Nat) = .ok true := ⟨rfl, rfl⟩
