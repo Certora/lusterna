@@ -7,7 +7,10 @@ public import Aeneas
 Models of the integer methods and conversions that the Aeneas library does not
 have, in the style of `Aeneas/Std/Scalar/`:
 
-* `TryFrom` between each pair of integer types that has no `From` impl
+* `TryFrom` between each pair of integer types that has no `From` impl, as
+  `<Tgt>.Insts.CoreConvertTryFrom<Src>TryFromIntError.try_from`, for example
+  `U64.Insts.CoreConvertTryFromI64TryFromIntError.try_from`. The lines
+  `try_from_impl <Tgt> <Src>` below define them.
 * `max_value` and `min_value`, which return `MAX` and `MIN`
 * `saturating_mul`
 -/
