@@ -3,8 +3,10 @@ use std::path::Path;
 use charon_lib::{export::CrateData, options::SerializationFormat, ullbc_ast::TranslatedCrate};
 
 mod dyn_param_to_type_param;
+mod try_branch_to_match;
 
 use dyn_param_to_type_param::DynParamToTypeParam;
+use try_branch_to_match::TryBranchToMatch;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RewriteError {}
@@ -14,9 +16,9 @@ pub trait RewriteRule {
 }
 
 const RULES: &[fn(&TranslatedCrate) -> Result<Option<TranslatedCrate>, RewriteError>] =
-    &[DynParamToTypeParam::apply];
+    &[DynParamToTypeParam::apply, TryBranchToMatch::apply];
 
-const MAX_ITERS: usize = 100;
+const MAX_ITERS: usize = 10_000;
 
 /// If no rewrite rule was applied, return `Ok(None)`
 pub fn run(llbc: &Path) -> anyhow::Result<Option<CrateData>> {

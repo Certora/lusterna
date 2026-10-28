@@ -18,5 +18,9 @@ integration-test = []
 name = "dyn_param_to_type_param"
 required-features = ["integration-test"]
 
+[[test]]
+name = "try_branch_to_match"
+required-features = ["integration-test"]
+
 [dev-dependencies]
 tempfile = "3.27.0"
