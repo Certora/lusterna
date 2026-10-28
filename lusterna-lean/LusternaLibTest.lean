@@ -50,3 +50,14 @@ example : uint.as_u64 (Lusterna.Uint.ofNat 4#usize (2 ^ 64)) = .fail .panic := r
 /-- `ofNat` keeps every value below `2^256`. -/
 example : Lusterna.Uint.val (Lusterna.Uint.ofNat 4#usize (2 ^ 256 - 1)) = 2 ^ 256 - 1 := by
   decide +kernel
+
+/-- `?` on `none` breaks with the residual `none`, which converts back to `none`. -/
+example :
+    core.option.Option.Insts.CoreOpsTry_traitTry.branch (none : Option Nat) = .ok (.Break none) ∧
+    core.option.Option.Insts.CoreOpsTry_traitFromResidualOptionNever.from_residual Nat none =
+      .ok none := ⟨rfl, rfl⟩
+
+/-- `unwrap_or_default` on `none` returns the default value. -/
+example :
+    core.option.Option.unwrap_or_default { default := .ok false } (none : Option Bool) =
+      .ok false := rfl
