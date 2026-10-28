@@ -13,26 +13,23 @@ pub trait RewriteRule {
     fn apply(tc: &TranslatedCrate) -> Result<Option<TranslatedCrate>, RewriteError>;
 }
 
+const RULES: &[fn(&TranslatedCrate) -> Result<Option<TranslatedCrate>, RewriteError>] =
+    &[DynParamToTypeParam::apply];
+
 /// If no rewrite rule was applied, return `Ok(None)`
 pub fn run(llbc: &Path) -> anyhow::Result<Option<TranslatedCrate>> {
-    let original_llbc = charon_lib::deserialize_llbc(llbc)?;
-
-    let mut current = original_llbc.clone();
-    let mut rewrite_appplied = false;
-
-    let mut do_loop = true;
-    while do_loop {
-        do_loop = false;
-        if let Some(res) = DynParamToTypeParam::apply(&current)? {
-            current = res;
-            do_loop = true;
-            rewrite_appplied = true;
+    let mut current = charon_lib::deserialize_llbc(llbc)?;
+    let mut applied = false;
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for rule in RULES {
+            if let Some(next) = rule(&current)? {
+                current = next;
+                changed = true;
+                applied = true;
+            }
         }
     }
-
-    if rewrite_appplied {
-        Ok(Some(current))
-    } else {
-        Ok(None)
-    }
+    Ok(applied.then_some(current))
 }
