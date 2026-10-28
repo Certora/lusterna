@@ -32,6 +32,8 @@ pub(super) struct Stub {
     /// The `LusternaLib` module with the Lean models of the items of the
     /// crate, if the crate has items in the extraction.
     lean: Option<String>,
+    /// Whether the Lean models take a `Lusterna.OverflowSettings`.
+    overflow_settings: bool,
 }
 
 /// The stubs in `lusterna-stubs/stubs.toml`.
@@ -51,6 +53,10 @@ pub(super) fn all() -> Vec<Stub> {
                 .expect("every `[[stub]]` has a string `crate`")
                 .to_owned(),
             lean: t.get("lean").and_then(|l| l.as_str()).map(str::to_owned),
+            overflow_settings: t
+                .get("overflow_settings")
+                .and_then(|o| o.as_bool())
+                .unwrap_or(false),
         })
         .collect()
 }
@@ -81,14 +87,17 @@ pub(super) fn patch_args() -> Vec<String> {
 /// The content of `Extraction/Lusterna.lean`: an import of the `lean` module
 /// of each stub, and an instance of `Lusterna.OverflowSettings` with
 /// the settings that the release profile of the workspace manifest
-/// `manifest` gives to these crates. Fails if it gives them different
-/// settings.
+/// `manifest` gives to the stubs with `overflow_settings`. Fails if it gives
+/// them different settings.
 pub(super) fn lean_module(stubs: &[Stub], manifest: &Path) -> Result<String, StubsError> {
     let mut imports = String::new();
     let mut settings: Option<(&str, (bool, bool))> = None;
     for r in stubs {
         let Some(lean) = &r.lean else { continue };
         imports.push_str(&format!("public import {lean}\n"));
+        if !r.overflow_settings {
+            continue;
+        }
         let s = cargo::release_settings(manifest, &r.krate)?;
         match settings {
             Some((first, f)) if f != s => {
@@ -125,10 +134,17 @@ mod tests {
             Stub {
                 krate: "fixed".to_owned(),
                 lean: Some("LusternaLib.Fixed".to_owned()),
+                overflow_settings: true,
             },
             Stub {
                 krate: "fixed-macro-impl".to_owned(),
                 lean: None,
+                overflow_settings: false,
+            },
+            Stub {
+                krate: "uint".to_owned(),
+                lean: Some("LusternaLib.Uint".to_owned()),
+                overflow_settings: false,
             },
         ];
         let dir = tempfile::tempdir().unwrap();
@@ -142,6 +158,7 @@ mod tests {
         let module = lean_module(&stubs, &manifest).unwrap();
 
         assert!(module.contains("public import LusternaLib.Fixed\n"));
+        assert!(module.contains("public import LusternaLib.Uint\n"));
         assert!(module.contains(
             "instance : Lusterna.OverflowSettings := { overflowChecks := false, debugAssertions := true }\n"
         ));

@@ -1,0 +1,19 @@
+[package]
+name = "uint"
+version = "0.9.5"
+edition = "2021"
+rust-version = "1.74"
+description = "Stub of uint for construct_uint!, from lusterna-stubs"
+
+[lib]
+doctest = false
+
+[features]
+default = ["std"]
+std = []
+quickcheck = []
+arbitrary = []
+
+[dev-dependencies]
+proptest = "1"
+uint_real = { package = "uint", version = "=0.9.5" }

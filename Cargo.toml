@@ -1,5 +1,5 @@
 [workspace]
-members = ["lusterna-stubs/fixed", "lusterna-stubs/fixed-macro-impl"]
+members = ["lusterna-stubs/fixed", "lusterna-stubs/fixed-macro-impl", "lusterna-stubs/uint"]
 
 [package]
 name = "lusterna"

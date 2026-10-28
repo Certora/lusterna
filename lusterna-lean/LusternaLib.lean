@@ -4,6 +4,7 @@ public import LusternaLib.OverflowSettings
 public import LusternaLib.Core.Cell
 public import LusternaLib.Core.CellLinter
 public import LusternaLib.Fixed
+public import LusternaLib.Uint
 public import LusternaLib.SolanaProgram.Pubkey
 
 /-!
@@ -15,6 +16,7 @@ of the item.
 
 * `LusternaLib.Core`: `core::cell::{Ref, RefMut}`.
 * `LusternaLib.Fixed`: `fixed::types::U68F60`.
+* `LusternaLib.Uint`: the numbers of `uint::construct_uint!`.
 * `LusternaLib.SolanaProgram`: `solana_program::pubkey::Pubkey`.
 * `LusternaLib.Anchor`: `anchor_lang::accounts::account_loader::AccountLoader`.
 -/

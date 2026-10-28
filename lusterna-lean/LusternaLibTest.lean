@@ -22,3 +22,31 @@ example (l : anchor_lang.accounts.account_loader.AccountLoader Nat)
       .ok (.Err .accountNotMutable, fun _ => ()) := by
   simp [Lusterna.Anchor.AccountLoader.loadMut,
     Solanalib.Anchor.AccountLoader.loadMut, h]
+
+/-- `MAX + 1` on `U256` panics. -/
+example :
+    uint.add (Lusterna.Uint.ofNat 4#usize (2 ^ 256 - 1)) (Lusterna.Uint.ofNat 4#usize 1) =
+      .fail .panic := rfl
+
+/-- `0.overflowing_sub(1)` on `U256` wraps to `MAX` and reports the overflow. -/
+example :
+    uint.overflowing_sub (Lusterna.Uint.ofNat 4#usize 0) (Lusterna.Uint.ofNat 4#usize 1) =
+      .ok (Lusterna.Uint.ofNat 4#usize (2 ^ 256 - 1), true) := rfl
+
+/-- `checked_mul` on `U256` returns `None` on overflow. -/
+example :
+    uint.checked_mul (Lusterna.Uint.ofNat 4#usize (2 ^ 128)) (Lusterna.Uint.ofNat 4#usize (2 ^ 128)) =
+      .ok none := rfl
+
+/-- Division by zero on `U256` panics. -/
+example :
+    uint.div (Lusterna.Uint.ofNat 4#usize 1) (Lusterna.Uint.ofNat 4#usize 0) = .fail .panic := by
+  have h : Lusterna.Uint.val (Lusterna.Uint.ofNat 4#usize 0) = 0 := by decide +kernel
+  simp [uint.div, Lusterna.Uint.divMod, h]
+
+/-- `as_u64` on `U256` panics on `2^64`. -/
+example : uint.as_u64 (Lusterna.Uint.ofNat 4#usize (2 ^ 64)) = .fail .panic := rfl
+
+/-- `ofNat` keeps every value below `2^256`. -/
+example : Lusterna.Uint.val (Lusterna.Uint.ofNat 4#usize (2 ^ 256 - 1)) = 2 ^ 256 - 1 := by
+  decide +kernel
