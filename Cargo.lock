@@ -907,6 +907,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "charon",
+ "clap",
  "serde_json",
  "tempfile",
  "thiserror",

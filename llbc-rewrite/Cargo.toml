@@ -8,6 +8,7 @@ charon = { git = "https://github.com/AeneasVerif/charon", rev = "de8736f7c", ver
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
+clap = { workspace = true }
 
 [features]
 # Builds the integration tests, which need `charon` and `aeneas` on `PATH`
