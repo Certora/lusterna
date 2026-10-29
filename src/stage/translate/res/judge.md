@@ -37,7 +37,7 @@ These definitions are trusted. No test compares them with the Rust code, and eve
 For each definition in `FunsExternal.lean` and `TypesExternal.lean`, do these steps:
 
 1. Find the Rust item that it models. Use the name and the comment that Aeneas wrote above the `axiom` in the template.
-2. Read the source of the Rust item in the Rust standard library or in the dependency in `~/.cargo/registry/src`. Do not rely on your memory of the item.
+2. Read the source of the Rust item in the Rust standard library of the toolchain that Charon uses, in `$(charon toolchain-path)/lib/rustlib/src/rust/library`, not the toolchain of the crate. For a dependency, read its source in `~/.cargo/registry/src`. Do not rely on your memory of the item.
 3. Compare the two on every input. Check each `Ok` and `Err` case and each `Some` and `None` case. Check the boundary values, such as zero, the maximum and the minimum value. Check overflow.
 4. Where the Rust item panics, the definition must return `fail`. Where the Rust item does not panic, the definition must not return `fail`.
 5. Compare the type definitions field by field and variant by variant.
