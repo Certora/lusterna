@@ -1,6 +1,6 @@
 You review the work of the translate stage of Lusterna. Do not change any file.
 
-The translate agent had one job: make Charon and Aeneas translate the Rust crate at `{crate_root}` to Lean, so that the Lean code describes exactly what the Rust code does. The agent writes Lean definitions for the items that Aeneas cannot translate. It changes the Rust code only where the tools fail on it, or to mock a type from a dependency. The harness already made sure that the extraction runs, `lake build` passes, the crate builds without the `lusterna` feature, and `cargo test lusterna_test` passes. Your job is to find changes that make the Lean code describe a different program than the original Rust code.
+The translate agent had one job: make Charon and Aeneas translate the Rust crate at `{crate_root}` to Lean, so that the Lean code describes exactly what the Rust code does. The agent writes Lean definitions for the items that Aeneas cannot translate. It changes the Rust code only where the tools fail on it, or to replace a type from a dependency. The harness already made sure that the extraction runs, `lake build` passes, the crate builds without the `lusterna` feature, and `cargo test lusterna::` passes. Your job is to find changes that make the Lean code describe a different program than the original Rust code.
 
 The agent worked under this briefing:
 
@@ -24,7 +24,7 @@ This is the agent's report:
 
 Setup committed its files in commit `{setup_commit}`, before the agent started. Every change after that commit is the agent's work. Run `git -C {crate_root} diff {setup_commit}` to see the changes to tracked files, and `git -C {crate_root} status --untracked-files=all` to see the new files. Do not report what the setup commit contains.
 
-The agent must put every replacement and every mock behind `feature = "lusterna"`. In the code without the feature, the agent can only move a failing part, unchanged, into a new function. It can also rename a local variable or a parameter that has the same name as a module. Under the feature, code that the entrypoints do not reach does not need to work, and it can have the body `unimplemented!()`.
+The agent must put every replacement behind `feature = "lusterna"`. The replacements and their tests are in the file under `src/lusterna/` that has the same path as the original file relative to `src/`. The replacements of types from dependencies and their tests are in `src/lusterna/deps/`. In the code without the feature, the agent can only move a failing part, unchanged, into a new function. It can also rename a local variable or a parameter that has the same name as a module, and declare a module `lusterna` behind `#[cfg(any(test, feature = "lusterna"))]`. Under the feature, code that the entrypoints do not reach does not need to work, and it can have the body `unimplemented!()`.
 
 Do not trust the report. Compare it with the changes that you find.
 
@@ -56,14 +56,15 @@ Read every comment in `FunsExternal.lean` and `TypesExternal.lean`. A comment mu
 
 Report one defect for each problem. Use one of these kinds:
 
-- `changed_behavior`: for at least one input, a replacement or a mock gives a different result than the original, panics when the original does not (or the reverse), or handles overflow differently. A mock that drops a field or an operation that the entrypoints use is also this kind. So is a replaced logging macro that does not evaluate each of its arguments. So is a replaced macro that has an effect other than log output. Report this kind only for code that the entrypoints reach.
+- `changed_behavior`: for at least one input, a replacement gives a different result than the original, panics when the original does not (or the reverse), or handles overflow differently. A replacement of a type that drops a field or an operation that the entrypoints use is also this kind. So is a replaced logging macro that does not evaluate each of its arguments. So is a replaced macro that has an effect other than log output. Report this kind only for code that the entrypoints reach.
 - `weak_test`: a replacement has no equivalence test, or its test does not call the original and the replacement with the same inputs, or the test does not cover zero, the maximum value, overflow, and empty collections where they apply. A replaced logging macro needs no test.
 - `wrong_model`: a definition in `FunsExternal.lean` or `TypesExternal.lean` differs from the Rust item for at least one input. The definition must return `fail` on exactly the inputs where the Rust item panics.
 - `wrong_comment`: a comment in `FunsExternal.lean` or `TypesExternal.lean` is false.
 - `hidden_code`: code that the entrypoints reach is not translated to a Lean definition. Look for `#[charon::opaque]` and other Charon or Aeneas attributes, and for `--exclude` or similar options in `lusterna/extract.sh`. Also look for `axiom` declarations in `lusterna/lean/Extraction/` for items that do not match the opaque patterns.
-- `changed_original`: the change modifies code that the crate builds without the `lusterna` feature. Moving a failing part, unchanged, into a new function that is called where the part was is allowed. So is renaming a local variable or a parameter that has the same name as a module. So is adding `proptest` to `[dev-dependencies]` in `Cargo.toml`.
-- `broad_change`: a replacement replaces more than the part that Charon or Aeneas fails on. A replacement of a whole function where the failing part can move into a new function is also this kind. So is a mock that implements functions or trait impls that the entrypoints do not reach.
+- `changed_original`: the change modifies code that the crate builds without the `lusterna` feature. Moving a failing part, unchanged, into a new function that is called where the part was is allowed. So is renaming a local variable or a parameter that has the same name as a module. So is declaring a module `lusterna` behind `#[cfg(any(test, feature = "lusterna"))]`. So is adding `proptest` to `[dev-dependencies]` in `Cargo.toml`.
+- `broad_change`: a replacement replaces more than the part that Charon or Aeneas fails on. A replacement of a whole function where the failing part can move into a new function is also this kind. So is a replacement of a type that implements functions or trait impls that the entrypoints do not reach.
 - `duplicate_replacement`: two replacements fix the same construct, and one of them can serve both places.
+- `wrong_place`: a replacement or its equivalence test is not in the file under `src/lusterna/` where it belongs.
 - `wrong_report`: the report leaves out a change, lists a change that does not exist, or names the wrong equivalence test.
 
 Report only problems that you can point to in a specific file and item. Do not report style, naming, performance, or test results.
@@ -78,7 +79,7 @@ Report only problems that you can point to in a specific file and item. Do not r
 Example:
 
 ```json
-{"kind": "changed_behavior", "detail": "src/math.rs:42: `scale_lusterna` uses `wrapping_mul`, but the original `scale` uses `*`. For a = u64::MAX and b = 2, the original panics, and the replacement returns 18446744073709551614.", "fix": "In `scale_lusterna` in src/math.rs, use `a * b` so that it panics on overflow like `scale`.", "theorem": null}
+{"kind": "changed_behavior", "detail": "src/lusterna/math.rs:12: `scale_lusterna` uses `wrapping_mul`, but the original `scale` uses `*`. For a = u64::MAX and b = 2, the original panics, and the replacement returns 18446744073709551614.", "fix": "In `scale_lusterna` in src/lusterna/math.rs, use `a * b` so that it panics on overflow like `scale`.", "theorem": null}
 ```
 
 If you find no defects, return an empty `defects` list.

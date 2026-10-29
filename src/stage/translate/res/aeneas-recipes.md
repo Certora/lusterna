@@ -39,15 +39,15 @@ Each rewrite must behave exactly like the original for every input.
 - Function pointers and globals of function type: use a generic type parameter or a direct call.
 - `BTreeMap` or `HashMap`: use a `Vec<(K, V)>`. `get` scans for the key. If the key exists, `insert` updates its entry. Otherwise, `insert` pushes a new entry. If the code depends on the iteration order, do not use this rewrite.
 
-## Mocks
+## Replacements of types from dependencies
 
-Implement the operations of a mock that the entrypoints reach. If the entrypoints reach a trait impl such as a serialization trait, give the mock its own body for it. For `Display` and `Debug`, see the briefing. Do not call the original type from the mock, for example `Original::from_bits(self.0).fmt(f)`, because that brings the original type back into the translation.
+Implement the operations of the replacement that the entrypoints reach. If the entrypoints reach a trait impl such as a serialization trait, give the replacement its own body for it. For `Display` and `Debug`, see the briefing. Do not call the original type from the replacement, for example `Original::from_bits(self.0).fmt(f)`, because that brings the original type back into the translation.
 
 ## Known problems
 
 Each entry is a fix that worked once. Apply an entry only when its condition holds.
 
-- The `fixed` crate does not translate. Mock the types of `fixed` that the crate uses, with only the functions that the entrypoints reach.
+- The `fixed` crate does not translate. Replace the types of `fixed` that the crate uses, with only the functions that the entrypoints reach.
 - Charon can panic with "stack depth limit exceeded" at a closure that uses `TryFromPrimitiveError`. Then the entrypoints reach an enum that derives a `num_enum` trait such as `TryFromPrimitive`. Find that enum in the Charon trace before the panic. Replace its derive with a hand-written `TryFrom` impl, then run again. The hand-written impl must not use `TryFromPrimitive` or `TryFromPrimitiveError`, because Charon panics on these too. Give it an error type of the crate. Do not replace the derive on enums that the entrypoints do not reach.
 - If Aeneas fails on a type that the macro `construct_uint!` of the `uint` crate defines, such as `U256`, copy the macro into the crate and rewrite only the parts that fail.
 - If Aeneas crashes while it inlines `{promoted_const}` items, add `--inline-anon-consts` to the `charon` command.

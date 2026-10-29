@@ -21,7 +21,7 @@ use crate::{
     },
 };
 
-/// How long `cargo test lusterna_test` may run in the gate check.
+/// How long `cargo test lusterna::` may run in the gate check.
 const EQUIV_TEST_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 /// How many bytes from the end of the extraction script's stderr the gate
@@ -115,8 +115,8 @@ where
 ///   the file `<module>.lean` exists and contains no `HOLE_WORDS`
 /// - `lake build` succeeds in the lean root
 /// - the crate builds without the `lusterna` feature
-/// - `cargo test lusterna_test` passes
-/// - `cargo test lusterna_test` runs at least one test if the crate uses the
+/// - `cargo test lusterna::` passes
+/// - `cargo test lusterna::` runs at least one test if the crate uses the
 ///   `lusterna` feature
 pub(super) fn run_gate(
     input: &TranslateInput,
@@ -163,7 +163,7 @@ pub(super) fn run_gate(
     // The equivalence tests must pass, and must exist if the crate uses
     // the `lusterna` feature
     let passed =
-        cargo::test(&manifest, "lusterna_test", EQUIV_TEST_TIMEOUT).map_err(|e| match e {
+        cargo::test(&manifest, "lusterna::", EQUIV_TEST_TIMEOUT).map_err(|e| match e {
             CargoError::Test { stdout, stderr, .. } => {
                 TranslateGateFailure::EquivalenceTestsFailed { stdout, stderr }.into()
             }
@@ -216,20 +216,20 @@ impl TranslateGateFailure {
                  Fix the first error and run `cargo build` again until it passes.",
             ),
             TranslateGateFailure::EquivalenceTestsFailed { stdout, stderr } => format!(
-                "`cargo test lusterna_test` failed with this output:\n\n\
+                "`cargo test lusterna::` failed with this output:\n\n\
                  ```\n{stdout}\n{stderr}\n```\n\n\
-                 Fix the first failing test and run `cargo test lusterna_test` again until \
+                 Fix the first failing test and run `cargo test lusterna::` again until \
                  it passes.",
             ),
             TranslateGateFailure::EquivalenceTestsTimeout { timeout } => format!(
-                "`cargo test lusterna_test` did not finish within {timeout:?}.\n\n\
+                "`cargo test lusterna::` did not finish within {timeout:?}.\n\n\
                  Make the equivalence tests finish within that time.",
             ),
             TranslateGateFailure::MissingEquivalenceTests => format!(
-                "The crate uses `feature = \"lusterna\"`, but `cargo test lusterna_test` \
+                "The crate uses `feature = \"lusterna\"`, but `cargo test lusterna::` \
                  ran no tests.\n\n\
-                 Add an equivalence test for every replacement, in a \
-                 `#[cfg(test)] mod lusterna_test` next to it.",
+                 Add an equivalence test for every replacement, in the \
+                 `#[cfg(test)] mod tests` of the `lusterna` module that contains it.",
             ),
             TranslateGateFailure::DeletedFiles {
                 files,
