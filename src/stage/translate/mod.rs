@@ -202,7 +202,7 @@ fn make_briefing(
                  `lusterna/extraction.llbc` to `lusterna/rewritten.llbc`, which Aeneas reads. \
                  Do not change the `llbc-rewrite` line, and keep `lusterna/rewritten.llbc` as the input \
                  of `aeneas`. If Aeneas fails, run the `aeneas` line on \
-                 `lusterna/extraction.llbc`. If the error then goes away or changes, the rewrite \
+                 `lusterna/extraction.llbc`. If the error then goes away, the rewrite \
                  caused it: change the Rust code of that function so that the rewrite no longer \
                  applies to it. If \
                  `llbc-rewrite` itself fails, stop and write your report."
