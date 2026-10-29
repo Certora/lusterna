@@ -5,7 +5,7 @@ mod stubs;
 
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     config::Platform,
@@ -80,6 +80,7 @@ pub fn solana_opaque() -> Vec<String> {
         .collect()
 }
 
+#[derive(Serialize, Deserialize, Clone)]
 pub struct TranslateInput {
     /// Absolute path to the workspace of the Rust project.
     pub workspace_root: PathBuf,
@@ -116,7 +117,7 @@ impl TranslateInput {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct TranslateOutput {
     // Absolute path of the crate's root
     pub crate_root: PathBuf,
@@ -131,9 +132,9 @@ pub struct TranslateOutput {
     pub report: TranslateReport,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
 pub struct TranslateStage {
     setup_outcome: Option<TranslateSetupOutcome>,
-
     input: TranslateInput,
 }
 
@@ -204,22 +205,27 @@ impl Stage for TranslateStage {
 
     type GateExecutionError = TranslateGateError;
 
-    type SetupOutcome = TranslateSetupOutcome;
+    fn new(input: Self::Input) -> Self {
+        Self {
+            setup_outcome: None,
+            input,
+        }
+    }
+
+    fn input(&self) -> &Self::Input {
+        &self.input
+    }
 
     fn name() -> &'static str {
         "translate"
     }
 
-    fn restore(&mut self, setup: Self::SetupOutcome) {
-        assert!(
-            self.setup_outcome.is_none(),
-            "Cannot restore after running setup"
-        );
-        self.setup_outcome = Some(setup);
+    fn is_set_up(&self) -> bool {
+        self.setup_outcome.is_some()
     }
 
     fn setup(&mut self) -> Result<(), Self::SetupError> {
-        assert!(self.setup_outcome.is_none(), "Cannot do setup twice");
+        assert!(!self.is_set_up(), "Cannot do setup twice");
         let outcome = setup::run_setup(&self.input)?;
         self.setup_outcome = Some(outcome);
         Ok(())

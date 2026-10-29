@@ -30,6 +30,7 @@ const SOLANA_HOST_BUILD_SKILL: &str = include_str!("res/solana-host-build.md");
 /// report.
 const JUDGE_PROMPT_TEMPLATE: &str = include_str!("res/judge.md");
 
+#[derive(Serialize, Deserialize, Clone)]
 pub struct PreTranslateInput {
     /// Absolute path to the workspace of the Rust project.
     pub workspace_root: PathBuf,
@@ -64,7 +65,7 @@ pub enum PreTranslateGateError {
     Cargo(#[from] CargoError),
 }
 
-#[derive(Debug, derive_more::Display)]
+#[derive(Debug, derive_more::Display, Deserialize, Serialize, Clone)]
 pub enum PreTranslateGateFailure {
     #[display("{} tracked files changed", files.len())]
     ChangedFiles {
@@ -91,6 +92,7 @@ fn differs_only_in_patch(old: &str, new: &str) -> bool {
 /// no tracked file changed except `.rs` files, `Cargo.lock` and the `patch`
 /// table of the workspace `Cargo.toml`. The judge checks each change against
 /// the rules of the briefing.
+#[derive(Serialize, Deserialize, Clone)]
 pub struct PreTranslateStage {
     /// Hash of `HEAD` when setup ran
     base_commit: Option<String>,
@@ -124,23 +126,30 @@ impl Stage for PreTranslateStage {
     type GateFailure = PreTranslateGateFailure;
 
     type GateExecutionError = PreTranslateGateError;
-    type SetupOutcome = String;
+
+    fn new(input: Self::Input) -> Self {
+        Self {
+            base_commit: None,
+            input,
+        }
+    }
+
+    fn input(&self) -> &Self::Input {
+        &self.input
+    }
+
+    fn is_set_up(&self) -> bool {
+        self.base_commit.is_some()
+    }
 
     fn name() -> &'static str {
         "pre-translate"
     }
 
-    fn restore(&mut self, setup: Self::SetupOutcome) {
-        assert!(
-            self.base_commit.is_none(),
-            "Cannot restore after setup is done"
-        );
-        self.base_commit = Some(setup);
-    }
-
     fn setup(&mut self) -> Result<(), Self::SetupError> {
-        assert!(self.base_commit.is_none(), "Cannot run setup twice");
-        self.base_commit = Some(git::head_rev(&self.input.workspace_root)?);
+        assert!(!self.is_set_up(), "Cannot run setup twice");
+        let head_rev = git::head_rev(&self.input.workspace_root)?;
+        self.base_commit = Some(head_rev);
         Ok(())
     }
 

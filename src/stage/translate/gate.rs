@@ -6,6 +6,8 @@ use std::{
     time::Duration,
 };
 
+use serde::{Deserialize, Serialize};
+
 use crate::{
     stage::{
         self,
@@ -40,7 +42,7 @@ pub enum TranslateGateError {
     Cargo(#[from] CargoError),
 }
 
-#[derive(Debug, derive_more::Display)]
+#[derive(Debug, derive_more::Display, Serialize, Deserialize, Clone)]
 pub enum TranslateGateFailure {
     #[display("extraction script misses line: {_0}")]
     ExtractionScriptMissingLine(String),
@@ -75,7 +77,7 @@ pub enum TranslateGateFailure {
     #[display("{word} in {} on line {line}", path.display())]
     ExternalHole {
         path: PathBuf,
-        word: &'static str,
+        word: String,
         line: usize,
     },
 }
@@ -162,16 +164,15 @@ pub(super) fn run_gate(
 
     // The equivalence tests must pass, and must exist if the crate uses
     // the `lusterna` feature
-    let passed =
-        cargo::test(&manifest, "lusterna::", EQUIV_TEST_TIMEOUT).map_err(|e| match e {
-            CargoError::Test { stdout, stderr, .. } => {
-                TranslateGateFailure::EquivalenceTestsFailed { stdout, stderr }.into()
-            }
-            CargoError::TestTimeout { timeout, .. } => {
-                TranslateGateFailure::EquivalenceTestsTimeout { timeout }.into()
-            }
-            e => GateStop::from(e),
-        })?;
+    let passed = cargo::test(&manifest, "lusterna::", EQUIV_TEST_TIMEOUT).map_err(|e| match e {
+        CargoError::Test { stdout, stderr, .. } => {
+            TranslateGateFailure::EquivalenceTestsFailed { stdout, stderr }.into()
+        }
+        CargoError::TestTimeout { timeout, .. } => {
+            TranslateGateFailure::EquivalenceTestsTimeout { timeout }.into()
+        }
+        e => GateStop::from(e),
+    })?;
     if passed == 0 && uses_lusterna_feature(&crate_root.join("src"))? {
         return Err(TranslateGateFailure::MissingEquivalenceTests.into());
     }
@@ -358,7 +359,7 @@ fn check_externals(dir: &Path) -> Result<(), GateStop> {
             if let Some(word) = HOLE_WORDS.into_iter().find(|w| words.contains(w)) {
                 return Err(GateStop::Failure(TranslateGateFailure::ExternalHole {
                     path: external,
-                    word,
+                    word: word.to_owned(),
                     line: i + 1,
                 }));
             }
@@ -602,7 +603,7 @@ mod tests {
 
         match check_externals(dir.path()) {
             Err(GateStop::Failure(TranslateGateFailure::ExternalHole { word, line, .. })) => {
-                assert_eq!((word, line), ("sorry", 2))
+                assert_eq!((word.as_str(), line), ("sorry", 2))
             }
             other => panic!("expected ExternalHole, got {other:?}"),
         }

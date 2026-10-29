@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 use crate::agent::Effort;
 
 pub const DEFAULT_STAGE_MAX_ATTEMPTS: usize = 5;
@@ -39,7 +41,7 @@ impl Default for Config {
 
 /// The platform that the crate is written for. It selects the default opaque
 /// patterns, the Lean project and the skills that the translate agent gets.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub enum Platform {
     /// A crate with no specific platform. The default opaque patterns are
     /// the general ones, and the translate agent gets no platform skill.

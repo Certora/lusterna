@@ -18,21 +18,19 @@ use crate::{
     utils::format_elapsed,
 };
 
-pub trait Stage: Sized {
-    type Input;
+pub trait Stage: Sized + Serialize + DeserializeOwned + Clone {
+    type Input: Serialize + DeserializeOwned;
 
-    type Output: Serialize;
+    type Output: Serialize + DeserializeOwned + Clone;
 
     /// What the agent did, which it returns when it finishes the stage.
     type Report: Serialize + DeserializeOwned + JsonSchema;
 
     /// The reasons for which the agent can stop the stage. Use [`Never`] for
     /// a stage that the agent cannot stop.
-    type Blocker: Display + DeserializeOwned + JsonSchema;
+    type Blocker: Display + Serialize + DeserializeOwned + JsonSchema;
 
     type SetupError: Error;
-
-    type SetupOutcome: Serialize + DeserializeOwned;
 
     /// The reason why the gate did not pass.
     /// The function `[feedback_prompt]` converts this type to a feedback prompt
@@ -41,7 +39,7 @@ pub trait Stage: Sized {
     /// The `[GateExecutionError]` on the other hand is used to indicate
     /// something failed while running the gate checks. This is not passed
     /// back to agent and instead abort the stage.
-    type GateFailure: Display;
+    type GateFailure: Display + Serialize + DeserializeOwned + Clone;
 
     /// An error that can occur while running the gate.
     /// This is meant for errors that the agent can not fix, use `[GateFailure]`
@@ -51,7 +49,11 @@ pub trait Stage: Sized {
     // The stage's name.
     fn name() -> &'static str;
 
-    fn restore(&mut self, setup: Self::SetupOutcome);
+    fn new(input: Self::Input) -> Self;
+
+    fn input(&self) -> &Self::Input;
+
+    fn is_set_up(&self) -> bool;
 
     /// Runs the stages setup phase.
     /// This phase is run before the agent is instructed to execute the stage.
@@ -91,7 +93,7 @@ pub trait Stage: Sized {
 }
 
 /// The blocker type of a stage that the agent cannot stop.
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub enum Never {}
 
 impl Display for Never {
@@ -158,6 +160,7 @@ impl<S: Stage> fmt::Debug for StageExecutionError<S> {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub enum AttemptRejected<S: Stage> {
     Gate(S::GateFailure),
     Judge(Vec<Defect>),
@@ -178,69 +181,182 @@ impl<S: Stage> fmt::Display for AttemptRejected<S> {
     }
 }
 
-/// Runs the stage `s`. The agent and the judge run in `dir`.
-pub fn run<S: Stage>(
-    mut s: S,
-    cfg: &Config,
-    dir: &Path,
-) -> Result<S::Output, StageExecutionError<S>> {
-    // Run the setup, if it fails, stop here.
-    s.setup().map_err(StageExecutionError::SetupError)?;
-    stage_info!(S::name(), "setup completed");
+#[derive(Serialize, Deserialize)]
+#[serde(bound(deserialize = ""))]
+pub enum StageState<S: Stage> {
+    NotStarted,
+    SetupDone,
+    /// The agent runs next.
+    Attempt {
+        attempts: usize,
+        last_rejection: Option<AttemptRejected<S>>,
+    },
+    /// The gate checks `report` next.
+    Gate {
+        attempts: usize,
+        report: S::Report,
+    },
+    /// The judge checks `output` next.
+    Judge {
+        attempts: usize,
+        report: S::Report,
+        output: S::Output,
+    },
+    Done(S::Output),
+}
 
-    let mut prompt: String = s.base_prompt();
-    let mut last_rejection: Option<AttemptRejected<S>> = None;
+#[derive(Serialize, Deserialize)]
+#[serde(bound(deserialize = ""))]
+pub struct StageFSM<S: Stage> {
+    stage: S,
+    state: StageState<S>,
+    #[serde(skip)]
+    agent: Option<Agent>,
+    #[serde(skip)]
+    usage_worker: f64,
+    #[serde(skip)]
+    usage_judge: f64,
+}
 
-    let mut agent = Agent::default();
-    // set the briefing
-    agent.set_briefing(s.briefing());
-    for (name, content) in s.skills() {
-        agent.add_skill(name, content);
+impl<S: Stage> Default for StageState<S> {
+    fn default() -> Self {
+        StageState::NotStarted
     }
-    agent.set_effort(cfg.effort);
-    agent.set_model(cfg.model.clone());
-    agent.set_dir(dir.to_owned());
-    agent.set_json_schema(
-        json_schema::<AgentResult<S::Report, S::Blocker>>().map_err(AgentError::from)?,
-    );
-    let mut judge_cost = 0.0;
+}
 
-    for attempt in 0..cfg.stage_max_attempts {
-        let remaining = cfg.stage_max_budget as f64 - agent.get_usage().cost_usd - judge_cost;
+impl<S: Stage> StageFSM<S> {
+    pub fn new(stage: S) -> Self {
+        Self {
+            stage,
+            state: StageState::NotStarted,
+            agent: None,
+            usage_worker: 0.0,
+            usage_judge: 0.0,
+        }
+    }
+
+    pub fn state(&self) -> &StageState<S> {
+        &self.state
+    }
+
+    pub fn is_done(&self) -> bool {
+        matches!(self.state, StageState::Done(_))
+    }
+
+    /// Runs one step of the stage and returns the execution in its next state.
+    pub fn step(&mut self, cfg: &Config, dir: &Path) -> Result<(), StageExecutionError<S>> {
+        self.state = match std::mem::take(&mut self.state) {
+            StageState::NotStarted => {
+                self.setup()?;
+                StageState::SetupDone
+            }
+            StageState::SetupDone => {
+                self.init_agent(cfg, dir)?;
+                StageState::Attempt {
+                    attempts: 0,
+                    last_rejection: None,
+                }
+            }
+            StageState::Attempt {
+                attempts,
+                last_rejection,
+            } => StageState::Gate {
+                attempts: attempts + 1,
+                report: self.attempt(cfg, attempts, last_rejection)?,
+            },
+            StageState::Gate { attempts, report } => match self.gate(&report)? {
+                Ok(output) => StageState::Judge {
+                    attempts,
+                    report,
+                    output,
+                },
+                Err(f) => StageState::Attempt {
+                    attempts,
+                    last_rejection: Some(AttemptRejected::Gate(f)),
+                },
+            },
+            StageState::Judge {
+                attempts,
+                report,
+                output,
+            } => {
+                let defects = self.judge(cfg, dir, &report, &output)?;
+                if defects.is_empty() {
+                    StageState::Done(output)
+                } else {
+                    StageState::Attempt {
+                        attempts,
+                        last_rejection: Some(AttemptRejected::Judge(defects)),
+                    }
+                }
+            }
+            StageState::Done(output) => StageState::Done(output),
+        };
+        Ok(())
+    }
+
+    fn setup(&mut self) -> Result<(), StageExecutionError<S>> {
+        self.stage
+            .setup()
+            .map_err(StageExecutionError::SetupError)?;
+        stage_info!(S::name(), "setup completed");
+        Ok(())
+    }
+
+    fn init_agent(&mut self, cfg: &Config, dir: &Path) -> Result<(), StageExecutionError<S>> {
+        let mut agent = Agent::default();
+        // set the briefing
+        agent.set_briefing(self.stage.briefing());
+        for (name, content) in self.stage.skills() {
+            agent.add_skill(name, content);
+        }
+        agent.set_effort(cfg.effort);
+        agent.set_model(cfg.model.clone());
+        agent.set_dir(dir.to_owned());
+        agent.set_json_schema(
+            json_schema::<AgentResult<S::Report, S::Blocker>>().map_err(AgentError::from)?,
+        );
+        self.agent = Some(agent);
+        Ok(())
+    }
+
+    /// Runs the agent and returns its report.
+    fn attempt(
+        &mut self,
+        cfg: &Config,
+        attempts: usize,
+        last_rejection: Option<AttemptRejected<S>>,
+    ) -> Result<S::Report, StageExecutionError<S>> {
+        if attempts >= cfg.stage_max_attempts {
+            return Err(StageExecutionError::MaxRetries(last_rejection));
+        }
+        let remaining = cfg.stage_max_budget as f64 - self.usage_worker - self.usage_judge;
         if remaining <= 0.0 {
             return Err(StageExecutionError::BudgetExhausted(last_rejection));
         }
-        agent.set_max_budget(remaining);
         stage_info!(
             S::name(),
             "starting attempt {}/{}, remaining budget: {:.2}/{} USD (agent spent: {:.2} USD, judge spent: {:.2} USD)",
-            attempt,
+            attempts + 1,
             cfg.stage_max_attempts,
             remaining,
             cfg.stage_max_budget,
-            agent.get_usage().cost_usd,
-            judge_cost
+            self.usage_worker,
+            self.usage_judge
         );
-        if attempt > 0 {
-            prompt.push_str(
-                "\nIn your report, list every change that you made since the start of the stage.\n",
-            );
-        }
+        let prompt = self.prompt(attempts, &last_rejection);
         let t = Instant::now();
-        let output = match agent.run_with_hook(prompt, |s| stage_info!(S::name(), "agent: {}", s,))
-        {
+        let result = match self.run_worker(prompt, remaining) {
             Err(AgentError::BudgetExhausted) => {
                 return Err(StageExecutionError::BudgetExhausted(last_rejection));
             }
             r => r?,
         };
         stage_info!(S::name(), "agent finished in {}", format_elapsed(t));
-        let result: AgentResult<S::Report, S::Blocker> =
-            serde_json::from_str(&output).map_err(AgentError::from)?;
-        let report = match result.result {
+        let report = match result {
             Ok(report) => report,
             Err(blocker) => {
-                log_stage_spent::<S>(cfg, agent.get_usage().cost_usd, judge_cost);
+                log_stage_spent::<S>(cfg, self.usage_worker, self.usage_judge);
                 return Err(StageExecutionError::Blocked(blocker));
             }
         };
@@ -249,67 +365,108 @@ pub fn run<S: Stage>(
             "agent report: {}",
             serde_json::to_string_pretty(&report).map_err(AgentError::from)?
         );
-        match s.gate_check(&report) {
-            Ok(o) => {
+        Ok(report)
+    }
+
+    /// Returns the prompt of the attempt after `attempts` attempts, the last
+    /// of which was rejected for `last_rejection`.
+    fn prompt(&self, attempts: usize, last_rejection: &Option<AttemptRejected<S>>) -> String {
+        let mut prompt = match last_rejection {
+            Some(AttemptRejected::Gate(gf)) => S::feedback_prompt(gf),
+            Some(AttemptRejected::Judge(defects)) => defects_feedback_prompt(defects),
+            None => self.stage.base_prompt(),
+        };
+        if attempts > 0 {
+            prompt.push_str(
+                "\nIn your report, list every change that you made since the start of the stage.\n",
+            );
+        }
+        prompt
+    }
+
+    /// Returns the agent's report, or the blocker it stopped the stage with.
+    fn run_worker(
+        &mut self,
+        prompt: String,
+        max_budget: f64,
+    ) -> Result<Result<S::Report, S::Blocker>, AgentError> {
+        let agent = self.agent.as_mut().expect("Agent was not initialized");
+        agent.set_max_budget(max_budget);
+        let output = agent.run_with_hook(prompt, |s| stage_info!(S::name(), "agent: {}", s))?;
+        self.usage_worker = agent.get_usage().cost_usd;
+        let result: AgentResult<S::Report, S::Blocker> = serde_json::from_str(&output)?;
+        Ok(result.result)
+    }
+
+    /// Returns the stage's output, or why the gate did not pass.
+    fn gate(
+        &self,
+        report: &S::Report,
+    ) -> Result<Result<S::Output, S::GateFailure>, StageExecutionError<S>> {
+        match self.stage.gate_check(report) {
+            Ok(output) => {
                 stage_info!(S::name(), "gate passed");
-                match s.judge_prompt(&o, &report) {
-                    Some(judge_prompt) => {
-                        let t = Instant::now();
-                        let remaining_budget =
-                            cfg.stage_max_budget as f64 - agent.get_usage().cost_usd - judge_cost;
-                        if remaining_budget <= 0.0 {
-                            return Err(StageExecutionError::BudgetExhausted(last_rejection));
-                        }
-                        stage_info!(
-                            S::name(),
-                            "running judge, remaining budget: {:.2}/{} USD (agent spent: {:.2} USD, judge spent: {:.2} USD)",
-                            remaining_budget,
-                            cfg.stage_max_budget,
-                            agent.get_usage().cost_usd,
-                            judge_cost
-                        );
-                        let (defects, cost) =
-                            run_judge::<S>(judge_prompt, cfg, remaining_budget, dir)?;
-                        judge_cost += cost;
-                        stage_info!(S::name(), "judge finished in {}", format_elapsed(t));
-                        if defects.is_empty() {
-                            stage_info!(S::name(), "judge found no defects, continuing");
-                            log_stage_spent::<S>(cfg, agent.get_usage().cost_usd, judge_cost);
-                            return Ok(o);
-                        }
-                        stage_info!(S::name(), "judge found defects");
-                        stage_debug!(
-                            S::name(),
-                            "defects:\n{}",
-                            (defects
-                                .iter()
-                                .map(|d| d.to_string())
-                                .collect::<Vec<String>>()
-                                .join("\n"))
-                        );
-                        prompt = defects_feedback_prompt(&defects);
-                        last_rejection = Some(AttemptRejected::Judge(defects))
-                    }
-                    None => {
-                        stage_info!(S::name(), "stage has no judge, continuing");
-                        log_stage_spent::<S>(cfg, agent.get_usage().cost_usd, judge_cost);
-                        return Ok(o);
-                    }
-                }
+                Ok(Ok(output))
             }
-            Err(GateStop::Failure(e)) => {
-                stage_info!(S::name(), "Gate failed: {}", e);
-                prompt = S::feedback_prompt(&e);
-                last_rejection = Some(AttemptRejected::Gate(e));
+            Err(GateStop::Failure(f)) => {
+                stage_info!(S::name(), "Gate failed: {}", f);
+                Ok(Err(f))
             }
-            Err(GateStop::Error(e)) => return Err(StageExecutionError::GateExecutionError(e)),
+            Err(GateStop::Error(e)) => Err(StageExecutionError::GateExecutionError(e)),
         }
     }
-    Err(StageExecutionError::MaxRetries(last_rejection))
+
+    /// Returns the defects the judge found. The list is empty if the stage
+    /// has no judge.
+    fn judge(
+        &mut self,
+        cfg: &Config,
+        dir: &Path,
+        report: &S::Report,
+        output: &S::Output,
+    ) -> Result<Vec<Defect>, StageExecutionError<S>> {
+        let Some(judge_prompt) = self.stage.judge_prompt(output, report) else {
+            stage_info!(S::name(), "stage has no judge, continuing");
+            log_stage_spent::<S>(cfg, self.usage_worker, self.usage_judge);
+            return Ok(Vec::new());
+        };
+        let remaining = cfg.stage_max_budget as f64 - self.usage_worker - self.usage_judge;
+        if remaining <= 0.0 {
+            return Err(StageExecutionError::BudgetExhausted(None));
+        }
+        stage_info!(
+            S::name(),
+            "running judge, remaining budget: {:.2}/{} USD (agent spent: {:.2} USD, judge spent: {:.2} USD)",
+            remaining,
+            cfg.stage_max_budget,
+            self.usage_worker,
+            self.usage_judge
+        );
+        let t = Instant::now();
+        let (defects, cost) = run_judge::<S>(judge_prompt, cfg, remaining, dir)?;
+        self.usage_judge += cost;
+        stage_info!(S::name(), "judge finished in {}", format_elapsed(t));
+        if defects.is_empty() {
+            stage_info!(S::name(), "judge found no defects, continuing");
+            log_stage_spent::<S>(cfg, self.usage_worker, self.usage_judge);
+        } else {
+            stage_info!(S::name(), "judge found defects");
+            stage_debug!(
+                S::name(),
+                "defects:\n{}",
+                (defects
+                    .iter()
+                    .map(|d| d.to_string())
+                    .collect::<Vec<String>>()
+                    .join("\n"))
+            );
+        }
+        Ok(defects)
+    }
 }
 
 /// A defect the judge found in a stage's output.
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema, Clone, PartialEq, Eq)]
 pub struct Defect {
     pub kind: String,
     pub detail: String,

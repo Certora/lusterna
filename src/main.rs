@@ -184,7 +184,9 @@ fn translate(config: &Config, args: TranslateArgs) -> anyhow::Result<()> {
                 manifest: manifest.clone(),
                 build_stderr: stderr,
             };
-            stage::run(PreTranslateStage::new(input), config, &worktree)?;
+            let stage = PreTranslateStage::new(input);
+            let stage_exec = stage::StageFSM::new(stage);
+            let _ = stage_exec.run(config, &worktree)?;
             log::info!("Finished pre-translate in {}", format_elapsed(t));
 
             let sha = git::commit_all(&worktree, "lusterna: make the crate build on the host")?;
@@ -217,7 +219,8 @@ fn translate(config: &Config, args: TranslateArgs) -> anyhow::Result<()> {
         Some(opaque) => opaque,
         None => {
             let mut opaque: Vec<String> = DEFAULT_OPAQUE.lines().map(str::to_owned).collect();
-            // Add addition opaque patterns if we are running on a solana program
+            // Add addition opaque patterns if we are running on a solana
+            // program
             if let Platform::Solana { .. } = platform {
                 opaque.extend(solana_opaque());
             }
@@ -240,7 +243,7 @@ fn translate(config: &Config, args: TranslateArgs) -> anyhow::Result<()> {
         platform,
     };
     let translate_stage = TranslateStage::new(input);
-    let output = stage::run(translate_stage, config, &worktree)?;
+    let output = stage::StageFSM::new(translate_stage).run(config, &worktree)?;
     log::info!("Finished translation in {}", format_elapsed(t));
 
     let sha = git::commit_all(&worktree, "lusterna: translate to Lean with Aeneas")?;

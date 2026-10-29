@@ -53,6 +53,11 @@ pub fn head_rev(repo: &Path) -> Result<String, GitError> {
     run(repo, &["rev-parse".as_ref(), "HEAD".as_ref()])
 }
 
+/// Returns the head commit hash of `branch` in `repo`.
+pub fn rev_of(repo: &Path, branch: &str) -> Result<String, GitError> {
+    run(repo, &["rev-parse".as_ref(), branch.as_ref()])
+}
+
 /// Creates the branch `branch` from `start` and checks it out in a new
 /// worktree at `path`. Fails if `branch` exists.
 pub fn add_worktree(repo: &Path, branch: &str, path: &Path, start: &str) -> Result<(), GitError> {
