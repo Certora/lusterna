@@ -32,6 +32,8 @@ pub trait Stage: Sized {
 
     type SetupError: Error;
 
+    type SetupOutcome: Serialize + DeserializeOwned;
+
     /// The reason why the gate did not pass.
     /// The function `[feedback_prompt]` converts this type to a feedback prompt
     /// that is passed to the agent, so the agent can fix the failure.
@@ -48,6 +50,8 @@ pub trait Stage: Sized {
 
     // The stage's name.
     fn name() -> &'static str;
+
+    fn restore(&mut self, setup: Self::SetupOutcome);
 
     /// Runs the stages setup phase.
     /// This phase is run before the agent is instructed to execute the stage.

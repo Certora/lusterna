@@ -124,12 +124,22 @@ impl Stage for PreTranslateStage {
     type GateFailure = PreTranslateGateFailure;
 
     type GateExecutionError = PreTranslateGateError;
+    type SetupOutcome = String;
 
     fn name() -> &'static str {
         "pre-translate"
     }
 
+    fn restore(&mut self, setup: Self::SetupOutcome) {
+        assert!(
+            self.base_commit.is_none(),
+            "Cannot restore after setup is done"
+        );
+        self.base_commit = Some(setup);
+    }
+
     fn setup(&mut self) -> Result<(), Self::SetupError> {
+        assert!(self.base_commit.is_none(), "Cannot run setup twice");
         self.base_commit = Some(git::head_rev(&self.input.workspace_root)?);
         Ok(())
     }

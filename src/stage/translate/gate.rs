@@ -11,7 +11,7 @@ use crate::{
         self,
         translate::{
             TranslateInput, TranslateStage,
-            setup::{self, CharonBuild, SetupOutcome},
+            setup::{self, CharonBuild, TranslateSetupOutcome},
         },
     },
     utils::{
@@ -120,7 +120,7 @@ where
 ///   `lusterna` feature
 pub(super) fn run_gate(
     input: &TranslateInput,
-    setup_outcome: &SetupOutcome,
+    setup_outcome: &TranslateSetupOutcome,
 ) -> Result<(), GateStop> {
     let extraction_script = &setup_outcome.extraction_script;
     let lean_root = &setup_outcome.lean_root;

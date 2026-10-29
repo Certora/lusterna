@@ -11,7 +11,7 @@ use crate::{
     config::Platform,
     stage::{
         GateStop, Stage,
-        translate::{gate::TranslateGateError, setup::SetupOutcome},
+        translate::{gate::TranslateGateError, setup::TranslateSetupOutcome},
     },
 };
 
@@ -132,7 +132,7 @@ pub struct TranslateOutput {
 }
 
 pub struct TranslateStage {
-    setup_outcome: Option<SetupOutcome>,
+    setup_outcome: Option<TranslateSetupOutcome>,
 
     input: TranslateInput,
 }
@@ -204,11 +204,22 @@ impl Stage for TranslateStage {
 
     type GateExecutionError = TranslateGateError;
 
+    type SetupOutcome = TranslateSetupOutcome;
+
     fn name() -> &'static str {
         "translate"
     }
 
+    fn restore(&mut self, setup: Self::SetupOutcome) {
+        assert!(
+            self.setup_outcome.is_none(),
+            "Cannot restore after running setup"
+        );
+        self.setup_outcome = Some(setup);
+    }
+
     fn setup(&mut self) -> Result<(), Self::SetupError> {
+        assert!(self.setup_outcome.is_none(), "Cannot do setup twice");
         let outcome = setup::run_setup(&self.input)?;
         self.setup_outcome = Some(outcome);
         Ok(())
