@@ -60,6 +60,7 @@ img { display: block; }
 }
 h1 { font-size: 4.25rem; line-height: 1.05; font-weight: 700; letter-spacing: -0.035em; }
 .lead { max-width: 660px; margin: 1.75rem auto 0; font-size: 1.15rem; line-height: 1.65; color: var(--gray-300); }
+.lead code { font-family: var(--mono); font-size: 0.9em; color: #fff; }
 .cta { display: flex; gap: 0.875rem; justify-content: center; flex-wrap: wrap; margin-top: 2.5rem; }
 
 /* Sections */

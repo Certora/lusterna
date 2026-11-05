@@ -4,14 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Lusterna — Formally verify Rust with AI agents | Certora</title>
-  <meta name="description" content="Lusterna uses AI agents to formally verify Rust programs, especially Solana programs, in Lean 4. The agents write the proofs; the Lean kernel checks every one.">
+  <meta name="description" content="Lusterna lets AI agents prove properties of Rust and Solana programs in Lean 4, and checks every result: the Lean kernel checks each proof, and the harness rejects any proof that rests on an unproven assumption.">
   <meta name="theme-color" content="#0d0d0d">
   <link rel="canonical" href="https://lusterna.sh/">
   <link rel="icon" type="image/svg+xml" href="assets/lusterna-mark.svg">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://lusterna.sh/">
   <meta property="og:title" content="Lusterna — Formally verify Rust with AI agents">
-  <meta property="og:description" content="AI agents translate Rust to Lean 4 and prove it. The Lean kernel checks every proof.">
+  <meta property="og:description" content="AI agents prove properties of Rust programs in Lean 4. Lusterna checks every result.">
   <meta name="twitter:card" content="summary">
 
   <link rel="preconnect" href="https://api.fontshare.com">
@@ -45,9 +45,11 @@
       <span class="badge">Experimental</span>
       <h1>Agents write the proofs.<br><span class="grad-text">Lean checks every one.</span></h1>
       <p class="lead">
-        Lusterna formally verifies Rust programs, especially Solana programs. AI agents infer the
-        intended behavior, translate the code to Lean&nbsp;4 with Aeneas, and prove it. The Lean
-        kernel checks every proof, and any result that rests on an unproven assumption is rejected.
+        AI agents can translate Rust to Lean&nbsp;4 and prove properties about it. But an agent will
+        also report a theorem as proved when its proof rests on a <code>sorry</code>, an unproven
+        axiom, or a weakened statement. Lusterna lets agents do this work on Rust and Solana programs
+        and checks every result itself: the Lean kernel checks each proof, and the harness rejects any
+        proof that rests on an unproven assumption.
       </p>
       <div class="cta">
         <a class="btn btn-primary" href="#get-started">Get started</a>
@@ -59,13 +61,13 @@
   <section class="how">
     <div class="wrap">
       <h2>How it works</h2>
-      <p class="sub">Give Lusterna a Rust repository and a short note on what to focus on. Each stage is a separate agent, and the harness checks its output before the next one starts.</p>
+      <p class="sub">You provide a Rust repository and a short note on what to focus on. Lusterna runs five stages on it, each a separate agent, and checks each stage's output before the next one starts.</p>
       <ol class="stages">
-        <li><span>01</span><h3>Infer</h3><p>Choose the functions and write the properties they should have.</p></li>
-        <li><span>02</span><h3>Translate</h3><p>Translate them to Lean 4 with Charon and Aeneas.</p></li>
-        <li><span>03</span><h3>Formalise</h3><p>State the properties as Lean theorems.</p></li>
-        <li><span>04</span><h3>Prove</h3><p>Prove them, or refute them with a counterexample.</p></li>
-        <li><span>05</span><h3>Report</h3><p>Summarise what was proved, as verified by the harness.</p></li>
+        <li><span>01</span><h3>Infer</h3><p>Choose the functions to verify and describe their intended behavior.</p></li>
+        <li><span>02</span><h3>Translate</h3><p>Translate those functions to Lean 4 with Charon and Aeneas.</p></li>
+        <li><span>03</span><h3>Formalise</h3><p>State the intended behavior as Lean theorems.</p></li>
+        <li><span>04</span><h3>Prove</h3><p>Prove the theorems, or refute false ones with a counterexample.</p></li>
+        <li><span>05</span><h3>Report</h3><p>Write a report that opens with the harness's list of proved theorems.</p></li>
       </ol>
     </div>
   </section>
@@ -73,7 +75,7 @@
   <section class="start" id="get-started">
     <div class="wrap">
       <h2>Get started</h2>
-      <p class="sub">Requires Python 3.10+, Docker, and an Anthropic API key. Results come back as a git branch in your repository.</p>
+      <p class="sub">You need Python 3.10+, Docker, and an Anthropic API key. Point Lusterna at a git repository, and it adds the results to that repository as a new branch.</p>
       <div class="panel">
         <div class="panel-head">shell<button class="copy" type="button">Copy</button></div>
 <pre><code>git clone https://github.com/Certora/lusterna && cd lusterna
