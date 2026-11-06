@@ -69,7 +69,16 @@ pub enum StageExecutionError<S: Stage> {
     #[error("the agent stopped the stage: {0}")]
     Blocked(S::Blocker),
     #[error(transparent)]
-    AgentError(#[from] AgentError),
+    AgentError(AgentError),
+}
+
+impl<S: Stage> From<AgentError> for StageExecutionError<S> {
+    fn from(e: AgentError) -> Self {
+        match e {
+            AgentError::BudgetExhausted => StageExecutionError::BudgetExhausted(None),
+            e => StageExecutionError::AgentError(e),
+        }
+    }
 }
 
 impl<S: Stage> fmt::Debug for StageExecutionError<S> {
