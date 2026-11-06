@@ -288,7 +288,7 @@ impl<S: Stage> StageExec<S> {
         cfg: &Config,
         rejection: AttemptRejected<S>,
     ) -> Result<Phase<S>, StageExecutionError<S>> {
-        if self.attempts > cfg.stage_max_attempts {
+        if self.attempts >= cfg.stage_max_attempts {
             return Err(StageExecutionError::MaxRetries(Some(rejection)));
         }
         if self.judge_cost + self.worker_cost >= cfg.stage_max_budget {
