@@ -181,14 +181,14 @@ impl Stage for PreTranslateStage {
         let workspace_manifest = self.input.workspace_root.join("Cargo.toml");
         let mut files = Vec::new();
         for f in
-            git::changed_files(&toplevel, &base_commit).map_err(|e| GateStop::Error(e.into()))?
+            git::changed_files(&toplevel, base_commit).map_err(|e| GateStop::Error(e.into()))?
         {
             if f.file_name() == Some("Cargo.lock".as_ref()) || f.extension() == Some("rs".as_ref())
             {
                 continue;
             }
             if toplevel.join(&f) == workspace_manifest {
-                let old = git::show_file(&toplevel, &base_commit, &f)
+                let old = git::show_file(&toplevel, base_commit, &f)
                     .map_err(|e| GateStop::Error(e.into()))?;
 
                 if let Ok(new) = fs::read_to_string(toplevel.join(&f))

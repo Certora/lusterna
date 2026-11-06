@@ -193,17 +193,13 @@ impl TranslateGateFailure {
                  `--start-from` or `--opaque`:\n\n```\n{line}\n```\n\n\
                  Remove it. Only the lines that setup wrote can set these patterns.",
             ),
-            TranslateGateFailure::ExtractionScriptArgsNotPassed => format!(
-                "`extraction.sh` has no line that starts with `charon` and passes `\"${{args[@]}}\"`.\n\n\
+            TranslateGateFailure::ExtractionScriptArgsNotPassed => "`extraction.sh` has no line that starts with `charon` and passes `\"${args[@]}\"`.\n\n\
                  Restore such a line, so that Charon receives the entrypoints and the opaque \
                  patterns. Do not put anything before `charon` on that line. To set an \
-                 environment variable, use `export` on an earlier line.",
-            ),
-            TranslateGateFailure::ExtractionScriptNotRelease => format!(
-                "The `charon` command in `extraction.sh` does not pass `--release` to cargo.\n\n\
+                 environment variable, use `export` on an earlier line.".to_string(),
+            TranslateGateFailure::ExtractionScriptNotRelease => "The `charon` command in `extraction.sh` does not pass `--release` to cargo.\n\n\
                  Add `--release` after `--` on that line, so that Charon compiles the crate \
-                 with the overflow checks of the release build.",
-            ),
+                 with the overflow checks of the release build.".to_string(),
             TranslateGateFailure::ExtractionScriptFailed { stderr } => format!(
                 "The extraction.sh script failed with this output:\n\n```\n{stderr}\n```\n\n\
                  Fix the first error and run the script again until it passes.",
@@ -226,12 +222,10 @@ impl TranslateGateFailure {
                 "`cargo test lusterna::` did not finish within {timeout:?}.\n\n\
                  Make the equivalence tests finish within that time.",
             ),
-            TranslateGateFailure::MissingEquivalenceTests => format!(
-                "The crate uses `feature = \"lusterna\"`, but `cargo test lusterna::` \
+            TranslateGateFailure::MissingEquivalenceTests => "The crate uses `feature = \"lusterna\"`, but `cargo test lusterna::` \
                  ran no tests.\n\n\
                  Add an equivalence test for every replacement, in the \
-                 `#[cfg(test)] mod tests` of the `lusterna` module that contains it.",
-            ),
+                 `#[cfg(test)] mod tests` of the `lusterna` module that contains it.".to_string(),
             TranslateGateFailure::DeletedFiles {
                 files,
                 setup_commit,
