@@ -1,3 +1,18 @@
+//! Runs a sequence of stages on a Rust crate. The kind of the pipeline
+//! selects the stages:
+//!
+//! - `Translate`: translates the crate to Lean with Aeneas.
+//!   1. `pre-translate`: runs only if `cargo build` fails. An agent changes
+//!      the crate so that it builds on the host, without changing what it
+//!      computes on its target.
+//!   2. `translate`: translates the code reachable from the entrypoints, with
+//!      the opaque patterns passed to Charon.
+//! - `Verify`: not implemented. [`Pipeline::run`] panics on it.
+//! - `InferAndVerify`: not implemented. [`Pipeline::run`] panics on it.
+//!
+//! After each stage, the pipeline commits all changes in the repository. The
+//! `--stop-after` option ends the pipeline after the named stage.
+
 use std::{
     path::{Path, PathBuf},
     time::Instant,
@@ -35,20 +50,29 @@ enum PipelineKind {
     InferAndVerify,
 }
 
+/// An error that ends a pipeline run.
 #[derive(Debug, thiserror::Error)]
 pub enum PipelineError {
+    /// The `pre-translate` stage failed to set up or to finish.
     #[error("Error in PreTranslate stage: {0}")]
     PreTranslate(StageExecutionError<PreTranslateStage>),
+    /// The `translate` stage failed to set up or to finish.
     #[error("Error in Translate stage: {0}")]
     Translate(StageExecutionError<TranslateStage>),
+    /// Committing the work of a stage failed.
     #[error(transparent)]
     Git(#[from] GitError),
+    /// A config value that a stage needs could not be resolved.
     #[error(transparent)]
     Config(#[from] ConfigError),
+    /// The initial `cargo build` could not run. A build that runs and fails
+    /// starts the `pre-translate` stage instead.
     #[error(transparent)]
     Cargo(#[from] CargoError),
 }
 
+/// A pipeline of stages, configured for one kind of run. See the module
+/// documentation.
 pub struct Pipeline {
     kind: PipelineKind,
     config: Config,
@@ -56,6 +80,9 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
+    /// Creates a `Translate` pipeline. `entrypoints` and `opaques` are the
+    /// Charon `--start-from` and `--opaque` patterns. An invalid
+    /// `--stop-after` stage name is logged and ignored.
     pub fn translate(entrypoints: Vec<String>, opaques: Vec<String>, config: Config) -> Self {
         let stop_after = match &config.stop_after {
             Some(sa) => match StageName::try_from(sa.as_str()) {
@@ -77,6 +104,7 @@ impl Pipeline {
         }
     }
 
+    /// Runs the stages of the pipeline in order and stops at the first error.
     pub fn run(self) -> Result<(), PipelineError> {
         match &self.kind {
             PipelineKind::Translate {
