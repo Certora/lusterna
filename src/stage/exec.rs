@@ -1,3 +1,18 @@
+//! Runs a stage as a state machine with these phases:
+//!
+//! - `Attempt`: the agent works on the stage and returns a report.
+//! - `Gate`: the stage's gate checks the report and builds the stage's output.
+//! - `Judge`: the judge reviews the output. A stage without a judge skips it.
+//! - `Done`: the output passed.
+//!
+//! If the gate fails or the judge finds defects, the next attempt gets their
+//! feedback as its prompt. All attempts run in the same agent session. The
+//! execution stops with an error when the stage runs out of attempts or
+//! budget, or when the agent stops the stage.
+//!
+//! [`StageExec::run`] calls a hook with the new state after every transition.
+//! The state is serializable, so the hook can save it.
+
 use std::{fmt, io, path::Path, time::Instant};
 
 use schemars::JsonSchema;
@@ -12,91 +27,8 @@ use crate::{
     utils::format_elapsed,
 };
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
-pub enum AttemptRejected<S: Stage> {
-    Gate(S::GateFailure),
-    Judge(Vec<Defect>),
-}
-
-impl<S: Stage> fmt::Display for AttemptRejected<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            AttemptRejected::Gate(e) => write!(f, "last gate error: {e}"),
-            AttemptRejected::Judge(defects) => {
-                write!(f, "last judge defects:")?;
-                for d in defects {
-                    write!(f, "\n- {d}")?;
-                }
-                Ok(())
-            }
-        }
-    }
-}
-
-/// A defect the judge found in a stage's output.
-#[derive(Debug, Serialize, Deserialize, JsonSchema, Clone, PartialEq, Eq)]
-pub struct Defect {
-    pub kind: String,
-    pub detail: String,
-    pub fix: String,
-    pub theorem: Option<String>,
-}
-
-impl fmt::Display for Defect {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}", self.kind, self.detail)
-    }
-}
-
-/// The judge's structured output. `--json-schema` requires an object at the
-/// top level, so the defect list is wrapped in this struct. An empty `defects`
-/// list approves the stage.
-#[derive(Deserialize, JsonSchema)]
-struct Verdict {
-    defects: Vec<Defect>,
-}
-
-#[derive(thiserror::Error)]
-pub enum StageExecutionError<S: Stage> {
-    #[error("setup failed: {0}")]
-    SetupError(S::SetupError),
-    #[error("failed to execute the gate: {0}")]
-    GateExecutionError(S::GateExecutionError),
-    #[error("max attempts reached{}", .0.as_ref().map(|r| format!(", {r}")).unwrap_or_default())]
-    MaxRetries(Option<AttemptRejected<S>>),
-    #[error("budget exhausted{}", .0.as_ref().map(|r| format!(", {r}")).unwrap_or_default())]
-    BudgetExhausted(Option<AttemptRejected<S>>),
-    #[error("the agent stopped the stage: {0}")]
-    Blocked(S::Blocker),
-    #[error(transparent)]
-    AgentError(AgentError),
-    #[error("`on_change` failed: {0}")]
-    OnChange(io::Error),
-}
-
-impl<S: Stage> From<AgentError> for StageExecutionError<S> {
-    fn from(e: AgentError) -> Self {
-        match e {
-            AgentError::BudgetExhausted => StageExecutionError::BudgetExhausted(None),
-            e => StageExecutionError::AgentError(e),
-        }
-    }
-}
-
-impl<S: Stage> fmt::Debug for StageExecutionError<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, f)
-    }
-}
-
-// The agent's structured output: its report, or the reason why it stopped
-// the stage. `--json-schema` requires an object at the top level, so the
-// `Result` is in a field.
-#[derive(Deserialize, JsonSchema)]
-struct AgentResult<R, B> {
-    result: Result<R, B>,
-}
-
+/// The state of a stage's execution. Serializing it keeps the phase, not the
+/// costs or the number of attempts.
 #[derive(Serialize, Deserialize)]
 #[serde(bound(deserialize = ""))]
 pub struct StageExec<S: Stage> {
@@ -130,6 +62,8 @@ enum Phase<S: Stage> {
 }
 
 impl<S: Stage> StageExec<S> {
+    /// Returns the execution of `stage`. The first attempt gets the stage's
+    /// base prompt.
     pub fn new(stage: S) -> Self {
         let prompt = stage.base_prompt();
         Self {
@@ -142,6 +76,8 @@ impl<S: Stage> StageExec<S> {
         }
     }
 
+    /// Runs the stage until it is done and returns its output. Calls
+    /// `on_change` with the new state after every transition.
     pub fn run(
         mut self,
         cfg: &Config,
@@ -329,16 +265,112 @@ impl<S: Stage> StageExec<S> {
     }
 }
 
-/// Logs what the stage spent of its budget.
-fn log_stage_spent<S: Stage>(cfg: &Config, agent_cost: f64, judge_cost: f64) {
-    stage_info!(
-        S::NAME,
-        "stage spent {:.2}/{} USD (agent: {:.2} USD, judge: {:.2} USD)",
-        agent_cost + judge_cost,
-        cfg.stage_max_budget,
-        agent_cost,
-        judge_cost
-    );
+/// Why the execution of a stage stopped without an output.
+#[derive(thiserror::Error)]
+pub enum StageExecutionError<S: Stage> {
+    /// The stage's setup failed.
+    #[error("setup failed: {0}")]
+    SetupError(S::SetupError),
+    /// The gate could not run its checks.
+    #[error("failed to execute the gate: {0}")]
+    GateExecutionError(S::GateExecutionError),
+    /// The stage used all its attempts. Holds why the last attempt was
+    /// rejected.
+    #[error("max attempts reached{}", .0.as_ref().map(|r| format!(", {r}")).unwrap_or_default())]
+    MaxRetries(Option<AttemptRejected<S>>),
+    /// The stage used its budget. Holds why the last attempt was rejected if
+    /// the budget ran out between attempts.
+    #[error("budget exhausted{}", .0.as_ref().map(|r| format!(", {r}")).unwrap_or_default())]
+    BudgetExhausted(Option<AttemptRejected<S>>),
+    /// The agent stopped the stage.
+    #[error("the agent stopped the stage: {0}")]
+    Blocked(S::Blocker),
+    /// Running the agent or the judge failed.
+    #[error(transparent)]
+    AgentError(AgentError),
+    /// The `on_change` hook of [`StageExec::run`] failed.
+    #[error("`on_change` failed: {0}")]
+    OnChange(io::Error),
+}
+
+impl<S: Stage> From<AgentError> for StageExecutionError<S> {
+    fn from(e: AgentError) -> Self {
+        match e {
+            AgentError::BudgetExhausted => StageExecutionError::BudgetExhausted(None),
+            e => StageExecutionError::AgentError(e),
+        }
+    }
+}
+
+impl<S: Stage> fmt::Debug for StageExecutionError<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+/// Why an attempt was rejected.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub enum AttemptRejected<S: Stage> {
+    /// The gate failed.
+    Gate(S::GateFailure),
+    /// The judge found these defects.
+    Judge(Vec<Defect>),
+}
+
+impl<S: Stage> fmt::Display for AttemptRejected<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AttemptRejected::Gate(e) => write!(f, "last gate error: {e}"),
+            AttemptRejected::Judge(defects) => {
+                write!(f, "last judge defects:")?;
+                for d in defects {
+                    write!(f, "\n- {d}")?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// A defect the judge found in a stage's output.
+#[derive(Debug, Serialize, Deserialize, JsonSchema, Clone, PartialEq, Eq)]
+pub struct Defect {
+    pub kind: String,
+    pub detail: String,
+    pub fix: String,
+    pub theorem: Option<String>,
+}
+
+impl fmt::Display for Defect {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.kind, self.detail)
+    }
+}
+
+// The agent's structured output: its report, or the reason why it stopped
+// the stage. `--json-schema` requires an object at the top level, so the
+// `Result` is in a field.
+#[derive(Deserialize, JsonSchema)]
+struct AgentResult<R, B> {
+    result: Result<R, B>,
+}
+
+/// The judge's structured output. `--json-schema` requires an object at the
+/// top level, so the defect list is wrapped in this struct. An empty `defects`
+/// list approves the stage.
+#[derive(Deserialize, JsonSchema)]
+struct Verdict {
+    defects: Vec<Defect>,
+}
+
+/// Returns the JSON schema of `T` for `claude --json-schema`, which only
+/// accepts draft-07 schemas. `schema_for!` generates a draft 2020-12 schema,
+/// which it rejects.
+fn json_schema<T: JsonSchema>() -> Result<String, serde_json::Error> {
+    let schema = schemars::generate::SchemaSettings::draft07()
+        .into_generator()
+        .into_root_schema_for::<T>();
+    serde_json::to_string(&schema)
 }
 
 /// Returns the feedback prompt for the agent for the defects the judge found
@@ -354,14 +386,16 @@ fn defects_feedback_prompt(defects: &[Defect]) -> String {
     prompt
 }
 
-/// Returns the JSON schema of `T` for `claude --json-schema`, which only
-/// accepts draft-07 schemas. `schema_for!` generates a draft 2020-12 schema,
-/// which it rejects.
-fn json_schema<T: JsonSchema>() -> Result<String, serde_json::Error> {
-    let schema = schemars::generate::SchemaSettings::draft07()
-        .into_generator()
-        .into_root_schema_for::<T>();
-    serde_json::to_string(&schema)
+/// Logs what the stage spent of its budget.
+fn log_stage_spent<S: Stage>(cfg: &Config, agent_cost: f64, judge_cost: f64) {
+    stage_info!(
+        S::NAME,
+        "stage spent {:.2}/{} USD (agent: {:.2} USD, judge: {:.2} USD)",
+        agent_cost + judge_cost,
+        cfg.stage_max_budget,
+        agent_cost,
+        judge_cost
+    );
 }
 
 #[cfg(test)]
