@@ -173,6 +173,9 @@ impl<S: Stage> StageExec<S> {
                 }
                 Phase::Judge { report, output } => {
                     if let Some(prompt) = self.stage.judge_prompt(output, report) {
+                        if self.worker_cost + self.judge_cost >= cfg.stage_max_budget {
+                            return Err(StageExecutionError::BudgetExhausted(None));
+                        }
                         let (defects, cost_usd) = self.run_judge(prompt, cfg, workdir)?;
                         self.judge_cost += cost_usd;
                         if defects.is_empty() {
@@ -230,16 +233,18 @@ impl<S: Stage> StageExec<S> {
         agent: &mut Agent,
         prompt: String,
     ) -> Result<Result<S::Report, S::Blocker>, AgentError> {
+        let remaining = cfg.stage_max_budget - self.worker_cost - self.judge_cost;
         stage_info!(
             S::NAME,
             "starting attempt {}/{}, remaining budget: {:.2}/{} USD (agent spent: {:.2} USD, judge spent: {:.2} USD)",
             self.attempts + 1,
             cfg.stage_max_attempts,
-            cfg.stage_max_budget - self.worker_cost - self.judge_cost,
+            remaining,
             cfg.stage_max_budget,
             self.worker_cost,
             self.judge_cost
         );
+        agent.set_max_budget(remaining);
         let t = Instant::now();
         let output = agent.run_with_hook(prompt, |s| stage_info!(S::NAME, "agent: {}", s))?;
         stage_info!(S::NAME, "agent finished in {}", format_elapsed(t));
@@ -266,11 +271,13 @@ impl<S: Stage> StageExec<S> {
         judge_agent.set_model(cfg.model.clone());
         judge_agent.set_dir(workdir.to_owned());
         judge_agent.set_json_schema(json_schema::<Verdict>()?);
+        let remaining = cfg.stage_max_budget - self.worker_cost - self.judge_cost;
+        judge_agent.set_max_budget(remaining);
 
         stage_info!(
             S::NAME,
             "running judge, remaining budget: {:.2}/{} USD (agent spent: {:.2} USD, judge spent: {:.2} USD)",
-            cfg.stage_max_budget - self.worker_cost - self.judge_cost,
+            remaining,
             cfg.stage_max_budget,
             self.worker_cost,
             self.judge_cost
