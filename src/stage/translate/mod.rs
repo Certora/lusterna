@@ -26,7 +26,7 @@ pub use {
 macro_rules! translate_info {
     ($($arg:tt)+) => {
         $crate::log::stage_info!(
-            <$crate::stage::translate::TranslateStage as $crate::stage::Stage>::NAME.as_str(),
+            <$crate::stage::translate::TranslateStage as $crate::stage::Stage>::NAME,
             $($arg)+
         )
     };

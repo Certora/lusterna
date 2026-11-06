@@ -1,4 +1,4 @@
-use std::{fmt, path::Path};
+use std::{fmt, path::Path, time::Instant};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -7,8 +7,9 @@ use uuid::Uuid;
 use crate::{
     agent::{Agent, AgentError},
     config::Config,
-    log::stage_info,
+    log::{stage_debug, stage_info},
     stage::{GateStop, Stage},
+    utils::format_elapsed,
 };
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -134,24 +135,34 @@ impl<S: Stage> StageExec<S> {
         let mut agent = self.init_agent(cfg, workdir)?;
         loop {
             let next = match &self.phase {
-                Phase::Attempt { prompt } => match self.run_attempt(&mut agent, prompt.clone())? {
-                    Ok(report) => {
-                        self.attempts += 1;
-                        // the worker agent is kept alive over the whole run
-                        // and claude code accumulated the usage over all calls.
-                        // So here we override instead of adding.
-                        self.worker_cost = agent.get_usage().cost_usd;
-                        Phase::Gate { report }
+                Phase::Attempt { prompt } => {
+                    match self.run_attempt(cfg, &mut agent, prompt.clone())? {
+                        Ok(report) => {
+                            self.attempts += 1;
+                            // the worker agent is kept alive over the whole run
+                            // and claude code accumulated the usage over all
+                            // calls. So here we
+                            // override instead of adding.
+                            self.worker_cost = agent.get_usage().cost_usd;
+                            Phase::Gate { report }
+                        }
+                        Err(blocker) => {
+                            log_stage_spent::<S>(cfg, agent.get_usage().cost_usd, self.judge_cost);
+                            return Err(StageExecutionError::Blocked(blocker));
+                        }
                     }
-                    Err(blocker) => return Err(StageExecutionError::Blocked(blocker)),
-                },
+                }
                 Phase::Gate { report } => {
                     match self.stage.gate_check(report) {
-                        Ok(o) => Phase::Judge {
-                            report: report.clone(),
-                            output: o.clone(),
-                        },
+                        Ok(o) => {
+                            stage_info!(S::NAME, "gate passed");
+                            Phase::Judge {
+                                report: report.clone(),
+                                output: o.clone(),
+                            }
+                        }
                         Err(GateStop::Failure(failure)) => {
+                            stage_info!(S::NAME, "Gate failed: {}", failure);
                             // get the feedback prompt
                             self.retry(cfg, AttemptRejected::Gate(failure.clone()))?
                         }
@@ -165,11 +176,25 @@ impl<S: Stage> StageExec<S> {
                         let (defects, cost_usd) = self.run_judge(prompt, cfg, workdir)?;
                         self.judge_cost += cost_usd;
                         if defects.is_empty() {
+                            stage_info!(S::NAME, "judge found no defects, continuing");
+                            log_stage_spent::<S>(cfg, self.worker_cost, self.judge_cost);
                             Phase::Done(output.clone())
                         } else {
+                            stage_info!(S::NAME, "judge found defects");
+                            stage_debug!(
+                                S::NAME,
+                                "defects:\n{}",
+                                defects
+                                    .iter()
+                                    .map(|d| d.to_string())
+                                    .collect::<Vec<String>>()
+                                    .join("\n")
+                            );
                             self.retry(cfg, AttemptRejected::Judge(defects))?
                         }
                     } else {
+                        stage_info!(S::NAME, "stage has no judge, continuing");
+                        log_stage_spent::<S>(cfg, self.worker_cost, self.judge_cost);
                         Phase::Done(output.clone())
                     }
                 }
@@ -201,13 +226,32 @@ impl<S: Stage> StageExec<S> {
     /// Returns the agent's report, or the blocker it stopped the stage with.
     fn run_attempt(
         &mut self,
+        cfg: &Config,
         agent: &mut Agent,
         prompt: String,
     ) -> Result<Result<S::Report, S::Blocker>, AgentError> {
-        let output =
-            agent.run_with_hook(prompt, |s| stage_info!(S::NAME.as_str(), "agent: {}", s))?;
+        stage_info!(
+            S::NAME,
+            "starting attempt {}/{}, remaining budget: {:.2}/{} USD (agent spent: {:.2} USD, judge spent: {:.2} USD)",
+            self.attempts + 1,
+            cfg.stage_max_attempts,
+            cfg.stage_max_budget - self.worker_cost - self.judge_cost,
+            cfg.stage_max_budget,
+            self.worker_cost,
+            self.judge_cost
+        );
+        let t = Instant::now();
+        let output = agent.run_with_hook(prompt, |s| stage_info!(S::NAME, "agent: {}", s))?;
+        stage_info!(S::NAME, "agent finished in {}", format_elapsed(t));
 
         let result: AgentResult<S::Report, S::Blocker> = serde_json::from_str(&output)?;
+        if let Ok(report) = &result.result {
+            stage_debug!(
+                S::NAME,
+                "agent report: {}",
+                serde_json::to_string_pretty(report)?
+            );
+        }
         Ok(result.result)
     }
 
@@ -223,8 +267,18 @@ impl<S: Stage> StageExec<S> {
         judge_agent.set_dir(workdir.to_owned());
         judge_agent.set_json_schema(json_schema::<Verdict>()?);
 
+        stage_info!(
+            S::NAME,
+            "running judge, remaining budget: {:.2}/{} USD (agent spent: {:.2} USD, judge spent: {:.2} USD)",
+            cfg.stage_max_budget - self.worker_cost - self.judge_cost,
+            cfg.stage_max_budget,
+            self.worker_cost,
+            self.judge_cost
+        );
+        let t = Instant::now();
         let judge_output =
-            judge_agent.run_with_hook(prompt, |s| stage_info!(S::NAME.as_str(), "judge: {}", s))?;
+            judge_agent.run_with_hook(prompt, |s| stage_info!(S::NAME, "judge: {}", s))?;
+        stage_info!(S::NAME, "judge finished in {}", format_elapsed(t));
         let verdict: Verdict = serde_json::from_str(&judge_output)?;
         Ok((verdict.defects, judge_agent.get_usage().cost_usd))
     }
@@ -249,6 +303,18 @@ impl<S: Stage> StageExec<S> {
         );
         Ok(Phase::Attempt { prompt })
     }
+}
+
+/// Logs what the stage spent of its budget.
+fn log_stage_spent<S: Stage>(cfg: &Config, agent_cost: f64, judge_cost: f64) {
+    stage_info!(
+        S::NAME,
+        "stage spent {:.2}/{} USD (agent: {:.2} USD, judge: {:.2} USD)",
+        agent_cost + judge_cost,
+        cfg.stage_max_budget,
+        agent_cost,
+        judge_cost
+    );
 }
 
 /// Returns the feedback prompt for the agent for the defects the judge found
