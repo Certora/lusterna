@@ -120,9 +120,12 @@ pub fn show_file(repo: &Path, commit: &str, path: &Path) -> Result<String, GitEr
 
 /// Stages all changes in `repo`, including untracked files that are not
 /// ignored, commits them with `message` as `Lusterna <lusterna@agent>`, and
-/// returns the commit hash.
-pub fn commit_all(repo: &Path, message: &str) -> Result<String, GitError> {
+/// returns the commit hash. Returns `None` if there is nothing to commit.
+pub fn commit_all(repo: &Path, message: &str) -> Result<Option<String>, GitError> {
     run(repo, &["add".as_ref(), "--all".as_ref()])?;
+    if run(repo, &["status".as_ref(), "--porcelain".as_ref()])?.is_empty() {
+        return Ok(None);
+    }
     run(
         repo,
         &[
@@ -135,5 +138,5 @@ pub fn commit_all(repo: &Path, message: &str) -> Result<String, GitError> {
             message.as_ref(),
         ],
     )?;
-    head_rev(repo)
+    head_rev(repo).map(Some)
 }

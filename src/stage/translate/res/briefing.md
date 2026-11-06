@@ -44,7 +44,7 @@ Aeneas declares each item that it cannot translate as an `axiom` in `FunsExterna
 
 Before you write definitions by hand, let Charon translate the items. Add `--include <pattern>` to `EXTRA_CHARON_ARGS` in `extract-args.sh` for each `axiom` in `FunsExternal_Template.lean` that does not match an opaque pattern. The skill `lusterna:aeneas-recipes` explains how to write the pattern. Add all patterns, then run `extract.sh` once. Aeneas then writes these items into `Funs.lean`, and their axioms go away. If Charon or Aeneas fails on an item, remove its `--include` and write the definition by hand.
 
-1. Copy each `<name>_Template.lean` to `<name>.lean` in the same directory.
+1. Copy each `<name>_Template.lean` to `<name>.lean` in the same directory. If `<name>.lean` exists from an earlier run, keep its definitions and add the missing declarations from the template.
 2. In `<name>.lean`, replace each `axiom` with a `def` (or a type definition) of the same name and type.
 3. Keep an `axiom` only for an item that matches an opaque pattern.
 4. Remove the comments that Aeneas wrote at the top of `<name>.lean`: the lines that say that Aeneas generated the file or that the file is a template, and the comments about the `-max-heartbeats` and `-max-recdepth` options. You write this file, so these comments are false.

@@ -11,10 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     stage::{
         self,
-        translate::{
-            TranslateInput, TranslateStage,
-            setup::TranslateSetupOutcome,
-        },
+        translate::{TranslateInput, TranslateStage, setup::TranslateSetupOutcome},
     },
     utils::{
         cargo::{self, CargoError},
@@ -134,7 +131,10 @@ pub(super) fn run_gate(
     // The extraction script must be unchanged since the setup commit
     let repo_root = git::toplevel(crate_root)?;
     let changed = git::changed_files(crate_root, &setup_outcome.setup_commit)?;
-    if changed.iter().any(|f| repo_root.join(f) == *extraction_script) {
+    if changed
+        .iter()
+        .any(|f| repo_root.join(f) == *extraction_script)
+    {
         return Err(TranslateGateFailure::ExtractionScriptChanged {
             setup_commit: setup_outcome.setup_commit.clone(),
         }
@@ -211,10 +211,13 @@ impl TranslateGateFailure {
                 "`cargo test lusterna::` did not finish within {timeout:?}.\n\n\
                  Make the equivalence tests finish within that time.",
             ),
-            TranslateGateFailure::MissingEquivalenceTests => "The crate uses `feature = \"lusterna\"`, but `cargo test lusterna::` \
+            TranslateGateFailure::MissingEquivalenceTests => {
+                "The crate uses `feature = \"lusterna\"`, but `cargo test lusterna::` \
                  ran no tests.\n\n\
                  Add an equivalence test for every replacement, in the \
-                 `#[cfg(test)] mod tests` of the `lusterna` module that contains it.".to_string(),
+                 `#[cfg(test)] mod tests` of the `lusterna` module that contains it."
+                    .to_string()
+            }
             TranslateGateFailure::DeletedFiles {
                 files,
                 setup_commit,

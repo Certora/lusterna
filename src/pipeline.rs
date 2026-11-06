@@ -100,9 +100,11 @@ impl Pipeline {
             Err(CargoError::Build { stderr, .. }) => {
                 info!("Crate does not build, executing pre translation stage");
                 self.exec_pre_translate_stage(stderr, &manifest)?;
-                let sha =
-                    git::commit_all(&self.config.repo_root()?, "Lusterna: `pre-translate` stage")?;
-                info!("Committed `pre-translate` work in {}", sha);
+                match git::commit_all(&self.config.repo_root()?, "Lusterna: `pre-translate` stage")?
+                {
+                    Some(sha) => info!("Committed `pre-translate` work in {}", sha),
+                    None => info!("No `pre-translate` work to commit"),
+                }
             }
             Err(e) => return Err(PipelineError::Cargo(e)),
         }
@@ -112,8 +114,10 @@ impl Pipeline {
 
         // 2. Run the translate stage
         let _output = self.exec_translate_stage(entrypoints, opaque)?;
-        let sha = git::commit_all(&self.config.repo_root()?, "Lusterna: `translate` stage")?;
-        info!("Committed `translate` work in {}", sha);
+        match git::commit_all(&self.config.repo_root()?, "Lusterna: `translate` stage")? {
+            Some(sha) => info!("Committed `translate` work in {}", sha),
+            None => info!("No `translate` work to commit"),
+        }
 
         Ok(())
     }

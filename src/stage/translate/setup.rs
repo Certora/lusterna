@@ -100,8 +100,6 @@ pub enum TranslateSetupErr {
         crate_root: PathBuf,
         workspace_root: PathBuf,
     },
-    #[error("`{0}` exists from an earlier run. Delete it and run the stage again")]
-    AlreadyExists(PathBuf),
     #[error("`{0}` is not on `PATH`")]
     NotInPath(&'static str),
     #[error(transparent)]
@@ -128,14 +126,12 @@ pub struct TranslateSetupOutcome {
 /// Sets up the crate for the agent:
 ///
 /// - checks that `charon` and `aeneas` are on `PATH`
-/// - checks that `lusterna/extract.sh` and `lusterna/lean` do not exist in the
-///   crate root
 /// - checks that `input.workspace_root` is the root of a Cargo workspace
 /// - checks that the crate root is a crate in that workspace
 /// - builds the crate
 /// - adds the `lusterna` feature to the crate
-/// - creates the extraction script
-/// - creates the lean project
+/// - creates or overwrites the extraction script
+/// - creates or overwrites the files of the lean project that setup writes
 /// - commits all changes in the git repository of the crate
 pub(super) fn run_setup(
     input: &TranslateInput,
@@ -149,14 +145,6 @@ pub(super) fn run_setup(
 
     let workspace_root = &input.workspace_root;
     let crate_root = input.crate_root();
-    for path in [
-        crate_root.join("lusterna").join("extract.sh"),
-        crate_root.join("lusterna").join("lean"),
-    ] {
-        if path.exists() {
-            return Err(TranslateSetupErr::AlreadyExists(path));
-        }
-    }
 
     // Check if workspace root is actually a rust workspace
     let ws_manifest = fs::canonicalize(workspace_root.join("Cargo.toml"))
@@ -218,8 +206,16 @@ pub(super) fn run_setup(
     }
     translate_info!("setup: initialized lake project at {}", lean_root.display());
 
-    let setup_commit = git::commit_all(crate_root, "lusterna: set up translation")?;
-    translate_info!("setup: committed setup in {setup_commit}");
+    let setup_commit = match git::commit_all(crate_root, "lusterna: set up translation")? {
+        Some(sha) => {
+            translate_info!("setup: committed setup in {sha}");
+            sha
+        }
+        None => {
+            translate_info!("setup: nothing to commit");
+            git::head_rev(crate_root)?
+        }
+    };
 
     Ok(TranslateSetupOutcome {
         extraction_script,
