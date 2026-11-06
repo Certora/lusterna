@@ -22,6 +22,27 @@ pub enum StageName {
     Report,
 }
 
+#[derive(Debug, thiserror::Error, derive_more::Display)]
+pub struct InvalidTypeName(String);
+
+impl TryFrom<&str> for StageName {
+    type Error = InvalidTypeName;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value.to_ascii_lowercase().as_str() {
+            "orientate" => Ok(StageName::Orientate),
+            "infer" => Ok(StageName::Infer),
+            "pre-translate" | "pretranslate" => Ok(StageName::PreTranslate),
+            "translate" => Ok(StageName::Translate),
+            "formalize" => Ok(StageName::Formalize),
+            "prove" => Ok(StageName::Prove),
+            "refute" => Ok(StageName::Refute),
+            "report" => Ok(StageName::Report),
+            _ => Err(InvalidTypeName(value.to_owned())),
+        }
+    }
+}
+
 impl StageName {
     pub fn as_str(&self) -> &'static str {
         match self {

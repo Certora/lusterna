@@ -82,7 +82,7 @@ impl<S: Stage> StageExec<S> {
         mut self,
         cfg: &Config,
         workdir: &Path,
-        mut on_change: impl FnMut(&Self),
+        mut on_change: Option<&mut dyn FnMut(&Self)>,
     ) -> Result<S::Output, StageExecutionError<S>> {
         let mut agent = self.init_agent(cfg, workdir)?;
         loop {
@@ -156,7 +156,9 @@ impl<S: Stage> StageExec<S> {
                 Phase::Done(output) => return Ok(output.clone()),
             };
             self.phase = next;
-            on_change(&self);
+            if let Some(on_change) = &mut on_change {
+                on_change(&self);
+            }
         }
     }
 

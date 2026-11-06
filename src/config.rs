@@ -7,17 +7,19 @@
 //! - is used by multiple stages
 use std::{
     fs::{self, canonicalize},
+    io,
     path::PathBuf,
+    process,
 };
 
-use anyhow::{Context, bail};
+use log::warn;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     agent::Effort,
     utils::{
-        cargo::{self},
-        git,
+        cargo::{self, CargoError},
+        git::{self, GitError},
     },
 };
 
@@ -46,7 +48,7 @@ pub struct Config {
 
     /// Aeneas checkout
     #[arg(long, env = "AENEAS_ROOT")]
-    pub(crate) aeneas_root: PathBuf,
+    aeneas_root: PathBuf,
 
     // Paths
     /// The path to the Solanalib library. Must be given if the tool targets a
@@ -55,60 +57,99 @@ pub struct Config {
     pub(crate) solanalib_root: Option<PathBuf>,
 
     /// Workspace of the Rust project
-    pub(crate) workspace_root: PathBuf,
+    workspace_root: PathBuf,
     /// Crate inside the workspace, if the workspace has more than one crate
     #[arg(long)]
-    pub(crate) crate_root: Option<PathBuf>,
+    crate_root: Option<PathBuf>,
 
-    /// Branch to start from [default: the checked out branch]
-    #[arg(long)]
-    pub(crate) source_branch: Option<String>,
-    /// The branch to work on. By default it is the currently checked out branch
-    #[arg(long)]
-    pub(crate) target_branch: Option<String>,
+    #[arg(long, help_heading = "Dev Options")]
+    pub(crate) stop_after: Option<String>,
 }
 
 impl Config {
-    pub fn manifest(&self) -> PathBuf {
-        self.crate_root
+    pub fn manifest(&self) -> Result<PathBuf, ConfigError> {
+        let manifest = self
+            .crate_root()?
             .as_deref()
-            .unwrap_or(&self.workspace_root)
-            .join("Cargo.toml")
+            .unwrap_or(&self.workspace_root()?)
+            .join("Cargo.toml");
+        Ok(manifest)
     }
 
-    pub fn lean_toolchain(&self) -> anyhow::Result<String> {
+    pub fn workspace_root(&self) -> Result<PathBuf, ConfigError> {
+        self.workspace_root.canonicalize().map_err(ConfigError::Io)
+    }
+
+    pub fn crate_root(&self) -> Result<Option<PathBuf>, ConfigError> {
+        self.crate_root
+            .as_ref()
+            .map(|cr| cr.canonicalize())
+            .transpose()
+            .map_err(ConfigError::Io)
+    }
+
+    pub fn aeneas_root(&self) -> Result<PathBuf, ConfigError> {
+        self.aeneas_root.canonicalize().map_err(ConfigError::Io)
+    }
+
+    pub fn repo_root(&self) -> Result<PathBuf, ConfigError> {
+        git::toplevel(&self.workspace_root()?).map_err(ConfigError::Git)
+    }
+
+    pub fn lean_toolchain(&self) -> Result<String, ConfigError> {
         let toolchain_file = self.aeneas_root.join("backends/lean/lean-toolchain");
-        Ok(fs::read_to_string(&toolchain_file)
-            .with_context(|| format!("cannot read `{}`", toolchain_file.display()))?
-            .trim()
-            .to_string())
+        let toolchain = fs::read_to_string(&toolchain_file)?;
+        Ok(toolchain.trim().to_string())
     }
 
-    pub fn get_platform(&self) -> anyhow::Result<Platform> {
-        let platform = if cargo::lock_has_package(&self.manifest(), "solana-program")? {
+    pub fn get_platform(&self) -> Result<Platform, ConfigError> {
+        if cargo::lock_has_package(&self.manifest()?, "solana-program")? {
             let solanalib_root = self
                 .solanalib_root
                 .as_ref()
-                .context("the crate is a Solana program, so `--solanalib-root` is required")?;
-            let packages = self.aeneas_root.join("backends/lean/.lake/packages");
-            if !packages.is_dir() {
-                bail!(
-                    "`{}` does not exist. Run `lake update` in `{}` once",
-                    packages.display(),
-                    self.aeneas_root.join("backends/lean").display()
-                );
+                .ok_or(ConfigError::MissingSolanalibRoot)?;
+
+            let lean_root = self.aeneas_root.join("backends/lean");
+            if !lean_root.join(".lake/packages").is_dir() {
+                return Err(ConfigError::MissingLakePackages(lean_root));
             }
-            Platform::Solana {
-                solanalib_root: canonicalize(&solanalib_root)?,
-            }
+            Ok(Platform::Solana {
+                solanalib_root: canonicalize(solanalib_root)?,
+            })
         } else {
-            Platform::Generic
-        };
-        Ok(platform)
+            Ok(Platform::Generic)
+        }
     }
 
-    pub fn aeneas_rev(&self) -> anyhow::Result<String> {
+    pub fn aeneas_rev(&self) -> Result<String, ConfigError> {
         Ok(git::head_rev(&self.aeneas_root)?)
+    }
+
+    pub fn ensure_aeneas_version_match(&self) -> Result<(), ConfigError> {
+        let output = process::Command::new("aeneas").arg("-version").output()?;
+
+        let version_bin = String::from_utf8_lossy(&output.stdout);
+
+        let built_rev = version_bin
+            .trim()
+            .strip_prefix("aeneas ")
+            .unwrap_or_default();
+        let (built_rev, dirty) = match built_rev.strip_suffix("-dirty") {
+            Some(rev) => (rev, true),
+            None => (built_rev, false),
+        };
+        let checkout_rev = self.aeneas_rev()?;
+        if built_rev.is_empty() || !checkout_rev.starts_with(built_rev) {
+            return Err(ConfigError::AeneasVersionMismatch {
+                version_bin: version_bin.to_string(),
+                root: self.aeneas_root.clone(),
+                version_checkout: checkout_rev,
+            });
+        }
+        if dirty {
+            warn!("`aeneas` on `PATH` was built from a checkout with uncommitted changes");
+        }
+        Ok(())
     }
 }
 
@@ -127,5 +168,27 @@ pub enum Platform {
     Solana {
         /// Absolute path to the Solanalib checkout.
         solanalib_root: PathBuf,
+    },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    #[error(transparent)]
+    Cargo(#[from] CargoError),
+    #[error("the crate is a Solana program, so `--solanalib-root` is required")]
+    MissingSolanalibRoot,
+    #[error("`{}/.lake/packages` does not exist. Run `lake update` in `{}` once", .0.display(), .0.display())]
+    MissingLakePackages(PathBuf),
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    #[error(transparent)]
+    Git(#[from] GitError),
+    #[error(
+        "`aeneas` on `PATH` reports version `{version_bin}`, but `{root}` is at {version_checkout}. Rebuild Aeneas or check out the matching commit"
+    )]
+    AeneasVersionMismatch {
+        version_bin: String,
+        root: PathBuf,
+        version_checkout: String,
     },
 }
