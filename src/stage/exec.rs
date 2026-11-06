@@ -13,7 +13,7 @@
 //! [`StageExec::run`] calls a hook with the new state after every transition.
 //! The state is serializable, so the hook can save it.
 
-use std::{fmt, io, path::Path, time::Instant};
+use std::{fmt, path::Path, time::Instant};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -82,7 +82,7 @@ impl<S: Stage> StageExec<S> {
         mut self,
         cfg: &Config,
         workdir: &Path,
-        mut on_change: impl FnMut(&Self) -> io::Result<()>,
+        mut on_change: impl FnMut(&Self),
     ) -> Result<S::Output, StageExecutionError<S>> {
         let mut agent = self.init_agent(cfg, workdir)?;
         loop {
@@ -156,7 +156,7 @@ impl<S: Stage> StageExec<S> {
                 Phase::Done(output) => return Ok(output.clone()),
             };
             self.phase = next;
-            on_change(&self).map_err(StageExecutionError::OnChange)?;
+            on_change(&self);
         }
     }
 
@@ -288,9 +288,6 @@ pub enum StageExecutionError<S: Stage> {
     /// Running the agent or the judge failed.
     #[error(transparent)]
     AgentError(AgentError),
-    /// The `on_change` hook of [`StageExec::run`] failed.
-    #[error("`on_change` failed: {0}")]
-    OnChange(io::Error),
 }
 
 impl<S: Stage> From<AgentError> for StageExecutionError<S> {
