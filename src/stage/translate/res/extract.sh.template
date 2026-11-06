@@ -8,6 +8,7 @@ CHARON_ARGS=({charon_args})
 CARGO_ARGS=({cargo_args})
 
 cd "$(dirname "$0")/.."
+source lusterna/extract-args.sh
 
 args=()
 for p in "${ENTRYPOINTS[@]}"; do args+=(--start-from "$p"); done
@@ -15,5 +16,5 @@ for p in "${OPAQUE[@]}"; do args+=(--opaque "$p"); done
 {charon_lock}
 
 export RUSTC="$PWD/lusterna/rustc"
-charon cargo --preset=aeneas "${CHARON_ARGS[@]}" "${args[@]}" --dest-file "$PWD/lusterna/extraction.llbc" -- --release --features lusterna "${CARGO_ARGS[@]}"
-aeneas -backend lean -split-files -subdir Extraction -dest lusterna/lean lusterna/extraction.llbc
+charon cargo --preset=aeneas "${CHARON_ARGS[@]}" "${EXTRA_CHARON_ARGS[@]}" "${args[@]}" --dest-file "$PWD/lusterna/extraction.llbc" -- --release --features lusterna "${CARGO_ARGS[@]}" "${EXTRA_CARGO_ARGS[@]}"
+aeneas -backend lean -split-files -subdir Extraction "${EXTRA_AENEAS_ARGS[@]}" -dest lusterna/lean lusterna/extraction.llbc

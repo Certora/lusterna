@@ -35,6 +35,9 @@ const EXTRACT_SH_TEMPLATE: &str = include_str!("res/extract.sh.template");
 /// example `stdsimd` in `ahash`.
 const RUSTC_SH: &str = include_str!("res/rustc.sh");
 
+/// The initial `lusterna/extract-args.sh`, which `extract.sh` sources.
+const EXTRACT_ARGS_SH: &str = include_str!("res/extract-args.sh");
+
 /// The `Cargo.lock` that the Charon build uses, relative to the crate root.
 /// `extract.sh` copies the workspace `Cargo.lock` to it, so that changes for
 /// the Charon build do not change the workspace one.
@@ -227,7 +230,7 @@ pub(super) fn run_setup(
 
 /// Returns the content of `lusterna/extract.sh` for the given Charon
 /// `--start-from` and `--opaque` patterns and Charon build.
-pub(super) fn make_extraction_script(
+pub fn make_extraction_script(
     entrypoints: &[String],
     opaque: &[String],
     build: &CharonBuild,
@@ -300,7 +303,8 @@ fn init_lake_project(
     Ok(lean_root)
 }
 
-/// Creates the initial extraction script and `lusterna/rustc`.
+/// Creates the initial extraction script and `lusterna/rustc`, and
+/// `lusterna/extract-args.sh` if it does not exist.
 /// Returns the path to the script.
 /// Returns an error if creation failed
 fn create_extraction_script(
@@ -317,6 +321,10 @@ fn create_extraction_script(
     let rustc = crate_root.join("lusterna").join("rustc");
     fs::write(&rustc, RUSTC_SH)?;
     fs::set_permissions(&rustc, fs::Permissions::from_mode(0o755))?;
+    let extract_args = crate_root.join("lusterna").join("extract-args.sh");
+    if !extract_args.exists() {
+        fs::write(&extract_args, EXTRACT_ARGS_SH)?;
+    }
     Ok(path)
 }
 

@@ -9,7 +9,7 @@ description: Known problems and fixes for the translation of a Solana program wi
 
 Each entry is a fix that worked once. When the condition of an entry holds, apply the entry.
 
-- Before the first run, pass a separate `--target-dir` after `--` in the `charon` command. Without it, the build output of `cargo build` conflicts with the Charon build.
+- Before the first run, add a separate `--target-dir` to `EXTRA_CARGO_ARGS` in `lusterna/extract-args.sh`. Without it, the build output of `cargo build` conflicts with the Charon build.
 - Do not replace the Anchor `AccountLoader`, `Ref`, `RefMut` or `Pubkey`. Do not change the Rust code that uses them. Only the fixes below for `?` and a live `RefMut` can change it. The fix for a `&dyn Trait` parameter in the skill `lusterna:aeneas-recipes` can also change it. The Lean project requires the library `LusternaLib` in `{lusterna_lean_root}`. Read its modules before you add an `--include` or write a definition. `{lusterna_lean_root}/LusternaLib.lean` lists them. Do not add an `--include` for an item that it defines, and do not define the item again.
 
   Add `public import LusternaLib` to `TypesExternal.lean` and `FunsExternal.lean`. Delete the axioms of the items that it defines. Then define `AccountLoader.load`, `AccountLoader.load_mut` and `key` of the `Key` impl. Use `load`, `loadMut` and `key` in `Lusterna.Anchor.AccountLoader`. The module doc of `{lusterna_lean_root}/LusternaLib/Anchor/AccountLoader.lean` shows how.
