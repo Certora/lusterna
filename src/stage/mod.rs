@@ -47,13 +47,13 @@ impl StageName {
     pub fn as_str(&self) -> &'static str {
         match self {
             StageName::Orientate => "orientate",
-            StageName::Infer => todo!(),
-            StageName::PreTranslate => todo!(),
-            StageName::Translate => todo!(),
-            StageName::Formalize => todo!(),
-            StageName::Prove => todo!(),
-            StageName::Refute => todo!(),
-            StageName::Report => todo!(),
+            StageName::Infer => "infer",
+            StageName::PreTranslate => "pre-translate",
+            StageName::Translate => "translate",
+            StageName::Formalize => "formalize",
+            StageName::Prove => "prove",
+            StageName::Refute => "refute",
+            StageName::Report => "report",
         }
     }
 }
