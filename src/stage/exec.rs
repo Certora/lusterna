@@ -1,4 +1,4 @@
-use std::{fmt, path::Path, time::Instant};
+use std::{fmt, io, path::Path, time::Instant};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -70,6 +70,8 @@ pub enum StageExecutionError<S: Stage> {
     Blocked(S::Blocker),
     #[error(transparent)]
     AgentError(AgentError),
+    #[error("`on_change` failed: {0}")]
+    OnChange(io::Error),
 }
 
 impl<S: Stage> From<AgentError> for StageExecutionError<S> {
@@ -140,7 +142,12 @@ impl<S: Stage> StageExec<S> {
         }
     }
 
-    pub fn run(mut self, cfg: &Config, workdir: &Path) -> Result<S::Output, StageExecutionError<S>> {
+    pub fn run(
+        mut self,
+        cfg: &Config,
+        workdir: &Path,
+        mut on_change: impl FnMut(&Self) -> io::Result<()>,
+    ) -> Result<S::Output, StageExecutionError<S>> {
         let mut agent = self.init_agent(cfg, workdir)?;
         loop {
             let next = match &self.phase {
@@ -212,7 +219,8 @@ impl<S: Stage> StageExec<S> {
                 }
                 Phase::Done(output) => return Ok(output.clone()),
             };
-            self.phase = next
+            self.phase = next;
+            on_change(&self).map_err(StageExecutionError::OnChange)?;
         }
     }
 
