@@ -295,7 +295,7 @@ impl<S: Stage> StageExec<S> {
             return Err(StageExecutionError::BudgetExhausted(Some(rejection)));
         }
         let mut prompt = match rejection {
-            AttemptRejected::Gate(_) => todo!(),
+            AttemptRejected::Gate(failure) => S::feedback_prompt(&failure),
             AttemptRejected::Judge(defects) => defects_feedback_prompt(&defects),
         };
         prompt.push_str(
