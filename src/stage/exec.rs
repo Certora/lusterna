@@ -131,7 +131,7 @@ impl<S: Stage> StageExec<S> {
         }
     }
 
-    pub fn run(mut self, cfg: &Config, workdir: &Path) -> Result<(), StageExecutionError<S>> {
+    pub fn run(mut self, cfg: &Config, workdir: &Path) -> Result<S::Output, StageExecutionError<S>> {
         let mut agent = self.init_agent(cfg, workdir)?;
         loop {
             let next = match &self.phase {
@@ -198,7 +198,7 @@ impl<S: Stage> StageExec<S> {
                         Phase::Done(output.clone())
                     }
                 }
-                Phase::Done(_) => todo!(),
+                Phase::Done(output) => return Ok(output.clone()),
             };
             self.phase = next
         }
