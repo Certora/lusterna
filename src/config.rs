@@ -59,7 +59,7 @@ pub struct Config {
     /// Workspace of the Rust project
     workspace_root: PathBuf,
     /// Crate inside the workspace, if the workspace has more than one crate
-    #[arg(long)]
+    #[arg(long, global = true)]
     crate_root: Option<PathBuf>,
 
     #[arg(long, help_heading = "Dev Options")]
