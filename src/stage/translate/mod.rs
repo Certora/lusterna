@@ -5,13 +5,13 @@ mod stubs;
 
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     config::Platform,
     stage::{
-        GateStop, Stage,
-        translate::{gate::TranslateGateError, setup::SetupOutcome},
+        GateStop, Stage, StageName,
+        translate::{gate::TranslateGateError, setup::TranslateSetupOutcome},
     },
 };
 
@@ -26,7 +26,7 @@ pub use {
 macro_rules! translate_info {
     ($($arg:tt)+) => {
         $crate::log::stage_info!(
-            <$crate::stage::translate::TranslateStage as $crate::stage::Stage>::name(),
+            <$crate::stage::translate::TranslateStage as $crate::stage::Stage>::NAME,
             $($arg)+
         )
     };
@@ -80,6 +80,7 @@ pub fn solana_opaque() -> Vec<String> {
         .collect()
 }
 
+#[derive(Serialize, Deserialize, Clone)]
 pub struct TranslateInput {
     /// Absolute path to the workspace of the Rust project.
     pub workspace_root: PathBuf,
@@ -116,7 +117,7 @@ impl TranslateInput {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct TranslateOutput {
     // Absolute path of the crate's root
     pub crate_root: PathBuf,
@@ -131,22 +132,10 @@ pub struct TranslateOutput {
     pub report: TranslateReport,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
 pub struct TranslateStage {
-    setup_outcome: Option<SetupOutcome>,
-
+    setup_outcome: TranslateSetupOutcome,
     input: TranslateInput,
-}
-
-impl TranslateStage {
-    /// Constructs a new stage from the given input.
-    ///
-    /// Must not have side effects.
-    pub fn new(input: TranslateInput) -> Self {
-        Self {
-            setup_outcome: None,
-            input,
-        }
-    }
 }
 
 /// Returns the first prompt for the crate at `crate_root`.
@@ -198,20 +187,20 @@ impl Stage for TranslateStage {
 
     type Blocker = TranslateBlocker;
 
-    type SetupError = TranslateSetupErr;
-
     type GateFailure = TranslateGateFailure;
 
     type GateExecutionError = TranslateGateError;
 
-    fn name() -> &'static str {
-        "translate"
-    }
+    type SetupError = TranslateSetupErr;
 
-    fn setup(&mut self) -> Result<(), Self::SetupError> {
-        let outcome = setup::run_setup(&self.input)?;
-        self.setup_outcome = Some(outcome);
-        Ok(())
+    const NAME: super::StageName = StageName::Translate;
+
+    fn setup(input: &Self::Input) -> Result<Self, Self::SetupError> {
+        let setup_outcome = setup::run_setup(input)?;
+        Ok(Self {
+            setup_outcome,
+            input: input.clone(),
+        })
     }
 
     fn base_prompt(&self) -> String {
@@ -223,7 +212,7 @@ impl Stage for TranslateStage {
     }
 
     fn gate_check(&self, report: &TranslateReport) -> Result<Self::Output, GateStop<Self>> {
-        let setup_outcome = self.setup_outcome.as_ref().expect("Setup not run");
+        let setup_outcome = &self.setup_outcome;
 
         gate::run_gate(&self.input, setup_outcome)?;
         Ok(TranslateOutput {
@@ -270,7 +259,7 @@ impl Stage for TranslateStage {
     }
 
     fn judge_prompt(&self, output: &Self::Output, report: &TranslateReport) -> Option<String> {
-        let setup_outcome = self.setup_outcome.as_ref().expect("Setup not run");
+        let setup_outcome = &self.setup_outcome;
         Some(
             JUDGE_PROMPT_TEMPLATE
                 .replace("{crate_root}", &output.crate_root.display().to_string())

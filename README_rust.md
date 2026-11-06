@@ -60,18 +60,16 @@ Lusterna also reads the Lean toolchain from `backends/lean/lean-toolchain` in th
 Run the translation:
 
 ```sh
-RUST_LOG=info target/release/lusterna translate /path/to/workspace \
+RUST_LOG=info target/release/lusterna /path/to/workspace translate \
   --crate-root /path/to/workspace/programs/my-program \
   --entrypoint 'crate::module_a' \
-  --entrypoint 'crate::module_b' \
-  --target-branch lusterna/translate
+  --entrypoint 'crate::module_b'
 ```
 
+- The workspace path must come before `translate`.
 - `--crate-root` selects the crate. If the workspace has more than one crate, you must give it.
 - `--entrypoint` is a Charon `--start-from` pattern. You can give it more than once.
-- `--target-branch` is the new branch for the result. The branch must not exist yet.
-- `--source-branch` is the branch to start from. The default is the checked out branch.
-- `--worktree` is where Lusterna creates the worktree. The default is `~/.lusterna/<project>_<source branch>_<target branch>`.
+- Lusterna commits the result of each stage on the checked out branch of the workspace.
 - `--opaque` replaces the default Charon `--opaque` patterns. `--add-opaque` adds patterns to the default patterns.
 - `--model` and `--effort` set the Claude model and the effort level.
 - `--stage-max-attempts` and `--stage-max-budget` set the attempts per stage and the budget per stage in USD.

@@ -1,9 +1,30 @@
-use std::path::PathBuf;
+//!
+//! ## Config vs. State Input
+//!
+//! Prefer a Config item over a Stage input whenever the item
+//!
+//! - is system dependent (e.g. a path on the machine), or
+//! - is used by multiple stages
+use std::{
+    fs::{self, canonicalize},
+    io,
+    path::PathBuf,
+    process,
+};
 
-use crate::agent::Effort;
+use log::warn;
+use serde::{Deserialize, Serialize};
+
+use crate::{
+    agent::Effort,
+    utils::{
+        cargo::{self, CargoError},
+        git::{self, GitError},
+    },
+};
 
 pub const DEFAULT_STAGE_MAX_ATTEMPTS: usize = 5;
-pub const DEFAULT_MAX_BUDGED_USD: usize = 50;
+pub const DEFAULT_MAX_BUDGED_USD: f64 = 50.0;
 
 pub const DEFAULT_MODEL: &str = "opus";
 pub const DEFAULT_EFFORT: Effort = Effort::Medium;
@@ -15,7 +36,7 @@ pub struct Config {
     pub(crate) stage_max_attempts: usize,
     /// Maximum budget per stage in USD
     #[arg(long, global = true, default_value_t = DEFAULT_MAX_BUDGED_USD)]
-    pub(crate) stage_max_budget: usize,
+    pub(crate) stage_max_budget: f64,
 
     // Claude settings
     /// Claude model
@@ -24,22 +45,117 @@ pub struct Config {
     /// Claude effort level
     #[arg(long, global = true, value_enum, default_value_t = DEFAULT_EFFORT)]
     pub(crate) effort: Effort,
+
+    /// Aeneas checkout
+    #[arg(long, env = "AENEAS_ROOT")]
+    aeneas_root: PathBuf,
+
+    // Paths
+    /// The path to the Solanalib library. Must be given if the tool targets a
+    /// Solana program
+    #[arg(long, global = true)]
+    pub(crate) solanalib_root: Option<PathBuf>,
+
+    /// Workspace of the Rust project
+    workspace_root: PathBuf,
+    /// Crate inside the workspace, if the workspace has more than one crate
+    #[arg(long, global = true)]
+    crate_root: Option<PathBuf>,
+
+    #[arg(long, help_heading = "Dev Options")]
+    pub(crate) stop_after: Option<String>,
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            stage_max_attempts: DEFAULT_STAGE_MAX_ATTEMPTS,
-            stage_max_budget: DEFAULT_MAX_BUDGED_USD,
-            model: DEFAULT_MODEL.to_string(),
-            effort: DEFAULT_EFFORT,
+impl Config {
+    pub fn manifest(&self) -> Result<PathBuf, ConfigError> {
+        let manifest = self
+            .crate_root()?
+            .as_deref()
+            .unwrap_or(&self.workspace_root()?)
+            .join("Cargo.toml");
+        Ok(manifest)
+    }
+
+    pub fn workspace_root(&self) -> Result<PathBuf, ConfigError> {
+        self.workspace_root.canonicalize().map_err(ConfigError::Io)
+    }
+
+    pub fn crate_root(&self) -> Result<Option<PathBuf>, ConfigError> {
+        self.crate_root
+            .as_ref()
+            .map(|cr| cr.canonicalize())
+            .transpose()
+            .map_err(ConfigError::Io)
+    }
+
+    pub fn aeneas_root(&self) -> Result<PathBuf, ConfigError> {
+        self.aeneas_root.canonicalize().map_err(ConfigError::Io)
+    }
+
+    pub fn repo_root(&self) -> Result<PathBuf, ConfigError> {
+        git::toplevel(&self.workspace_root()?).map_err(ConfigError::Git)
+    }
+
+    pub fn lean_toolchain(&self) -> Result<String, ConfigError> {
+        let toolchain_file = self.aeneas_root.join("backends/lean/lean-toolchain");
+        let toolchain = fs::read_to_string(&toolchain_file)?;
+        Ok(toolchain.trim().to_string())
+    }
+
+    pub fn get_platform(&self) -> Result<Platform, ConfigError> {
+        if cargo::lock_has_package(&self.manifest()?, "solana-program")? {
+            let solanalib_root = self
+                .solanalib_root
+                .as_ref()
+                .ok_or(ConfigError::MissingSolanalibRoot)?;
+
+            let lean_root = self.aeneas_root.join("backends/lean");
+            if !lean_root.join(".lake/packages").is_dir() {
+                return Err(ConfigError::MissingLakePackages(lean_root));
+            }
+            Ok(Platform::Solana {
+                solanalib_root: canonicalize(solanalib_root)?,
+            })
+        } else {
+            Ok(Platform::Generic)
         }
+    }
+
+    pub fn aeneas_rev(&self) -> Result<String, ConfigError> {
+        Ok(git::head_rev(&self.aeneas_root)?)
+    }
+
+    pub fn ensure_aeneas_version_match(&self) -> Result<(), ConfigError> {
+        let output = process::Command::new("aeneas").arg("-version").output()?;
+
+        let version_bin = String::from_utf8_lossy(&output.stdout);
+
+        let built_rev = version_bin
+            .trim()
+            .strip_prefix("aeneas ")
+            .unwrap_or_default();
+        let (built_rev, dirty) = match built_rev.strip_suffix("-dirty") {
+            Some(rev) => (rev, true),
+            None => (built_rev, false),
+        };
+        let checkout_rev = self.aeneas_rev()?;
+        if built_rev.is_empty() || !checkout_rev.starts_with(built_rev) {
+            return Err(ConfigError::AeneasVersionMismatch {
+                version_bin: version_bin.to_string(),
+                root: self.aeneas_root.clone(),
+                version_checkout: checkout_rev,
+            });
+        }
+        if dirty {
+            warn!("`aeneas` on `PATH` was built from a checkout with uncommitted changes");
+        }
+        Ok(())
     }
 }
 
 /// The platform that the crate is written for. It selects the default opaque
 /// patterns, the Lean project and the skills that the translate agent gets.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub enum Platform {
     /// A crate with no specific platform. The default opaque patterns are
     /// the general ones, and the translate agent gets no platform skill.
@@ -52,5 +168,27 @@ pub enum Platform {
     Solana {
         /// Absolute path to the Solanalib checkout.
         solanalib_root: PathBuf,
+    },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    #[error(transparent)]
+    Cargo(#[from] CargoError),
+    #[error("the crate is a Solana program, so `--solanalib-root` is required")]
+    MissingSolanalibRoot,
+    #[error("`{}/.lake/packages` does not exist. Run `lake update` in `{}` once", .0.display(), .0.display())]
+    MissingLakePackages(PathBuf),
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    #[error(transparent)]
+    Git(#[from] GitError),
+    #[error(
+        "`aeneas` on `PATH` reports version `{version_bin}`, but `{root}` is at {version_checkout}. Rebuild Aeneas or check out the matching commit"
+    )]
+    AeneasVersionMismatch {
+        version_bin: String,
+        root: PathBuf,
+        version_checkout: String,
     },
 }

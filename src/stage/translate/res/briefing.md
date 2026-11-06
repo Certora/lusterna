@@ -3,6 +3,7 @@ You are the translate stage of Lusterna. Your task is to make Charon and Aeneas 
 ## What is already set up
 
 - `lusterna/extract.sh` runs Charon and then Aeneas on the crate, with the feature `lusterna` enabled. Aeneas writes the Lean modules `Types.lean` and `Funs.lean` to `lusterna/lean/Extraction/`. If some items have no body, Aeneas also writes `TypesExternal_Template.lean` and `FunsExternal_Template.lean` there.
+- `lusterna/extract-args.sh` sets the extra arguments that `extract.sh` passes to `charon` (`EXTRA_CHARON_ARGS`), to `cargo` after `--` (`EXTRA_CARGO_ARGS`) and to `aeneas` (`EXTRA_AENEAS_ARGS`).
 - `lusterna/lean` is a Lake project that depends on the Aeneas Lean library.
 - The crate's `Cargo.toml` has an empty feature `lusterna`.
 - Setup committed these files in git. Do not create commits, and do not change the git history, the branches or the stash.
@@ -22,13 +23,13 @@ The harness checks these conditions after you stop. If one fails, you get the er
 1. `lusterna/extract.sh` exits with status 0.
 2. For each `<name>_Template.lean` in `lusterna/lean/Extraction/`, the file `<name>.lean` exists and contains no `sorry` or `admit`.
 3. `lake build` in `lusterna/lean` exits with status 0.
-4. In `extract.sh`, the `ENTRYPOINTS=` and `OPAQUE=` lines and the two `for` loops are unchanged, no other line passes `--start-from` or `--opaque`, and the `charon` command passes `"${args[@]}"` and `--release`.
+4. `extract.sh` is unchanged.
 5. `cargo build` without the `lusterna` feature succeeds.
 6. `cargo test lusterna::` without the `lusterna` feature passes within 10 minutes. If the crate uses `feature = "lusterna"`, it must run at least one test.
 
 ## How to work
 
-1. Apply the fixes of the known problems (see the end of "What you must not do"). Then run `lusterna/extract.sh`. If it fails, collect all errors of the run and fix them together, each with the smallest change that works. Then run the script again. Repeat until it passes. A Charon run takes minutes. If Charon passed and only Aeneas failed, run only the `aeneas` line of `extract.sh` until Aeneas passes. If you changed Rust code since the last Charon run, run the whole script.
+1. Apply the fixes of the known problems (see the end of "What you must not do"). Then run `lusterna/extract.sh`. If it fails, collect all errors of the run and fix them together, each with the smallest change that works. Then run the script again. Repeat until it passes. A Charon run takes minutes. If Charon passed and only Aeneas failed, run only the `aeneas` line of `extract.sh`, after `source lusterna/extract-args.sh`, until Aeneas passes. If you changed Rust code since the last Charon run, run the whole script.
 2. If Aeneas wrote `_Template.lean` files, write the Lean definitions (see the next section).
 3. Run `lake build` in `lusterna/lean` and fix the errors.
 4. If you changed Rust code, run `cargo test lusterna::` and make sure that your equivalence tests pass. Other tests of the crate can fail already before your changes, and you do not need to fix them.
@@ -41,9 +42,9 @@ Nobody reads your messages while you work, and nobody answers questions. Do not 
 
 Aeneas declares each item that it cannot translate as an `axiom` in `FunsExternal_Template.lean` or `TypesExternal_Template.lean`. These are often functions from the Rust standard library or a dependency. `Funs.lean` imports `FunsExternal.lean` and `Types.lean` imports `TypesExternal.lean`, which you must write.
 
-Before you write definitions by hand, let Charon translate the items. Add `--include <pattern>` to the `charon` command in `extract.sh` for each `axiom` in `FunsExternal_Template.lean` that does not match an opaque pattern. The skill `lusterna:aeneas-recipes` explains how to write the pattern. Add all patterns, then run `extract.sh` once. Aeneas then writes these items into `Funs.lean`, and their axioms go away. If Charon or Aeneas fails on an item, remove its `--include` and write the definition by hand.
+Before you write definitions by hand, let Charon translate the items. Add `--include <pattern>` to `EXTRA_CHARON_ARGS` in `extract-args.sh` for each `axiom` in `FunsExternal_Template.lean` that does not match an opaque pattern. The skill `lusterna:aeneas-recipes` explains how to write the pattern. Add all patterns, then run `extract.sh` once. Aeneas then writes these items into `Funs.lean`, and their axioms go away. If Charon or Aeneas fails on an item, remove its `--include` and write the definition by hand.
 
-1. Copy each `<name>_Template.lean` to `<name>.lean` in the same directory.
+1. Copy each `<name>_Template.lean` to `<name>.lean` in the same directory. If `<name>.lean` exists from an earlier run, keep its definitions and add the missing declarations from the template.
 2. In `<name>.lean`, replace each `axiom` with a `def` (or a type definition) of the same name and type.
 3. Keep an `axiom` only for an item that matches an opaque pattern.
 4. Remove the comments that Aeneas wrote at the top of `<name>.lean`: the lines that say that Aeneas generated the file or that the file is a template, and the comments about the `-max-heartbeats` and `-max-recdepth` options. You write this file, so these comments are false.
@@ -148,7 +149,7 @@ Run the tests with `cargo test lusterna::`, without the `lusterna` feature, so t
 - Do not change code that the crate builds without the `lusterna` feature, except to move a failing part into a new function as described above. You can also rename a local variable or a parameter that has the same name as a module. Lean reads a path that starts with that name as a field of the variable.
 - Do not delete files or directories that you did not create. This includes build output such as `target/`.
 
-You can change other Charon and Aeneas options in `extract.sh` if that helps the translation.
+You can change other Charon, cargo and Aeneas options in `extract-args.sh` if that helps the translation. Do not edit `extract.sh`.
 
 Before the first run of `extract.sh`, read the known problems in the skill `lusterna:aeneas-recipes`.{solana_skill} Then look in `Cargo.toml` and `Cargo.lock` for the crates that the known problems name. If the crate depends on one of them, apply the fix for it before the first run, without waiting for the error. Some of these problems make a run of `extract.sh` take much longer. A run often shows only the next problem, so each fix that you wait for costs one more run.
 

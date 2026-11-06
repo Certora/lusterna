@@ -6,13 +6,12 @@ use std::{
     time::Duration,
 };
 
+use serde::{Deserialize, Serialize};
+
 use crate::{
     stage::{
         self,
-        translate::{
-            TranslateInput, TranslateStage,
-            setup::{self, CharonBuild, SetupOutcome},
-        },
+        translate::{TranslateInput, TranslateStage, setup::TranslateSetupOutcome},
     },
     utils::{
         cargo::{self, CargoError},
@@ -40,16 +39,10 @@ pub enum TranslateGateError {
     Cargo(#[from] CargoError),
 }
 
-#[derive(Debug, derive_more::Display)]
+#[derive(Debug, derive_more::Display, Serialize, Deserialize, Clone)]
 pub enum TranslateGateFailure {
-    #[display("extraction script misses line: {_0}")]
-    ExtractionScriptMissingLine(String),
-    #[display("extraction script has unexpected line: {_0}")]
-    ExtractionScriptUnexpectedLine(String),
-    #[display("extraction script does not pass args to charon")]
-    ExtractionScriptArgsNotPassed,
-    #[display("extraction script does not pass --release to charon")]
-    ExtractionScriptNotRelease,
+    #[display("extraction script changed")]
+    ExtractionScriptChanged { setup_commit: String },
     #[display("extraction script failed")]
     ExtractionScriptFailed { stderr: String },
     #[display("lake build failed")]
@@ -75,7 +68,7 @@ pub enum TranslateGateFailure {
     #[display("{word} in {} on line {line}", path.display())]
     ExternalHole {
         path: PathBuf,
-        word: &'static str,
+        word: String,
         line: usize,
     },
 }
@@ -108,8 +101,7 @@ where
 /// Checks the result of the agent:
 ///
 /// - no file that the setup commit tracks is deleted
-/// - the extraction script passes the input entrypoints and opaque patterns to
-///   Charon
+/// - the extraction script is unchanged since the setup commit
 /// - the extraction script runs without error
 /// - for every `<module>_Template.lean` of `EXTERNAL_MODULES` in `Extraction/`,
 ///   the file `<module>.lean` exists and contains no `HOLE_WORDS`
@@ -120,7 +112,7 @@ where
 ///   `lusterna` feature
 pub(super) fn run_gate(
     input: &TranslateInput,
-    setup_outcome: &SetupOutcome,
+    setup_outcome: &TranslateSetupOutcome,
 ) -> Result<(), GateStop> {
     let extraction_script = &setup_outcome.extraction_script;
     let lean_root = &setup_outcome.lean_root;
@@ -136,8 +128,18 @@ pub(super) fn run_gate(
         .into());
     }
 
-    // The entrypoints and opaque patterns must match the given inputs
-    check_patterns(extraction_script, &input.entrypoints, &input.opaque)?;
+    // The extraction script must be unchanged since the setup commit
+    let repo_root = git::toplevel(crate_root)?;
+    let changed = git::changed_files(crate_root, &setup_outcome.setup_commit)?;
+    if changed
+        .iter()
+        .any(|f| repo_root.join(f) == *extraction_script)
+    {
+        return Err(TranslateGateFailure::ExtractionScriptChanged {
+            setup_commit: setup_outcome.setup_commit.clone(),
+        }
+        .into());
+    }
 
     // Running the extraction script must succeed
     run_script(extraction_script)?;
@@ -162,16 +164,15 @@ pub(super) fn run_gate(
 
     // The equivalence tests must pass, and must exist if the crate uses
     // the `lusterna` feature
-    let passed =
-        cargo::test(&manifest, "lusterna::", EQUIV_TEST_TIMEOUT).map_err(|e| match e {
-            CargoError::Test { stdout, stderr, .. } => {
-                TranslateGateFailure::EquivalenceTestsFailed { stdout, stderr }.into()
-            }
-            CargoError::TestTimeout { timeout, .. } => {
-                TranslateGateFailure::EquivalenceTestsTimeout { timeout }.into()
-            }
-            e => GateStop::from(e),
-        })?;
+    let passed = cargo::test(&manifest, "lusterna::", EQUIV_TEST_TIMEOUT).map_err(|e| match e {
+        CargoError::Test { stdout, stderr, .. } => {
+            TranslateGateFailure::EquivalenceTestsFailed { stdout, stderr }.into()
+        }
+        CargoError::TestTimeout { timeout, .. } => {
+            TranslateGateFailure::EquivalenceTestsTimeout { timeout }.into()
+        }
+        e => GateStop::from(e),
+    })?;
     if passed == 0 && uses_lusterna_feature(&crate_root.join("src"))? {
         return Err(TranslateGateFailure::MissingEquivalenceTests.into());
     }
@@ -182,26 +183,11 @@ pub(super) fn run_gate(
 impl TranslateGateFailure {
     pub(super) fn to_feedback_prompt(&self) -> String {
         match self {
-            TranslateGateFailure::ExtractionScriptMissingLine(line) => format!(
-                "`extraction.sh` must contain this line unchanged:\n\n```\n{line}\n```\n\n\
-                 Restore the line. You must not change the entrypoints, the opaque patterns \
-                 or the loops that turn them into Charon options.",
-            ),
-            TranslateGateFailure::ExtractionScriptUnexpectedLine(line) => format!(
-                "`extraction.sh` contains this line, which sets `ENTRYPOINTS` or `OPAQUE` or passes \
-                 `--start-from` or `--opaque`:\n\n```\n{line}\n```\n\n\
-                 Remove it. Only the lines that setup wrote can set these patterns.",
-            ),
-            TranslateGateFailure::ExtractionScriptArgsNotPassed => format!(
-                "`extraction.sh` has no line that starts with `charon` and passes `\"${{args[@]}}\"`.\n\n\
-                 Restore such a line, so that Charon receives the entrypoints and the opaque \
-                 patterns. Do not put anything before `charon` on that line. To set an \
-                 environment variable, use `export` on an earlier line.",
-            ),
-            TranslateGateFailure::ExtractionScriptNotRelease => format!(
-                "The `charon` command in `extraction.sh` does not pass `--release` to cargo.\n\n\
-                 Add `--release` after `--` on that line, so that Charon compiles the crate \
-                 with the overflow checks of the release build.",
+            TranslateGateFailure::ExtractionScriptChanged { setup_commit } => format!(
+                "`lusterna/extract.sh` differs from the version that setup wrote, but you must \
+                 not edit it.\n\n\
+                 Restore it with `git restore --source={setup_commit} -- lusterna/extract.sh`. \
+                 Put extra Charon, cargo and Aeneas arguments in `lusterna/extract-args.sh`.",
             ),
             TranslateGateFailure::ExtractionScriptFailed { stderr } => format!(
                 "The extraction.sh script failed with this output:\n\n```\n{stderr}\n```\n\n\
@@ -225,12 +211,13 @@ impl TranslateGateFailure {
                 "`cargo test lusterna::` did not finish within {timeout:?}.\n\n\
                  Make the equivalence tests finish within that time.",
             ),
-            TranslateGateFailure::MissingEquivalenceTests => format!(
+            TranslateGateFailure::MissingEquivalenceTests => {
                 "The crate uses `feature = \"lusterna\"`, but `cargo test lusterna::` \
                  ran no tests.\n\n\
                  Add an equivalence test for every replacement, in the \
-                 `#[cfg(test)] mod tests` of the `lusterna` module that contains it.",
-            ),
+                 `#[cfg(test)] mod tests` of the `lusterna` module that contains it."
+                    .to_string()
+            }
             TranslateGateFailure::DeletedFiles {
                 files,
                 setup_commit,
@@ -281,60 +268,6 @@ fn uses_lusterna_feature(dir: &Path) -> Result<bool, TranslateGateError> {
     Ok(false)
 }
 
-/// Checks that the extraction script `script` passes exactly `entrypoints`
-/// and `opaque` to Charon. The lines of `make_extraction_script` that set
-/// `ENTRYPOINTS` or `OPAQUE` or pass `--start-from` or `--opaque` must appear
-/// unchanged, no other line may do so, and the `charon` command must pass
-/// `"${args[@]}"` and `--release`.
-fn check_patterns(
-    script: &Path,
-    entrypoints: &[String],
-    opaque: &[String],
-) -> Result<(), GateStop> {
-    let content = fs::read_to_string(script)?;
-    let lines: Vec<&str> = content.lines().map(str::trim).collect();
-
-    let sets_patterns = |line: &str| {
-        line.starts_with("ENTRYPOINTS=")
-            || line.starts_with("OPAQUE=")
-            || line.contains("--start-from")
-            || line.contains("--opaque")
-    };
-    let expected = setup::make_extraction_script(entrypoints, opaque, &CharonBuild::default());
-    let expected_lines: Vec<&str> = expected.lines().filter(|l| sets_patterns(l)).collect();
-
-    if let Some(line) = expected_lines.iter().find(|l| !lines.contains(l)) {
-        return Err(GateStop::Failure(
-            TranslateGateFailure::ExtractionScriptMissingLine(line.to_string()),
-        ));
-    }
-    if let Some(line) = lines
-        .iter()
-        .find(|l| sets_patterns(l) && !expected_lines.contains(l))
-    {
-        return Err(GateStop::Failure(
-            TranslateGateFailure::ExtractionScriptUnexpectedLine(line.to_string()),
-        ));
-    }
-    if !lines
-        .iter()
-        .any(|l| l.starts_with("charon ") && l.contains(r#""${args[@]}""#))
-    {
-        return Err(GateStop::Failure(
-            TranslateGateFailure::ExtractionScriptArgsNotPassed,
-        ));
-    }
-    if !lines
-        .iter()
-        .any(|l| l.starts_with("charon ") && l.split_whitespace().any(|w| w == "--release"))
-    {
-        return Err(GateStop::Failure(
-            TranslateGateFailure::ExtractionScriptNotRelease,
-        ));
-    }
-    Ok(())
-}
-
 /// Checks that for every `<module>_Template.lean` of `EXTERNAL_MODULES` in
 /// `dir`, the file `<module>.lean` exists and contains none of `HOLE_WORDS`.
 fn check_externals(dir: &Path) -> Result<(), GateStop> {
@@ -358,7 +291,7 @@ fn check_externals(dir: &Path) -> Result<(), GateStop> {
             if let Some(word) = HOLE_WORDS.into_iter().find(|w| words.contains(w)) {
                 return Err(GateStop::Failure(TranslateGateFailure::ExternalHole {
                     path: external,
-                    word,
+                    word: word.to_owned(),
                     line: i + 1,
                 }));
             }
@@ -409,7 +342,6 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
-    use crate::stage::translate::setup::{CharonBuild, make_extraction_script};
 
     /// Writes `content` as an executable script into `dir` and returns its
     /// path.
@@ -418,127 +350,6 @@ mod tests {
         fs::write(&path, content).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         path
-    }
-
-    fn patterns() -> (Vec<String>, Vec<String>) {
-        (
-            vec!["crate::f".to_owned(), "crate::{impl A for B}::g".to_owned()],
-            vec!["crate::h".to_owned()],
-        )
-    }
-
-    #[test]
-    fn check_patterns_accepts_generated_script() {
-        let dir = tempfile::tempdir().unwrap();
-        let (entrypoints, opaque) = patterns();
-        let script = write_script(
-            dir.path(),
-            &make_extraction_script(&entrypoints, &opaque, &CharonBuild::default()),
-        );
-
-        check_patterns(&script, &entrypoints, &opaque).unwrap();
-    }
-
-    #[test]
-    fn check_patterns_accepts_other_charon_options() {
-        let dir = tempfile::tempdir().unwrap();
-        let (entrypoints, opaque) = patterns();
-        let content = make_extraction_script(&entrypoints, &opaque, &CharonBuild::default())
-            .replace(
-                "charon cargo --preset=aeneas",
-                "charon cargo --preset=aeneas --hide-marker-traits",
-            );
-        let script = write_script(dir.path(), &content);
-
-        check_patterns(&script, &entrypoints, &opaque).unwrap();
-    }
-
-    #[test]
-    fn check_patterns_rejects_changed_entrypoints() {
-        let dir = tempfile::tempdir().unwrap();
-        let (entrypoints, opaque) = patterns();
-        let script = write_script(
-            dir.path(),
-            &make_extraction_script(
-                &["crate::other".to_owned()],
-                &opaque,
-                &CharonBuild::default(),
-            ),
-        );
-
-        match check_patterns(&script, &entrypoints, &opaque) {
-            Err(GateStop::Failure(TranslateGateFailure::ExtractionScriptMissingLine(line))) => {
-                assert!(line.starts_with("ENTRYPOINTS="), "{line}")
-            }
-            other => panic!("expected ExtractionScriptMissingLine, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn check_patterns_rejects_extra_opaque_option() {
-        let dir = tempfile::tempdir().unwrap();
-        let (entrypoints, opaque) = patterns();
-        let content = make_extraction_script(&entrypoints, &opaque, &CharonBuild::default())
-            .replace(
-                "charon cargo --preset=aeneas",
-                "charon cargo --preset=aeneas --opaque crate::x",
-            );
-        let script = write_script(dir.path(), &content);
-
-        match check_patterns(&script, &entrypoints, &opaque) {
-            Err(GateStop::Failure(TranslateGateFailure::ExtractionScriptUnexpectedLine(line))) => {
-                assert!(line.starts_with("charon "), "{line}")
-            }
-            other => panic!("expected ExtractionScriptUnexpectedLine, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn check_patterns_rejects_second_array_assignment() {
-        let dir = tempfile::tempdir().unwrap();
-        let (entrypoints, opaque) = patterns();
-        let content = make_extraction_script(&entrypoints, &opaque, &CharonBuild::default())
-            .replace("\ncd ", "\nOPAQUE=()\ncd ");
-        let script = write_script(dir.path(), &content);
-
-        match check_patterns(&script, &entrypoints, &opaque) {
-            Err(GateStop::Failure(TranslateGateFailure::ExtractionScriptUnexpectedLine(line))) => {
-                assert_eq!(line, "OPAQUE=()")
-            }
-            other => panic!("expected ExtractionScriptUnexpectedLine, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn check_patterns_rejects_charon_without_args() {
-        let dir = tempfile::tempdir().unwrap();
-        let (entrypoints, opaque) = patterns();
-        let content = make_extraction_script(&entrypoints, &opaque, &CharonBuild::default())
-            .replace(r#""${args[@]}""#, "");
-        let script = write_script(dir.path(), &content);
-
-        assert!(matches!(
-            check_patterns(&script, &entrypoints, &opaque),
-            Err(GateStop::Failure(
-                TranslateGateFailure::ExtractionScriptArgsNotPassed
-            ))
-        ));
-    }
-
-    #[test]
-    fn check_patterns_rejects_charon_without_release() {
-        let dir = tempfile::tempdir().unwrap();
-        let (entrypoints, opaque) = patterns();
-        let content = make_extraction_script(&entrypoints, &opaque, &CharonBuild::default())
-            .replace("--release ", "");
-        let script = write_script(dir.path(), &content);
-
-        assert!(matches!(
-            check_patterns(&script, &entrypoints, &opaque),
-            Err(GateStop::Failure(
-                TranslateGateFailure::ExtractionScriptNotRelease
-            ))
-        ));
     }
 
     #[test]
@@ -602,7 +413,7 @@ mod tests {
 
         match check_externals(dir.path()) {
             Err(GateStop::Failure(TranslateGateFailure::ExternalHole { word, line, .. })) => {
-                assert_eq!((word, line), ("sorry", 2))
+                assert_eq!((word.as_str(), line), ("sorry", 2))
             }
             other => panic!("expected ExternalHole, got {other:?}"),
         }

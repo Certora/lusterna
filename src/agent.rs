@@ -106,6 +106,13 @@ pub enum AgentError {
 }
 
 impl Agent {
+    pub fn with_session_id(session_id: Uuid) -> Self {
+        Self {
+            session_id: Some(session_id),
+            ..Default::default()
+        }
+    }
+
     pub fn set_briefing(&mut self, briefing: String) {
         self.briefing = Some(briefing)
     }
@@ -157,8 +164,8 @@ impl Agent {
     ) -> Result<String, AgentError> {
         let mut args: Vec<String> = vec!["-p".into()];
         let mut briefing_file = None;
-        if let Some(r_sid) = self.session_id {
-            args.extend(["--resume".into(), r_sid.to_string()]);
+        if let Some(sid) = self.session_id {
+            args.extend(["--resume".into(), sid.to_string()]);
         } else {
             let sid = Uuid::new_v4();
             self.session_id = Some(sid);
@@ -191,7 +198,6 @@ impl Agent {
             args.extend(["--effort".to_owned(), effort.to_string()]);
         }
         if let Some(budget) = self.max_budged {
-            let budget = budget + self.usage.cost_usd;
             args.extend(["--max-budget-usd".to_owned(), budget.to_string()]);
         }
         if let Some(schema) = self.json_schema.as_ref() {

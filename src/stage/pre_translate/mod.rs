@@ -30,6 +30,7 @@ const SOLANA_HOST_BUILD_SKILL: &str = include_str!("res/solana-host-build.md");
 /// report.
 const JUDGE_PROMPT_TEMPLATE: &str = include_str!("res/judge.md");
 
+#[derive(Serialize, Deserialize, Clone)]
 pub struct PreTranslateInput {
     /// Absolute path to the workspace of the Rust project.
     pub workspace_root: PathBuf,
@@ -40,13 +41,13 @@ pub struct PreTranslateInput {
 }
 
 /// Every change that the agent made since the start of the stage.
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
 pub struct PreTranslateReport {
     /// Each change, including each patched copy of a dependency.
     pub changes: Vec<PreTranslateChange>,
 }
 
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
 pub struct PreTranslateChange {
     /// The file, relative to the workspace root.
     pub file: String,
@@ -64,7 +65,7 @@ pub enum PreTranslateGateError {
     Cargo(#[from] CargoError),
 }
 
-#[derive(Debug, derive_more::Display)]
+#[derive(Debug, derive_more::Display, Deserialize, Serialize, Clone)]
 pub enum PreTranslateGateFailure {
     #[display("{} tracked files changed", files.len())]
     ChangedFiles {
@@ -91,23 +92,12 @@ fn differs_only_in_patch(old: &str, new: &str) -> bool {
 /// no tracked file changed except `.rs` files, `Cargo.lock` and the `patch`
 /// table of the workspace `Cargo.toml`. The judge checks each change against
 /// the rules of the briefing.
+#[derive(Serialize, Deserialize, Clone)]
 pub struct PreTranslateStage {
     /// Hash of `HEAD` when setup ran
-    base_commit: Option<String>,
+    base_commit: String,
 
     input: PreTranslateInput,
-}
-
-impl PreTranslateStage {
-    /// Constructs a new stage from the given input.
-    ///
-    /// Must not have side effects.
-    pub fn new(input: PreTranslateInput) -> Self {
-        Self {
-            base_commit: None,
-            input,
-        }
-    }
 }
 
 impl Stage for PreTranslateStage {
@@ -119,19 +109,27 @@ impl Stage for PreTranslateStage {
 
     type Blocker = Never;
 
-    type SetupError = GitError;
-
     type GateFailure = PreTranslateGateFailure;
 
     type GateExecutionError = PreTranslateGateError;
 
-    fn name() -> &'static str {
-        "pre-translate"
-    }
+    type SetupError = GitError;
 
-    fn setup(&mut self) -> Result<(), Self::SetupError> {
-        self.base_commit = Some(git::head_rev(&self.input.workspace_root)?);
-        Ok(())
+    const NAME: super::StageName = super::StageName::PreTranslate;
+
+    // fn setup(input: &Self::Input) -> Result<(), Self::SetupError> {
+    //     assert!(!self.is_set_up(), "Cannot run setup twice");
+    //     let head_rev = git::head_rev(&self.input.workspace_root)?;
+    //     self.base_commit = Some(head_rev);
+    //     Ok(())
+    // }
+
+    fn setup(input: &Self::Input) -> Result<Self, Self::SetupError> {
+        let head_rev = git::head_rev(&input.workspace_root)?;
+        Ok(Self {
+            base_commit: head_rev,
+            input: input.clone(),
+        })
     }
 
     fn base_prompt(&self) -> String {
@@ -174,7 +172,7 @@ impl Stage for PreTranslateStage {
     }
 
     fn gate_check(&self, _report: &PreTranslateReport) -> Result<(), GateStop<Self>> {
-        let base_commit = self.base_commit.as_ref().expect("Setup not run");
+        let base_commit = &self.base_commit;
 
         // No tracked file may change, except `.rs` files, `Cargo.lock` and the
         // `patch` table of the workspace `Cargo.toml`
@@ -192,6 +190,7 @@ impl Stage for PreTranslateStage {
             if toplevel.join(&f) == workspace_manifest {
                 let old = git::show_file(&toplevel, base_commit, &f)
                     .map_err(|e| GateStop::Error(e.into()))?;
+
                 if let Ok(new) = fs::read_to_string(toplevel.join(&f))
                     && differs_only_in_patch(&old, &new)
                 {
@@ -217,7 +216,7 @@ impl Stage for PreTranslateStage {
     }
 
     fn judge_prompt(&self, _output: &Self::Output, report: &PreTranslateReport) -> Option<String> {
-        let base_commit = self.base_commit.as_ref().expect("Setup not run");
+        let base_commit = &self.base_commit;
         Some(
             JUDGE_PROMPT_TEMPLATE
                 .replace(
@@ -240,12 +239,14 @@ mod tests {
 
     #[test]
     fn judge_prompt_contains_the_report() {
-        let mut stage = PreTranslateStage::new(PreTranslateInput {
-            workspace_root: PathBuf::from("/ws"),
-            manifest: PathBuf::from("/ws/Cargo.toml"),
-            build_stderr: String::new(),
-        });
-        stage.base_commit = Some("abc123".to_owned());
+        let stage = PreTranslateStage {
+            input: PreTranslateInput {
+                workspace_root: PathBuf::from("/ws"),
+                manifest: PathBuf::from("/ws/Cargo.toml"),
+                build_stderr: String::new(),
+            },
+            base_commit: "abc123".to_owned(),
+        };
         let report = PreTranslateReport {
             changes: vec![PreTranslateChange {
                 file: "src/lib.rs".to_owned(),
