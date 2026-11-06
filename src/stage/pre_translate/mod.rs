@@ -41,13 +41,13 @@ pub struct PreTranslateInput {
 }
 
 /// Every change that the agent made since the start of the stage.
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
 pub struct PreTranslateReport {
     /// Each change, including each patched copy of a dependency.
     pub changes: Vec<PreTranslateChange>,
 }
 
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
 pub struct PreTranslateChange {
     /// The file, relative to the workspace root.
     pub file: String,
@@ -95,21 +95,9 @@ fn differs_only_in_patch(old: &str, new: &str) -> bool {
 #[derive(Serialize, Deserialize, Clone)]
 pub struct PreTranslateStage {
     /// Hash of `HEAD` when setup ran
-    base_commit: Option<String>,
+    base_commit: String,
 
     input: PreTranslateInput,
-}
-
-impl PreTranslateStage {
-    /// Constructs a new stage from the given input.
-    ///
-    /// Must not have side effects.
-    pub fn new(input: PreTranslateInput) -> Self {
-        Self {
-            base_commit: None,
-            input,
-        }
-    }
 }
 
 impl Stage for PreTranslateStage {
@@ -121,36 +109,27 @@ impl Stage for PreTranslateStage {
 
     type Blocker = Never;
 
-    type SetupError = GitError;
-
     type GateFailure = PreTranslateGateFailure;
 
     type GateExecutionError = PreTranslateGateError;
 
-    fn new(input: Self::Input) -> Self {
-        Self {
-            base_commit: None,
-            input,
-        }
-    }
+    type SetupError = GitError;
 
-    fn input(&self) -> &Self::Input {
-        &self.input
-    }
+    const NAME: super::StageName = super::StageName::PreTranslate;
 
-    fn is_set_up(&self) -> bool {
-        self.base_commit.is_some()
-    }
+    // fn setup(input: &Self::Input) -> Result<(), Self::SetupError> {
+    //     assert!(!self.is_set_up(), "Cannot run setup twice");
+    //     let head_rev = git::head_rev(&self.input.workspace_root)?;
+    //     self.base_commit = Some(head_rev);
+    //     Ok(())
+    // }
 
-    fn name() -> &'static str {
-        "pre-translate"
-    }
-
-    fn setup(&mut self) -> Result<(), Self::SetupError> {
-        assert!(!self.is_set_up(), "Cannot run setup twice");
-        let head_rev = git::head_rev(&self.input.workspace_root)?;
-        self.base_commit = Some(head_rev);
-        Ok(())
+    fn setup(input: &Self::Input) -> Result<Self, Self::SetupError> {
+        let head_rev = git::head_rev(&input.workspace_root)?;
+        Ok(Self {
+            base_commit: head_rev,
+            input: input.clone(),
+        })
     }
 
     fn base_prompt(&self) -> String {
@@ -193,7 +172,7 @@ impl Stage for PreTranslateStage {
     }
 
     fn gate_check(&self, _report: &PreTranslateReport) -> Result<(), GateStop<Self>> {
-        let base_commit = self.base_commit.as_ref().expect("Setup not run");
+        let base_commit = &self.base_commit;
 
         // No tracked file may change, except `.rs` files, `Cargo.lock` and the
         // `patch` table of the workspace `Cargo.toml`
@@ -202,15 +181,16 @@ impl Stage for PreTranslateStage {
         let workspace_manifest = self.input.workspace_root.join("Cargo.toml");
         let mut files = Vec::new();
         for f in
-            git::changed_files(&toplevel, base_commit).map_err(|e| GateStop::Error(e.into()))?
+            git::changed_files(&toplevel, &base_commit).map_err(|e| GateStop::Error(e.into()))?
         {
             if f.file_name() == Some("Cargo.lock".as_ref()) || f.extension() == Some("rs".as_ref())
             {
                 continue;
             }
             if toplevel.join(&f) == workspace_manifest {
-                let old = git::show_file(&toplevel, base_commit, &f)
+                let old = git::show_file(&toplevel, &base_commit, &f)
                     .map_err(|e| GateStop::Error(e.into()))?;
+
                 if let Ok(new) = fs::read_to_string(toplevel.join(&f))
                     && differs_only_in_patch(&old, &new)
                 {
@@ -236,7 +216,7 @@ impl Stage for PreTranslateStage {
     }
 
     fn judge_prompt(&self, _output: &Self::Output, report: &PreTranslateReport) -> Option<String> {
-        let base_commit = self.base_commit.as_ref().expect("Setup not run");
+        let base_commit = &self.base_commit;
         Some(
             JUDGE_PROMPT_TEMPLATE
                 .replace(
@@ -259,12 +239,14 @@ mod tests {
 
     #[test]
     fn judge_prompt_contains_the_report() {
-        let mut stage = PreTranslateStage::new(PreTranslateInput {
-            workspace_root: PathBuf::from("/ws"),
-            manifest: PathBuf::from("/ws/Cargo.toml"),
-            build_stderr: String::new(),
-        });
-        stage.base_commit = Some("abc123".to_owned());
+        let stage = PreTranslateStage {
+            input: PreTranslateInput {
+                workspace_root: PathBuf::from("/ws"),
+                manifest: PathBuf::from("/ws/Cargo.toml"),
+                build_stderr: String::new(),
+            },
+            base_commit: "abc123".to_owned(),
+        };
         let report = PreTranslateReport {
             changes: vec![PreTranslateChange {
                 file: "src/lib.rs".to_owned(),

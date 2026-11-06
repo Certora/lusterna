@@ -185,7 +185,7 @@ fn translate(config: &Config, args: TranslateArgs) -> anyhow::Result<()> {
                 build_stderr: stderr,
             };
             let stage = PreTranslateStage::new(input);
-            let stage_exec = stage::StageFSM::new(stage);
+            let stage_exec = stage::StageExec::new(stage);
             let _ = stage_exec.run(config, &worktree)?;
             log::info!("Finished pre-translate in {}", format_elapsed(t));
 
@@ -243,7 +243,7 @@ fn translate(config: &Config, args: TranslateArgs) -> anyhow::Result<()> {
         platform,
     };
     let translate_stage = TranslateStage::new(input);
-    let output = stage::StageFSM::new(translate_stage).run(config, &worktree)?;
+    let output = stage::StageExec::new(translate_stage).run(config, &worktree)?;
     log::info!("Finished translation in {}", format_elapsed(t));
 
     let sha = git::commit_all(&worktree, "lusterna: translate to Lean with Aeneas")?;

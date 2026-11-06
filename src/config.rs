@@ -22,7 +22,7 @@ use crate::{
 };
 
 pub const DEFAULT_STAGE_MAX_ATTEMPTS: usize = 5;
-pub const DEFAULT_MAX_BUDGED_USD: usize = 50;
+pub const DEFAULT_MAX_BUDGED_USD: f64 = 50.0;
 
 pub const DEFAULT_MODEL: &str = "opus";
 pub const DEFAULT_EFFORT: Effort = Effort::Medium;
@@ -34,7 +34,7 @@ pub struct Config {
     pub(crate) stage_max_attempts: usize,
     /// Maximum budget per stage in USD
     #[arg(long, global = true, default_value_t = DEFAULT_MAX_BUDGED_USD)]
-    pub(crate) stage_max_budget: usize,
+    pub(crate) stage_max_budget: f64,
 
     // Claude settings
     /// Claude model

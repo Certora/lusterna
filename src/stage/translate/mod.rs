@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     config::Platform,
     stage::{
-        GateStop, Stage,
+        GateStop, Stage, StageName,
         translate::{gate::TranslateGateError, setup::TranslateSetupOutcome},
     },
 };
@@ -26,7 +26,7 @@ pub use {
 macro_rules! translate_info {
     ($($arg:tt)+) => {
         $crate::log::stage_info!(
-            <$crate::stage::translate::TranslateStage as $crate::stage::Stage>::name(),
+            <$crate::stage::translate::TranslateStage as $crate::stage::Stage>::NAME.as_str(),
             $($arg)+
         )
     };
@@ -134,20 +134,8 @@ pub struct TranslateOutput {
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct TranslateStage {
-    setup_outcome: Option<TranslateSetupOutcome>,
+    setup_outcome: TranslateSetupOutcome,
     input: TranslateInput,
-}
-
-impl TranslateStage {
-    /// Constructs a new stage from the given input.
-    ///
-    /// Must not have side effects.
-    pub fn new(input: TranslateInput) -> Self {
-        Self {
-            setup_outcome: None,
-            input,
-        }
-    }
 }
 
 /// Returns the first prompt for the crate at `crate_root`.
@@ -199,36 +187,20 @@ impl Stage for TranslateStage {
 
     type Blocker = TranslateBlocker;
 
-    type SetupError = TranslateSetupErr;
-
     type GateFailure = TranslateGateFailure;
 
     type GateExecutionError = TranslateGateError;
 
-    fn new(input: Self::Input) -> Self {
-        Self {
-            setup_outcome: None,
-            input,
-        }
-    }
+    type SetupError = TranslateSetupErr;
 
-    fn input(&self) -> &Self::Input {
-        &self.input
-    }
+    const NAME: super::StageName = StageName::Translate;
 
-    fn name() -> &'static str {
-        "translate"
-    }
-
-    fn is_set_up(&self) -> bool {
-        self.setup_outcome.is_some()
-    }
-
-    fn setup(&mut self) -> Result<(), Self::SetupError> {
-        assert!(!self.is_set_up(), "Cannot do setup twice");
-        let outcome = setup::run_setup(&self.input)?;
-        self.setup_outcome = Some(outcome);
-        Ok(())
+    fn setup(input: &Self::Input) -> Result<Self, Self::SetupError> {
+        let setup_outcome = setup::run_setup(input)?;
+        Ok(Self {
+            setup_outcome,
+            input: input.clone(),
+        })
     }
 
     fn base_prompt(&self) -> String {
@@ -240,7 +212,7 @@ impl Stage for TranslateStage {
     }
 
     fn gate_check(&self, report: &TranslateReport) -> Result<Self::Output, GateStop<Self>> {
-        let setup_outcome = self.setup_outcome.as_ref().expect("Setup not run");
+        let setup_outcome = &self.setup_outcome;
 
         gate::run_gate(&self.input, setup_outcome)?;
         Ok(TranslateOutput {
@@ -287,7 +259,7 @@ impl Stage for TranslateStage {
     }
 
     fn judge_prompt(&self, output: &Self::Output, report: &TranslateReport) -> Option<String> {
-        let setup_outcome = self.setup_outcome.as_ref().expect("Setup not run");
+        let setup_outcome = &self.setup_outcome;
         Some(
             JUDGE_PROMPT_TEMPLATE
                 .replace("{crate_root}", &output.crate_root.display().to_string())
