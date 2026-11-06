@@ -198,7 +198,6 @@ impl Agent {
             args.extend(["--effort".to_owned(), effort.to_string()]);
         }
         if let Some(budget) = self.max_budged {
-            let budget = budget + self.usage.cost_usd;
             args.extend(["--max-budget-usd".to_owned(), budget.to_string()]);
         }
         if let Some(schema) = self.json_schema.as_ref() {
