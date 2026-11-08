@@ -46,10 +46,11 @@
       <h1>Agents write the proofs.<br><span class="grad-text">Lean checks every one.</span></h1>
       <p class="lead">
         AI agents can translate Rust to Lean&nbsp;4 and prove properties about it. But an agent will
-        also report a theorem as proved when its proof rests on a <code>sorry</code>, an unproven
-        axiom, or a weakened statement. Lusterna lets agents do this work on Rust and Solana programs
-        and checks every result itself: the Lean kernel checks each proof, and the harness rejects any
+        also report a theorem as proved when its proof relies on a <code>sorry</code>, an unproven
+        axiom, or a weakened statement. Lusterna lets agents do this work and makes sure that every result is sound:
+        the Lean kernel checks each proof, and the harness rejects any
         proof that rests on an unproven assumption.
+        Lusterna works on Rust and Solana programs.
       </p>
       <div class="cta">
         <a class="btn btn-primary" href="#get-started">Get started</a>
