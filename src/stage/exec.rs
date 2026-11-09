@@ -27,6 +27,9 @@ use crate::{
     utils::format_elapsed,
 };
 
+/// Added to the system prompt of the agent and the judge.
+const WAIT_FOR_SUBAGENTS: &str = "Before you submit your structured output, wait until every subagent you started has finished and use its results. Results that arrive after the submission are lost.";
+
 /// The state of a stage's execution. Serializing it keeps the phase, not the
 /// costs or the number of attempts.
 #[derive(Serialize, Deserialize)]
@@ -168,7 +171,7 @@ impl<S: Stage> StageExec<S> {
             None => Agent::default(),
         };
         // set the briefing
-        agent.set_briefing(self.stage.briefing());
+        agent.set_briefing(format!("{}\n\n{WAIT_FOR_SUBAGENTS}", self.stage.briefing()));
         for (name, content) in self.stage.skills() {
             agent.add_skill(name, content);
         }
@@ -222,6 +225,7 @@ impl<S: Stage> StageExec<S> {
         workdir: &Path,
     ) -> Result<(Vec<Defect>, f64), AgentError> {
         let mut judge_agent = Agent::default();
+        judge_agent.set_briefing(WAIT_FOR_SUBAGENTS.to_owned());
         judge_agent.set_effort(cfg.effort);
         judge_agent.set_model(cfg.model.clone());
         judge_agent.set_dir(workdir.to_owned());
