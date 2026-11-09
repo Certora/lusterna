@@ -96,9 +96,9 @@ pub enum PropertyStatus {
 pub struct FormalizeOutput {
     pub property_status: BTreeMap<PropertyId, PropertyStatus>,
     /// For each struct that an invariant property is declared on, keyed by the
-    /// struct name as the property gives it, the full Lean names of the
-    /// functions that mutate it.
-    pub mutators: BTreeMap<String, Vec<String>>,
+    /// struct name as the property gives it, the full Lean names of its
+    /// mutating operations, which the induction steps of its invariants call.
+    pub mutating_operations: BTreeMap<String, Vec<String>>,
 }
 
 impl Stage for FormalizeStage {
@@ -208,7 +208,7 @@ mod tests {
                 1,
                 PropertyStatus::Skipped(SkipReason::Other("{lean_root}".to_owned())),
             )]),
-            mutators: BTreeMap::new(),
+            mutating_operations: BTreeMap::new(),
         };
         let prompt = stage().judge_prompt(&report, &report).unwrap();
 

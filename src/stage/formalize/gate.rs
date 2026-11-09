@@ -8,8 +8,8 @@
 //! 6. The labels match the report: each label's property is formalized, the
 //!    title matches, the theorem is in the reported file, and each property's
 //!    labelled theorems are the reported ones.
-//! 7. Each formalized invariant has `mutators` for its struct, and each mutator
-//!    is called by a labelled theorem of that invariant.
+//! 7. Each formalized invariant has `mutating_operations` for its struct, and
+//!    each of them is called by a labelled theorem of that invariant.
 //!
 //! Labelled theorem: a theorem tagged `@[lusterna id "title"]`, which states
 //! the property with that `id` and `title` in the properties file. Untagged
@@ -67,10 +67,10 @@ pub enum FormalizeGateFailure {
     IssuesFound { theorems: Vec<(String, Vec<Issue>)> },
     #[display("{} labels do not match the report", problems.len())]
     LabelMismatch { problems: Vec<LabelProblem> },
-    #[display("no mutators reported for {}", structs.join(", "))]
-    MissingMutators { structs: Vec<String> },
-    #[display("{} mutators have no theorem", missing.len())]
-    UncoveredMutators { missing: Vec<(PropertyId, String)> },
+    #[display("no mutating operations reported for {}", structs.join(", "))]
+    MissingOperations { structs: Vec<String> },
+    #[display("{} mutating operations have no theorem", missing.len())]
+    UncoveredOperations { missing: Vec<(PropertyId, String)> },
 }
 
 /// A problem with the statement of a labelled theorem, as
@@ -249,7 +249,7 @@ fn check_theorems(
     check_sorry(checks)?;
     check_issues(checks)?;
     check_labels(properties, report, checks)?;
-    check_mutators(properties, report, checks)
+    check_operations(properties, report, checks)
 }
 
 /// Checks that the proof of every theorem is `sorry`.
@@ -365,15 +365,15 @@ fn check_labels(
     Ok(())
 }
 
-/// Checks that every formalized invariant property has `mutators` for its
+/// Checks that every formalized invariant property has `mutating_operations` for its
 /// struct, and for each of them a labelled theorem whose triple calls it.
-fn check_mutators(
+fn check_operations(
     properties: &Properties,
     report: &FormalizeOutput,
     checks: &[TheoremCheck],
 ) -> Result<(), FormalizeGateFailure> {
-    let mut structs_without_mutators = BTreeSet::new();
-    let mut uncovered_mutators = Vec::new();
+    let mut structs_without_operations = BTreeSet::new();
+    let mut uncovered_operations = Vec::new();
     for property in &properties.0 {
         // Skip rules
         let PropertyKind::Invariant { r#struct } = &property.kind else {
@@ -384,30 +384,30 @@ fn check_mutators(
         else {
             continue;
         };
-        // The report must list the mutators of the struct
-        let Some(mutators) = report.mutators.get(r#struct) else {
-            structs_without_mutators.insert(r#struct.clone());
+        // The report must list the operations of the struct
+        let Some(operations) = report.mutating_operations.get(r#struct) else {
+            structs_without_operations.insert(r#struct.clone());
             continue;
         };
-        // Each mutator must be the function of a labelled theorem of the
+        // Each operation must be the function of a labelled theorem of the
         // property
-        for mutator in mutators {
+        for operation in operations {
             if !checks
                 .iter()
-                .any(|c| c.id == Some(property.id) && c.function.as_ref() == Some(mutator))
+                .any(|c| c.id == Some(property.id) && c.function.as_ref() == Some(operation))
             {
-                uncovered_mutators.push((property.id, mutator.clone()));
+                uncovered_operations.push((property.id, operation.clone()));
             }
         }
     }
-    if !structs_without_mutators.is_empty() {
-        return Err(FormalizeGateFailure::MissingMutators {
-            structs: structs_without_mutators.into_iter().collect(),
+    if !structs_without_operations.is_empty() {
+        return Err(FormalizeGateFailure::MissingOperations {
+            structs: structs_without_operations.into_iter().collect(),
         });
     }
-    if !uncovered_mutators.is_empty() {
-        return Err(FormalizeGateFailure::UncoveredMutators {
-            missing: uncovered_mutators,
+    if !uncovered_operations.is_empty() {
+        return Err(FormalizeGateFailure::UncoveredOperations {
+            missing: uncovered_operations,
         });
     }
 
@@ -532,22 +532,23 @@ impl FormalizeGateFailure {
                  Fix the labels or the report so that they agree.",
                 list(problems.iter().map(LabelProblem::to_string).collect())
             ),
-            FormalizeGateFailure::MissingMutators { structs } => format!(
-                "Your report has no entry in `mutators` for these structs of invariant \
+            FormalizeGateFailure::MissingOperations { structs } => format!(
+                "Your report has no entry in `mutating_operations` for these structs of invariant \
                  properties:\n\n{}\n\n\
-                 Add the full Lean names of the functions that mutate each struct, under the \
-                 struct name exactly as the property gives it.",
+                 Add the full Lean names of the mutating operations of each struct, under \
+                 the struct name exactly as the property gives it.",
                 list(code(structs))
             ),
-            FormalizeGateFailure::UncoveredMutators { missing } => format!(
-                "These mutators have no labelled theorem of the invariant property whose \
+            FormalizeGateFailure::UncoveredOperations { missing } => format!(
+                "These mutating operations have no labelled theorem of the invariant property \
+                 whose \
                  triple calls them directly:\n\n{}\n\n\
                  Write the induction step for each one, as \"Invariants\" in your briefing \
                  describes.",
                 list(
                     missing
                         .iter()
-                        .map(|(id, mutator)| format!("property {id}: `{mutator}`"))
+                        .map(|(id, operation)| format!("property {id}: `{operation}`"))
                         .collect()
                 )
             ),
@@ -602,7 +603,7 @@ mod tests {
                     },
                 ),
             ]),
-            mutators: BTreeMap::from([(
+            mutating_operations: BTreeMap::from([(
                 "vault::Vault".to_owned(),
                 vec!["vault.Vault.deposit".to_owned()],
             )]),
@@ -744,26 +745,26 @@ mod tests {
     }
 
     #[test]
-    fn rejects_missing_mutators() {
+    fn rejects_missing_operations() {
         let mut report = report();
-        report.mutators.clear();
+        report.mutating_operations.clear();
         assert!(matches!(
             check_theorems(&properties(), &report, &checks()),
-            Err(FormalizeGateFailure::MissingMutators { structs }) if structs == ["vault::Vault"]
+            Err(FormalizeGateFailure::MissingOperations { structs }) if structs == ["vault::Vault"]
         ));
     }
 
     #[test]
-    fn rejects_uncovered_mutator() {
+    fn rejects_uncovered_operation() {
         let mut report = report();
         report
-            .mutators
+            .mutating_operations
             .get_mut("vault::Vault")
             .unwrap()
             .push("vault.Vault.withdraw".to_owned());
         assert!(matches!(
             check_theorems(&properties(), &report, &checks()),
-            Err(FormalizeGateFailure::UncoveredMutators { missing })
+            Err(FormalizeGateFailure::UncoveredOperations { missing })
                 if missing == [(2, "vault.Vault.withdraw".to_owned())]
         ));
     }
