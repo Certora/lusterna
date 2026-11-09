@@ -148,9 +148,8 @@ impl Pipeline {
             &properties,
             serde_json::to_string_pretty(&self.spec.properties).expect("the properties serialize"),
         )?;
-        match git::commit_all(&repo_root, "Lusterna: spec")? {
-            Some(sha) => info!("Committed the spec in {}", sha),
-            None => info!("The spec is unchanged"),
+        if let Some(sha) = git::commit_all(&repo_root, "Lusterna: spec")? {
+            info!("Committed the spec in {}", sha);
         }
 
         // 3. Run the pre-translate stage
