@@ -13,9 +13,23 @@ use crate::{
     utils::git::{self, GitError},
 };
 
+/// The first prompt of the formalize stage, with `{lean_root}` standing for
+/// the Lean project root.
+const BASE_PROMPT_TEMPLATE: &str = include_str!("res/prompt.md");
+
+/// The agent briefing of the formalize stage, with `{lean_root}`,
+/// `{extracted}` and `{properties}` standing for the Lean project root, the
+/// directory of the extraction and the JSON file of the properties.
+const BRIEFING_TEMPLATE: &str = include_str!("res/briefing.md");
+
+/// The `SKILL.md` of the skill `aeneas-specs`.
+const AENEAS_SPECS_SKILL: &str = include_str!("res/aeneas-specs.md");
+
 #[derive(Deserialize, Serialize)]
 pub struct FormalizeStage {
     input: FormalizeInput,
+    /// The content of `input.properties`.
+    properties: Properties,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -25,8 +39,8 @@ pub struct FormalizeInput {
     pub extracted: PathBuf,
     /// Path to the lean root, from which lake can be executed.
     pub lean_root: PathBuf,
-    /// The properties for formalizes
-    pub properties: Properties,
+    /// Absolute path to the JSON file of the properties to formalize
+    pub properties: PathBuf,
 }
 
 #[derive(Debug, derive_more::Display, JsonSchema, Serialize, Deserialize)]
@@ -46,6 +60,8 @@ pub enum FormalizeSetupError {
     Io(#[from] io::Error),
     #[error(transparent)]
     Git(#[from] GitError),
+    #[error("cannot parse the properties in `{0}`: {1}")]
+    Properties(PathBuf, serde_json::Error),
 }
 
 #[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
@@ -64,8 +80,9 @@ pub enum SkipReason {
 #[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
 pub enum PropertyStatus {
     Formalized {
+        /// The spec file, relative to the Lean project root.
         file: PathBuf,
-        /// The theorems that express the property.
+        /// The full Lean names of the theorems that express the property.
         theorems: Vec<String>,
     },
     Skipped(SkipReason),
@@ -74,7 +91,8 @@ pub enum PropertyStatus {
 #[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
 pub struct FormalizeOutput {
     pub property_status: BTreeMap<PropertyId, PropertyStatus>,
-    /// For each struct that an invariant property is declared on, the
+    /// For each struct that an invariant property is declared on, keyed by the
+    /// struct name as the property gives it, the full Lean names of the
     /// functions that mutate it.
     pub mutators: BTreeMap<String, Vec<String>>,
 }
@@ -103,16 +121,25 @@ impl Stage for FormalizeStage {
         if !git::is_clean(&input.lean_root)? {
             return Err(FormalizeSetupError::Dirty(input.lean_root));
         }
+        let properties = serde_json::from_str(&fs::read_to_string(&input.properties)?)
+            .map_err(|e| FormalizeSetupError::Properties(input.properties.clone(), e))?;
         fs::create_dir_all(input.lean_root.join("Spec"))?;
-        Ok(Self { input })
+        Ok(Self { input, properties })
     }
 
     fn base_prompt(&self) -> String {
-        todo!()
+        BASE_PROMPT_TEMPLATE.replace("{lean_root}", &self.input.lean_root.display().to_string())
     }
 
     fn briefing(&self) -> String {
-        todo!()
+        BRIEFING_TEMPLATE
+            .replace("{lean_root}", &self.input.lean_root.display().to_string())
+            .replace("{extracted}", &self.input.extracted.display().to_string())
+            .replace("{properties}", &self.input.properties.display().to_string())
+    }
+
+    fn skills(&self) -> Vec<(&'static str, String)> {
+        vec![("aeneas-specs", AENEAS_SPECS_SKILL.to_owned())]
     }
 
     fn feedback_prompt(gate_failed: &Self::GateFailure) -> String {
@@ -121,5 +148,45 @@ impl Stage for FormalizeStage {
 
     fn gate_check(&self, report: &Self::Report) -> Result<Self::Output, super::GateStop<Self>> {
         todo!()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stage() -> FormalizeStage {
+        FormalizeStage {
+            input: FormalizeInput {
+                extracted: PathBuf::from("/c/lusterna/lean/Extraction"),
+                lean_root: PathBuf::from("/c/lusterna/lean"),
+                properties: PathBuf::from("/c/lusterna/properties.json"),
+            },
+            properties: Properties(Vec::new()),
+        }
+    }
+
+    #[test]
+    fn briefing_fills_every_placeholder() {
+        let briefing = stage().briefing();
+
+        for placeholder in ["{lean_root}", "{extracted}", "{properties}"] {
+            assert!(!briefing.contains(placeholder), "{placeholder} is left");
+        }
+        assert!(briefing.contains("`/c/lusterna/properties.json`"));
+    }
+
+    #[test]
+    fn base_prompt_names_lean_root() {
+        assert!(stage().base_prompt().contains("`/c/lusterna/lean`"));
+    }
+
+    #[test]
+    fn skill_has_front_matter() {
+        let skills = stage().skills();
+
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].0, "aeneas-specs");
+        assert!(skills[0].1.starts_with("---\nname: aeneas-specs\n"));
     }
 }
