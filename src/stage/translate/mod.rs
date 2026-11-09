@@ -87,11 +87,8 @@ pub fn solana_opaque() -> Vec<String> {
 pub struct TranslateInput {
     /// Absolute path to the workspace of the Rust project.
     pub workspace_root: PathBuf,
-    /// If the workspace has more than one crate, this must the absolute path to
-    /// the crate. In that case, `workspace_root` must be a parent of this
-    /// path. If this is empty, then the stage assumes the `workspace_root`
-    /// is also the `crate` root
-    pub crate_root: Option<PathBuf>,
+    /// Absolute path to the crate: `workspace_root`, or a directory inside it.
+    pub crate_root: PathBuf,
 
     /// The entrypoint pattern passed to Aeneas/Charon to be translated
     pub entrypoints: Vec<String>,
@@ -111,13 +108,6 @@ pub struct TranslateInput {
 
     /// The platform of the crate
     pub platform: Platform,
-}
-
-impl TranslateInput {
-    /// Returns `crate_root` if given, and `workspace_root` otherwise.
-    pub fn crate_root(&self) -> &Path {
-        self.crate_root.as_deref().unwrap_or(&self.workspace_root)
-    }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -207,7 +197,7 @@ impl Stage for TranslateStage {
     }
 
     fn base_prompt(&self) -> String {
-        make_base_prompt(self.input.crate_root())
+        make_base_prompt(&self.input.crate_root)
     }
 
     fn feedback_prompt(gate_error: &Self::GateFailure) -> String {
@@ -219,7 +209,7 @@ impl Stage for TranslateStage {
 
         gate::run_gate(&self.input, setup_outcome)?;
         Ok(TranslateOutput {
-            crate_root: self.input.crate_root().to_owned(),
+            crate_root: self.input.crate_root.clone(),
             extract_script: setup_outcome.extraction_script.to_owned(),
             extracted: setup_outcome.lean_root.join("Extraction"),
             lean_root: setup_outcome.lean_root.to_owned(),
@@ -228,7 +218,7 @@ impl Stage for TranslateStage {
     }
 
     fn briefing(&self) -> String {
-        let crate_root = self.input.crate_root();
+        let crate_root = &self.input.crate_root;
         make_briefing(
             crate_root,
             &self.input.entrypoints,

@@ -145,7 +145,7 @@ pub(super) fn run_setup(
     }
 
     let workspace_root = &input.workspace_root;
-    let crate_root = input.crate_root();
+    let crate_root = &input.crate_root;
 
     // Check if workspace root is actually a rust workspace
     let ws_manifest = fs::canonicalize(workspace_root.join("Cargo.toml"))

@@ -57,8 +57,10 @@ pub struct Config {
     pub(crate) solanalib_root: Option<PathBuf>,
 
     /// Workspace of the Rust project
+    #[arg(long, global = true, default_value = ".")]
     workspace_root: PathBuf,
-    /// Crate inside the workspace, if the workspace has more than one crate
+    /// Crate inside the workspace. Required if the workspace has more than
+    /// one crate
     #[arg(long, global = true)]
     crate_root: Option<PathBuf>,
 
@@ -68,24 +70,24 @@ pub struct Config {
 
 impl Config {
     pub fn manifest(&self) -> Result<PathBuf, ConfigError> {
-        let manifest = self
-            .crate_root()?
-            .as_deref()
-            .unwrap_or(&self.workspace_root()?)
-            .join("Cargo.toml");
-        Ok(manifest)
+        Ok(self.crate_root()?.join("Cargo.toml"))
     }
 
     pub fn workspace_root(&self) -> Result<PathBuf, ConfigError> {
         self.workspace_root.canonicalize().map_err(ConfigError::Io)
     }
 
-    pub fn crate_root(&self) -> Result<Option<PathBuf>, ConfigError> {
-        self.crate_root
-            .as_ref()
-            .map(|cr| cr.canonicalize())
-            .transpose()
-            .map_err(ConfigError::Io)
+    /// Returns `--crate-root` if given, and otherwise the only crate of the
+    /// workspace.
+    pub fn crate_root(&self) -> Result<PathBuf, ConfigError> {
+        if let Some(crate_root) = &self.crate_root {
+            return Ok(crate_root.canonicalize()?);
+        }
+        let members = cargo::workspace_members(&self.workspace_root()?.join("Cargo.toml"))?;
+        match members.as_slice() {
+            [crate_root] => Ok(crate_root.canonicalize()?),
+            _ => Err(ConfigError::NoCrateRoot(members)),
+        }
     }
 
     pub fn aeneas_root(&self) -> Result<PathBuf, ConfigError> {
@@ -177,6 +179,12 @@ pub enum ConfigError {
     Cargo(#[from] CargoError),
     #[error("the crate is a Solana program, so `--solanalib-root` is required")]
     MissingSolanalibRoot,
+    #[error(
+        "the workspace has {} crates, so `--crate-root` is required: {}",
+        .0.len(),
+        .0.iter().map(|c| c.display().to_string()).collect::<Vec<_>>().join(", ")
+    )]
+    NoCrateRoot(Vec<PathBuf>),
     #[error("`{}/.lake/packages` does not exist. Run `lake update` in `{}` once", .0.display(), .0.display())]
     MissingLakePackages(PathBuf),
     #[error(transparent)]

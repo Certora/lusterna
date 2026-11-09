@@ -56,7 +56,7 @@ fn setup_bootstraps_extraction_of_workspace_member() {
 
     let mut stage = TranslateStage::new(TranslateInput {
         workspace_root: workspace_root.clone(),
-        crate_root: Some(crate_root.clone()),
+        crate_root: crate_root.clone(),
         entrypoints: vec!["crate::clamp".to_owned()],
         opaque: vec!["crate::min".to_owned()],
         aeneas_rev,

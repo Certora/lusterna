@@ -116,7 +116,7 @@ pub(super) fn run_gate(
 ) -> Result<(), GateStop> {
     let extraction_script = &setup_outcome.extraction_script;
     let lean_root = &setup_outcome.lean_root;
-    let crate_root = input.crate_root();
+    let crate_root = &input.crate_root;
 
     // No tracked file may be deleted
     let files = git::deleted_files(crate_root, &setup_outcome.setup_commit)?;

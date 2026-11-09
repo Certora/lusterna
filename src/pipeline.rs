@@ -137,11 +137,7 @@ impl Pipeline {
         }
 
         // 2. Write the spec and its properties to the crate
-        let crate_root = match self.config.crate_root()? {
-            Some(crate_root) => crate_root,
-            None => self.config.workspace_root()?,
-        };
-        let lusterna_dir = crate_root.join("lusterna");
+        let lusterna_dir = self.config.crate_root()?.join("lusterna");
         fs::create_dir_all(&lusterna_dir)?;
         let properties = lusterna_dir.join("properties.json");
         fs::write(

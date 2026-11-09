@@ -76,11 +76,12 @@ Write the spec of the run, `lusterna.json` in the workspace root by default:
 Run lusterna:
 
 ```sh
-RUST_LOG=info target/release/lusterna /path/to/workspace run \
-  --crate-root /path/to/workspace/programs/my-program
+cd /path/to/workspace
+RUST_LOG=info lusterna run
 ```
 
-- The workspace path must come before `run`. `run` takes the path of the spec if it is not `lusterna.json` in the workspace root.
+- `run` takes the path of the spec if it is not `lusterna.json` in the workspace root.
+- `--workspace-root` selects the workspace. It defaults to the current directory.
 - `--crate-root` selects the crate. If the workspace has more than one crate, you must give it.
 - The repository must have no uncommitted changes other than the spec.
 - Lusterna copies the spec to `lusterna/lusterna.json` and the properties to `lusterna/properties.json` in the crate, and commits them and the result of each stage on the checked out branch of the workspace.
