@@ -148,7 +148,7 @@ pub(super) fn run_gate(
     check_externals(&lean_root.join("Extraction"))?;
 
     // Running `lake build` must succeed in the lean root
-    lean::lake_build(lean_root).map_err(|e| match e {
+    lean::lake_build(lean_root, &[]).map_err(|e| match e {
         LakeError::Build { output, .. } => TranslateGateFailure::LakeBuildFailed { output }.into(),
         e => GateStop::from(e),
     })?;

@@ -1,3 +1,4 @@
+mod gate;
 pub(crate) mod properties;
 
 use std::{collections::BTreeMap, fs, io, path::PathBuf};
@@ -12,6 +13,8 @@ use crate::{
     },
     utils::git::{self, GitError},
 };
+
+pub use gate::{FormalizeGateError, FormalizeGateFailure};
 
 /// The first prompt of the formalize stage, with `{lean_root}` standing for
 /// the Lean project root.
@@ -45,12 +48,6 @@ pub struct FormalizeInput {
 
 #[derive(Debug, derive_more::Display, JsonSchema, Serialize, Deserialize)]
 pub struct FormalizeBlocker;
-
-#[derive(Debug, derive_more::Display, Serialize, Deserialize, Clone)]
-pub enum FormalizeGateFailure {}
-
-#[derive(Debug, thiserror::Error, Serialize, Deserialize, Clone)]
-pub enum FormalizeGateError {}
 
 #[derive(Debug, thiserror::Error)]
 pub enum FormalizeSetupError {
@@ -143,11 +140,12 @@ impl Stage for FormalizeStage {
     }
 
     fn feedback_prompt(gate_failed: &Self::GateFailure) -> String {
-        todo!()
+        gate_failed.to_feedback_prompt()
     }
 
     fn gate_check(&self, report: &Self::Report) -> Result<Self::Output, super::GateStop<Self>> {
-        todo!()
+        gate::run_gate(&self.input.lean_root, &self.properties, report)?;
+        Ok(report.clone())
     }
 }
 

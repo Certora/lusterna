@@ -118,6 +118,24 @@ pub fn show_file(repo: &Path, commit: &str, path: &Path) -> Result<String, GitEr
     )
 }
 
+/// Returns the paths, relative to the root of the work tree, of the files that
+/// differ from `HEAD` in the work tree of `repo`, including untracked files
+/// that are not ignored.
+pub fn uncommitted_files(repo: &Path) -> Result<Vec<PathBuf>, GitError> {
+    let mut files = changed_files(repo, "HEAD")?;
+    let untracked = run(
+        repo,
+        &[
+            "ls-files".as_ref(),
+            "--others".as_ref(),
+            "--exclude-standard".as_ref(),
+            "--full-name".as_ref(),
+        ],
+    )?;
+    files.extend(untracked.lines().map(PathBuf::from));
+    Ok(files)
+}
+
 /// Returns whether the work tree of `repo` has no changes, counting untracked
 /// files that are not ignored.
 pub fn is_clean(repo: &Path) -> Result<bool, GitError> {
