@@ -80,13 +80,14 @@ impl CharonBuild {
 }
 
 /// The `lakefile.toml` of the Lean project, with `{rev}` standing for the
-/// Aeneas git revision. `extract.sh` makes Aeneas write the generated modules
+/// Aeneas git revision and `{lusterna_spec_root}` for `LUSTERNA_SPEC`. `extract.sh` makes Aeneas write the generated modules
 /// to `Extraction/`.
 const LAKEFILE_TEMPLATE: &str = include_str!("res/lakefile.toml.template");
 
 /// The `lakefile.toml` of the Lean project of a Solana crate, with
-/// `{aeneas_root}`, `{solanalib_root}` and `{lusterna_lean_root}` standing for
-/// the Aeneas and Solanalib checkouts and `LUSTERNA_LEAN`.
+/// `{aeneas_root}`, `{solanalib_root}`, `{lusterna_lean_root}` and
+/// `{lusterna_spec_root}` standing for the Aeneas and Solanalib checkouts,
+/// `LUSTERNA_LEAN` and `LUSTERNA_SPEC`.
 const LAKEFILE_SOLANA_TEMPLATE: &str = include_str!("res/lakefile-solana.toml.template");
 
 #[derive(Debug, thiserror::Error)]
@@ -254,19 +255,22 @@ pub fn make_extraction_script(
 }
 
 /// Returns the content of the Lean project's `lakefile.toml` for the given
-/// Aeneas git revision.
+/// Aeneas git revision, which also requires `LusternaSpec`.
 fn make_lakefile(aeneas_rev: &str) -> String {
-    LAKEFILE_TEMPLATE.replace("{rev}", aeneas_rev)
+    LAKEFILE_TEMPLATE
+        .replace("{rev}", aeneas_rev)
+        .replace("{lusterna_spec_root}", super::LUSTERNA_SPEC)
 }
 
 /// Returns the content of the Lean project's `lakefile.toml` for a Solana
-/// crate, which requires Aeneas and Solanalib from the given checkouts, and
-/// `LusternaLib`.
+/// crate, which requires Aeneas and Solanalib from the given checkouts,
+/// `LusternaLib` and `LusternaSpec`.
 fn make_solana_lakefile(aeneas_root: &Path, solanalib_root: &Path) -> String {
     LAKEFILE_SOLANA_TEMPLATE
         .replace("{aeneas_root}", &aeneas_root.display().to_string())
         .replace("{solanalib_root}", &solanalib_root.display().to_string())
         .replace("{lusterna_lean_root}", super::LUSTERNA_LEAN)
+        .replace("{lusterna_spec_root}", super::LUSTERNA_SPEC)
 }
 
 /// Creates the lean project in `lusterna/lean` of the crate root:
@@ -382,6 +386,12 @@ mod tests {
         assert_eq!(aeneas["name"].as_str(), Some("aeneas"));
         assert_eq!(aeneas["rev"].as_str(), Some("abc123"));
         assert_eq!(aeneas["subDir"].as_str(), Some("backends/lean"));
+        let lusterna_spec = &doc["require"][1];
+        assert_eq!(lusterna_spec["name"].as_str(), Some("lusternaSpec"));
+        assert_eq!(
+            lusterna_spec["path"].as_str(),
+            Some(super::super::LUSTERNA_SPEC)
+        );
     }
 
     #[test]
@@ -405,6 +415,12 @@ mod tests {
         assert_eq!(
             lusterna_lib["path"].as_str(),
             Some(super::super::LUSTERNA_LEAN)
+        );
+        let lusterna_spec = &doc["require"][3];
+        assert_eq!(lusterna_spec["name"].as_str(), Some("lusternaSpec"));
+        assert_eq!(
+            lusterna_spec["path"].as_str(),
+            Some(super::super::LUSTERNA_SPEC)
         );
     }
 

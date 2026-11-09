@@ -56,6 +56,9 @@ const SOLANA_TRANSLATE_SKILL: &str = include_str!("res/solana-translate.md");
 /// The Lean package `LusternaLib`.
 const LUSTERNA_LEAN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/lusterna-lean");
 
+/// The Lean package `LusternaSpec`.
+const LUSTERNA_SPEC: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/lusterna-spec");
+
 /// The judge prompt of the translate stage, with `{crate_root}`,
 /// `{setup_commit}`, `{briefing}`, `{skills}` and `{report}` standing for the
 /// crate root, the hash of the setup commit, the agent briefing, the

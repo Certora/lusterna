@@ -14,6 +14,14 @@ path = "{solanalib_root}"
 name = "lusternaLib"
 path = "{lusterna_lean_root}"
 
+[[require]]
+name = "lusternaSpec"
+path = "{lusterna_spec_root}"
+
 [[lean_lib]]
 name = "Extraction"
 globs = ["Extraction.Lusterna", "Extraction.TypesExternal", "Extraction.Types", "Extraction.FunsExternal", "Extraction.Funs"]
+
+[[lean_lib]]
+name = "Spec"
+globs = ["Spec.+"]

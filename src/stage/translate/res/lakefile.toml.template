@@ -7,6 +7,14 @@ git = "https://github.com/AeneasVerif/aeneas.git"
 rev = "{rev}"
 subDir = "backends/lean"
 
+[[require]]
+name = "lusternaSpec"
+path = "{lusterna_spec_root}"
+
 [[lean_lib]]
 name = "Extraction"
 globs = ["Extraction.+"]
+
+[[lean_lib]]
+name = "Spec"
+globs = ["Spec.+"]
