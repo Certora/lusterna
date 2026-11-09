@@ -9,16 +9,18 @@
 //!    its target.
 //! 4. `translate`: translates the code reachable from the entrypoints, with the
 //!    default opaque patterns and those of the spec passed to Charon.
-//! 5. `formalize`: states each property as Lean theorems about the
-//!    translation, without proofs. Runs only if the spec has properties.
+//! 5. `formalize`: states each property as Lean theorems about the translation,
+//!    without proofs. Runs only if the spec has properties.
 //!
 //! A run starts only if the repository has no uncommitted changes other than
-//! the spec file. After each step, the pipeline commits all changes in the
+//! the spec file, the tools of `TOOLS` are on `PATH`, and the settings that the
+//! stages need, such as `--solanalib-root` for a Solana program, resolve.
+//! After each step, the pipeline commits all changes in the
 //! repository. The `--stop-after` option ends the pipeline after the named
 //! stage.
 
 use std::{
-    fs, io,
+    env, fs, io,
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -43,6 +45,9 @@ use crate::{
         git::{self, GitError},
     },
 };
+
+/// The tools that the stages run.
+const TOOLS: [&str; 6] = ["git", "cargo", "charon", "aeneas", "lake", "claude"];
 
 /// An error that ends a pipeline run.
 #[derive(Debug, thiserror::Error)]
@@ -72,6 +77,9 @@ pub enum PipelineError {
         .0.iter().map(|f| f.display().to_string()).collect::<Vec<_>>().join(", ")
     )]
     DirtyWorktree(Vec<PathBuf>),
+    /// These tools of `TOOLS` are not on `PATH`.
+    #[error("these tools are not on `PATH`: {}", .0.join(", "))]
+    NotInPath(Vec<&'static str>),
     /// The spec has no entrypoints and does not ask to infer them.
     #[error("the spec has no entrypoints; add some or set `infer` to true")]
     NoEntrypoints,
@@ -117,16 +125,8 @@ impl Pipeline {
 
     /// Runs the stages of the pipeline in order and stops at the first error.
     pub fn run(self) -> Result<(), PipelineError> {
-        // The repository must have no uncommitted changes but the spec, which
-        // the spec commit below includes
+        self.pre_check()?;
         let repo_root = self.config.repo_root()?;
-        let files: Vec<PathBuf> = git::uncommitted_files(&repo_root)?
-            .into_iter()
-            .filter(|f| repo_root.join(f) != self.spec_path)
-            .collect();
-        if !files.is_empty() {
-            return Err(PipelineError::DirtyWorktree(files));
-        }
 
         // 1. Infer the entrypoints and properties
         if self.spec.infer {
@@ -204,6 +204,46 @@ impl Pipeline {
             }
             Err(e) => return Err(PipelineError::Cargo(e)),
         }
+    }
+
+    /// Checks everything a run needs before it does any work.
+    fn pre_check(&self) -> Result<(), PipelineError> {
+        self.check_clean_worktree()?;
+        self.check_dependencies()
+    }
+
+    /// Checks that the repository has no uncommitted changes but the spec,
+    /// which the spec commit includes.
+    fn check_clean_worktree(&self) -> Result<(), PipelineError> {
+        let repo_root = self.config.repo_root()?;
+        let files: Vec<PathBuf> = git::uncommitted_files(&repo_root)?
+            .into_iter()
+            .filter(|f| repo_root.join(f) != self.spec_path)
+            .collect();
+        if !files.is_empty() {
+            return Err(PipelineError::DirtyWorktree(files));
+        }
+        Ok(())
+    }
+
+    /// Checks that the tools of `TOOLS` are on `PATH`, that `aeneas` matches
+    /// the Aeneas checkout, and that the settings that the stages need
+    /// resolve, such as `--solanalib-root` for a Solana program.
+    fn check_dependencies(&self) -> Result<(), PipelineError> {
+        let path = env::var_os("PATH").unwrap_or_default();
+        let missing: Vec<&str> = TOOLS
+            .into_iter()
+            .filter(|tool| !env::split_paths(&path).any(|dir| dir.join(tool).is_file()))
+            .collect();
+        if !missing.is_empty() {
+            return Err(PipelineError::NotInPath(missing));
+        }
+        self.config.ensure_aeneas_version_match()?;
+        self.config.crate_root()?;
+        self.config.aeneas_rev()?;
+        self.config.lean_toolchain()?;
+        self.config.get_platform()?;
+        Ok(())
     }
 
     fn run_translate(

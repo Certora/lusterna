@@ -31,7 +31,6 @@ fn main() -> anyhow::Result<()> {
     let Command::Run(args) = cli.command;
     let config = cli.config;
 
-    config.ensure_aeneas_version_match()?;
     let spec_path = match args.spec {
         Some(spec) => spec,
         None => config.workspace_root()?.join("lusterna.json"),
