@@ -53,8 +53,14 @@ pub struct FormalizeInput {
     pub properties: PathBuf,
 }
 
+/// A problem outside `Spec/` that stops the stage, for example a dependency of
+/// the Lean project that does not build.
 #[derive(Debug, derive_more::Display, JsonSchema, Serialize, Deserialize)]
-pub struct FormalizeBlocker;
+#[display("{reason}")]
+pub struct FormalizeBlocker {
+    /// What the problem is, and the command and output that show it.
+    pub reason: String,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum FormalizeSetupError {
