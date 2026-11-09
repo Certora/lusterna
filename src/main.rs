@@ -34,7 +34,7 @@ struct TranslateArgs {
 }
 
 fn main() -> anyhow::Result<()> {
-    env_logger::init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let cli = Cli::parse();
     let pipeline = match cli.command {
         Command::Translate(args) => translate(cli.config, args),
