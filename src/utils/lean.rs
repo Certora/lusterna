@@ -12,12 +12,16 @@ pub enum LakeError {
     Update { lean_root: PathBuf, stderr: String },
     #[error("`lake build` failed in `{lean_root}`:\n{output}")]
     Build { lean_root: PathBuf, output: String },
+    #[error("`lake env lean {file}` failed:\n{output}")]
+    Lean { file: PathBuf, output: String },
 }
 
-/// Runs `lake build` in the Lean project at `lean_root`.
-pub fn lake_build(lean_root: &Path) -> Result<(), LakeError> {
+/// Runs `lake build` with `targets` in the Lean project at `lean_root`. No
+/// targets build the default targets.
+pub fn lake_build(lean_root: &Path, targets: &[&str]) -> Result<(), LakeError> {
     let output = Command::new("lake")
         .arg("build")
+        .args(targets)
         .current_dir(lean_root)
         .output()?;
     if !output.status.success() {
@@ -31,6 +35,27 @@ pub fn lake_build(lean_root: &Path) -> Result<(), LakeError> {
         });
     }
     Ok(())
+}
+
+/// Runs `lake env lean <file>` in the Lean project at `lean_root` and returns
+/// its stdout.
+pub fn lake_env_lean(lean_root: &Path, file: &Path) -> Result<String, LakeError> {
+    let output = Command::new("lake")
+        .args(["env", "lean"])
+        .arg(file)
+        .current_dir(lean_root)
+        .output()?;
+    if !output.status.success() {
+        return Err(LakeError::Lean {
+            file: file.to_owned(),
+            output: format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        });
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// Runs `lake update` in the Lean project at `lean_root`.

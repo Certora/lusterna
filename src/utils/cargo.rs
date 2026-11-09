@@ -57,6 +57,48 @@ pub enum CargoError {
         #[source]
         source: io::Error,
     },
+    #[error("`cargo metadata` failed for `{manifest}`:\n{stderr}")]
+    Metadata { manifest: PathBuf, stderr: String },
+    #[error("cannot parse the output of `cargo metadata` for `{manifest}`: {source}")]
+    ParseMetadata {
+        manifest: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+}
+
+/// Returns the directories of the crates of the workspace of `manifest`.
+pub fn workspace_members(manifest: &Path) -> Result<Vec<PathBuf>, CargoError> {
+    #[derive(serde::Deserialize)]
+    struct Metadata {
+        packages: Vec<Package>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Package {
+        manifest_path: PathBuf,
+    }
+
+    let output = Command::new("cargo")
+        .args(["metadata", "--no-deps", "--format-version", "1"])
+        .arg("--manifest-path")
+        .arg(manifest)
+        .output()?;
+    if !output.status.success() {
+        return Err(CargoError::Metadata {
+            manifest: manifest.to_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        });
+    }
+    let metadata: Metadata =
+        serde_json::from_slice(&output.stdout).map_err(|source| CargoError::ParseMetadata {
+            manifest: manifest.to_owned(),
+            source,
+        })?;
+    Ok(metadata
+        .packages
+        .into_iter()
+        .map(|p| p.manifest_path.parent().unwrap().to_owned())
+        .collect())
 }
 
 /// Returns the path of the workspace `Cargo.toml` that `manifest` belongs to.
@@ -271,6 +313,27 @@ mod tests {
             fs::canonicalize(found).unwrap(),
             fs::canonicalize(root).unwrap()
         );
+    }
+
+    #[test]
+    fn workspace_members_lists_each_crate() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"a\", \"b\"]\n",
+        )
+        .unwrap();
+        write_crate(&dir.path().join("a"), "a", "");
+        write_crate(&dir.path().join("b"), "b", "");
+
+        let mut members: Vec<PathBuf> = workspace_members(&dir.path().join("Cargo.toml"))
+            .unwrap()
+            .into_iter()
+            .map(|m| fs::canonicalize(m).unwrap())
+            .collect();
+        members.sort();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        assert_eq!(members, [root.join("a"), root.join("b")]);
     }
 
     #[test]
