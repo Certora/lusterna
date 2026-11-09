@@ -195,8 +195,8 @@ impl Stage for TranslateStage {
 
     const NAME: super::StageName = StageName::Translate;
 
-    fn setup(input: &Self::Input) -> Result<Self, Self::SetupError> {
-        let setup_outcome = setup::run_setup(input)?;
+    fn setup(input: Self::Input) -> Result<Self, Self::SetupError> {
+        let setup_outcome = setup::run_setup(&input)?;
         Ok(Self {
             setup_outcome,
             input: input.clone(),

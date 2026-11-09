@@ -2,9 +2,9 @@
 //! selects the stages:
 //!
 //! - `Translate`: translates the crate to Lean with Aeneas.
-//!   1. `pre-translate`: runs only if `cargo build` fails. An agent changes
-//!      the crate so that it builds on the host, without changing what it
-//!      computes on its target.
+//!   1. `pre-translate`: runs only if `cargo build` fails. An agent changes the
+//!      crate so that it builds on the host, without changing what it computes
+//!      on its target.
 //!   2. `translate`: translates the code reachable from the entrypoints, with
 //!      the opaque patterns passed to Charon.
 //! - `Verify`: not implemented. [`Pipeline::run`] panics on it.
@@ -188,7 +188,7 @@ impl Pipeline {
         input: S::Input,
         workspace_root: &Path,
     ) -> Result<S::Output, StageExecutionError<S>> {
-        let stage = S::setup(&input).map_err(StageExecutionError::SetupError)?;
+        let stage = S::setup(input).map_err(StageExecutionError::SetupError)?;
         let t = Instant::now();
         log::info!("Executing `{}`", S::NAME);
         let stage_exec = StageExec::new(stage);

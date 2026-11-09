@@ -58,7 +58,7 @@ impl StageName {
     }
 }
 
-pub trait Stage: Sized + Serialize + DeserializeOwned + Clone {
+pub trait Stage: Sized + Serialize + DeserializeOwned {
     const NAME: StageName;
     /// The stage's input.
     type Input: Serialize + DeserializeOwned;
@@ -92,7 +92,7 @@ pub trait Stage: Sized + Serialize + DeserializeOwned + Clone {
     /// executed. "Mechanical" here means that they are deterministic checks
     /// and do **not** use an agent/LLM. If the check fails, the stage
     /// cannot be executed.
-    fn setup(input: &Self::Input) -> Result<Self, Self::SetupError>;
+    fn setup(input: Self::Input) -> Result<Self, Self::SetupError>;
 
     /// Returns the base prompt of the agent
     fn base_prompt(&self) -> String;

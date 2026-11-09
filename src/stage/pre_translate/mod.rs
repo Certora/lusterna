@@ -124,7 +124,7 @@ impl Stage for PreTranslateStage {
     //     Ok(())
     // }
 
-    fn setup(input: &Self::Input) -> Result<Self, Self::SetupError> {
+    fn setup(input: Self::Input) -> Result<Self, Self::SetupError> {
         let head_rev = git::head_rev(&input.workspace_root)?;
         Ok(Self {
             base_commit: head_rev,
