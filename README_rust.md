@@ -57,24 +57,37 @@ If the two are different, Lusterna stops. Rebuild Aeneas or check out the matchi
 If the binary was built from a checkout with uncommitted changes, Lusterna shows a warning and continues.
 Lusterna also reads the Lean toolchain from `backends/lean/lean-toolchain` in the Aeneas checkout.
 
-Run the translation:
+Write the spec of the run, `lusterna.json` in the workspace root by default:
 
-```sh
-RUST_LOG=info target/release/lusterna /path/to/workspace translate \
-  --crate-root /path/to/workspace/programs/my-program \
-  --entrypoint 'crate::module_a' \
-  --entrypoint 'crate::module_b'
+```json
+{
+  "entrypoints": ["crate::module_a", "crate::module_b"],
+  "add_opaque": [],
+  "properties": [],
+  "infer": false
+}
 ```
 
-- The workspace path must come before `translate`.
+- `entrypoints` are Charon `--start-from` patterns.
+- `add_opaque` adds Charon `--opaque` patterns to the default patterns.
+- `properties` are the properties to formalize. With none, the run ends after the translation.
+- `infer` infers entrypoints and properties in addition to the given ones. It is not implemented yet.
+
+Run lusterna:
+
+```sh
+RUST_LOG=info target/release/lusterna /path/to/workspace run \
+  --crate-root /path/to/workspace/programs/my-program
+```
+
+- The workspace path must come before `run`. `run` takes the path of the spec if it is not `lusterna.json` in the workspace root.
 - `--crate-root` selects the crate. If the workspace has more than one crate, you must give it.
-- `--entrypoint` is a Charon `--start-from` pattern. You can give it more than once.
-- Lusterna commits the result of each stage on the checked out branch of the workspace.
-- `--opaque` replaces the default Charon `--opaque` patterns. `--add-opaque` adds patterns to the default patterns.
+- The repository must have no uncommitted changes other than the spec.
+- Lusterna copies the spec to `lusterna/lusterna.json` and the properties to `lusterna/properties.json` in the crate, and commits them and the result of each stage on the checked out branch of the workspace.
 - `--model` and `--effort` set the Claude model and the effort level.
 - `--stage-max-attempts` and `--stage-max-budget` set the attempts per stage and the budget per stage in USD.
 
-Run `lusterna translate --help` for all options.
+Run `lusterna run --help` for all options.
 
 ## Repository layout
 

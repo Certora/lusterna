@@ -1,5 +1,5 @@
 mod gate;
-pub(crate) mod properties;
+pub mod properties;
 
 use std::{collections::BTreeMap, fs, io, path::PathBuf};
 

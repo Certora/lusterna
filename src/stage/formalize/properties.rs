@@ -16,5 +16,5 @@ pub struct Property {
     pub natspec: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Properties(pub Vec<Property>);
