@@ -50,9 +50,9 @@ theorem deposit_adds (v : Vault) (amount : U64) (h : v.total.val + amount.val â‰
 
 ## Invariants
 
-An invariant property names a struct. It holds for every value of the struct that the program creates and keeps holding after every change. It is proven by induction: a base case for each function that creates the struct, and an induction step for each function that mutates it.
+An invariant property names a struct. It holds for every value of the struct that the program creates and keeps holding after every change. It is proven by induction: a base case for each function that creates the struct, and an induction step for each mutator, as defined below.
 
-1. Find every function in the extraction that mutates the struct, including the functions that mutate a value that contains the struct. Report their full Lean names in `mutators`, under the struct name exactly as the property gives it. Also find every function that creates a value of the struct.
+1. Find the mutators of the struct: the outermost functions, among those reachable from the entrypoints, that take the struct or a value containing it as `&mut`, so that the translation returns its new value. A helper that only such a function calls is not a mutator, because the invariant only has to hold between operations, not in the middle of one. A function that changes the struct only through a write that the translation drops, such as a write through a `RefMut`, does not change it in the model and is not a mutator. Report the full Lean names of the mutators in `mutators`, under the struct name exactly as the property gives it. Also find every function that creates a value of the struct.
 2. Base case: for each function that creates the struct, write one theorem. It calls the function and asserts in the postcondition that the invariant holds for the created value.
 3. Induction step: for each mutator, write one theorem. Its induction hypothesis is that the invariant holds for the value before the call. It calls the mutator and asserts in the postcondition that the invariant holds for the value after the call. A Rust function that takes `&mut` returns the new value as part of its result.
 4. In the base case and induction step theorems, the triple calls the function directly, not through a `do` block.

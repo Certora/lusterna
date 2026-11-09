@@ -39,7 +39,7 @@ Also check that the theorems of the property cover all of it. A property about s
 
 ## Check each invariant property
 
-1. Search the translation for every function that mutates the struct, including the functions that mutate a value that contains it. Each one must be in `mutators` under the struct's name.
+1. Search the translation for the mutators of the struct, as the briefing defines them: the outermost functions reachable from the entrypoints that take the struct or a value containing it as `&mut`. Each one must be in `mutators` under the struct's name. A helper that only a mutator calls must not be there, and neither must a function whose writes to the struct the translation drops: an induction step over it holds for free.
 2. Search the translation for every function that creates a value of the struct. Each one must have a base case theorem: a theorem that calls it and asserts the invariant for the created value.
 3. Each induction step theorem assumes the invariant for the value before the call and asserts it for the value after the call. Any other hypothesis must only rule out inputs on which the call panics.
 
@@ -63,7 +63,7 @@ Report one defect for each problem. Use one of these kinds:
 - `vacuous`: the theorem holds for every implementation of the function. For example, its hypotheses cannot be satisfied, or a helper `def` makes the postcondition trivial in a way that the harness cannot see.
 - `missing_coverage`: a part of a property has no theorem.
 - `wrong_helper`: a helper `def` does not match the property, or does not match the translated function that it restates.
-- `incomplete_mutators`: a function that mutates the struct of an invariant is missing from `mutators`, or a function that creates the struct has no base case theorem.
+- `incomplete_mutators`: a mutator of the struct of an invariant is missing from `mutators`, `mutators` lists a function that is not a mutator, or a function that creates the struct has no base case theorem.
 - `wrong_skip`: the reason of a skipped property does not hold.
 - `wrong_grouping`: a file groups theorems by the function that they call, or mixes unrelated properties.
 
