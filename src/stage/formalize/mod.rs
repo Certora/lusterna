@@ -28,6 +28,13 @@ const BRIEFING_TEMPLATE: &str = include_str!("res/briefing.md");
 /// The `SKILL.md` of the skill `aeneas-specs`.
 const AENEAS_SPECS_SKILL: &str = include_str!("res/aeneas-specs.md");
 
+/// The judge prompt of the formalize stage, with `{lean_root}`,
+/// `{extracted}`, `{properties}`, `{briefing}`, `{skills}` and `{report}`
+/// standing for the Lean project root, the directory of the extraction, the
+/// JSON file of the properties, the agent briefing, the `SKILL.md` content of
+/// the agent's skills and the agent's report.
+const JUDGE_PROMPT_TEMPLATE: &str = include_str!("res/judge.md");
+
 #[derive(Deserialize, Serialize)]
 pub struct FormalizeStage {
     input: FormalizeInput,
@@ -94,9 +101,6 @@ pub struct FormalizeOutput {
     pub mutators: BTreeMap<String, Vec<String>>,
 }
 
-#[derive(Debug, derive_more::Display, Serialize, Deserialize)]
-pub enum FormalizeGateExecutionError {}
-
 impl Stage for FormalizeStage {
     const NAME: super::StageName = StageName::Formalize;
 
@@ -147,6 +151,29 @@ impl Stage for FormalizeStage {
         gate::run_gate(&self.input.lean_root, &self.properties, report)?;
         Ok(report.clone())
     }
+
+    fn judge_prompt(&self, _output: &Self::Output, report: &Self::Report) -> Option<String> {
+        Some(
+            JUDGE_PROMPT_TEMPLATE
+                .replace("{lean_root}", &self.input.lean_root.display().to_string())
+                .replace("{extracted}", &self.input.extracted.display().to_string())
+                .replace("{properties}", &self.input.properties.display().to_string())
+                .replace(
+                    "{skills}",
+                    &self
+                        .skills()
+                        .into_iter()
+                        .map(|(_, content)| content)
+                        .collect::<Vec<_>>()
+                        .join("\n\n"),
+                )
+                .replace("{briefing}", &self.briefing())
+                .replace(
+                    "{report}",
+                    &serde_json::to_string_pretty(report).expect("the report serializes"),
+                ),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -172,6 +199,30 @@ mod tests {
             assert!(!briefing.contains(placeholder), "{placeholder} is left");
         }
         assert!(briefing.contains("`/c/lusterna/properties.json`"));
+    }
+
+    #[test]
+    fn judge_prompt_fills_every_placeholder() {
+        let report = FormalizeOutput {
+            property_status: BTreeMap::from([(
+                1,
+                PropertyStatus::Skipped(SkipReason::Other("{lean_root}".to_owned())),
+            )]),
+            mutators: BTreeMap::new(),
+        };
+        let prompt = stage().judge_prompt(&report, &report).unwrap();
+
+        for placeholder in [
+            "{extracted}",
+            "{properties}",
+            "{briefing}",
+            "{skills}",
+            "{report}",
+        ] {
+            assert!(!prompt.contains(placeholder), "{placeholder} is left");
+        }
+        assert!(prompt.contains("\"Other\": \"{lean_root}\""));
+        assert!(prompt.contains("name: aeneas-specs"));
     }
 
     #[test]
