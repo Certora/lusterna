@@ -13,7 +13,7 @@
 //!    without proofs. Runs only if the spec has properties.
 //!
 //! A run starts only if the repository has no uncommitted changes other than
-//! the spec file, the tools of `TOOLS` are on `PATH`, and the settings that the
+//! the spec file (unless `--allow-dirty`), the tools of `TOOLS` are on `PATH`, and the settings that the
 //! stages need, such as `--solanalib-root` for a Solana program, resolve.
 //! After each step, the pipeline commits all changes in the
 //! repository. The `--stop-after` option ends the pipeline after the named
@@ -208,20 +208,27 @@ impl Pipeline {
 
     /// Checks everything a run needs before it does any work.
     fn pre_check(&self) -> Result<(), PipelineError> {
-        self.check_clean_worktree()?;
-        self.check_dependencies()
+        self.check_dependencies()?;
+        self.check_clean_worktree()
     }
 
     /// Checks that the repository has no uncommitted changes but the spec,
-    /// which the spec commit includes.
+    /// which the spec commit includes. With `--allow-dirty`, commits the
+    /// changes instead.
     fn check_clean_worktree(&self) -> Result<(), PipelineError> {
         let repo_root = self.config.repo_root()?;
         let files: Vec<PathBuf> = git::uncommitted_files(&repo_root)?
             .into_iter()
             .filter(|f| repo_root.join(f) != self.spec_path)
             .collect();
-        if !files.is_empty() {
+        if files.is_empty() {
+            return Ok(());
+        }
+        if !self.config.allow_dirty {
             return Err(PipelineError::DirtyWorktree(files));
+        }
+        if let Some(sha) = git::commit_all(&repo_root, "Lusterna: uncommitted changes")? {
+            info!("Committed the uncommitted changes in {}", sha);
         }
         Ok(())
     }

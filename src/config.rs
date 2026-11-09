@@ -64,6 +64,11 @@ pub struct Config {
     #[arg(long, global = true)]
     crate_root: Option<PathBuf>,
 
+    /// Run on a repository with uncommitted changes. The run commits them
+    /// first, in a commit of their own.
+    #[arg(long)]
+    pub(crate) allow_dirty: bool,
+
     #[arg(long, help_heading = "Dev Options")]
     pub(crate) stop_after: Option<String>,
 }
