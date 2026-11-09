@@ -118,6 +118,12 @@ pub fn show_file(repo: &Path, commit: &str, path: &Path) -> Result<String, GitEr
     )
 }
 
+/// Returns whether the work tree of `repo` has no changes, counting untracked
+/// files that are not ignored.
+pub fn is_clean(repo: &Path) -> Result<bool, GitError> {
+    run(repo, &["status".as_ref(), "--porcelain".as_ref()]).map(|out| out.is_empty())
+}
+
 /// Stages all changes in `repo`, including untracked files that are not
 /// ignored, commits them with `message` as `Lusterna <lusterna@agent>`, and
 /// returns the commit hash. Returns `None` if there is nothing to commit.

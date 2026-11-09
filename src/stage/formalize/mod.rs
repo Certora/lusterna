@@ -1,13 +1,16 @@
 pub(crate) mod properties;
 
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{collections::BTreeMap, fs, io, path::PathBuf};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::stage::{
-    Stage, StageName,
-    formalize::properties::{Properties, PropertyId},
+use crate::{
+    stage::{
+        Stage, StageName,
+        formalize::properties::{Properties, PropertyId},
+    },
+    utils::git::{self, GitError},
 };
 
 #[derive(Deserialize, Serialize)]
@@ -35,8 +38,15 @@ pub enum FormalizeGateFailure {}
 #[derive(Debug, thiserror::Error, Serialize, Deserialize, Clone)]
 pub enum FormalizeGateError {}
 
-#[derive(Debug, thiserror::Error, Clone)]
-pub enum FormalizeSetupError {}
+#[derive(Debug, thiserror::Error)]
+pub enum FormalizeSetupError {
+    #[error("the work tree of `{0}` has uncommitted changes")]
+    Dirty(PathBuf),
+    #[error("IO error: {0}")]
+    Io(#[from] io::Error),
+    #[error(transparent)]
+    Git(#[from] GitError),
+}
 
 #[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
 pub enum SkipReason {
@@ -90,6 +100,10 @@ impl Stage for FormalizeStage {
     type SetupError = FormalizeSetupError;
 
     fn setup(input: Self::Input) -> Result<Self, Self::SetupError> {
+        if !git::is_clean(&input.lean_root)? {
+            return Err(FormalizeSetupError::Dirty(input.lean_root));
+        }
+        fs::create_dir_all(input.lean_root.join("Spec"))?;
         Ok(Self { input })
     }
 
