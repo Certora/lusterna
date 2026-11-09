@@ -1,0 +1,25 @@
+# LusternaSpec: the `@[lusterna id "title"]` attribute that labels the
+# theorems of a formalized property, and the check that lusterna runs over
+# them.
+#
+# The path of `aeneas` below is for a build of this package on its own, with
+# the Aeneas checkout next to the lusterna checkout. A project that requires
+# this package and also requires `aeneas` itself uses its own path for it.
+
+name = "lusternaSpec"
+defaultTargets = ["LusternaSpec"]
+testDriver = "LusternaSpecTest"
+packagesDir = "../../../aeneas/backends/lean/.lake/packages"
+
+[leanOptions]
+autoImplicit = false
+
+[[require]]
+name = "aeneas"
+path = "../../../aeneas/backends/lean"
+
+[[lean_lib]]
+name = "LusternaSpec"
+
+[[lean_lib]]
+name = "LusternaSpecTest"
