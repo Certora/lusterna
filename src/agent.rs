@@ -8,7 +8,7 @@ use std::{
     thread,
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::io::Read;
 use tempfile::{NamedTempFile, TempDir};
 use uuid::Uuid;
@@ -24,7 +24,7 @@ const SUBMIT_STRUCTURED_OUTPUT: &str =
     "You stopped without submitting your structured output. Submit it now.";
 
 /// The effort level for the agent
-#[derive(Debug, Clone, Copy, Default, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, Default, clap::ValueEnum, Serialize, Deserialize)]
 pub enum Effort {
     Low,
     #[default]
@@ -47,7 +47,7 @@ impl Display for Effort {
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ModelUsage {
     pub input_tokens: u64,
@@ -58,7 +58,7 @@ pub struct ModelUsage {
     pub cost_usd: f64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Agent {
     briefing: Option<String>,
     allowed_tools: Vec<String>,
@@ -157,6 +157,10 @@ impl Agent {
 
     pub fn get_usage(&self) -> &ModelUsage {
         &self.usage
+    }
+
+    pub fn session_id(&self) -> Option<Uuid> {
+        self.session_id
     }
 
     /// Return the agents final message
