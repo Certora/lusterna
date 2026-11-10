@@ -18,6 +18,9 @@ const DEFAULT_ALLOWED_TOOLS: &[&str] =
 
 const DEFAULT_MODEL: &str = "opus";
 
+const SUBMIT_STRUCTURED_OUTPUT: &str =
+    "You stopped without submitting your structured output. Submit it now.";
+
 /// The effort level for the agent
 #[derive(Debug, Clone, Copy, Default, clap::ValueEnum)]
 pub enum Effort {
@@ -101,6 +104,8 @@ pub enum AgentError {
     NoResult { stderr: String },
     #[error("the agent run ended with an error: {result}")]
     ResultError { result: String },
+    #[error("the agent run ended without a structured output")]
+    NoStructuredOutput,
     #[error("JSON: {0}")]
     Json(#[from] serde_json::Error),
 }
@@ -158,6 +163,19 @@ impl Agent {
     }
 
     pub fn run_with_hook(
+        &mut self,
+        prompt: String,
+        mut hook: impl FnMut(&str),
+    ) -> Result<String, AgentError> {
+        match self.run_claude(prompt, &mut hook) {
+            Err(AgentError::NoStructuredOutput) => {
+                self.run_claude(SUBMIT_STRUCTURED_OUTPUT.to_owned(), &mut hook)
+            }
+            r => r,
+        }
+    }
+
+    fn run_claude(
         &mut self,
         prompt: String,
         mut hook: impl FnMut(&str),
@@ -291,6 +309,9 @@ impl Agent {
             return Err(AgentError::ResultError { result: text });
         }
         if self.json_schema.is_some() {
+            if event["structured_output"].is_null() {
+                return Err(AgentError::NoStructuredOutput);
+            }
             return Ok(event["structured_output"].to_string());
         }
         Ok(text)
