@@ -115,7 +115,7 @@ Logging macros such as `println!`, `log::info!` or the `msg!` of Solana programs
 ```rust
 #[cfg(feature = "lusterna")]
 macro_rules! msg {
-    ($($arg:expr),* $(,)?) => {{ $(let _ = &$arg;)* }};
+    ($($arg:expr),* $(,)?) => {{ $(let _ = $arg;)* }};
 }
 ```
 
