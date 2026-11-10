@@ -25,7 +25,7 @@
 //!
 //! To work around this, the Judge is kept active (i.e. resumed after the first
 //! invocation), so it keeps its context and is only instructed to check if the
-//! initially found defects were fixed and whether these fixed introduced other
+//! initially found defects were fixed and whether these fixes introduced other
 //! defects.
 
 use std::{fmt, path::Path, time::Instant};
@@ -189,7 +189,7 @@ impl<S: Stage> StageExec<S> {
             }
             agent.set_effort(cfg.effort);
             agent.set_model(cfg.model.clone());
-            agent.set_dir(cfg.workspace_root().unwrap());
+            agent.set_dir(cfg.workspace_root()?);
             agent.set_json_schema(
                 json_schema::<AgentResult<S::Report, S::Blocker>>().map_err(AgentError::from)?,
             );
@@ -265,6 +265,12 @@ impl<S: Stage> StageExec<S> {
         cfg: &Config,
     ) -> Result<(Vec<Defect>, f64), AgentError> {
         let remaining = cfg.stage_max_budget - self.worker_cost - self.judge_cost;
+
+        let Some(base_prompt) = self.stage.judge_prompt(output, report) else {
+            stage_info!(S::NAME, "stage has no judge, continuing");
+            return Ok((vec![], 0.0));
+        };
+
         stage_info!(
             S::NAME,
             "running judge, remaining budget: {:.2}/{} USD (agent spent: {:.2} USD, judge spent: {:.2} USD)",
@@ -274,11 +280,7 @@ impl<S: Stage> StageExec<S> {
             self.judge_cost
         );
 
-        let Some(base_prompt) = self.stage.judge_prompt(output, report) else {
-            return Ok((vec![], 0.0));
-        };
-
-        let judge = self.get_judge(cfg, &cfg.workspace_root().unwrap())?;
+        let judge = self.get_judge(cfg, &cfg.workspace_root()?)?;
 
         // Check if we are running a second judge attempt.
         // In that case, shift focus to the defects flagged in previous round.

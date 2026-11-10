@@ -13,6 +13,8 @@ use std::io::Read;
 use tempfile::{NamedTempFile, TempDir};
 use uuid::Uuid;
 
+use crate::config::ConfigError;
+
 const DEFAULT_ALLOWED_TOOLS: &[&str] =
     &["Bash", "Edit", "Write", "Read", "Glob", "Grep", "TodoWrite"];
 
@@ -110,16 +112,11 @@ pub enum AgentError {
     NoStructuredOutput,
     #[error("JSON: {0}")]
     Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    Config(#[from] ConfigError),
 }
 
 impl Agent {
-    pub fn with_session_id(session_id: Uuid) -> Self {
-        Self {
-            session_id: Some(session_id),
-            ..Default::default()
-        }
-    }
-
     pub fn set_briefing(&mut self, briefing: String) {
         self.briefing = Some(briefing)
     }
@@ -161,11 +158,6 @@ impl Agent {
 
     pub fn session_id(&self) -> Option<Uuid> {
         self.session_id
-    }
-
-    /// Return the agents final message
-    pub fn run(&mut self, prompt: String) -> Result<String, AgentError> {
-        self.run_with_hook(prompt, |_| {})
     }
 
     pub fn run_with_hook(
