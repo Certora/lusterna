@@ -37,6 +37,8 @@ Each rewrite must behave exactly like the original for every input.
 - Early `return`, `break` or `continue` inside a loop: use one exit. Keep the result in a mutable local. Add a flag to the loop condition (`while i < n && !done`). Set the flag where the original leaves the loop.
 - `&dyn Trait`: make the function generic (`fn f<T: Trait>(x: &T)`) or use the concrete type.
 - Function pointers and globals of function type: use a generic type parameter or a direct call.
+- Closure parameters with a higher-ranked bound, such as `f: impl Fn(&T) -> bool`: write a function without the closure parameter that runs the code of the closure in place.
+- `str` methods that take a pattern, such as `trim_end_matches`: use a `while` loop over `as_bytes()`.
 - `BTreeMap` or `HashMap`: use a `Vec<(K, V)>`. `get` scans for the key. If the key exists, `insert` updates its entry. Otherwise, `insert` pushes a new entry. If the code depends on the iteration order, do not use this rewrite.
 
 ## Replacements of types from dependencies
@@ -53,9 +55,10 @@ Each entry is a fix that worked once. Apply an entry only when its condition hol
 - If Aeneas crashes while it inlines `{promoted_const}` items, add `--inline-anon-consts` to `EXTRA_CHARON_ARGS` in `lusterna/extract-args.sh`.
 - If Charon panics with "stack depth limit exceeded", find the item in its trace output. If that item has an iterator chain with closures, replace the chain with a loop.
 - If Aeneas fails on a loop whose body returns early, for example with `?` or `require!`, move the loop unchanged into its own function. Replace that function with a recursive one that handles one element per call and returns the same error at the same element. Do not copy the function that contains the loop. It stays unchanged, except that it calls the new function where the loop was. If the loop is in one branch of an `if` or `match`, this rule also holds.
-- If Aeneas fails after `?` on a `Result<&mut T, E>`, replace the function that returns it with one that returns an index or a plain value.
+- If Aeneas fails with "Unreachable" after `?` on a `Result` whose `Ok` value holds a borrow, such as `Result<&mut T, E>` or `Result<(&T, usize), E>`, replace the `?` with `match r { Ok(v) => v, Err(e) => return Err(From::from(e)) }`. If Aeneas still fails, replace the function that returns the `Result` with one that returns an index or a plain value.
 - If Aeneas fails to join the branches of an `if` or `match` because a borrow stays open in one branch, end the borrow before the branch. Copy the value, or move the code that uses the borrow into a helper that returns plain values.
 - If Aeneas fails with "Function pointers are not supported yet", the code calls a method through a `&dyn Trait` parameter. Under the feature, make the function generic with one type parameter for each `&dyn Trait` parameter, for example `repay: &R, withdraw: &W` with `R: Trait, W: Trait`. Callers then compile unchanged. Test the generic version against the original, also with two arguments that are the same value.
 - If Aeneas fails on a function item passed as an `Fn` value, pass a closure that calls it.
 - An `Iterator` instance in `Funs.lean` can have fields that the Lean model of the trait does not have. If `lake build` fails on these fields, add `-filter-trait-methods` to `EXTRA_AENEAS_ARGS` in `lusterna/extract-args.sh`.
+- If `lake build` fails on the `Iterator` instance for `&mut I`, the code passes `&mut it` to a function that takes an `I: Iterator` by value. Under the feature, add a version of that function that takes `it: &mut I`, and call it at those call sites.
 - If `lake build` fails where a local variable or a parameter has the same name as a module, rename the variable. For example, Lean reads `market.ops.f` as a field of a parameter named `market`.
