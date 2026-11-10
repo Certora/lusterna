@@ -288,7 +288,10 @@ impl<S: Stage> StageExec<S> {
         // If we don't do that, chances are the two agents never converge to a
         // passing version.
         let prompt = match judge.session_id() {
-            Some(_) => RECHECK_PROMPT.to_owned(),
+            Some(_) => format!(
+                "{RECHECK_PROMPT}\n\nThe agent's report:\n{}",
+                serde_json::to_string_pretty(report)?
+            ),
             None => base_prompt,
         };
 
