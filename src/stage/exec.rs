@@ -338,9 +338,13 @@ impl<S: Stage> fmt::Display for AttemptRejected<S> {
 /// A defect the judge found in a stage's output.
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone, PartialEq, Eq)]
 pub struct Defect {
+    /// One of the defect kinds that the stage's judge prompt lists.
     pub kind: String,
+    /// Where the defect is and what is wrong.
     pub detail: String,
+    /// The change that the agent must make.
     pub fix: String,
+    /// The full Lean name of the theorem that has the defect, if any.
     pub theorem: Option<String>,
 }
 
