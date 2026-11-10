@@ -105,7 +105,6 @@ impl<S: Stage> StageExec<S> {
     pub fn run(
         mut self,
         cfg: &Config,
-        workdir: &Path,
         mut on_change: Option<&mut dyn FnMut(&Self)>,
     ) -> Result<S::Output, StageExecutionError<S>> {
         loop {

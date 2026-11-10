@@ -13,17 +13,13 @@
 //!    without proofs. Runs only if the spec has properties.
 //!
 //! A run starts only if the repository has no uncommitted changes other than
-//! the spec file (unless `--allow-dirty`), the tools of `TOOLS` are on `PATH`, and the settings that the
-//! stages need, such as `--solanalib-root` for a Solana program, resolve.
-//! After each step, the pipeline commits all changes in the
-//! repository. The `--stop-after` option ends the pipeline after the named
-//! stage.
+//! the spec file (unless `--allow-dirty`), the tools of `TOOLS` are on `PATH`,
+//! and the settings that the stages need, such as `--solanalib-root` for a
+//! Solana program, resolve. After each step, the pipeline commits all changes
+//! in the repository. The `--stop-after` option ends the pipeline after the
+//! named stage.
 
-use std::{
-    env, fs, io,
-    path::{Path, PathBuf},
-    time::Instant,
-};
+use std::{env, fs, io, path::PathBuf, time::Instant};
 
 use log::{info, warn};
 
@@ -187,7 +183,7 @@ impl Pipeline {
                     manifest: manifest.to_owned(),
                     build_stderr: stderr,
                 };
-                self.exec_stage::<PreTranslateStage>(input, &self.config.workspace_root()?)
+                self.exec_stage::<PreTranslateStage>(input)
                     .map_err(PipelineError::PreTranslate)?;
 
                 match git::commit_all(&self.config.repo_root()?, "Lusterna: `pre-translate` stage")?
@@ -269,7 +265,7 @@ impl Pipeline {
             platform: self.config.get_platform()?,
         };
         let output = self
-            .exec_stage::<TranslateStage>(input, &self.config.workspace_root()?)
+            .exec_stage::<TranslateStage>(input)
             .map_err(PipelineError::Translate)?;
 
         match git::commit_all(&self.config.repo_root()?, "Lusterna: `translate` stage")? {
@@ -290,7 +286,7 @@ impl Pipeline {
             properties,
         };
         let output = self
-            .exec_stage::<FormalizeStage>(input, &self.config.workspace_root()?)
+            .exec_stage::<FormalizeStage>(input)
             .map_err(PipelineError::Formalize)?;
 
         match git::commit_all(&self.config.repo_root()?, "Lusterna: `formalize` stage")? {
@@ -300,16 +296,12 @@ impl Pipeline {
         Ok(output)
     }
 
-    fn exec_stage<S: Stage>(
-        &self,
-        input: S::Input,
-        workspace_root: &Path,
-    ) -> Result<S::Output, StageExecutionError<S>> {
+    fn exec_stage<S: Stage>(&self, input: S::Input) -> Result<S::Output, StageExecutionError<S>> {
         let stage = S::setup(input).map_err(StageExecutionError::SetupError)?;
         let t = Instant::now();
         log::info!("Executing `{}`", S::NAME);
         let stage_exec = StageExec::new(stage);
-        let output = stage_exec.run(&self.config, workspace_root, None)?;
+        let output = stage_exec.run(&self.config, None)?;
         log::info!("Executed `{}` in {}", S::NAME, format_elapsed(t));
         Ok(output)
     }
