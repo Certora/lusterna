@@ -47,8 +47,8 @@ const WAIT_FOR_SUBAGENTS: &str = "Before you submit your structured output, wait
 /// The judge's prompt after its first verdict.
 const RECHECK_PROMPT: &str = "The agent changed its work to fix the defects of your last verdict. Do not review the whole work again. For each defect, check whether the agent fixed it, and review the code that the agent changed to fix it. Report a defect again only if it is not fixed. Do not report a defect again if it turns out to be wrong. Report a new defect only in the code that the agent changed to fix these defects.";
 
-/// The state of a stage's execution. Serializing it keeps the phase, not the
-/// costs or the number of attempts.
+/// The state of a stage's execution. Serializing it keeps the phase and the
+/// costs, not the number of attempts.
 #[derive(Serialize, Deserialize)]
 #[serde(bound(deserialize = ""))]
 pub struct StageExec<S: Stage> {
@@ -59,10 +59,8 @@ pub struct StageExec<S: Stage> {
 
     phase: Phase<S>,
 
-    #[serde(skip)]
     worker_cost: f64,
 
-    #[serde(skip)]
     judge_cost: f64,
 
     #[serde(skip)]
