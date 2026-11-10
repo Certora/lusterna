@@ -10,14 +10,28 @@
 //! execution stops with an error when the stage runs out of attempts or
 //! budget, or when the agent stops the stage.
 //!
+//!
 //! [`StageExec::run`] calls a hook with the new state after every transition.
 //! The state is serializable, so the hook can save it.
+//!
+//! ## Design of the Judge
+//! The Judge is supposed to be an adversarial agent that finds defects in the
+//! worker's output. The best practice would be to spawn a fresh judge after
+//! each attempt. However, testing on larger codebases showed that this
+//! can lead to the worker and judge never converging: after each attempt, the
+//! new judge would flag completely different defects than the previous judges
+//! (and almost all of them benign). Additionally, there was no guarantee that
+//! the fixes of previous defects were actually re-evaluated.
+//!
+//! To work around this, the Judge is kept active (i.e. resumed after the first
+//! invocation), so it keeps its context and is only instructed to check if the
+//! initially found defects were fixed and whether these fixes introduced other
+//! defects.
 
 use std::{fmt, path::Path, time::Instant};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use crate::{
     agent::{Agent, AgentError},
@@ -30,19 +44,23 @@ use crate::{
 /// Added to the system prompt of the agent and the judge.
 const WAIT_FOR_SUBAGENTS: &str = "Before you submit your structured output, wait until every subagent you started has finished and use its results. Results that arrive after the submission are lost.";
 
-/// The state of a stage's execution. Serializing it keeps the phase, not the
-/// costs or the number of attempts.
+/// The judge's prompt after its first verdict.
+const RECHECK_PROMPT: &str = "The agent changed its work to fix the defects of your last verdict. Do not review the whole work again. For each defect, check whether the agent fixed it, and review the code that the agent changed to fix it. Report a defect again only if it is not fixed. Do not report a defect again if it turns out to be wrong. Report a new defect only in the code that the agent changed to fix these defects.";
+
+/// The state of a stage's execution. Serializing it keeps the phase and the
+/// costs, not the number of attempts.
 #[derive(Serialize, Deserialize)]
 #[serde(bound(deserialize = ""))]
 pub struct StageExec<S: Stage> {
     stage: S,
-    session: Option<Uuid>,
+
+    worker: Option<Agent>,
+    judge: Option<Agent>,
+
     phase: Phase<S>,
 
-    #[serde(skip)]
     worker_cost: f64,
 
-    #[serde(skip)]
     judge_cost: f64,
 
     #[serde(skip)]
@@ -71,7 +89,8 @@ impl<S: Stage> StageExec<S> {
         let prompt = stage.base_prompt();
         Self {
             stage,
-            session: None,
+            worker: None,
+            judge: None,
             attempts: 0,
             phase: Phase::Attempt { prompt },
             worker_cost: 0f64,
@@ -84,25 +103,22 @@ impl<S: Stage> StageExec<S> {
     pub fn run(
         mut self,
         cfg: &Config,
-        workdir: &Path,
         mut on_change: Option<&mut dyn FnMut(&Self)>,
     ) -> Result<S::Output, StageExecutionError<S>> {
-        let mut agent = self.init_agent(cfg, workdir)?;
         loop {
             let next = match &self.phase {
                 Phase::Attempt { prompt } => {
-                    match self.run_attempt(cfg, &mut agent, prompt.clone())? {
+                    let (res, usage) = self.run_attempt(cfg, prompt.clone())?;
+                    self.worker_cost = usage;
+                    log_stage_spent::<S>(cfg, usage, self.judge_cost);
+
+                    match res {
                         Ok(report) => {
                             self.attempts += 1;
-                            // the worker agent is kept alive over the whole run
-                            // and claude code accumulated the usage over all
-                            // calls. So here we
-                            // override instead of adding.
-                            self.worker_cost = agent.get_usage().cost_usd;
+
                             Phase::Gate { report }
                         }
                         Err(blocker) => {
-                            log_stage_spent::<S>(cfg, agent.get_usage().cost_usd, self.judge_cost);
                             return Err(StageExecutionError::Blocked(blocker));
                         }
                     }
@@ -127,33 +143,32 @@ impl<S: Stage> StageExec<S> {
                     }
                 }
                 Phase::Judge { report, output } => {
-                    if let Some(prompt) = self.stage.judge_prompt(output, report) {
-                        if self.worker_cost + self.judge_cost >= cfg.stage_max_budget {
-                            return Err(StageExecutionError::BudgetExhausted(None));
-                        }
-                        let (defects, cost_usd) = self.run_judge(prompt, cfg, workdir)?;
-                        self.judge_cost += cost_usd;
-                        if defects.is_empty() {
-                            stage_info!(S::NAME, "judge found no defects, continuing");
-                            log_stage_spent::<S>(cfg, self.worker_cost, self.judge_cost);
-                            Phase::Done(output.clone())
-                        } else {
-                            stage_info!(S::NAME, "judge found defects");
-                            stage_debug!(
-                                S::NAME,
-                                "defects:\n{}",
-                                defects
-                                    .iter()
-                                    .map(|d| d.to_string())
-                                    .collect::<Vec<String>>()
-                                    .join("\n")
-                            );
-                            self.retry(cfg, AttemptRejected::Judge(defects))?
-                        }
-                    } else {
-                        stage_info!(S::NAME, "stage has no judge, continuing");
+                    // need to clone these to circumvent borrow errors
+                    let output = output.clone();
+                    let report = report.clone();
+
+                    if self.worker_cost + self.judge_cost >= cfg.stage_max_budget {
+                        return Err(StageExecutionError::BudgetExhausted(None));
+                    }
+                    let (defects, cost_usd) = self.run_judge(&output, &report, cfg)?;
+                    self.judge_cost = cost_usd;
+
+                    if defects.is_empty() {
+                        stage_info!(S::NAME, "judge found no defects, continuing");
                         log_stage_spent::<S>(cfg, self.worker_cost, self.judge_cost);
-                        Phase::Done(output.clone())
+                        Phase::Done(output)
+                    } else {
+                        stage_info!(S::NAME, "judge found defects");
+                        stage_debug!(
+                            S::NAME,
+                            "defects:\n{}",
+                            defects
+                                .iter()
+                                .map(|d| d.to_string())
+                                .collect::<Vec<String>>()
+                                .join("\n")
+                        );
+                        self.retry(cfg, AttemptRejected::Judge(defects))?
                     }
                 }
                 Phase::Done(output) => return Ok(output.clone()),
@@ -165,33 +180,49 @@ impl<S: Stage> StageExec<S> {
         }
     }
 
-    fn init_agent(&mut self, cfg: &Config, dir: &Path) -> Result<Agent, StageExecutionError<S>> {
-        let mut agent = match self.session {
-            Some(session_id) => Agent::with_session_id(session_id),
-            None => Agent::default(),
-        };
-        // set the briefing
-        agent.set_briefing(format!("{}\n\n{WAIT_FOR_SUBAGENTS}", self.stage.briefing()));
-        for (name, content) in self.stage.skills() {
-            agent.add_skill(name, content);
+    fn get_agent(&mut self, cfg: &Config) -> Result<&mut Agent, AgentError> {
+        if self.worker.is_none() {
+            let mut agent = Agent::default();
+            agent.set_briefing(format!("{}\n\n{WAIT_FOR_SUBAGENTS}", self.stage.briefing()));
+            for (name, content) in self.stage.skills() {
+                agent.add_skill(name, content);
+            }
+            agent.set_effort(cfg.effort);
+            agent.set_model(cfg.model.clone());
+            agent.set_dir(cfg.workspace_root()?);
+            agent.set_json_schema(
+                json_schema::<AgentResult<S::Report, S::Blocker>>().map_err(AgentError::from)?,
+            );
+            self.worker = Some(agent);
         }
-        agent.set_effort(cfg.effort);
-        agent.set_model(cfg.model.clone());
-        agent.set_dir(dir.to_owned());
-        agent.set_json_schema(
-            json_schema::<AgentResult<S::Report, S::Blocker>>().map_err(AgentError::from)?,
-        );
-        Ok(agent)
+
+        Ok(self.worker.as_mut().unwrap())
+    }
+
+    fn get_judge(&mut self, cfg: &Config, dir: &Path) -> Result<&mut Agent, AgentError> {
+        if self.judge.is_none() {
+            let mut judge = Agent::default();
+
+            judge.set_briefing(WAIT_FOR_SUBAGENTS.to_owned());
+            judge.set_effort(cfg.effort);
+            judge.set_model(cfg.model.clone());
+            judge.set_dir(dir.to_owned());
+            judge.set_json_schema(json_schema::<Verdict>()?);
+
+            self.judge = Some(judge);
+        }
+
+        Ok(self.judge.as_mut().unwrap())
     }
 
     /// Returns the agent's report, or the blocker it stopped the stage with.
     fn run_attempt(
         &mut self,
         cfg: &Config,
-        agent: &mut Agent,
         prompt: String,
-    ) -> Result<Result<S::Report, S::Blocker>, AgentError> {
+    ) -> Result<(Result<S::Report, S::Blocker>, f64), AgentError> {
         let remaining = cfg.stage_max_budget - self.worker_cost - self.judge_cost;
+
         stage_info!(
             S::NAME,
             "starting attempt {}/{}, remaining budget: {:.2}/{} USD (agent spent: {:.2} USD, judge spent: {:.2} USD)",
@@ -202,6 +233,8 @@ impl<S: Stage> StageExec<S> {
             self.worker_cost,
             self.judge_cost
         );
+
+        let agent = self.get_agent(cfg)?;
         agent.set_max_budget(remaining);
         let t = Instant::now();
         let output = agent.run_with_hook(prompt, |s| stage_info!(S::NAME, "agent: {}", s))?;
@@ -215,23 +248,28 @@ impl<S: Stage> StageExec<S> {
                 serde_json::to_string_pretty(report)?
             );
         }
-        Ok(result.result)
+
+        // the worker agent is kept alive over the whole run
+        // and claude code accumulated the usage over all
+        // calls. So here we
+        // override instead of adding.
+        let usage_cost = agent.get_usage().cost_usd;
+
+        Ok((result.result, usage_cost))
     }
 
     fn run_judge(
-        &self,
-        prompt: String,
+        &mut self,
+        output: &S::Output,
+        report: &S::Report,
         cfg: &Config,
-        workdir: &Path,
     ) -> Result<(Vec<Defect>, f64), AgentError> {
-        let mut judge_agent = Agent::default();
-        judge_agent.set_briefing(WAIT_FOR_SUBAGENTS.to_owned());
-        judge_agent.set_effort(cfg.effort);
-        judge_agent.set_model(cfg.model.clone());
-        judge_agent.set_dir(workdir.to_owned());
-        judge_agent.set_json_schema(json_schema::<Verdict>()?);
         let remaining = cfg.stage_max_budget - self.worker_cost - self.judge_cost;
-        judge_agent.set_max_budget(remaining);
+
+        let Some(base_prompt) = self.stage.judge_prompt(output, report) else {
+            stage_info!(S::NAME, "stage has no judge, continuing");
+            return Ok((vec![], 0.0));
+        };
 
         stage_info!(
             S::NAME,
@@ -241,12 +279,28 @@ impl<S: Stage> StageExec<S> {
             self.worker_cost,
             self.judge_cost
         );
+
+        let judge = self.get_judge(cfg, &cfg.workspace_root()?)?;
+
+        // Check if we are running a second judge attempt.
+        // In that case, shift focus to the defects flagged in previous round.
+        // If we don't do that, chances are the two agents never converge to a
+        // passing version.
+        let prompt = match judge.session_id() {
+            Some(_) => format!(
+                "{RECHECK_PROMPT}\n\nThe agent's report:\n{}",
+                serde_json::to_string_pretty(report)?
+            ),
+            None => base_prompt,
+        };
+
+        judge.set_max_budget(remaining);
+
         let t = Instant::now();
-        let judge_output =
-            judge_agent.run_with_hook(prompt, |s| stage_info!(S::NAME, "judge: {}", s))?;
+        let judge_output = judge.run_with_hook(prompt, |s| stage_info!(S::NAME, "judge: {}", s))?;
         stage_info!(S::NAME, "judge finished in {}", format_elapsed(t));
         let verdict: Verdict = serde_json::from_str(&judge_output)?;
-        Ok((verdict.defects, judge_agent.get_usage().cost_usd))
+        Ok((verdict.defects, judge.get_usage().cost_usd))
     }
 
     fn retry(
@@ -338,9 +392,13 @@ impl<S: Stage> fmt::Display for AttemptRejected<S> {
 /// A defect the judge found in a stage's output.
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone, PartialEq, Eq)]
 pub struct Defect {
+    /// One of the defect kinds that the stage's judge prompt lists.
     pub kind: String,
+    /// Where the defect is and what is wrong.
     pub detail: String,
+    /// The change that the agent must make.
     pub fix: String,
+    /// The full Lean name of the theorem that has the defect, if any.
     pub theorem: Option<String>,
 }
 

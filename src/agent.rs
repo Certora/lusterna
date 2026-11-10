@@ -8,10 +8,12 @@ use std::{
     thread,
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::io::Read;
 use tempfile::{NamedTempFile, TempDir};
 use uuid::Uuid;
+
+use crate::config::ConfigError;
 
 const DEFAULT_ALLOWED_TOOLS: &[&str] =
     &["Bash", "Edit", "Write", "Read", "Glob", "Grep", "TodoWrite"];
@@ -24,7 +26,7 @@ const SUBMIT_STRUCTURED_OUTPUT: &str =
     "You stopped without submitting your structured output. Submit it now.";
 
 /// The effort level for the agent
-#[derive(Debug, Clone, Copy, Default, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, Default, clap::ValueEnum, Serialize, Deserialize)]
 pub enum Effort {
     Low,
     #[default]
@@ -47,7 +49,7 @@ impl Display for Effort {
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ModelUsage {
     pub input_tokens: u64,
@@ -58,7 +60,7 @@ pub struct ModelUsage {
     pub cost_usd: f64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Agent {
     briefing: Option<String>,
     allowed_tools: Vec<String>,
@@ -110,16 +112,11 @@ pub enum AgentError {
     NoStructuredOutput,
     #[error("JSON: {0}")]
     Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    Config(#[from] ConfigError),
 }
 
 impl Agent {
-    pub fn with_session_id(session_id: Uuid) -> Self {
-        Self {
-            session_id: Some(session_id),
-            ..Default::default()
-        }
-    }
-
     pub fn set_briefing(&mut self, briefing: String) {
         self.briefing = Some(briefing)
     }
@@ -159,9 +156,8 @@ impl Agent {
         &self.usage
     }
 
-    /// Return the agents final message
-    pub fn run(&mut self, prompt: String) -> Result<String, AgentError> {
-        self.run_with_hook(prompt, |_| {})
+    pub fn session_id(&self) -> Option<Uuid> {
+        self.session_id
     }
 
     pub fn run_with_hook(
