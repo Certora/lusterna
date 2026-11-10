@@ -97,7 +97,7 @@ pub(crate) fn total_lusterna(v: &[u64]) -> u64 {
 
 Write the replacements of `src/a/b.rs` in `src/lusterna/a/b.rs`, and declare that file once in `src/a/b.rs`, after its `use` items, as in the example. The `#[path]` is relative to the directory of the original file: `"../lusterna/a/b.rs"` in `src/a/b.rs`, and `"../../lusterna/a/b/mod.rs"` in `src/a/b/mod.rs`. The new file is a child module of the original module, so `use super::*;` gives it the private items of the original module. Its items are `pub(crate)`, have the name of the original with the suffix `_lusterna`, and need no `cfg` of their own.
 
-If only a part of a larger function fails, first move that part, unchanged, into a new function. Call the new function where the part was. You must not make other changes to the code that the crate builds without the `lusterna` feature. Then replace the new function as in the example. If the failure involves the control flow of a function, replace the whole function. For example, a borrow that stays open in only one branch of an `if` can need this.
+If only a part of a function fails, such as a loop or one branch of an `if` or `match`, move that part unchanged into a new function and call it where the part was. Then replace the new function as in the example. Replace the whole function only if Charon or Aeneas still fails after the move.
 
 Under the feature, code that the entrypoints do not reach does not need to work. A change for the feature can break such code, for example a handler that calls a function with a changed signature. Then give that code the body `unimplemented!()` behind the feature.
 
