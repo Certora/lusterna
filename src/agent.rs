@@ -16,6 +16,8 @@ use uuid::Uuid;
 const DEFAULT_ALLOWED_TOOLS: &[&str] =
     &["Bash", "Edit", "Write", "Read", "Glob", "Grep", "TodoWrite"];
 
+const DISALLOWED_TOOLS: &[&str] = &["ScheduleWakeup"];
+
 const DEFAULT_MODEL: &str = "opus";
 
 const SUBMIT_STRUCTURED_OUTPUT: &str =
@@ -208,6 +210,8 @@ impl Agent {
             "dontAsk".into(),
             "--allowedTools".into(),
             self.allowed_tools.join(","),
+            "--disallowedTools".into(),
+            DISALLOWED_TOOLS.join(","),
             "--model".into(),
             self.model.clone(),
             "--setting-sources".into(),
