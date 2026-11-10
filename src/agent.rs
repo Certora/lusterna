@@ -187,6 +187,7 @@ impl Agent {
         } else {
             let sid = Uuid::new_v4();
             self.session_id = Some(sid);
+            log::debug!("claude session {sid}");
 
             args.extend(["--session-id".into(), sid.to_string().clone()]);
             if let Some(briefing) = self.briefing.as_ref() {
@@ -267,7 +268,11 @@ impl Agent {
                 continue;
             };
             if let Some(summary) = summarize(&event) {
-                hook(&summary);
+                if event["parent_tool_use_id"].is_string() {
+                    log::trace!("subagent: {summary}");
+                } else {
+                    hook(&summary);
+                }
             }
             if event["type"] == "result" {
                 result = Some(event);
@@ -347,7 +352,11 @@ fn summarize(event: &serde_json::Value) -> Option<String> {
                     .or(input["pattern"].as_str())
                     .or(input["skill"].as_str())
                     .unwrap_or("");
-                Some(short(what))
+                Some(format!(
+                    "{}: {}",
+                    b["name"].as_str().unwrap_or(""),
+                    short(what)
+                ))
             }
             _ => None,
         })
