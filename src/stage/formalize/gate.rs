@@ -27,10 +27,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     stage::{
         self,
-        formalize::{
-            FormalizeOutput, FormalizeStage, PropertyFormalizationStatus,
-            properties::{Properties, PropertyId, PropertyKind},
-        },
+        formalize::{FormalizeOutput, FormalizeStage, PropertyFormalizationStatus},
+        properties::{Properties, PropertyId, PropertyKind},
     },
     utils::{
         git::{self, GitError},
@@ -536,7 +534,7 @@ impl FormalizeGateFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stage::formalize::{Induction, properties::Property};
+    use crate::stage::{formalize::Induction, properties::Property};
 
     fn properties() -> Properties {
         Properties(vec![

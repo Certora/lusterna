@@ -1,5 +1,4 @@
 mod gate;
-pub mod properties;
 
 use std::{collections::BTreeMap, fs, io, path::PathBuf};
 
@@ -9,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     stage::{
         Stage, StageName,
-        formalize::properties::{Properties, PropertyId},
+        properties::{Properties, PropertyId},
     },
     utils::git::{self, GitError},
 };

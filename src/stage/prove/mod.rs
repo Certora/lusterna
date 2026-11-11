@@ -4,10 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    stage::{
-        Stage, StageName,
-        formalize::{PropertyFormalizationStatus, properties::PropertyId},
-    },
+    stage::{Stage, StageName, formalize::PropertyFormalizationStatus, properties::PropertyId},
     utils::{
         git::{self, GitError},
         lean::LakeError,
