@@ -30,9 +30,7 @@ Every theorem that states a property is an Aeneas WP triple:
 @[lusterna 3 "f adds x to a"]
 theorem f_adds
     -- Inputs
-    (s : Struct) (x : U64)
-    -- Additional assumptions
-    (h : s.a.val + x.val ≤ U64.max) :
+    (s : Struct) (x : U64) :
     -- Statement
     f s x ⦃ (ret, s') => s'.a.val = s.a.val + x.val ⦄ := by
   sorry
@@ -40,18 +38,19 @@ theorem f_adds
 
 `f args ⦃ r => post ⦄` says that `f args` returns without failing and that its result satisfies `post`. The skill `lusterna:aeneas-specs` explains the notation and how to read the extraction.
 
-1. Hypotheses constrain only the inputs and the state before the call. Everything about the result goes in the postcondition. The one exception is `h_ok` in the theorems of an invariant, which "Invariants" describes.
-2. The postcondition mentions the result.
-3. The postcondition contains no term of type `Result _`. Where the postcondition or a helper `Prop`, such as an invariant, needs the value of a translated function, it uses the model of that function. Do not restate the body of a translated function inline. The skill `lusterna:aeneas-models` shows how to write a model and its bridge.
-4. The postcondition as a whole does not hold for every result: not `True`, and not an implication that assumes its own conclusion. One case of a `match` may be `True`.
-5. For a property about several functions, write one triple over a `do` block that calls them in order, for example `(do let (_, s1) ← f s x; g s1 x) ⦃ (res, s2) => … ⦄`. Do not nest triples.
-6. Destructure a tuple result in the binder: `⦃ (ret, v') => … ⦄`.
-7. Write the parameters of the theorem in groups, each under a comment line, in this order. Leave out the comment line of an empty group. Then write the comment line `-- Statement` above the triple.
+1. Write a hypothesis only for a condition that the natspec states. Do not add a hypothesis that rules out a panic, even if the theorem is false without it: the prove stage finds those hypotheses.
+2. Hypotheses constrain only the inputs and the state before the call. Everything about the result goes in the postcondition. The one exception is `h_ok` in the theorems of an invariant, which "Invariants" describes.
+3. The postcondition mentions the result.
+4. The postcondition contains no term of type `Result _`. Where the postcondition or a helper `Prop`, such as an invariant, needs the value of a translated function, it uses the model of that function. Do not restate the body of a translated function inline. The skill `lusterna:aeneas-models` shows how to write a model and its bridge.
+5. The postcondition as a whole does not hold for every result: not `True`, and not an implication that assumes its own conclusion. One case of a `match` may be `True`.
+6. For a property about several functions, write one triple over a `do` block that calls them in order, for example `(do let (_, s1) ← f s x; g s1 x) ⦃ (res, s2) => … ⦄`. Do not nest triples.
+7. Destructure a tuple result in the binder: `⦃ (ret, v') => … ⦄`.
+8. Write the parameters of the theorem in groups, each under a comment line, in this order. Leave out the comment line of an empty group. Then write the comment line `-- Statement` above the triple.
    - `-- State`: in an induction step of an invariant, the argument that is or contains the struct.
    - `-- Inputs`: the other arguments of the call.
    - `-- Induction hypothesis`: in an induction step of an invariant, `h_inv`.
    - `-- No panic`: in a theorem of an invariant, `h_ok`.
-   - `-- Additional assumptions`: the other hypotheses.
+   - `-- Preconditions`: the conditions that the natspec states.
 
 ## Labels
 
@@ -115,7 +114,7 @@ The harness checks these conditions after you stop. If one fails, you get the er
 
 1. `lake build Spec` in `{lean_root}` exits with status 0. Warnings about `sorry` are expected.
 2. You changed or created files only under `Spec/`.
-3. Every labelled theorem is a triple whose postcondition follows rules 2 to 4 of "The shape of a theorem".
+3. Every labelled theorem is a triple whose postcondition follows rules 3 to 5 of "The shape of a theorem".
 4. Your report gives a status for every property.
 5. For each formalized property, the theorems in your report are exactly the theorems with its label, and they are in the file that your report names.
 6. For each invariant property, each function in the `base_cases` and the `steps` of `induction` for its struct has a labelled theorem of that property whose triple calls it.

@@ -5,7 +5,7 @@ description: How to write a pure Lean model of a translated function and the `@[
 
 # Models of translated functions
 
-A translated function returns `Result α`, and a statement must not contain a term of type `Result _`. When a statement needs the value of a translated function, for example `s.get_total()`, it uses a model of that function instead. A model is a pure Lean `def` that computes the same value. Each model has a bridge: a `@[step]` theorem stating that the translated function returns the value of the model.
+A translated function returns `Result α`, and a postcondition must not contain a term of type `Result _`. When a postcondition or a helper `Prop` needs the value of a translated function, for example `s.get_total()`, it uses a model of that function instead. A model is a pure Lean `def` that computes the same value. Each model has a bridge: a `@[step]` theorem stating that the translated function returns the value of the model.
 
 ```lean
 -- Rust: fn get_total(&self) -> u64 { self.a + self.b - self.c }

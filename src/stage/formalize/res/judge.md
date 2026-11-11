@@ -42,7 +42,7 @@ Judge only this work. Do not report a defect in a theorem, a definition or a mod
 For each theorem with the label of the property:
 
 1. Read the property's `natspec`, then the theorem. The hypotheses and the postcondition together must state the property: not something else, not less, and not more.
-2. The hypotheses may rule out inputs on which the call panics. They must not exclude other inputs or states that the property covers, and they must be satisfiable. The theorems of an invariant have `h_ok` instead, as "Check each invariant property" describes.
+2. Each hypothesis must be a condition that the natspec states, and the hypotheses must be satisfiable. The theorems of an invariant have `h_inv` and `h_ok` instead, as "Check each invariant property" describes.
 3. Every helper `def` that the theorem uses must mean what the property means. The postcondition and the helper `Prop`s must use the model of a translated function where they need its value, and must not restate its body inline.
 4. If the function returns a Rust `Result`, the postcondition must state the property in every case of it that the property talks about. An invariant talks only about the `.Ok` case.
 
@@ -54,7 +54,7 @@ The models are under `{lean_root}/Spec/Model/`, as the skill `aeneas-models` des
 
 1. Read the translated function and compare it with the model on every input on which the function does not panic. The model must compute exactly the same value.
 2. The model has a bridge: a `@[step]` theorem whose triple calls the function and whose postcondition is an equality between the result and the model.
-3. The only hypothesis of the bridge is `h_ok : ∃ r, f args = ok r`. `h_ok` covers every panic of the function. Do not ask for hypotheses that state when the function panics, and do not report that the function can panic.
+3. The only hypothesis of the bridge is `h_ok : ∃ r, f args = ok r`. `h_ok` covers every panic of the function.
 4. No two models restate the same function.
 
 ## Check each invariant property
@@ -63,7 +63,7 @@ The models are under `{lean_root}/Spec/Model/`, as the skill `aeneas-models` des
 2. Search the translation for every function that creates a value of the struct. Each one must be in the `base_cases` of `induction` under the struct's name.
 3. A function that is not in the translation cannot be a base case or a step. It is not a defect that `induction` does not list it.
 4. Each induction step theorem assumes the invariant for the value before the call, as `h_inv`, and asserts it for the value after the call. Each base case theorem asserts it for the created value.
-5. Each base case and induction step theorem assumes that the call returns, as `h_ok : ∃ r, f args = ok r`. `h_ok` covers every panic of the call. Do not ask for hypotheses that state when the call panics, and do not report that the call can panic.
+5. Each base case and induction step theorem assumes that the call returns, as `h_ok : ∃ r, f args = ok r`. `h_ok` covers every panic of the call.
 6. A base case or induction step theorem must have no hypothesis other than `h_inv` and `h_ok`.
 7. If the function returns a Rust `Result`, the postcondition asserts the invariant in the `.Ok` case and `True` in the `.Err` case. It is not a defect that it claims nothing for `.Err`.
 
@@ -97,6 +97,8 @@ Report one defect for each problem. Use one of these kinds:
 
 Report only problems that you can point to in a specific file and theorem or definition. Do not report style or naming.
 
+Do not check whether a call can panic. Do not report that a theorem is false because the call can panic, and do not ask for a hypothesis that rules out a panic. The prove stage finds those hypotheses.
+
 ## How to write a defect
 
 - `kind`: one of the kinds above.
@@ -107,7 +109,7 @@ Report only problems that you can point to in a specific file and theorem or def
 Example:
 
 ```json
-{"kind": "too_weak", "detail": "Spec/FAdds.lean: `f_adds` assumes `h : s.a.val = 0`, but the natspec says \"f adds x to a\" for every struct. The hypothesis excludes every struct with a non-zero `a`.", "fix": "In `Spec/FAdds.lean`, replace the hypothesis `h` of `f_adds` with `h : s.a.val + x.val ≤ U64.max`, which only rules out the overflow on which `f` panics.", "theorem": "Spec.FAdds.f_adds"}
+{"kind": "too_weak", "detail": "Spec/FAdds.lean: `f_adds` assumes `h : s.a.val = 0`, but the natspec says \"f adds x to a\" for every struct. The hypothesis excludes every struct with a non-zero `a`.", "fix": "In `Spec/FAdds.lean`, remove the hypothesis `h` of `f_adds`. The natspec states no condition.", "theorem": "Spec.FAdds.f_adds"}
 ```
 
 If you find no defects, return an empty `defects` list.

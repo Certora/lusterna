@@ -34,7 +34,7 @@ The value of a scalar is `x.val`: a `Nat` for unsigned types and an `Int` for si
 
 The notation is scoped in the namespace `Aeneas`, so a file that uses it needs `open Aeneas`. `open Aeneas.Std Result` gives the short names `U64`, `Result` and `ok`, as in the generated modules.
 
-`f args ⦃ r => post ⦄` is `Aeneas.Std.WP.spec (f args) (fun r => post)`. It is true when `f args` returns `ok r` and `post` holds for `r`. It is false when `f args` returns `fail` or `div`. So a triple also states that the call does not panic. If the call may panic for some inputs, add a hypothesis that rules those inputs out. The theorems of an invariant and the bridges of models assume `h_ok : ∃ r, f args = ok r` instead: the call returns.
+`f args ⦃ r => post ⦄` is `Aeneas.Std.WP.spec (f args) (fun r => post)`. It is true when `f args` returns `ok r` and `post` holds for `r`. It is false when `f args` returns `fail` or `div`. So a triple also states that the call does not panic. Do not add a hypothesis that rules out the inputs on which the call panics: the prove stage finds those hypotheses. The theorems of an invariant and the bridges of models assume `h_ok : ∃ r, f args = ok r`: the call returns.
 
 Destructure a tuple result in the binder:
 
