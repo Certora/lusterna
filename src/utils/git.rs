@@ -136,6 +136,16 @@ pub fn uncommitted_files(repo: &Path) -> Result<Vec<PathBuf>, GitError> {
     Ok(files)
 }
 
+/// Returns the files of `uncommitted_files` that are not under `dir`, an
+/// absolute path.
+pub fn uncommitted_files_outside(repo: &Path, dir: &Path) -> Result<Vec<PathBuf>, GitError> {
+    let root = toplevel(repo)?;
+    Ok(uncommitted_files(repo)?
+        .into_iter()
+        .filter(|f| !root.join(f).starts_with(dir))
+        .collect())
+}
+
 /// Returns whether the work tree of `repo` has no changes, counting untracked
 /// files that are not ignored.
 pub fn is_clean(repo: &Path) -> Result<bool, GitError> {

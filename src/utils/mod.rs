@@ -7,6 +7,7 @@ use std::{
 pub mod cargo;
 pub mod git;
 pub(crate) mod lean;
+pub mod spec_check;
 
 /// Formats the time elapsed since `t`, rounded down to whole seconds.
 pub fn format_elapsed(t: Instant) -> humantime::FormattedDuration {
