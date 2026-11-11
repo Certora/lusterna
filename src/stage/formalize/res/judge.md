@@ -1,6 +1,6 @@
 You review the work of the formalize stage of Lusterna. Do not change any file.
 
-The formalize agent had one job: state each property in `{properties}` as Lean theorems about the Aeneas translation of a Rust crate, without proving them. The harness already made sure that only files under `{lean_root}/Spec/` changed, that `lake build Spec` passes, that every theorem is `sorry`, that every labelled theorem is a WP triple whose postcondition mentions the result, contains no `Result` and does not hold for every result, that the labels match the report, and that each function in `mutating_operations` is called by a labelled theorem of its invariant. Do not check these again. Your job is to find theorems that do not mean what their property means.
+The formalize agent had one job: state each property in `{properties}` as Lean theorems about the Aeneas translation of a Rust crate, without proving them. The harness already made sure that only files under `{lean_root}/Spec/` changed, that `lake build Spec` passes, that every labelled theorem is a WP triple whose postcondition mentions the result, contains no `Result` and does not hold for every result, that the labels match the report, and that each function in `mutating_operations` is called by a labelled theorem of its invariant. Do not check these again. Your job is to find theorems that do not mean what their property means.
 
 The agent worked under this briefing:
 
@@ -25,6 +25,17 @@ This is the agent's report:
 The properties are in `{properties}`. The spec files are under `{lean_root}/Spec/`, and the report names the file of each formalized property. The translation is in `{extracted}`. Before you judge a statement, read the definitions of the functions and types that it uses. Do not judge a function by its name.
 
 Do not trust the report. Compare it with the files that you find.
+
+## What the agent changed
+
+The work tree was clean when the agent started, and the agent made no commits. Use `git` to see what the agent changed. A file that `git status` shows as untracked is new.
+
+Judge only this work. Do not report a defect in a theorem, a definition or a model that the agent did not add or change.
+
+1. `new_theorems`, `updated_theorems` and `removed_theorems` in the report must match the diff.
+2. The proof of every theorem that the agent **added** must be `by sorry`.
+3. Each changed statement and each removed theorem needs a reason: the theorem no longer stated its property, for example because the translation or the property changed.
+4. The agent must not have changed a proof from before the run, except to replace it with `by sorry` in a theorem whose statement changed or that uses a model or a helper `def` that changed.
 
 ## Check each formalized property
 
@@ -74,6 +85,9 @@ Report one defect for each problem. Use one of these kinds:
 - `wrong_helper`: a helper `def` does not match the property, or restates a translated function instead of using its model.
 - `wrong_model`: a model does not match its translated function, has no bridge, or has a bridge that is not an equality, has hypotheses beyond the panics of the function, or has unsatisfiable hypotheses. Also for a second model of the same function.
 - `incomplete_operations`: a mutating operation of the struct of an invariant is missing from `mutating_operations`, `mutating_operations` lists a function that is not one, or a function that creates the struct has no base case theorem.
+- `wrong_change_report`: `new_theorems`, `updated_theorems` or `removed_theorems` does not match the diff.
+- `proved`: a theorem that the agent added has a proof other than `by sorry`.
+- `unwarranted_change`: the agent changed a statement or removed a theorem that still stated its property, or changed a proof from before the run that it had no reason to replace with `by sorry`.
 - `wrong_skip`: the reason of a skipped property does not hold.
 - `wrong_grouping`: a file groups theorems by the function that they call, or mixes unrelated properties.
 

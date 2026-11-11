@@ -61,8 +61,6 @@ pub enum FormalizeGateFailure {
     },
     #[display("lake build Spec failed")]
     BuildFailed { output: String },
-    #[display("{} theorems are not sorry", theorems.len())]
-    NotSorry { theorems: Vec<String> },
     #[display("{} labelled theorems have issues", theorems.len())]
     IssuesFound { theorems: Vec<(String, Vec<Issue>)> },
     #[display("{} labels do not match the report", problems.len())]
@@ -118,7 +116,6 @@ struct TheoremCheck {
     module: String,
     id: Option<PropertyId>,
     title: Option<String>,
-    is_sorry: bool,
     /// The head constant of the computation in the theorem's triple.
     function: Option<String>,
     issues: Vec<Issue>,
@@ -246,25 +243,9 @@ fn check_theorems(
     report: &FormalizeOutput,
     checks: &[TheoremCheck],
 ) -> Result<(), FormalizeGateFailure> {
-    check_sorry(checks)?;
     check_issues(checks)?;
     check_labels(properties, report, checks)?;
     check_operations(properties, report, checks)
-}
-
-/// Checks that the proof of every theorem is `sorry`.
-fn check_sorry(checks: &[TheoremCheck]) -> Result<(), FormalizeGateFailure> {
-    let thms_non_sorry: Vec<String> = checks
-        .iter()
-        .filter(|c| !c.is_sorry)
-        .map(|c| c.name.clone())
-        .collect();
-    if !thms_non_sorry.is_empty() {
-        return Err(FormalizeGateFailure::NotSorry {
-            theorems: thms_non_sorry,
-        });
-    }
-    Ok(())
 }
 
 /// Checks that no labelled theorem has an issue.
@@ -505,11 +486,6 @@ impl FormalizeGateFailure {
                 "`lake build Spec` failed with this output:\n\n```\n{output}\n```\n\n\
                  Fix the first error and run `lake build Spec` again until it passes.",
             ),
-            FormalizeGateFailure::NotSorry { theorems } => format!(
-                "The proofs of these theorems are not `sorry`:\n\n{}\n\n\
-                 Replace each proof with `by sorry`. This stage writes statements only.",
-                list(code(theorems))
-            ),
             FormalizeGateFailure::IssuesFound { theorems } => format!(
                 "These labelled theorems break the rules of \"The shape of a theorem\":\n\n{}\n\n\
                  The skill `lusterna:aeneas-specs` shows how to fix each problem.",
@@ -607,6 +583,9 @@ mod tests {
                 "vault::Vault".to_owned(),
                 vec!["vault.Vault.deposit".to_owned()],
             )]),
+            new_theorems: Vec::new(),
+            updated_theorems: Vec::new(),
+            removed_theorems: Vec::new(),
         }
     }
 
@@ -622,7 +601,6 @@ mod tests {
             module: module.to_owned(),
             id: Some(id),
             title: Some(title.to_owned()),
-            is_sorry: true,
             function: Some(function.to_owned()),
             issues: Vec::new(),
         }
@@ -656,10 +634,9 @@ mod tests {
 
     #[test]
     fn parses_check_output() {
-        let line = r#"{"function":"LusternaSpecTest.f","id":4,"isSorry":true,"issues":[{"canFail":{"reason":"LusternaSpecTest.f r"}}],"module":"LusternaSpecTest.Fixture","name":"LusternaSpecTest.f_fixpoint","title":"f is a fixpoint"}"#;
+        let line = r#"{"function":"LusternaSpecTest.f","id":4,"issues":[{"canFail":{"reason":"LusternaSpecTest.f r"}}],"module":"LusternaSpecTest.Fixture","name":"LusternaSpecTest.f_fixpoint","title":"f is a fixpoint"}"#;
         let check: TheoremCheck = serde_json::from_str(line).unwrap();
         assert_eq!(check.id, Some(4));
-        assert!(check.is_sorry);
         assert_eq!(
             check.issues,
             vec![Issue::CanFail {
@@ -667,7 +644,7 @@ mod tests {
             }]
         );
 
-        let line = r#"{"function":null,"id":null,"isSorry":false,"issues":["notATriple","ignoresResult","vacuous"],"module":"M","name":"M.two","title":null}"#;
+        let line = r#"{"function":null,"id":null,"issues":["notATriple","ignoresResult","vacuous"],"module":"M","name":"M.two","title":null}"#;
         let check: TheoremCheck = serde_json::from_str(line).unwrap();
         assert_eq!(check.id, None);
         assert_eq!(check.function, None);
@@ -680,16 +657,6 @@ mod tests {
     #[test]
     fn consistent_report_passes() {
         check_theorems(&properties(), &report(), &checks()).unwrap();
-    }
-
-    #[test]
-    fn rejects_proof() {
-        let mut checks = checks();
-        checks[0].is_sorry = false;
-        assert!(matches!(
-            check_theorems(&properties(), &report(), &checks),
-            Err(FormalizeGateFailure::NotSorry { theorems }) if theorems == ["Spec.DepositAdds.adds"]
-        ));
     }
 
     #[test]

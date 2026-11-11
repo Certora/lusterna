@@ -108,6 +108,15 @@ pub struct FormalizeOutput {
     /// struct name as the property gives it, the full Lean names of its
     /// mutating operations, which the induction steps of its invariants call.
     pub mutating_operations: BTreeMap<String, Vec<String>>,
+    /// The full Lean names of the theorems that this run added. A renamed
+    /// theorem is not one of them.
+    pub new_theorems: Vec<String>,
+    /// The full Lean names of the theorems from before this run whose
+    /// statement this run changed.
+    pub updated_theorems: Vec<String>,
+    /// The full Lean names that the theorems that this run removed or renamed
+    /// had before this run.
+    pub removed_theorems: Vec<String>,
 }
 
 impl Stage for FormalizeStage {
@@ -221,6 +230,9 @@ mod tests {
                 PropertyStatus::Skipped(SkipReason::Other("{lean_root}".to_owned())),
             )]),
             mutating_operations: BTreeMap::new(),
+            new_theorems: Vec::new(),
+            updated_theorems: Vec::new(),
+            removed_theorems: Vec::new(),
         };
         let prompt = stage().judge_prompt(&report, &report).unwrap();
 
