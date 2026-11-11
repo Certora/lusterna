@@ -28,7 +28,11 @@ Every theorem that states a property is an Aeneas WP triple:
 
 ```lean
 @[lusterna 3 "f adds x to a"]
-theorem f_adds (s : Struct) (x : U64) (h : s.a.val + x.val ≤ U64.max) :
+theorem f_adds
+    -- Inputs
+    (s : Struct) (x : U64)
+    -- Additional assumptions
+    (h : s.a.val + x.val ≤ U64.max) :
     f s x ⦃ (ret, s') => s'.a.val = s.a.val + x.val ⦄ := by
   sorry
 ```
@@ -41,6 +45,7 @@ theorem f_adds (s : Struct) (x : U64) (h : s.a.val + x.val ≤ U64.max) :
 4. The postcondition does not hold for every result: not `True`, and not an implication that assumes its own conclusion.
 5. For a property about several functions, write one triple over a `do` block that calls them in order, for example `(do let (_, s1) ← f s x; g s1 x) ⦃ (res, s2) => … ⦄`. Do not nest triples.
 6. Destructure a tuple result in the binder: `⦃ (ret, v') => … ⦄`.
+7. Write the parameters of the theorem in two groups, in this order: the arguments of the call under the comment line `-- Inputs`, then the hypotheses under the comment line `-- Additional assumptions`. Leave out the comment line of an empty group.
 
 ## Labels
 
@@ -57,6 +62,21 @@ An invariant property names a struct. It holds for every value of the struct tha
 2. Base case: for each function that creates the struct, write one theorem. It calls the function and asserts in the postcondition that the invariant holds for the created value.
 3. Induction step: for each mutating operation, write one theorem. Its induction hypothesis is that the invariant holds for the value before the call. It calls the mutating operation and asserts in the postcondition that the invariant holds for the value after the call. A Rust function that takes `&mut` returns the new value as part of its result.
 4. In the base case and induction step theorems, the triple calls the function directly, not through a `do` block.
+5. Write the parameters of an induction step theorem in four groups, in this order: the argument that is or contains the struct under the comment line `-- State`, the other arguments of the call under `-- Inputs`, the induction hypothesis under `-- Induction hypothesis`, and the other hypotheses under `-- Additional assumptions`. Name the induction hypothesis `h_inv`. Leave out the comment line of an empty group. A type parameter or an instance that the type of the struct argument needs comes before `-- State`.
+
+```lean
+theorem f_keeps_inv
+    -- State
+    (s : Struct)
+    -- Inputs
+    (x : U64)
+    -- Induction hypothesis
+    (h_inv : Inv s)
+    -- Additional assumptions
+    (h : s.a.val + x.val ≤ U64.max) :
+    f s x ⦃ (ret, s') => Inv s' ⦄ := by
+  sorry
+```
 
 You decide how to write the invariant: inline in each theorem, or as a helper `def` that the theorems share.
 
