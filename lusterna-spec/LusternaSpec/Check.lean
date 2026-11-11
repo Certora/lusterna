@@ -7,9 +7,8 @@ import LusternaSpec.Attr
 `check` prints one JSON line for each theorem of the given modules. Run it with
 ``#eval Lusterna.Spec.check #[`Some.Module]`` in a file that imports those modules.
 
-For every theorem it reports whether the proof is `sorry`. For a theorem labelled
-`@[lusterna id "title"]` it also checks the statement: the conclusion must be an Aeneas WP triple
-`m ⦃ r => post r ⦄`, and `post r` must
+For a theorem labelled `@[lusterna id "title"]` it checks the statement: the conclusion must be an
+Aeneas WP triple `m ⦃ r => post r ⦄`, and `post r` must
 * mention `r`,
 * contain no term of type `Result _`, because that computation can fail, and
 * not hold for every `r`, as `True` or `Q → Q` do.
@@ -193,8 +192,6 @@ structure TheoremCheck where
   id : Option Nat
   /-- The title from `@[lusterna]`, or `none` if the theorem has no label. -/
   title : Option String
-  /-- The proof is `sorry`. -/
-  isSorry : Bool
   /-- The head constant of the computation in the theorem's triple. `none` if the theorem has no
   label, its conclusion is not a triple, or the head is not a constant. -/
   function : Option Name
@@ -235,7 +232,7 @@ def check (modules : Array Name) : MetaM Unit := do
     let some idx := env.getModuleIdx? mod | throwError "module {mod} is not imported"
     let some data := env.header.moduleData[idx.toNat]? | throwError "no data for module {mod}"
     for thm in data.constNames do
-      let some (.thmInfo info) := env.find? thm | continue
+      let some (.thmInfo _) := env.find? thm | continue
       if thm.isInternal then continue
       let label := lusternaAttr.getParam? env thm
       let (function, issues) ← if label.isSome then checkTriple thm else pure (none, #[])
@@ -245,7 +242,6 @@ def check (modules : Array Name) : MetaM Unit := do
         «module» := mod
         id := label.map (·.1)
         title := label.map (·.2)
-        isSorry := info.value.getLambdaBody.consumeMData.isSorry
       }
       IO.println (toJson result).compress
 

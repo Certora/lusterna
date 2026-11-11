@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     agent::Effort,
+    pipeline::PipelineStep,
     utils::{
         cargo::{self, CargoError},
         git::{self, GitError},
@@ -69,8 +70,11 @@ pub struct Config {
     #[arg(long)]
     pub(crate) allow_dirty: bool,
 
-    #[arg(long, help_heading = "Dev Options")]
-    pub(crate) stop_after: Option<String>,
+    #[arg(long, value_enum, help_heading = "Dev Options")]
+    pub(crate) start_at: Option<PipelineStep>,
+
+    #[arg(long, value_enum, help_heading = "Dev Options")]
+    pub(crate) stop_after: Option<PipelineStep>,
 }
 
 impl Config {

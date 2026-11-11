@@ -28,6 +28,9 @@ const BRIEFING_TEMPLATE: &str = include_str!("res/briefing.md");
 /// The `SKILL.md` of the skill `aeneas-specs`.
 const AENEAS_SPECS_SKILL: &str = include_str!("res/aeneas-specs.md");
 
+/// The `SKILL.md` of the skill `aeneas-models`.
+const AENEAS_MODELS_SKILL: &str = include_str!("res/aeneas-models.md");
+
 /// The judge prompt of the formalize stage, with `{lean_root}`,
 /// `{extracted}`, `{properties}`, `{briefing}`, `{skills}` and `{report}`
 /// standing for the Lean project root, the directory of the extraction, the
@@ -98,13 +101,33 @@ pub enum PropertyStatus {
     Skipped(SkipReason),
 }
 
+/// The functions that the induction over the invariants of a struct covers.
+#[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
+pub struct Induction {
+    /// The full Lean names of the functions that create the struct, which the
+    /// base cases call.
+    pub base_cases: Vec<String>,
+    /// The full Lean names of the mutating operations of the struct, which
+    /// the induction steps call.
+    pub steps: Vec<String>,
+}
+
 #[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
 pub struct FormalizeOutput {
     pub property_status: BTreeMap<PropertyId, PropertyStatus>,
     /// For each struct that an invariant property is declared on, keyed by the
-    /// struct name as the property gives it, the full Lean names of its
-    /// mutating operations, which the induction steps of its invariants call.
-    pub mutating_operations: BTreeMap<String, Vec<String>>,
+    /// struct name as the property gives it, the functions of its base cases
+    /// and induction steps.
+    pub induction: BTreeMap<String, Induction>,
+    /// The full Lean names of the theorems that this run added. A renamed
+    /// theorem is not one of them.
+    pub new_theorems: Vec<String>,
+    /// The full Lean names of the theorems from before this run whose
+    /// statement this run changed.
+    pub updated_theorems: Vec<String>,
+    /// The full Lean names that the theorems that this run removed or renamed
+    /// had before this run.
+    pub removed_theorems: Vec<String>,
 }
 
 impl Stage for FormalizeStage {
@@ -146,7 +169,10 @@ impl Stage for FormalizeStage {
     }
 
     fn skills(&self) -> Vec<(&'static str, String)> {
-        vec![("aeneas-specs", AENEAS_SPECS_SKILL.to_owned())]
+        vec![
+            ("aeneas-specs", AENEAS_SPECS_SKILL.to_owned()),
+            ("aeneas-models", AENEAS_MODELS_SKILL.to_owned()),
+        ]
     }
 
     fn feedback_prompt(gate_failed: &Self::GateFailure) -> String {
@@ -214,7 +240,10 @@ mod tests {
                 1,
                 PropertyStatus::Skipped(SkipReason::Other("{lean_root}".to_owned())),
             )]),
-            mutating_operations: BTreeMap::new(),
+            induction: BTreeMap::new(),
+            new_theorems: Vec::new(),
+            updated_theorems: Vec::new(),
+            removed_theorems: Vec::new(),
         };
         let prompt = stage().judge_prompt(&report, &report).unwrap();
 
@@ -240,8 +269,9 @@ mod tests {
     fn skill_has_front_matter() {
         let skills = stage().skills();
 
-        assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].0, "aeneas-specs");
-        assert!(skills[0].1.starts_with("---\nname: aeneas-specs\n"));
+        assert_eq!(skills.len(), 2);
+        for (name, content) in skills {
+            assert!(content.starts_with(&format!("---\nname: {name}\n")));
+        }
     }
 }

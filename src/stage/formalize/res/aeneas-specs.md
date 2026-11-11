@@ -8,7 +8,7 @@ description: How Aeneas translates Rust to Lean, and how to state a property of 
 ## Reading the extraction
 
 - `Types.lean` holds the Rust types as Lean structures and inductives. `Funs.lean` holds the Rust functions. `TypesExternal.lean` and `FunsExternal.lean` hold hand-written definitions of items that Aeneas could not translate.
-- The Lean names follow the Rust paths, for example `my_crate.vault.Vault.deposit`. Search with `grep -n` for a definition and read its exact signature before you use it. The examples below leave out the namespaces.
+- The Lean names follow the Rust paths, for example `my_crate.module.Struct.f`. Search with `grep -n` for a definition and read its exact signature before you use it. The examples below leave out the namespaces.
 - Every function returns `Result α`. `Result` is the failure monad of Aeneas: a call returns `ok x`, or `fail` on a panic or an overflow, or `div` if it does not terminate.
 
 | Rust | Lean |
@@ -26,7 +26,7 @@ description: How Aeneas translates Rust to Lean, and how to state a property of 
 | `Result<T, E>` | `core.result.Result T E`, with `.Ok` and `.Err` |
 | `panic!`, overflow, out-of-bounds index | `fail` |
 
-For a function `fn deposit(&mut self, amount: u64) -> u64`, Aeneas gives `deposit (self : Vault) (amount : U64) : Result (U64 × Vault)`: the return value and the new `Vault`.
+For a function `fn f(&mut self, x: u64) -> u64`, Aeneas gives `f (self : Struct) (x : U64) : Result (U64 × Struct)`: the return value and the new `Struct`.
 
 The value of a scalar is `x.val`: a `Nat` for unsigned types and an `Int` for signed types. The elements of a `Vec` or `Slice` are the list `v.val`, and `v.length` is its length.
 
@@ -34,18 +34,18 @@ The value of a scalar is `x.val`: a `Nat` for unsigned types and an `Int` for si
 
 The notation is scoped in the namespace `Aeneas`, so a file that uses it needs `open Aeneas`. `open Aeneas.Std Result` gives the short names `U64`, `Result` and `ok`, as in the generated modules.
 
-`f args ⦃ r => post ⦄` is `Aeneas.Std.WP.spec (f args) (fun r => post)`. It is true when `f args` returns `ok r` and `post` holds for `r`. It is false when `f args` returns `fail` or `div`. So a triple also states that the call does not panic. If the call may panic for some inputs, add a hypothesis that rules those inputs out.
+`f args ⦃ r => post ⦄` is `Aeneas.Std.WP.spec (f args) (fun r => post)`. It is true when `f args` returns `ok r` and `post` holds for `r`. It is false when `f args` returns `fail` or `div`. So a triple also states that the call does not panic. Do not add a hypothesis that rules out the inputs on which the call panics: the prove stage finds those hypotheses. The theorems of an invariant and the bridges of models assume `h_ok : ∃ r, f args = ok r`: the call returns.
 
 Destructure a tuple result in the binder:
 
 ```lean
-deposit v amount ⦃ (ret, v') => v'.total.val = v.total.val + amount.val ⦄
+f s x ⦃ (ret, s') => s'.a.val = s.a.val + x.val ⦄
 ```
 
 For a property about several calls, put them in one `do` block and return what the postcondition needs:
 
 ```lean
-(do let (_, v1) ← deposit v a; withdraw v1 a) ⦃ (res, v2) => v2.total = v.total ⦄
+(do let (_, s1) ← f s x; g s1 x) ⦃ (res, s2) => s2.a = s.a ⦄
 ```
 
 ## Hypotheses are about the inputs
@@ -54,11 +54,13 @@ A hypothesis may constrain the arguments and the state before the call. It must 
 
 ```lean
 -- BAD: `h2` assumes the conclusion
-theorem t (v v' : Vault) (h : transfer v = ok v') (h2 : v'.total = v.total) : v'.total = v.total
+theorem t (s s' : Struct) (h : update s = ok s') (h2 : s'.a = s.a) : s'.a = s.a
 
 -- GOOD
-theorem t (v : Vault) : transfer v ⦃ v' => v'.total = v.total ⦄
+theorem t (s : Struct) : update s ⦃ s' => s'.a = s.a ⦄
 ```
+
+`h_ok : ∃ r, update s = ok r` is not such a hypothesis. It says that the call returns and nothing about the value that it returns.
 
 ## Two kinds of `Result`
 
@@ -68,10 +70,10 @@ theorem t (v : Vault) : transfer v ⦃ v' => v'.total = v.total ⦄
 State what happens in each case of a Rust `Result` with an exhaustive `match` in the postcondition:
 
 ```lean
-withdraw v amount ⦃ (res, v') =>
+g s x ⦃ (res, s') =>
   match res with
-  | .Ok out => out.val = amount.val ∧ v'.total.val = v.total.val - amount.val
-  | .Err _ => v' = v ⦄
+  | .Ok out => out.val = x.val ∧ s'.a.val = s.a.val - x.val
+  | .Err _ => s' = s ⦄
 ```
 
 ## Keeping the postcondition free of `Result`
@@ -83,25 +85,24 @@ Values of every other type are fine. Compare structs, enums, `Option`, `core.res
 **Scalar arithmetic.** `x + y` on `U64` has the type `Result U64`, because it fails on overflow. Compute on the values instead:
 
 ```lean
--- BAD: `v.total + amount` is a `Result U64`
-deposit v amount ⦃ (_, v') => v'.total = v.total + amount ⦄
+-- BAD: `s.a + x` is a `Result U64`
+f s x ⦃ (_, s') => s'.a = s.a + x ⦄
 
 -- GOOD
-deposit v amount ⦃ (_, v') => v'.total.val = v.total.val + amount.val ⦄
+f s x ⦃ (_, s') => s'.a.val = s.a.val + x.val ⦄
 ```
 
-**A translated function that you need to state the claim**, for example a getter on the result. Call it in the computation of the triple, in a `do` block, and return its value. If it fails, the triple is false.
+**A translated function that you need to state the claim**, for example a getter on the result. Use its model, as the skill `lusterna:aeneas-models` describes.
 
 ```lean
--- BAD: `shares v'` is a `Result U64` in the postcondition, and the claim holds when it fails
-deposit v amount ⦃ (_, v') => ∀ s, shares v' = ok s → s.val ≤ v'.total.val ⦄
+-- BAD: `sum s'` is a `Result U64` in the postcondition, and the claim holds when it fails
+f s x ⦃ (_, s') => ∀ y, sum s' = ok y → y.val ≤ s'.c.val ⦄
 
--- GOOD
-(do let (_, v') ← deposit v amount; let s ← shares v'; pure (v', s))
-  ⦃ (v', s) => s.val ≤ v'.total.val ⦄
+-- GOOD: `Struct.sumModel` is the model of `sum`
+f s x ⦃ (_, s') => s'.sumModel ≤ s'.c.val ⦄
 ```
 
-**Helper `def`s.** A helper over values, such as `def Solvent (v : Vault) : Prop := v.shares.val ≤ v.total.val`, is fine. A helper that calls a translated function brings its `Result` into the postcondition.
+**Helper `def`s.** A helper over values and models, such as `def Inv (s : Struct) : Prop := s.c.val ≤ s.getTotal`, is fine. A helper that calls a translated function brings its `Result` into the postcondition.
 
 ## No `sorry` in definitions
 

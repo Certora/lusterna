@@ -3,13 +3,13 @@
 //! 1. Only files under `Spec/` differ from `HEAD`.
 //! 2. The report has a status for exactly the given properties.
 //! 3. `lake build Spec` passes.
-//! 4. Every theorem in `Spec/` is `sorry`.
-//! 5. No labelled theorem has an issue reported by `Lusterna.Spec.check`.
-//! 6. The labels match the report: each label's property is formalized, the
+//! 4. No labelled theorem has an issue reported by `Lusterna.Spec.check`.
+//! 5. The labels match the report: each label's property is formalized, the
 //!    title matches, the theorem is in the reported file, and each property's
 //!    labelled theorems are the reported ones.
-//! 7. Each formalized invariant has `mutating_operations` for its struct, and
-//!    each of them is called by a labelled theorem of that invariant.
+//! 6. Each formalized invariant has an `induction` entry for its struct, and
+//!    each of its `base_cases` and `steps` is called by a labelled theorem of
+//!    that invariant.
 //!
 //! Labelled theorem: a theorem tagged `@[lusterna id "title"]`, which states
 //! the property with that `id` and `title` in the properties file. Untagged
@@ -61,16 +61,14 @@ pub enum FormalizeGateFailure {
     },
     #[display("lake build Spec failed")]
     BuildFailed { output: String },
-    #[display("{} theorems are not sorry", theorems.len())]
-    NotSorry { theorems: Vec<String> },
     #[display("{} labelled theorems have issues", theorems.len())]
     IssuesFound { theorems: Vec<(String, Vec<Issue>)> },
     #[display("{} labels do not match the report", problems.len())]
     LabelMismatch { problems: Vec<LabelProblem> },
-    #[display("no mutating operations reported for {}", structs.join(", "))]
-    MissingOperations { structs: Vec<String> },
-    #[display("{} mutating operations have no theorem", missing.len())]
-    UncoveredOperations { missing: Vec<(PropertyId, String)> },
+    #[display("no induction reported for {}", structs.join(", "))]
+    MissingInduction { structs: Vec<String> },
+    #[display("{} base cases and steps have no theorem", missing.len())]
+    UncoveredInduction { missing: Vec<(PropertyId, String)> },
 }
 
 /// A problem with the statement of a labelled theorem, as
@@ -118,7 +116,6 @@ struct TheoremCheck {
     module: String,
     id: Option<PropertyId>,
     title: Option<String>,
-    is_sorry: bool,
     /// The head constant of the computation in the theorem's triple.
     function: Option<String>,
     issues: Vec<Issue>,
@@ -246,25 +243,9 @@ fn check_theorems(
     report: &FormalizeOutput,
     checks: &[TheoremCheck],
 ) -> Result<(), FormalizeGateFailure> {
-    check_sorry(checks)?;
     check_issues(checks)?;
     check_labels(properties, report, checks)?;
-    check_operations(properties, report, checks)
-}
-
-/// Checks that the proof of every theorem is `sorry`.
-fn check_sorry(checks: &[TheoremCheck]) -> Result<(), FormalizeGateFailure> {
-    let thms_non_sorry: Vec<String> = checks
-        .iter()
-        .filter(|c| !c.is_sorry)
-        .map(|c| c.name.clone())
-        .collect();
-    if !thms_non_sorry.is_empty() {
-        return Err(FormalizeGateFailure::NotSorry {
-            theorems: thms_non_sorry,
-        });
-    }
-    Ok(())
+    check_induction(properties, report, checks)
 }
 
 /// Checks that no labelled theorem has an issue.
@@ -365,15 +346,16 @@ fn check_labels(
     Ok(())
 }
 
-/// Checks that every formalized invariant property has `mutating_operations` for its
-/// struct, and for each of them a labelled theorem whose triple calls it.
-fn check_operations(
+/// Checks that every formalized invariant property has an `induction` entry
+/// for its struct, and for each of its `base_cases` and `steps` a labelled
+/// theorem whose triple calls it.
+fn check_induction(
     properties: &Properties,
     report: &FormalizeOutput,
     checks: &[TheoremCheck],
 ) -> Result<(), FormalizeGateFailure> {
-    let mut structs_without_operations = BTreeSet::new();
-    let mut uncovered_operations = Vec::new();
+    let mut structs_without_induction = BTreeSet::new();
+    let mut uncovered = Vec::new();
     for property in &properties.0 {
         // Skip rules
         let PropertyKind::Invariant { r#struct } = &property.kind else {
@@ -384,31 +366,29 @@ fn check_operations(
         else {
             continue;
         };
-        // The report must list the operations of the struct
-        let Some(operations) = report.mutating_operations.get(r#struct) else {
-            structs_without_operations.insert(r#struct.clone());
+        // The report must list the induction of the struct
+        let Some(induction) = report.induction.get(r#struct) else {
+            structs_without_induction.insert(r#struct.clone());
             continue;
         };
-        // Each operation must be the function of a labelled theorem of the
-        // property
-        for operation in operations {
+        // Each base case and step must be the function of a labelled theorem
+        // of the property
+        for function in induction.base_cases.iter().chain(&induction.steps) {
             if !checks
                 .iter()
-                .any(|c| c.id == Some(property.id) && c.function.as_ref() == Some(operation))
+                .any(|c| c.id == Some(property.id) && c.function.as_ref() == Some(function))
             {
-                uncovered_operations.push((property.id, operation.clone()));
+                uncovered.push((property.id, function.clone()));
             }
         }
     }
-    if !structs_without_operations.is_empty() {
-        return Err(FormalizeGateFailure::MissingOperations {
-            structs: structs_without_operations.into_iter().collect(),
+    if !structs_without_induction.is_empty() {
+        return Err(FormalizeGateFailure::MissingInduction {
+            structs: structs_without_induction.into_iter().collect(),
         });
     }
-    if !uncovered_operations.is_empty() {
-        return Err(FormalizeGateFailure::UncoveredOperations {
-            missing: uncovered_operations,
-        });
+    if !uncovered.is_empty() {
+        return Err(FormalizeGateFailure::UncoveredInduction { missing: uncovered });
     }
 
     Ok(())
@@ -505,11 +485,6 @@ impl FormalizeGateFailure {
                 "`lake build Spec` failed with this output:\n\n```\n{output}\n```\n\n\
                  Fix the first error and run `lake build Spec` again until it passes.",
             ),
-            FormalizeGateFailure::NotSorry { theorems } => format!(
-                "The proofs of these theorems are not `sorry`:\n\n{}\n\n\
-                 Replace each proof with `by sorry`. This stage writes statements only.",
-                list(code(theorems))
-            ),
             FormalizeGateFailure::IssuesFound { theorems } => format!(
                 "These labelled theorems break the rules of \"The shape of a theorem\":\n\n{}\n\n\
                  The skill `lusterna:aeneas-specs` shows how to fix each problem.",
@@ -532,23 +507,22 @@ impl FormalizeGateFailure {
                  Fix the labels or the report so that they agree.",
                 list(problems.iter().map(LabelProblem::to_string).collect())
             ),
-            FormalizeGateFailure::MissingOperations { structs } => format!(
-                "Your report has no entry in `mutating_operations` for these structs of invariant \
+            FormalizeGateFailure::MissingInduction { structs } => format!(
+                "Your report has no entry in `induction` for these structs of invariant \
                  properties:\n\n{}\n\n\
-                 Add the full Lean names of the mutating operations of each struct, under \
-                 the struct name exactly as the property gives it.",
+                 Add the `base_cases` and the `steps` of each struct, under the struct name \
+                 exactly as the property gives it.",
                 list(code(structs))
             ),
-            FormalizeGateFailure::UncoveredOperations { missing } => format!(
-                "These mutating operations have no labelled theorem of the invariant property \
-                 whose \
-                 triple calls them directly:\n\n{}\n\n\
-                 Write the induction step for each one, as \"Invariants\" in your briefing \
-                 describes.",
+            FormalizeGateFailure::UncoveredInduction { missing } => format!(
+                "These functions in `base_cases` or `steps` have no labelled theorem of the \
+                 invariant property whose triple calls them directly:\n\n{}\n\n\
+                 Write the base case or the induction step for each one, as \"Invariants\" in \
+                 your briefing describes.",
                 list(
                     missing
                         .iter()
-                        .map(|(id, operation)| format!("property {id}: `{operation}`"))
+                        .map(|(id, function)| format!("property {id}: `{function}`"))
                         .collect()
                 )
             ),
@@ -559,7 +533,7 @@ impl FormalizeGateFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stage::formalize::properties::Property;
+    use crate::stage::formalize::{Induction, properties::Property};
 
     fn properties() -> Properties {
         Properties(vec![
@@ -603,10 +577,16 @@ mod tests {
                     },
                 ),
             ]),
-            mutating_operations: BTreeMap::from([(
+            induction: BTreeMap::from([(
                 "vault::Vault".to_owned(),
-                vec!["vault.Vault.deposit".to_owned()],
+                Induction {
+                    base_cases: vec!["vault.Vault.new".to_owned()],
+                    steps: vec!["vault.Vault.deposit".to_owned()],
+                },
             )]),
+            new_theorems: Vec::new(),
+            updated_theorems: Vec::new(),
+            removed_theorems: Vec::new(),
         }
     }
 
@@ -622,7 +602,6 @@ mod tests {
             module: module.to_owned(),
             id: Some(id),
             title: Some(title.to_owned()),
-            is_sorry: true,
             function: Some(function.to_owned()),
             issues: Vec::new(),
         }
@@ -656,10 +635,9 @@ mod tests {
 
     #[test]
     fn parses_check_output() {
-        let line = r#"{"function":"LusternaSpecTest.f","id":4,"isSorry":true,"issues":[{"canFail":{"reason":"LusternaSpecTest.f r"}}],"module":"LusternaSpecTest.Fixture","name":"LusternaSpecTest.f_fixpoint","title":"f is a fixpoint"}"#;
+        let line = r#"{"function":"LusternaSpecTest.f","id":4,"issues":[{"canFail":{"reason":"LusternaSpecTest.f r"}}],"module":"LusternaSpecTest.Fixture","name":"LusternaSpecTest.f_fixpoint","title":"f is a fixpoint"}"#;
         let check: TheoremCheck = serde_json::from_str(line).unwrap();
         assert_eq!(check.id, Some(4));
-        assert!(check.is_sorry);
         assert_eq!(
             check.issues,
             vec![Issue::CanFail {
@@ -667,7 +645,7 @@ mod tests {
             }]
         );
 
-        let line = r#"{"function":null,"id":null,"isSorry":false,"issues":["notATriple","ignoresResult","vacuous"],"module":"M","name":"M.two","title":null}"#;
+        let line = r#"{"function":null,"id":null,"issues":["notATriple","ignoresResult","vacuous"],"module":"M","name":"M.two","title":null}"#;
         let check: TheoremCheck = serde_json::from_str(line).unwrap();
         assert_eq!(check.id, None);
         assert_eq!(check.function, None);
@@ -680,16 +658,6 @@ mod tests {
     #[test]
     fn consistent_report_passes() {
         check_theorems(&properties(), &report(), &checks()).unwrap();
-    }
-
-    #[test]
-    fn rejects_proof() {
-        let mut checks = checks();
-        checks[0].is_sorry = false;
-        assert!(matches!(
-            check_theorems(&properties(), &report(), &checks),
-            Err(FormalizeGateFailure::NotSorry { theorems }) if theorems == ["Spec.DepositAdds.adds"]
-        ));
     }
 
     #[test]
@@ -745,27 +713,28 @@ mod tests {
     }
 
     #[test]
-    fn rejects_missing_operations() {
+    fn rejects_missing_induction() {
         let mut report = report();
-        report.mutating_operations.clear();
+        report.induction.clear();
         assert!(matches!(
             check_theorems(&properties(), &report, &checks()),
-            Err(FormalizeGateFailure::MissingOperations { structs }) if structs == ["vault::Vault"]
+            Err(FormalizeGateFailure::MissingInduction { structs }) if structs == ["vault::Vault"]
         ));
     }
 
     #[test]
-    fn rejects_uncovered_operation() {
+    fn rejects_uncovered_induction() {
         let mut report = report();
-        report
-            .mutating_operations
-            .get_mut("vault::Vault")
-            .unwrap()
-            .push("vault.Vault.withdraw".to_owned());
+        let induction = report.induction.get_mut("vault::Vault").unwrap();
+        induction.base_cases.push("vault.Vault.default".to_owned());
+        induction.steps.push("vault.Vault.withdraw".to_owned());
         assert!(matches!(
             check_theorems(&properties(), &report, &checks()),
-            Err(FormalizeGateFailure::UncoveredOperations { missing })
-                if missing == [(2, "vault.Vault.withdraw".to_owned())]
+            Err(FormalizeGateFailure::UncoveredInduction { missing })
+                if missing == [
+                    (2, "vault.Vault.default".to_owned()),
+                    (2, "vault.Vault.withdraw".to_owned()),
+                ]
         ));
     }
 }
