@@ -20,7 +20,7 @@ const BASE_PROMPT_TEMPLATE: &str = include_str!("res/prompt.md");
 
 const BRIEFING_TEMPLATE: &str = include_str!("res/briefing.md");
 
-// const JUDGE_PROMPT_TEMPLATE: &str = todo!();
+const JUDGE_PROMPT_TEMPLATE: &str = include_str!("res/judge.md");
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProveInput {
@@ -199,5 +199,81 @@ impl Stage for ProveStage {
 
     fn gate_check(&self, report: &Self::Report) -> Result<Self::Output, super::GateStop<Self>> {
         gate::run_gate(&self.input, &self.properties, report)
+    }
+
+    fn judge_prompt(&self, _output: &Self::Output, report: &Self::Report) -> Option<String> {
+        let report = serde_json::to_string_pretty(report).expect("the report serializes");
+        let induction =
+            serde_json::to_string_pretty(&self.input.induction).expect("the induction serializes");
+        Some(
+            JUDGE_PROMPT_TEMPLATE
+                .replace("{lean_root}", &self.input.lean_root.display().to_string())
+                .replace("{extracted}", &self.input.extracted.display().to_string())
+                .replace("{properties}", &self.input.properties.display().to_string())
+                .replace("{briefing}", &self.briefing())
+                .replace("{induction}", &induction)
+                .replace("{report}", &report),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stage() -> ProveStage {
+        ProveStage {
+            input: ProveInput {
+                extracted: PathBuf::from("/c/lusterna/lean/Extraction"),
+                lean_root: PathBuf::from("/c/lusterna/lean"),
+                properties: PathBuf::from("/c/lusterna/properties.json"),
+                property_status: BTreeMap::new(),
+                induction: BTreeMap::new(),
+                additional_theorem: Vec::new(),
+            },
+            properties: Properties(Vec::new()),
+        }
+    }
+
+    #[test]
+    fn briefing_fills_every_placeholder() {
+        let briefing = stage().briefing();
+
+        for placeholder in ["{lean_root}", "{extracted}", "{properties}"] {
+            assert!(!briefing.contains(placeholder), "{placeholder} is left");
+        }
+        assert!(briefing.contains("`/c/lusterna/properties.json`"));
+    }
+
+    #[test]
+    fn judge_prompt_fills_every_placeholder() {
+        let report = ProveReport {
+            theorems: BTreeMap::from([(
+                "Spec.FAdds.f_adds".to_owned(),
+                TheoremStatus::Open {
+                    reason: "{lean_root}".to_owned(),
+                },
+            )]),
+        };
+        let output = ProveOutput {
+            properties: BTreeMap::new(),
+        };
+        let prompt = stage().judge_prompt(&output, &report).unwrap();
+
+        for placeholder in [
+            "{extracted}",
+            "{properties}",
+            "{briefing}",
+            "{induction}",
+            "{report}",
+        ] {
+            assert!(!prompt.contains(placeholder), "{placeholder} is left");
+        }
+        assert!(prompt.contains("\"reason\": \"{lean_root}\""));
+    }
+
+    #[test]
+    fn base_prompt_names_lean_root() {
+        assert!(stage().base_prompt().contains("`/c/lusterna/lean`"));
     }
 }
