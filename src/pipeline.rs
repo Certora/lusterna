@@ -15,19 +15,25 @@
 //! A run starts only if the repository has no uncommitted changes other than
 //! the spec file (unless `--allow-dirty`), the tools of `TOOLS` are on `PATH`,
 //! and the settings that the stages need, such as `--solanalib-root` for a
-//! Solana program, resolve. After each step, the pipeline commits all changes
-//! in the repository. The `--stop-after` option ends the pipeline after the
-//! named stage.
+//! Solana program, resolve.
+//!
+//! After each step, the pipeline commits all changes
+//! in the repository.
+//!
+//! ## Partial Runs
+//!
+//! The `--start-at` option skips the steps before the named [`Step`], and the
+//! `--stop-after` option ends the pipeline after the named [`Step`].
 
 use std::{env, fs, io, path::PathBuf, time::Instant};
 
-use log::{info, warn};
+use log::info;
 
 use crate::{
     config::{Config, ConfigError, Platform},
     spec::Spec,
     stage::{
-        Stage, StageName,
+        Stage,
         exec::{StageExec, StageExecutionError},
         formalize::{FormalizeInput, FormalizeOutput, FormalizeStage},
         pre_translate::{PreTranslateInput, PreTranslateStage},
@@ -62,8 +68,7 @@ pub enum PipelineError {
     /// A config value that a stage needs could not be resolved.
     #[error(transparent)]
     Config(#[from] ConfigError),
-    /// The initial `cargo build` could not run. A build that runs and fails
-    /// starts the `pre-translate` stage instead.
+    /// The initial `cargo build` could not run.
     #[error(transparent)]
     Cargo(#[from] CargoError),
     /// The repository has uncommitted changes to these files, relative to its
@@ -84,90 +89,107 @@ pub enum PipelineError {
     Io(#[from] io::Error),
 }
 
+/// The steps of a pipeline run, in the order in which they run. A step
+/// executes a stage or does other work on the crate, and ends with a commit
+/// of its changes.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
+pub enum PipelineStep {
+    Infer,
+    /// Writes the spec and its properties to the crate.
+    WriteSpec,
+    PreTranslate,
+    Translate,
+    Formalize,
+}
+
 /// A pipeline of stages, configured by a spec. See the module documentation.
 pub struct Pipeline {
     spec: Spec,
     /// The file that `spec` was read from.
     spec_path: PathBuf,
     config: Config,
-    stop_after: Option<StageName>,
 }
 
 impl Pipeline {
-    fn stop_after(config: &Config) -> Option<StageName> {
-        match &config.stop_after {
-            Some(sa) => match StageName::try_from(sa.as_str()) {
-                Ok(sa) => Some(sa),
-                Err(_) => {
-                    warn!("Invalid name for --stop-after: '{}', skipping", sa);
-                    None
-                }
-            },
-            None => None,
-        }
-    }
-
-    /// Creates the pipeline for `spec`, which was read from `spec_path`. An
-    /// invalid `--stop-after` stage name is logged and ignored.
+    /// Creates the pipeline for `spec`, which was read from `spec_path`.
     pub fn new(spec: Spec, spec_path: PathBuf, config: Config) -> Self {
-        let stop_after = Self::stop_after(&config);
         Self {
             spec,
             spec_path,
             config,
-            stop_after,
         }
     }
 
-    /// Runs the stages of the pipeline in order and stops at the first error.
+    /// Whether `step` is in the range that `--start-at` and `--stop-after`
+    /// select.
+    fn runs(&self, step: PipelineStep) -> bool {
+        self.config.start_at.is_none_or(|s| s <= step)
+            && self.config.stop_after.is_none_or(|s| step <= s)
+    }
+
+    /// Runs the steps of the pipeline in order and stops at the first error.
     pub fn run(self) -> Result<(), PipelineError> {
         self.pre_check()?;
-        let repo_root = self.config.repo_root()?;
 
         // 1. Infer the entrypoints and properties
-        if self.spec.infer {
+        if self.runs(PipelineStep::Infer) && self.spec.infer {
             todo!()
-        }
-        if self.spec.entrypoints.is_empty() {
-            return Err(PipelineError::NoEntrypoints);
         }
 
         // 2. Write the spec and its properties to the crate
+        if self.runs(PipelineStep::WriteSpec) {
+            self.write_spec()?;
+        }
+
+        // 3. Run the pre-translate stage
+        // this is a noop if the project does build.
+        if self.runs(PipelineStep::PreTranslate) {
+            self.run_pretranslate()?;
+        }
+
+        // 4. Run the translate stage
+        if self.runs(PipelineStep::Translate) {
+            if !self.runs(PipelineStep::PreTranslate) {
+                // If pre translate was skipped, the crate might not build.
+                // The translate stage fails in that so we stop early.
+                let build = cargo::build(&self.config.manifest()?);
+                if let Err(CargoError::Build { .. }) = &build {
+                    log::error!(
+                        "The crate does not build, cannot start at `translate`. Start at `pre-translate` or earlier."
+                    );
+                }
+                build?;
+            }
+            if self.spec.entrypoints.is_empty() {
+                return Err(PipelineError::NoEntrypoints);
+            }
+            self.run_translate(
+                self.spec.entrypoints.clone(),
+                opaque_patterns(&self.config, &self.spec.add_opaque)?,
+            )?;
+        }
+
+        // 5. Run the formalize stage
+        if self.runs(PipelineStep::Formalize) && !self.spec.properties.0.is_empty() {
+            self.run_formalize()?;
+        }
+        Ok(())
+    }
+
+    fn write_spec(&self) -> Result<(), PipelineError> {
         let lusterna_dir = self.config.crate_root()?.join("lusterna");
         fs::create_dir_all(&lusterna_dir)?;
-        let properties = lusterna_dir.join("properties.json");
         fs::write(
             lusterna_dir.join("lusterna.json"),
             serde_json::to_string_pretty(&self.spec).expect("the spec serializes"),
         )?;
         fs::write(
-            &properties,
+            lusterna_dir.join("properties.json"),
             serde_json::to_string_pretty(&self.spec.properties).expect("the properties serialize"),
         )?;
-        if let Some(sha) = git::commit_all(&repo_root, "Lusterna: spec")? {
+        if let Some(sha) = git::commit_all(&self.config.repo_root()?, "Lusterna: spec")? {
             info!("Committed the spec in {}", sha);
         }
-
-        // 3. Run the pre-translate stage
-        // this is a noop if the project does build.
-        self.run_pretranslate()?;
-        if matches!(&self.stop_after, Some(StageName::PreTranslate)) {
-            return Ok(());
-        }
-
-        // 4. Run the translate stage
-        let translate_out = self.run_translate(
-            self.spec.entrypoints.clone(),
-            opaque_patterns(&self.config, &self.spec.add_opaque)?,
-        )?;
-        if matches!(&self.stop_after, Some(StageName::Translate))
-            || self.spec.properties.0.is_empty()
-        {
-            return Ok(());
-        }
-
-        // 5. Run the formalize stage
-        self.run_formalize(translate_out, properties)?;
         Ok(())
     }
 
@@ -275,15 +297,13 @@ impl Pipeline {
         Ok(output)
     }
 
-    fn run_formalize(
-        &self,
-        translate_out: TranslateOutput,
-        properties: PathBuf,
-    ) -> Result<FormalizeOutput, PipelineError> {
+    fn run_formalize(&self) -> Result<FormalizeOutput, PipelineError> {
+        let lusterna_dir = self.config.crate_root()?.join("lusterna");
+        let lean_root = lusterna_dir.join("lean");
         let input = FormalizeInput {
-            extracted: translate_out.extracted,
-            lean_root: translate_out.lean_root,
-            properties,
+            extracted: lean_root.join("Extraction"),
+            lean_root,
+            properties: lusterna_dir.join("properties.json"),
         };
         let output = self
             .exec_stage::<FormalizeStage>(input)
