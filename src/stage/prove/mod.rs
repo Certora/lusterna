@@ -1,15 +1,20 @@
-use std::{collections::BTreeMap, io, path::PathBuf};
+mod gate;
+
+use std::{collections::BTreeMap, fs, io, path::PathBuf};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    stage::{Stage, StageName, formalize::PropertyFormalizationStatus, properties::PropertyId},
-    utils::{
-        git::{self, GitError},
-        lean::LakeError,
+    stage::{
+        Stage, StageName,
+        formalize::{Induction, PropertyFormalizationStatus},
+        properties::{Properties, PropertyId},
     },
+    utils::git::{self, GitError},
 };
+
+pub use gate::{ProveGateError, ProveGateFailure};
 
 const BASE_PROMPT_TEMPLATE: &str = include_str!("res/prompt.md");
 
@@ -30,6 +35,10 @@ pub struct ProveInput {
     /// This stage will attempt to construct proves for all theorem for the
     /// properties with status `Formalized`
     pub property_status: BTreeMap<PropertyId, PropertyFormalizationStatus>,
+    /// For each struct that an invariant property is declared on, keyed by the
+    /// struct name as the property gives it, the functions of its base cases
+    /// and induction steps.
+    pub induction: BTreeMap<String, Induction>,
     /// Additional theorems created by the formalize stage that are not tied to
     /// one property
     pub additional_theorem: Vec<(PathBuf, String)>,
@@ -128,33 +137,23 @@ pub struct ProveBlocker {
     pub reason: String,
 }
 
-#[derive(Debug, derive_more::Display, Serialize, Deserialize, Clone)]
-pub enum ProveGateFailure {
-    #[display("Lean project does not build")]
-    DoesNotBuild,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum ProveGateError {
-    #[error("Error running git: {0}")]
-    Git(#[from] GitError),
-    #[error("IO error: {0}")]
-    Io(#[from] io::Error),
-    #[error("Lake error: {0}")]
-    Lake(#[from] LakeError),
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum ProveSetupError {
     #[error("the work tree of `{0}` has uncommitted changes")]
     Dirty(PathBuf),
+    #[error("IO error: {0}")]
+    Io(#[from] io::Error),
     #[error(transparent)]
     Git(#[from] GitError),
+    #[error("cannot parse the properties in `{0}`: {1}")]
+    Properties(PathBuf, serde_json::Error),
 }
 
 #[derive(Deserialize, Serialize)]
-struct ProveStage {
+pub struct ProveStage {
     input: ProveInput,
+    /// The content of `input.properties`.
+    properties: Properties,
 }
 
 impl Stage for ProveStage {
@@ -162,7 +161,7 @@ impl Stage for ProveStage {
 
     type Input = ProveInput;
 
-    type Output = PropertyProofStatus;
+    type Output = ProveOutput;
 
     type Report = ProveReport;
 
@@ -178,7 +177,9 @@ impl Stage for ProveStage {
         if !git::is_clean(&input.lean_root)? {
             return Err(ProveSetupError::Dirty(input.lean_root));
         }
-        Ok(Self { input })
+        let properties = serde_json::from_str(&fs::read_to_string(&input.properties)?)
+            .map_err(|e| ProveSetupError::Properties(input.properties.clone(), e))?;
+        Ok(Self { input, properties })
     }
 
     fn base_prompt(&self) -> String {
@@ -193,10 +194,10 @@ impl Stage for ProveStage {
     }
 
     fn feedback_prompt(gate_failed: &Self::GateFailure) -> String {
-        todo!()
+        gate_failed.to_feedback_prompt()
     }
 
     fn gate_check(&self, report: &Self::Report) -> Result<Self::Output, super::GateStop<Self>> {
-        todo!()
+        gate::run_gate(&self.input, &self.properties, report)
     }
 }

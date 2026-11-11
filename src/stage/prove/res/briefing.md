@@ -59,7 +59,7 @@ The harness checks these conditions after you stop. If one fails, you get the er
 2. You changed or created files only under `Spec/`.
 3. Your report gives a status for every theorem under `Spec/` whose proof was `sorry` when you started.
 4. A theorem that you report as proven does not depend on `sorry`, directly or through a lemma, and does not depend on an axiom other than the axioms of the extraction and of Lean.
-5. The same holds for each theorem that you name as evidence: a counterexample, a reachable run, or the base cases and induction steps of a `StateInvariant`.
+5. The same holds for each theorem that you name in a status: in `counterexample` or `reachable`, or in the `base_cases` or `induction_steps` of a `StateInvariant`.
 6. Each labelled theorem differs from its statement at the start only by the hypotheses that you report, and they are under `-- Additional assumptions`.
 
 Nobody reads your messages while you work, and nobody answers questions. Do not stop to ask a question or to wait for an answer. If you must choose between options, choose the one that follows this briefing and continue. The harness controls the budget. Do not stop early because you expect the budget to run out.
