@@ -27,9 +27,9 @@ Work through the properties one at a time: read a property, write or reuse the m
 Every theorem that states a property is an Aeneas WP triple:
 
 ```lean
-@[lusterna 3 "Deposit adds the amount to the total"]
-theorem deposit_adds (v : Vault) (amount : U64) (h : v.total.val + amount.val ≤ U64.max) :
-    deposit v amount ⦃ (ret, v') => v'.total.val = v.total.val + amount.val ⦄ := by
+@[lusterna 3 "f adds x to a"]
+theorem f_adds (s : Struct) (x : U64) (h : s.a.val + x.val ≤ U64.max) :
+    f s x ⦃ (ret, s') => s'.a.val = s.a.val + x.val ⦄ := by
   sorry
 ```
 
@@ -39,7 +39,7 @@ theorem deposit_adds (v : Vault) (amount : U64) (h : v.total.val + amount.val �
 2. The postcondition mentions the result.
 3. The postcondition contains no term of type `Result _`. Where the postcondition or a helper `Prop`, such as an invariant, needs the value of a translated function, it uses the model of that function. Do not restate the body of a translated function inline. The skill `lusterna:aeneas-models` shows how to write a model and its bridge.
 4. The postcondition does not hold for every result: not `True`, and not an implication that assumes its own conclusion.
-5. For a property about several functions, write one triple over a `do` block that calls them in order, for example `(do let (_, v1) ← deposit v a; withdraw v1 a) ⦃ (res, v2) => … ⦄`. Do not nest triples.
+5. For a property about several functions, write one triple over a `do` block that calls them in order, for example `(do let (_, s1) ← f s x; g s1 x) ⦃ (res, s2) => … ⦄`. Do not nest triples.
 6. Destructure a tuple result in the binder: `⦃ (ret, v') => … ⦄`.
 
 ## Labels
@@ -90,6 +90,6 @@ Nobody reads your messages while you work, and nobody answers questions. Do not 
 
 ## Your result
 
-When you are done, return `Ok` with your report. Fill each field as its description says. `file` is relative to `{lean_root}`, and `theorems` are full Lean names, for example `Spec.DepositAdds.deposit_adds`.
+When you are done, return `Ok` with your report. Fill each field as its description says. `file` is relative to `{lean_root}`, and `theorems` are full Lean names, for example `Spec.FAdds.f_adds`.
 
 Return `Err` only for a reason that the result schema lists. Then the stage stops, and nobody continues your work. For every other problem, keep working.
