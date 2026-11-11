@@ -22,6 +22,12 @@ const BRIEFING_TEMPLATE: &str = include_str!("res/briefing.md");
 
 const JUDGE_PROMPT_TEMPLATE: &str = include_str!("res/judge.md");
 
+/// The `SKILL.md` of the skill `aeneas-partial-correctness`.
+const AENEAS_PARTIAL_CORRECTNESS_SKILL: &str = include_str!("res/aeneas-partial-correctness.md");
+
+/// The `SKILL.md` of the skill `aeneas-tactics`.
+const AENEAS_TACTICS_SKILL: &str = include_str!("res/aeneas-tactics.md");
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProveInput {
     /// Absolute path to the directory of the Lean modules that Aeneas
@@ -83,8 +89,6 @@ pub enum AssumptionPurpose {
     NoPanic,
     /// Assumes another invariant that holds in the pre-state.
     /// Must supply
-    /// - the property as stated as a Prop in lean which must match what the
-    ///   assumption expresses
     /// - The FQNs of the (proven) base cases
     /// - The FQNs of the (proven) induction steps
     StateInvariant {
@@ -190,6 +194,16 @@ impl Stage for ProveStage {
             .replace("{properties}", &self.input.properties.display().to_string())
     }
 
+    fn skills(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("aeneas-tactics", AENEAS_TACTICS_SKILL.to_owned()),
+            (
+                "aeneas-partial-correctness",
+                AENEAS_PARTIAL_CORRECTNESS_SKILL.to_owned(),
+            ),
+        ]
+    }
+
     fn feedback_prompt(gate_failed: &Self::GateFailure) -> String {
         gate_failed.to_feedback_prompt()
     }
@@ -271,5 +285,12 @@ mod tests {
     #[test]
     fn base_prompt_names_lean_root() {
         assert!(stage().base_prompt().contains("`/c/lusterna/lean`"));
+    }
+
+    #[test]
+    fn skill_has_front_matter() {
+        for (name, content) in stage().skills() {
+            assert!(content.starts_with(&format!("---\nname: {name}\n")));
+        }
     }
 }

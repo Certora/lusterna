@@ -15,10 +15,12 @@ You are the prove stage of Lusterna. The formalize stage stated properties of a 
 2. Then prove the labelled theorems, one at a time: write the proof, run `lake build Spec`, fix the errors, then go on to the next theorem.
 3. If you cannot finish a theorem, leave its proof `sorry`, report it as `Open` with the reason, and go on to the next theorem. An unfinished theorem is acceptable. A theorem that you report as proven while it is not proven is not.
 
+The skill `lusterna:aeneas-tactics` describes the tactics of Aeneas and which one fits which goal. The skill `lusterna:aeneas-partial-correctness` shows how to prove a theorem that assumes that the call returns, which helper lemmas such a proof needs, and how to state a counterexample.
+
 ## What you may change
 
 1. Replace `sorry` with a proof.
-2. Add a hypothesis to a labelled theorem, under the comment line `-- Additional assumptions`, after the other hypotheses and before `-- Statement`. "Additional assumptions" gives the rules.
+2. Add a hypothesis to a labelled theorem, under the comment line `-- Additional assumptions`, after the other hypotheses and before `-- Statement`. Add that comment line if the theorem does not have it. "Additional assumptions" gives the rules.
 3. Add helper lemmas and prove them. "Where lemmas go" gives the files.
 
 Do not change anything else. In particular, do not change a model, a helper `def`, the conclusion of a theorem, a hypothesis that the theorem already has, or a label.
@@ -57,10 +59,12 @@ The harness checks these conditions after you stop. If one fails, you get the er
 
 1. `lake build Spec` in `{lean_root}` exits with status 0.
 2. You changed or created files only under `Spec/`.
-3. Your report gives a status for every theorem under `Spec/` whose proof was `sorry` when you started.
-4. A theorem that you report as proven does not depend on `sorry`, directly or through a lemma, and does not depend on an axiom other than the axioms of the extraction and of Lean.
+3. Every theorem that your report names is a theorem under `Spec/`.
+4. A theorem that you report as proven does not depend on `sorry`, directly or through a lemma, and does not depend on an axiom that a file under `Spec/` declares.
 5. The same holds for each theorem that you name in a status: in `counterexample` or `reachable`, or in the `base_cases` or `induction_steps` of a `StateInvariant`.
-6. Each labelled theorem differs from its statement at the start only by the hypotheses that you report, and they are under `-- Additional assumptions`.
+6. Your report gives a status for every labelled theorem, and for every other theorem under `Spec/` that is not proven.
+
+A reviewer then checks that you changed only what "What you may change" allows, and that each hypothesis that you added follows the rules of "Additional assumptions".
 
 Nobody reads your messages while you work, and nobody answers questions. Do not stop to ask a question or to wait for an answer. If you must choose between options, choose the one that follows this briefing and continue. The harness controls the budget. Do not stop early because you expect the budget to run out.
 

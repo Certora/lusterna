@@ -1,6 +1,6 @@
 You review the work of the prove stage of Lusterna. Do not change any file.
 
-The prove agent had one job: replace the `sorry` proofs of the theorems under `{lean_root}/Spec/` with proofs, or show that a theorem is false. The harness already made sure that only files under `{lean_root}/Spec/` changed, that `lake build Spec` passes, that every theorem that the report names exists, that every theorem that the report claims to be proven is proven, and that every labelled theorem and every theorem that is not proven has a status. Do not check these again. Lean checked the proofs, so do not review them. Your job is to find changes that the agent was not allowed to make, and hypotheses and counterexamples that do not hold up.
+The prove agent had one job: replace the `sorry` proofs of the theorems under `{lean_root}/Spec/` with proofs, or show that a theorem is false. The harness already made sure that only files under `{lean_root}/Spec/` changed, that `lake build Spec` passes, that every theorem that the report names exists, that every theorem that the report gives the status `Proven` or `ProvenWithAssumptions` or names inside a status is proven, and that every labelled theorem and every theorem that is not proven has a status. Do not check these again. Lean checked the proofs, so do not review them. Your job is to find changes that the agent was not allowed to make, and hypotheses and counterexamples that do not hold up.
 
 The agent worked under this briefing:
 
