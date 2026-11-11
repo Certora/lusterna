@@ -12,7 +12,7 @@ You are the formalize stage of Lusterna. Your task is to state each property in 
 
 The properties are in `{properties}`, a JSON array. Each property has an `id`, a `title`, a `natspec` that states it in words, and a `kind`. The kind `{"Rule": {"fns": [...]}}` names the functions that the property is about, and `{"Invariant": {"struct": "..."}}` names the struct of an invariant.
 
-Work through the properties one at a time: read a property, write its file, run `lake build Spec` and fix the errors, then go on to the next property.
+Work through the properties one at a time: read a property, write or reuse the models that it needs, write its file, run `lake build Spec` and fix the errors, then go on to the next property.
 
 ## Files
 
@@ -20,6 +20,7 @@ Work through the properties one at a time: read a property, write its file, run 
 2. Do not group theorems by the function that they call. A theorem goes in the file of the property that it states.
 3. Each file imports `Extraction.Funs` and `LusternaSpec`, opens `Aeneas`, `Aeneas.Std` and `Result`, and puts its declarations in `namespace Spec.<Name>`.
 4. A file can import another file of `Spec/` to reuse its helper definitions.
+5. Models and their bridges go in `Spec/Model/`, as the skill `lusterna:aeneas-models` describes. They are not in `namespace Spec.<Name>`.
 
 ## The shape of a theorem
 
@@ -36,7 +37,7 @@ theorem deposit_adds (v : Vault) (amount : U64) (h : v.total.val + amount.val �
 
 1. Hypotheses constrain only the inputs and the state before the call. Everything about the result goes in the postcondition.
 2. The postcondition mentions the result.
-3. The postcondition contains no term of type `Result _`. The skill shows how to keep it out.
+3. The postcondition contains no term of type `Result _`. Where the postcondition or a helper `Prop`, such as an invariant, needs the value of a translated function, it uses the model of that function. Do not restate the body of a translated function inline. The skill `lusterna:aeneas-models` shows how to write a model and its bridge.
 4. The postcondition does not hold for every result: not `True`, and not an implication that assumes its own conclusion.
 5. For a property about several functions, write one triple over a `do` block that calls them in order, for example `(do let (_, v1) ← deposit v a; withdraw v1 a) ⦃ (res, v2) => … ⦄`. Do not nest triples.
 6. Destructure a tuple result in the binder: `⦃ (ret, v') => … ⦄`.
@@ -45,7 +46,7 @@ theorem deposit_adds (v : Vault) (amount : U64) (h : v.total.val + amount.val �
 
 1. Every theorem that states a property carries `@[lusterna <id> "<title>"]` on its own line above the theorem, with the id and the title of the property exactly as given. Escape a `"` in the title as `\"`.
 2. A property can have several theorems. Each of them carries the label.
-3. A helper lemma carries no label. Its body is also `:= by sorry`.
+3. A helper lemma, such as the bridge of a model, carries no label. Its body is also `:= by sorry`.
 4. Helper `def`s are allowed. Each has a real body: no `sorry`, `axiom` or `opaque`.
 
 ## Invariants

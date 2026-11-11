@@ -90,15 +90,14 @@ deposit v amount ⦃ (_, v') => v'.total = v.total + amount ⦄
 deposit v amount ⦃ (_, v') => v'.total.val = v.total.val + amount.val ⦄
 ```
 
-**A translated function that you need to state the claim**, for example a getter on the result. Call it in the computation of the triple, in a `do` block, and return its value. If it fails, the triple is false.
+**A translated function that you need to state the claim**, for example a getter on the result. Use its model, as the skill `lusterna:aeneas-models` describes.
 
 ```lean
--- BAD: `shares v'` is a `Result U64` in the postcondition, and the claim holds when it fails
-deposit v amount ⦃ (_, v') => ∀ s, shares v' = ok s → s.val ≤ v'.total.val ⦄
+-- BAD: `sum s'` is a `Result U64` in the postcondition, and the claim holds when it fails
+f s x ⦃ (_, s') => ∀ y, sum s' = ok y → y.val ≤ s'.c.val ⦄
 
--- GOOD
-(do let (_, v') ← deposit v amount; let s ← shares v'; pure (v', s))
-  ⦃ (v', s) => s.val ≤ v'.total.val ⦄
+-- GOOD: `Struct.sumModel` is the model of `sum`
+f s x ⦃ (_, s') => s'.sumModel ≤ s'.c.val ⦄
 ```
 
 **Helper `def`s.** A helper over values, such as `def Solvent (v : Vault) : Prop := v.shares.val ≤ v.total.val`, is fine. A helper that calls a translated function brings its `Result` into the postcondition.

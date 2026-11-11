@@ -28,6 +28,9 @@ const BRIEFING_TEMPLATE: &str = include_str!("res/briefing.md");
 /// The `SKILL.md` of the skill `aeneas-specs`.
 const AENEAS_SPECS_SKILL: &str = include_str!("res/aeneas-specs.md");
 
+/// The `SKILL.md` of the skill `aeneas-models`.
+const AENEAS_MODELS_SKILL: &str = include_str!("res/aeneas-models.md");
+
 /// The judge prompt of the formalize stage, with `{lean_root}`,
 /// `{extracted}`, `{properties}`, `{briefing}`, `{skills}` and `{report}`
 /// standing for the Lean project root, the directory of the extraction, the
@@ -146,7 +149,10 @@ impl Stage for FormalizeStage {
     }
 
     fn skills(&self) -> Vec<(&'static str, String)> {
-        vec![("aeneas-specs", AENEAS_SPECS_SKILL.to_owned())]
+        vec![
+            ("aeneas-specs", AENEAS_SPECS_SKILL.to_owned()),
+            ("aeneas-models", AENEAS_MODELS_SKILL.to_owned()),
+        ]
     }
 
     fn feedback_prompt(gate_failed: &Self::GateFailure) -> String {
@@ -240,8 +246,9 @@ mod tests {
     fn skill_has_front_matter() {
         let skills = stage().skills();
 
-        assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].0, "aeneas-specs");
-        assert!(skills[0].1.starts_with("---\nname: aeneas-specs\n"));
+        assert_eq!(skills.len(), 2);
+        for (name, content) in skills {
+            assert!(content.starts_with(&format!("---\nname: {name}\n")));
+        }
     }
 }

@@ -32,10 +32,19 @@ For each theorem with the label of the property:
 
 1. Read the property's `natspec`, then the theorem. The hypotheses and the postcondition together must state the property: not something else, not less, and not more.
 2. The hypotheses may rule out inputs on which the call panics. They must not exclude other inputs or states that the property covers, and they must be satisfiable.
-3. Every helper `def` that the theorem uses must mean what the property means. For a helper that restates a translated function, read that function and compare them on every input.
+3. Every helper `def` that the theorem uses must mean what the property means. The postcondition and the helper `Prop`s must use the model of a translated function where they need its value, and must not restate its body inline.
 4. If the function returns a Rust `Result`, the postcondition must state the property in every case of it that the property talks about.
 
 Also check that the theorems of the property cover all of it. A property about several functions or several cases needs a theorem for each part.
+
+## Check each model
+
+The models are under `{lean_root}/Spec/Model/`, as the skill `aeneas-models` describes.
+
+1. Read the translated function and compare it with the model on every input on which the function does not panic. The model must compute exactly the same value.
+2. The model has a bridge: a `@[step]` theorem whose triple calls the function and whose postcondition is an equality between the result and the model.
+3. The hypotheses of the bridge rule out only inputs on which the function panics, and they are satisfiable.
+4. No two models restate the same function.
 
 ## Check each invariant property
 
@@ -62,7 +71,8 @@ Report one defect for each problem. Use one of these kinds:
 - `too_strong`: the theorem claims more than its property.
 - `vacuous`: the theorem holds for every implementation of the function. For example, its hypotheses cannot be satisfied, or a helper `def` makes the postcondition trivial in a way that the harness cannot see.
 - `missing_coverage`: a part of a property has no theorem.
-- `wrong_helper`: a helper `def` does not match the property, or does not match the translated function that it restates.
+- `wrong_helper`: a helper `def` does not match the property, or restates a translated function instead of using its model.
+- `wrong_model`: a model does not match its translated function, has no bridge, or has a bridge that is not an equality, has hypotheses beyond the panics of the function, or has unsatisfiable hypotheses. Also for a second model of the same function.
 - `incomplete_operations`: a mutating operation of the struct of an invariant is missing from `mutating_operations`, `mutating_operations` lists a function that is not one, or a function that creates the struct has no base case theorem.
 - `wrong_skip`: the reason of a skipped property does not hold.
 - `wrong_grouping`: a file groups theorems by the function that they call, or mixes unrelated properties.
@@ -79,7 +89,7 @@ Report only problems that you can point to in a specific file and theorem or def
 Example:
 
 ```json
-{"kind": "too_weak", "detail": "Spec/DepositAdds.lean: `deposit_adds` assumes `h : v.total.val = 0`, but the natspec says \"deposit adds the amount to the total\" for every vault. The hypothesis excludes every vault with a non-zero total.", "fix": "In `Spec/DepositAdds.lean`, replace the hypothesis `h` of `deposit_adds` with `h : v.total.val + amount.val ≤ U64.max`, which only rules out the overflow on which `deposit` panics.", "theorem": "Spec.DepositAdds.deposit_adds"}
+{"kind": "too_weak", "detail": "Spec/FAdds.lean: `f_adds` assumes `h : s.a.val = 0`, but the natspec says \"f adds x to a\" for every struct. The hypothesis excludes every struct with a non-zero `a`.", "fix": "In `Spec/FAdds.lean`, replace the hypothesis `h` of `f_adds` with `h : s.a.val + x.val ≤ U64.max`, which only rules out the overflow on which `f` panics.", "theorem": "Spec.FAdds.f_adds"}
 ```
 
 If you find no defects, return an empty `defects` list.
