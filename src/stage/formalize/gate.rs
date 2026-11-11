@@ -28,7 +28,7 @@ use crate::{
     stage::{
         self,
         formalize::{
-            FormalizeOutput, FormalizeStage, PropertyStatus,
+            FormalizeOutput, FormalizeStage, PropertyFormalizationStatus,
             properties::{Properties, PropertyId, PropertyKind},
         },
     },
@@ -280,7 +280,9 @@ fn check_labels(
             continue;
         };
         // The report must mark the label's property as formalized
-        let Some(PropertyStatus::Formalized { file, .. }) = report.property_status.get(&id) else {
+        let Some(PropertyFormalizationStatus::Formalized { file, .. }) =
+            report.property_status.get(&id)
+        else {
             problems.push(LabelProblem::UnreportedLabel {
                 theorem: check.name.clone(),
                 id,
@@ -317,7 +319,7 @@ fn check_labels(
     // ones
     for (id, status) in &report.property_status {
         // Skip skipped properties
-        let PropertyStatus::Formalized { theorems, .. } = status else {
+        let PropertyFormalizationStatus::Formalized { theorems, .. } = status else {
             continue;
         };
         let reported: BTreeSet<&str> = theorems.iter().map(String::as_str).collect();
@@ -362,7 +364,8 @@ fn check_induction(
             continue;
         };
         // Skip skipped properties
-        let Some(PropertyStatus::Formalized { .. }) = report.property_status.get(&property.id)
+        let Some(PropertyFormalizationStatus::Formalized { .. }) =
+            report.property_status.get(&property.id)
         else {
             continue;
         };
@@ -561,14 +564,14 @@ mod tests {
             property_status: BTreeMap::from([
                 (
                     1,
-                    PropertyStatus::Formalized {
+                    PropertyFormalizationStatus::Formalized {
                         file: PathBuf::from("Spec/DepositAdds.lean"),
                         theorems: vec!["Spec.DepositAdds.adds".to_owned()],
                     },
                 ),
                 (
                     2,
-                    PropertyStatus::Formalized {
+                    PropertyFormalizationStatus::Formalized {
                         file: PathBuf::from("Spec/Solvent.lean"),
                         theorems: vec![
                             "Spec.Solvent.new".to_owned(),

@@ -91,7 +91,7 @@ pub enum SkipReason {
 }
 
 #[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
-pub enum PropertyStatus {
+pub enum PropertyFormalizationStatus {
     Formalized {
         /// The spec file, relative to the Lean project root.
         file: PathBuf,
@@ -114,7 +114,7 @@ pub struct Induction {
 
 #[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
 pub struct FormalizeOutput {
-    pub property_status: BTreeMap<PropertyId, PropertyStatus>,
+    pub property_status: BTreeMap<PropertyId, PropertyFormalizationStatus>,
     /// For each struct that an invariant property is declared on, keyed by the
     /// struct name as the property gives it, the functions of its base cases
     /// and induction steps.
@@ -238,7 +238,7 @@ mod tests {
         let report = FormalizeOutput {
             property_status: BTreeMap::from([(
                 1,
-                PropertyStatus::Skipped(SkipReason::Other("{lean_root}".to_owned())),
+                PropertyFormalizationStatus::Skipped(SkipReason::Other("{lean_root}".to_owned())),
             )]),
             induction: BTreeMap::new(),
             new_theorems: Vec::new(),
