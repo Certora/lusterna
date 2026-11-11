@@ -15,6 +15,8 @@ Aeneas WP triple `m ⦃ r => post r ⦄`, and `post r` must
 
 The last two rules look into the predicates that `post` uses, except the ones declared in Lean,
 Aeneas or their dependencies.
+
+With `axioms := true` it also reports, for every theorem, the axioms that leave it unproven.
 -/
 
 open Lean Elab Meta
@@ -197,7 +199,18 @@ structure TheoremCheck where
   function : Option Name
   /-- Empty if the theorem has no label. -/
   issues : Array Issue
+  /-- What `unprovenAxioms` returns for the theorem: empty if it is proven. `none` if `check` ran
+  without `axioms`. -/
+  axioms : Option (Array Name)
 deriving ToJson
+
+/-- The axioms that `thm` depends on and that leave it unproven, sorted: `sorryAx` and the axioms
+declared in the modules `idxs`. `native_decide` declares such an axiom. -/
+private def unprovenAxioms (thm : Name) (idxs : Array ModuleIdx) : MetaM (Array Name) := do
+  let env ← getEnv
+  let axioms := (← collectAxioms thm).filter fun a =>
+    a == ``sorryAx || (env.getModuleIdxFor? a).any idxs.contains
+  return axioms.qsort Name.lt
 
 /-- Checks the statement of the labelled theorem `qn`. Returns the head constant of the computation
 in its triple and the problems with its statement. The triple `m ⦃ r => post r ⦄` elaborates to
@@ -225,11 +238,14 @@ private def checkTriple (qn : Name) : MetaM (Option Name × Array Issue) := do
       return (function, issues)
 
 /-- Prints one `TheoremCheck` as a JSON line for each theorem declared in `modules`. Only the
-statements of theorems with `@[lusterna]` are checked. Throws if a module is not imported. -/
-def check (modules : Array Name) : MetaM Unit := do
+statements of theorems with `@[lusterna]` are checked. With `axioms`, each line has the
+`unprovenAxioms` of its theorem. Throws if a module is not imported. -/
+def check (modules : Array Name) (axioms : Bool := false) : MetaM Unit := do
   let env ← getEnv
-  for mod in modules do
+  let idxs ← modules.mapM fun mod => do
     let some idx := env.getModuleIdx? mod | throwError "module {mod} is not imported"
+    pure idx
+  for mod in modules, idx in idxs do
     let some data := env.header.moduleData[idx.toNat]? | throwError "no data for module {mod}"
     for thm in data.constNames do
       let some (.thmInfo _) := env.find? thm | continue
@@ -242,6 +258,7 @@ def check (modules : Array Name) : MetaM Unit := do
         «module» := mod
         id := label.map (·.1)
         title := label.map (·.2)
+        axioms := ← if axioms then some <$> unprovenAxioms thm idxs else pure none
       }
       IO.println (toJson result).compress
 

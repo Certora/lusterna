@@ -33,6 +33,9 @@ theorem f_returns (x : U32) : f x ⦃ _ => True ⦄ := by
 theorem f_fixpoint (x : U32) : f x ⦃ r => f r = .ok r ⦄ := by
   sorry
 
+/-- A proof that uses a theorem whose proof is `sorry`. -/
+theorem f_eq_by_lemma (x : U32) : f x = f x := f_eq x
+
 /-- An unlabelled theorem with a proof. -/
 theorem two : 1 + 1 = 2 := rfl
 
