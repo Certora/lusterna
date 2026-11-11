@@ -516,7 +516,6 @@ mod tests {
                     steps: vec!["module.Struct.f".to_owned()],
                 },
             )]),
-            additional_theorem: Vec::new(),
         }
     }
 

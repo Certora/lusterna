@@ -39,9 +39,6 @@ pub struct ProveInput {
     /// struct name as the property gives it, the functions of its base cases
     /// and induction steps.
     pub induction: BTreeMap<String, Induction>,
-    /// Additional theorems created by the formalize stage that are not tied to
-    /// one property
-    pub additional_theorem: Vec<(PathBuf, String)>,
 }
 
 /// The state a theorem is in
@@ -229,7 +226,6 @@ mod tests {
                 properties: PathBuf::from("/c/lusterna/properties.json"),
                 property_status: BTreeMap::new(),
                 induction: BTreeMap::new(),
-                additional_theorem: Vec::new(),
             },
             properties: Properties(Vec::new()),
         }
