@@ -10,7 +10,8 @@
 //! 4. `translate`: translates the code reachable from the entrypoints, with the
 //!    default opaque patterns and those of the spec passed to Charon.
 //! 5. `formalize`: states each property as Lean theorems about the translation,
-//!    without proofs. Runs only if the spec has properties.
+//!    without proofs. Runs only if the spec has properties. The pipeline writes
+//!    the output of the stage to `lusterna/formalize.json` in the crate root.
 //!
 //! A run starts only if the repository has no uncommitted changes other than
 //! the spec file (unless `--allow-dirty`), the tools of `TOOLS` are on `PATH`,
@@ -308,6 +309,10 @@ impl Pipeline {
         let output = self
             .exec_stage::<FormalizeStage>(input)
             .map_err(PipelineError::Formalize)?;
+        fs::write(
+            lusterna_dir.join("formalize.json"),
+            serde_json::to_string_pretty(&output).expect("the formalize output serializes"),
+        )?;
 
         match git::commit_all(&self.config.repo_root()?, "Lusterna: `formalize` stage")? {
             Some(sha) => info!("Committed `formalize` work in {}", sha),
