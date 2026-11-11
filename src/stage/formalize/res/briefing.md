@@ -62,7 +62,9 @@ An invariant property names a struct. It holds for every value of the struct tha
 2. Base case: for each function that creates the struct, write one theorem. It calls the function and asserts in the postcondition that the invariant holds for the created value.
 3. Induction step: for each mutating operation, write one theorem. Its induction hypothesis is that the invariant holds for the value before the call. It calls the mutating operation and asserts in the postcondition that the invariant holds for the value after the call. A Rust function that takes `&mut` returns the new value as part of its result.
 4. In the base case and induction step theorems, the triple calls the function directly, not through a `do` block.
-5. Write the parameters of an induction step theorem in four groups, in this order: the argument that is or contains the struct under the comment line `-- State`, the other arguments of the call under `-- Inputs`, the induction hypothesis under `-- Induction hypothesis`, and the other hypotheses under `-- Additional assumptions`. Name the induction hypothesis `h_inv`. Leave out the comment line of an empty group. A type parameter or an instance that the type of the struct argument needs comes before `-- State`.
+5. An invariant is about the values that the program reaches, and a call that panics reaches none. So a base case or induction step theorem does not state when the call panics. It assumes that the call returns, with the hypothesis `h_ok : ∃ r, f args = ok r`. It has no hypothesis other than `h_ok` and, in an induction step, the induction hypothesis.
+6. If the function returns a Rust `Result`, the postcondition asserts the invariant in the `.Ok` case and `True` in the `.Err` case.
+7. Write the parameters of an induction step theorem in four groups, in this order: the argument that is or contains the struct under the comment line `-- State`, the other arguments of the call under `-- Inputs`, the induction hypothesis under `-- Induction hypothesis`, and `h_ok` under `-- No panic`. Name the induction hypothesis `h_inv`. Leave out the comment line of an empty group. A type parameter or an instance that the type of the struct argument needs comes before `-- State`. A base case theorem has the groups `-- Inputs` and `-- No panic`.
 
 ```lean
 theorem f_keeps_inv
@@ -72,9 +74,12 @@ theorem f_keeps_inv
     (x : U64)
     -- Induction hypothesis
     (h_inv : Inv s)
-    -- Additional assumptions
-    (h : s.a.val + x.val ≤ U64.max) :
-    f s x ⦃ (ret, s') => Inv s' ⦄ := by
+    -- No panic
+    (h_ok : ∃ r, f s x = ok r) :
+    f s x ⦃ (res, s') =>
+      match res with
+      | .Ok _ => Inv s'
+      | .Err _ => True ⦄ := by
   sorry
 ```
 

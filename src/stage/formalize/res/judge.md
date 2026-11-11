@@ -39,7 +39,7 @@ Judge only this work. Do not report a defect in a theorem, a definition or a mod
 
 ## Check each formalized property
 
-For each theorem with the label of the property:
+For each theorem with the label of the property. For the base case and induction step theorems of an invariant, "Check each invariant property" replaces points 2 and 4:
 
 1. Read the property's `natspec`, then the theorem. The hypotheses and the postcondition together must state the property: not something else, not less, and not more.
 2. The hypotheses may rule out inputs on which the call panics. They must not exclude other inputs or states that the property covers, and they must be satisfiable.
@@ -62,7 +62,10 @@ The models are under `{lean_root}/Spec/Model/`, as the skill `aeneas-models` des
 1. Search the translation for the mutating operations of the struct, as the briefing defines them: the outermost functions reachable from the entrypoints that take the struct or a value containing it as `&mut` and change it. Each one must be in the `steps` of `induction` under the struct's name. A function that does not change the struct must not be there, nor a helper that only a mutating operation calls, nor a function whose writes to the struct the translation drops: an induction step over it holds for free.
 2. Search the translation for every function that creates a value of the struct. Each one must be in the `base_cases` of `induction` under the struct's name.
 3. A function that is not in the translation cannot be a base case or a step. It is not a defect that `induction` does not list it.
-4. Each induction step theorem assumes the invariant for the value before the call and asserts it for the value after the call. Any other hypothesis must only rule out inputs on which the call panics.
+4. Each induction step theorem assumes the invariant for the value before the call, as `h_inv`, and asserts it for the value after the call. Each base case theorem asserts it for the created value.
+5. Each base case and induction step theorem assumes that the call returns, as `h_ok : ∃ r, f args = ok r`. `h_ok` covers every panic of the call. Do not ask for hypotheses that state when the call panics, and do not report that the call can panic.
+6. A base case or induction step theorem must have no hypothesis other than `h_inv` and `h_ok`.
+7. If the function returns a Rust `Result`, the postcondition asserts the invariant in the `.Ok` case and `True` in the `.Err` case. It is not a defect that it claims nothing for `.Err`.
 
 ## Check each skipped property
 
