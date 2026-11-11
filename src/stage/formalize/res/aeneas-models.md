@@ -18,8 +18,7 @@ def getTotal (s : Struct) : Int :=
 
 @[step]
 theorem get_total.spec (s : Struct)
-    (h1 : s.a.val + s.b.val ≤ U64.max)
-    (h2 : s.c.val ≤ s.a.val + s.b.val) :
+    (h_ok : ∃ r, get_total s = ok r) :
     get_total s ⦃ r => (r.val : Int) = s.getTotal ⦄ := by
   sorry
 
@@ -36,7 +35,7 @@ def Inv (s : Struct) : Prop := s.c.val ≤ s.getTotal
 
 Write a model for a translated function whose value a statement talks about. Do not write models for the functions that a function calls internally: the proof deals with those.
 
-A function without a body, such as an `axiom` in `FunsExternal.lean`, gets no model. State what you need about it as a hypothesis.
+A function without a body, such as an `axiom` in `FunsExternal.lean`, gets no model.
 
 ## The model
 
@@ -49,7 +48,7 @@ A function without a body, such as an `axiom` in `FunsExternal.lean`, gets no mo
 
 1. The bridge is a theorem named `<function>.spec` with `@[step]`, and its body is `:= by sorry`. It carries no `@[lusterna]` label.
 2. It is a triple that calls the translated function on plain arguments. Its postcondition states that the result equals the model: `r = model args`, or `r.val = model args` for a scalar, or one equality per component for a tuple.
-3. Its hypotheses rule out the inputs on which the function panics, such as an overflow, and nothing else. They must be satisfiable.
+3. Its only hypothesis is `h_ok : ∃ r, f args = ok r`: the call returns. Do not state when the function panics.
 4. Write only the equality. A weaker relation, such as `r.val ≥ …`, is a lemma for the proof, not a bridge.
 
 ## Files and names

@@ -3,7 +3,7 @@ You are the formalize stage of Lusterna. Your task is to state each property in 
 ## What is already set up
 
 - `{lean_root}` is a Lake project. Aeneas wrote the Lean translation of the crate to `{extracted}`: the modules `Extraction.Types` and `Extraction.Funs`, and the hand-written `Extraction.TypesExternal` and `Extraction.FunsExternal` if they exist.
-- The Lake library `Spec` builds every file `Spec/<Name>.lean` of the project. Build it with `lake build Spec` in `{lean_root}`. The directory `Spec/` exists and may contain files from an earlier run.
+- The Lake library `Spec` builds every file under `Spec/`. Build it with `lake build Spec` in `{lean_root}`. The directory `Spec/` exists and may contain files from an earlier run.
 - `import LusternaSpec` gives the attribute `@[lusterna <id> "<title>"]`.
 - Do not create commits, and do not change the git history, the branches or the stash.
 - Work only in the git repository of the crate.
@@ -40,13 +40,18 @@ theorem f_adds
 
 `f args ⦃ r => post ⦄` says that `f args` returns without failing and that its result satisfies `post`. The skill `lusterna:aeneas-specs` explains the notation and how to read the extraction.
 
-1. Hypotheses constrain only the inputs and the state before the call. Everything about the result goes in the postcondition.
+1. Hypotheses constrain only the inputs and the state before the call. Everything about the result goes in the postcondition. The one exception is `h_ok` in the theorems of an invariant, which "Invariants" describes.
 2. The postcondition mentions the result.
 3. The postcondition contains no term of type `Result _`. Where the postcondition or a helper `Prop`, such as an invariant, needs the value of a translated function, it uses the model of that function. Do not restate the body of a translated function inline. The skill `lusterna:aeneas-models` shows how to write a model and its bridge.
-4. The postcondition does not hold for every result: not `True`, and not an implication that assumes its own conclusion.
+4. The postcondition as a whole does not hold for every result: not `True`, and not an implication that assumes its own conclusion. One case of a `match` may be `True`.
 5. For a property about several functions, write one triple over a `do` block that calls them in order, for example `(do let (_, s1) ← f s x; g s1 x) ⦃ (res, s2) => … ⦄`. Do not nest triples.
 6. Destructure a tuple result in the binder: `⦃ (ret, v') => … ⦄`.
-7. Write the parameters of the theorem in two groups, in this order: the arguments of the call under the comment line `-- Inputs`, then the hypotheses under the comment line `-- Additional assumptions`. Leave out the comment line of an empty group. Write the comment line `-- Statement` above the triple.
+7. Write the parameters of the theorem in groups, each under a comment line, in this order. Leave out the comment line of an empty group. Then write the comment line `-- Statement` above the triple.
+   - `-- State`: in an induction step of an invariant, the argument that is or contains the struct.
+   - `-- Inputs`: the other arguments of the call.
+   - `-- Induction hypothesis`: in an induction step of an invariant, `h_inv`.
+   - `-- No panic`: in a theorem of an invariant, `h_ok`.
+   - `-- Additional assumptions`: the other hypotheses.
 
 ## Labels
 
@@ -61,11 +66,11 @@ An invariant property names a struct. It holds for every value of the struct tha
 
 1. Find the mutating operations of the struct: the outermost functions, among those reachable from the entrypoints, that take the struct or a value containing it as `&mut`, so that the translation returns its new value. A function that does not change the struct is not one. A helper that only such a function calls is not one either, because the invariant only has to hold between operations, not in the middle of one. A function that changes the struct only through a write that the translation drops, such as a write through a `RefMut`, does not change it in the model and is not one. Also find every function that creates a value of the struct. Report the full Lean names in `induction`, under the struct name exactly as the property gives it: the functions that create the struct as `base_cases` and the mutating operations as `steps`.
 2. Base case: for each function that creates the struct, write one theorem. It calls the function and asserts in the postcondition that the invariant holds for the created value.
-3. Induction step: for each mutating operation, write one theorem. Its induction hypothesis is that the invariant holds for the value before the call. It calls the mutating operation and asserts in the postcondition that the invariant holds for the value after the call. A Rust function that takes `&mut` returns the new value as part of its result.
+3. Induction step: for each mutating operation, write one theorem. Its induction hypothesis `h_inv` is that the invariant holds for the value before the call. It calls the mutating operation and asserts in the postcondition that the invariant holds for the value after the call. A Rust function that takes `&mut` returns the new value as part of its result.
 4. In the base case and induction step theorems, the triple calls the function directly, not through a `do` block.
-5. An invariant is about the values that the program reaches, and a call that panics reaches none. So a base case or induction step theorem does not state when the call panics. It assumes that the call returns, with the hypothesis `h_ok : ∃ r, f args = ok r`. It has no hypothesis other than `h_ok` and, in an induction step, the induction hypothesis.
+5. An invariant is about the values that the program reaches, and a call that panics reaches none. So a base case or induction step theorem does not state when the call panics. It assumes that the call returns, with the hypothesis `h_ok : ∃ r, f args = ok r`. It has no hypothesis other than `h_ok` and, in an induction step, `h_inv`.
 6. If the function returns a Rust `Result`, the postcondition asserts the invariant in the `.Ok` case and `True` in the `.Err` case.
-7. Write the parameters of an induction step theorem in four groups, in this order: the argument that is or contains the struct under the comment line `-- State`, the other arguments of the call under `-- Inputs`, the induction hypothesis under `-- Induction hypothesis`, and `h_ok` under `-- No panic`. Name the induction hypothesis `h_inv`. Leave out the comment line of an empty group. A type parameter or an instance that the type of the struct argument needs comes before `-- State`. A base case theorem has the groups `-- Inputs` and `-- No panic`. Both have the comment line `-- Statement` above the triple.
+7. A type parameter or an instance that the type of the struct argument needs comes before `-- State`.
 
 ```lean
 theorem f_keeps_inv

@@ -39,12 +39,12 @@ Judge only this work. Do not report a defect in a theorem, a definition or a mod
 
 ## Check each formalized property
 
-For each theorem with the label of the property. For the base case and induction step theorems of an invariant, "Check each invariant property" replaces points 2 and 4:
+For each theorem with the label of the property:
 
 1. Read the property's `natspec`, then the theorem. The hypotheses and the postcondition together must state the property: not something else, not less, and not more.
-2. The hypotheses may rule out inputs on which the call panics. They must not exclude other inputs or states that the property covers, and they must be satisfiable.
+2. The hypotheses may rule out inputs on which the call panics. They must not exclude other inputs or states that the property covers, and they must be satisfiable. The theorems of an invariant have `h_ok` instead, as "Check each invariant property" describes.
 3. Every helper `def` that the theorem uses must mean what the property means. The postcondition and the helper `Prop`s must use the model of a translated function where they need its value, and must not restate its body inline.
-4. If the function returns a Rust `Result`, the postcondition must state the property in every case of it that the property talks about.
+4. If the function returns a Rust `Result`, the postcondition must state the property in every case of it that the property talks about. An invariant talks only about the `.Ok` case.
 
 Also check that the theorems of the property cover all of it. A property about several functions or several cases needs a theorem for each part.
 
@@ -54,7 +54,7 @@ The models are under `{lean_root}/Spec/Model/`, as the skill `aeneas-models` des
 
 1. Read the translated function and compare it with the model on every input on which the function does not panic. The model must compute exactly the same value.
 2. The model has a bridge: a `@[step]` theorem whose triple calls the function and whose postcondition is an equality between the result and the model.
-3. The hypotheses of the bridge rule out only inputs on which the function panics, and they are satisfiable.
+3. The only hypothesis of the bridge is `h_ok : ∃ r, f args = ok r`. `h_ok` covers every panic of the function. Do not ask for hypotheses that state when the function panics, and do not report that the function can panic.
 4. No two models restate the same function.
 
 ## Check each invariant property
@@ -87,7 +87,7 @@ Report one defect for each problem. Use one of these kinds:
 - `vacuous`: the theorem holds for every implementation of the function. For example, its hypotheses cannot be satisfied, or a helper `def` makes the postcondition trivial in a way that the harness cannot see.
 - `missing_coverage`: a part of a property has no theorem.
 - `wrong_helper`: a helper `def` does not match the property, or restates a translated function instead of using its model.
-- `wrong_model`: a model does not match its translated function, has no bridge, or has a bridge that is not an equality, has hypotheses beyond the panics of the function, or has unsatisfiable hypotheses. Also for a second model of the same function.
+- `wrong_model`: a model does not match its translated function, has no bridge, or has a bridge that is not an equality, or has a bridge with a hypothesis other than `h_ok`. Also for a second model of the same function.
 - `incomplete_induction`: a mutating operation of the struct of an invariant is missing from `steps`, `steps` lists a function that is not one, or a function that creates the struct is missing from `base_cases`.
 - `wrong_change_report`: `new_theorems`, `updated_theorems` or `removed_theorems` does not match the diff.
 - `proved`: a theorem that the agent added has a proof other than `by sorry`.
