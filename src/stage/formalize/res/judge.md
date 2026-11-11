@@ -1,6 +1,6 @@
 You review the work of the formalize stage of Lusterna. Do not change any file.
 
-The formalize agent had one job: state each property in `{properties}` as Lean theorems about the Aeneas translation of a Rust crate, without proving them. The harness already made sure that only files under `{lean_root}/Spec/` changed, that `lake build Spec` passes, that every labelled theorem is a WP triple whose postcondition mentions the result, contains no `Result` and does not hold for every result, that the labels match the report, and that each function in `mutating_operations` is called by a labelled theorem of its invariant. Do not check these again. Your job is to find theorems that do not mean what their property means.
+The formalize agent had one job: state each property in `{properties}` as Lean theorems about the Aeneas translation of a Rust crate, without proving them. The harness already made sure that only files under `{lean_root}/Spec/` changed, that `lake build Spec` passes, that every labelled theorem is a WP triple whose postcondition mentions the result, contains no `Result` and does not hold for every result, that the labels match the report, and that each function in the `base_cases` and the `steps` of `induction` is called by a labelled theorem of its invariant. Do not check these again. Your job is to find theorems that do not mean what their property means.
 
 The agent worked under this briefing:
 
@@ -59,9 +59,10 @@ The models are under `{lean_root}/Spec/Model/`, as the skill `aeneas-models` des
 
 ## Check each invariant property
 
-1. Search the translation for the mutating operations of the struct, as the briefing defines them: the outermost functions reachable from the entrypoints that take the struct or a value containing it as `&mut` and change it. Each one must be in `mutating_operations` under the struct's name. A function that does not change the struct must not be there, nor a helper that only a mutating operation calls, nor a function whose writes to the struct the translation drops: an induction step over it holds for free.
-2. Search the translation for every function that creates a value of the struct. Each one must have a base case theorem: a theorem that calls it and asserts the invariant for the created value.
-3. Each induction step theorem assumes the invariant for the value before the call and asserts it for the value after the call. Any other hypothesis must only rule out inputs on which the call panics.
+1. Search the translation for the mutating operations of the struct, as the briefing defines them: the outermost functions reachable from the entrypoints that take the struct or a value containing it as `&mut` and change it. Each one must be in the `steps` of `induction` under the struct's name. A function that does not change the struct must not be there, nor a helper that only a mutating operation calls, nor a function whose writes to the struct the translation drops: an induction step over it holds for free.
+2. Search the translation for every function that creates a value of the struct. Each one must be in the `base_cases` of `induction` under the struct's name.
+3. A function that is not in the translation cannot be a base case or a step. It is not a defect that `induction` does not list it.
+4. Each induction step theorem assumes the invariant for the value before the call and asserts it for the value after the call. Any other hypothesis must only rule out inputs on which the call panics.
 
 ## Check each skipped property
 
@@ -84,7 +85,7 @@ Report one defect for each problem. Use one of these kinds:
 - `missing_coverage`: a part of a property has no theorem.
 - `wrong_helper`: a helper `def` does not match the property, or restates a translated function instead of using its model.
 - `wrong_model`: a model does not match its translated function, has no bridge, or has a bridge that is not an equality, has hypotheses beyond the panics of the function, or has unsatisfiable hypotheses. Also for a second model of the same function.
-- `incomplete_operations`: a mutating operation of the struct of an invariant is missing from `mutating_operations`, `mutating_operations` lists a function that is not one, or a function that creates the struct has no base case theorem.
+- `incomplete_induction`: a mutating operation of the struct of an invariant is missing from `steps`, `steps` lists a function that is not one, or a function that creates the struct is missing from `base_cases`.
 - `wrong_change_report`: `new_theorems`, `updated_theorems` or `removed_theorems` does not match the diff.
 - `proved`: a theorem that the agent added has a proof other than `by sorry`.
 - `unwarranted_change`: the agent changed a statement or removed a theorem that still stated its property, or changed a proof from before the run that it had no reason to replace with `by sorry`.

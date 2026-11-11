@@ -101,13 +101,24 @@ pub enum PropertyStatus {
     Skipped(SkipReason),
 }
 
+/// The functions that the induction over the invariants of a struct covers.
+#[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
+pub struct Induction {
+    /// The full Lean names of the functions that create the struct, which the
+    /// base cases call.
+    pub base_cases: Vec<String>,
+    /// The full Lean names of the mutating operations of the struct, which
+    /// the induction steps call.
+    pub steps: Vec<String>,
+}
+
 #[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
 pub struct FormalizeOutput {
     pub property_status: BTreeMap<PropertyId, PropertyStatus>,
     /// For each struct that an invariant property is declared on, keyed by the
-    /// struct name as the property gives it, the full Lean names of its
-    /// mutating operations, which the induction steps of its invariants call.
-    pub mutating_operations: BTreeMap<String, Vec<String>>,
+    /// struct name as the property gives it, the functions of its base cases
+    /// and induction steps.
+    pub induction: BTreeMap<String, Induction>,
     /// The full Lean names of the theorems that this run added. A renamed
     /// theorem is not one of them.
     pub new_theorems: Vec<String>,
@@ -229,7 +240,7 @@ mod tests {
                 1,
                 PropertyStatus::Skipped(SkipReason::Other("{lean_root}".to_owned())),
             )]),
-            mutating_operations: BTreeMap::new(),
+            induction: BTreeMap::new(),
             new_theorems: Vec::new(),
             updated_theorems: Vec::new(),
             removed_theorems: Vec::new(),
