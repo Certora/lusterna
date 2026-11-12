@@ -24,6 +24,10 @@ path = "../../../leanprover-solanalib"
 name = "aeneas"
 path = "../../../aeneas/backends/lean"
 
+[[require]]
+name = "lusternaSpec"
+path = "../lusterna-spec"
+
 [[lean_lib]]
 name = "LusternaLib"
 
