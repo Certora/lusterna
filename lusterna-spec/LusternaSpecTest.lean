@@ -10,6 +10,7 @@ output.
 
 /--
 info: {"axioms":[],"function":null,"id":null,"issues":[],"module":"LusternaSpecTest.Fixture","name":"LusternaSpecTest.two","title":null}
+{"axioms":["sorryAx"],"function":"LusternaSpecTest.f","id":5,"issues":[],"module":"LusternaSpecTest.Fixture","name":"LusternaSpecTest.f_increments_fail","title":"f increments if it returns"}
 {"axioms":["sorryAx"],"function":"LusternaSpecTest.f","id":1,"issues":[],"module":"LusternaSpecTest.Fixture","name":"LusternaSpecTest.f_increments","title":"f increments"}
 {"axioms":["sorryAx"],"function":null,"id":2,"issues":["notATriple"],"module":"LusternaSpecTest.Fixture","name":"LusternaSpecTest.f_eq","title":"f is f"}
 {"axioms":["sorryAx"],"function":null,"id":null,"issues":[],"module":"LusternaSpecTest.Fixture","name":"LusternaSpecTest.f_eq_by_lemma","title":null}

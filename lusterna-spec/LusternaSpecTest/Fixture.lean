@@ -1,5 +1,6 @@
 import Aeneas
 import LusternaSpec.Attr
+import LusternaSpec.FSpec
 
 /-!
 # Fixture
@@ -31,6 +32,12 @@ theorem f_returns (x : U32) : f x ⦃ _ => True ⦄ := by
 /-- A postcondition that runs `f`. -/
 @[lusterna 4 "f is a fixpoint"]
 theorem f_fixpoint (x : U32) : f x ⦃ r => f r = .ok r ⦄ := by
+  sorry
+
+open Lusterna.Spec in
+/-- An `fspec` triple with a postcondition about the result. -/
+@[lusterna 5 "f increments if it returns"]
+theorem f_increments_fail (x : U32) : f x ⦃ r => r.val = x.val + 1 ⦄fail := by
   sorry
 
 /-- A proof that uses a theorem whose proof is `sorry`. -/

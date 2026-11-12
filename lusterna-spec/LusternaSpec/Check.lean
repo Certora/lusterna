@@ -1,5 +1,6 @@
 import Aeneas
 import LusternaSpec.Attr
+import LusternaSpec.FSpec
 
 /-!
 # Check
@@ -7,8 +8,8 @@ import LusternaSpec.Attr
 `check` prints one JSON line for each theorem of the given modules. Run it with
 ``#eval Lusterna.Spec.check #[`Some.Module]`` in a file that imports those modules.
 
-For a theorem labelled `@[lusterna id "title"]` it checks the statement: the conclusion must be an
-Aeneas WP triple `m ⦃ r => post r ⦄`, and `post r` must
+For a theorem labelled `@[lusterna id "title"]` it checks the statement: the conclusion must be a
+triple `m ⦃ r => post r ⦄`, `m ⦃ r => post r ⦄div` or `m ⦃ r => post r ⦄fail`, and `post r` must
 * mention `r`,
 * contain no term of type `Result _`, because that computation can fail, and
 * not hold for every `r`, as `True` or `Q → Q` do.
@@ -85,11 +86,12 @@ private def isResultTy (t : Expr) : MetaM Bool := do
   | .const c _ => return c == ``Aeneas.Std.Result
   | _ => return false
 
-/-- `e` is an Aeneas WP triple `m ⦃ r => post r ⦄`, that is `Aeneas.Std.WP.spec m post` or
-`Aeneas.Std.WP.dspec m post`. -/
+/-- `e` is a triple: `Aeneas.Std.WP.spec m post`, `Aeneas.Std.WP.dspec m post` or
+`Lusterna.Spec.fspec m post`. -/
 private def isTripleLike (e : Expr) : Bool :=
   match e.getAppFn with
-  | .const n _ => n == ``Aeneas.Std.WP.spec || n == ``Aeneas.Std.WP.dspec
+  | .const n _ =>
+    n == ``Aeneas.Std.WP.spec || n == ``Aeneas.Std.WP.dspec || n == ``Lusterna.Spec.fspec
   | _ => false
 
 /-- Returns the first subterm of `e` whose type is `Result _`, pretty-printed, or `none` if there is
@@ -174,7 +176,7 @@ private partial def postConstrains? (e : Expr) (fuel : Nat) : MetaM Bool := do
 
 /-- A problem with the statement of a labelled theorem. -/
 inductive Issue where
-  /-- The conclusion is not an Aeneas WP triple `m ⦃ r => post r ⦄`. -/
+  /-- The conclusion is not a triple, as `isTripleLike` defines it. -/
   | notATriple
   /-- The postcondition does not mention the result. -/
   | ignoresResult
@@ -213,9 +215,8 @@ private def unprovenAxioms (thm : Name) (idxs : Array ModuleIdx) : MetaM (Array 
   return axioms.qsort Name.lt
 
 /-- Checks the statement of the labelled theorem `qn`. Returns the head constant of the computation
-in its triple and the problems with its statement. The triple `m ⦃ r => post r ⦄` elaborates to
-`WP.spec m post`, whose last three arguments are the result type, `m` and `post`. `post` is
-checked as `post r` for a fresh `r`. -/
+in its triple and the problems with its statement. The last three arguments of a triple are the
+result type, `m` and `post`. `post` is checked as `post r` for a fresh `r`. -/
 private def checkTriple (qn : Name) : MetaM (Option Name × Array Issue) := do
   let ci ← getConstInfo qn
   forallTelescope (← instantiateMVars ci.type) fun _ concl => do
