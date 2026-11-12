@@ -86,6 +86,7 @@ Nobody reads your messages while you work, and nobody answers questions. Do not 
 - Do not declare an `axiom` or an `opaque`, and do not use `native_decide`.
 - Do not define a tactic, a macro or a syntax.
 - Do not set `maxHeartbeats` above 1000000, and do not raise another limit of Lean. A proof that does not check within these limits must be split into lemmas.
+- Do not run `lean` or `lake env lean`, and do not write Lean files outside `Spec/`. Check Lean code only with `lake build Spec.<Module>`: the lakefile limits the memory of these builds. To try a snippet, write it to `Spec/Scratch.lean`, build it with `lake build Spec.Scratch`, and delete the file before you return.
 - Do not stop processes by name, as `pkill` and `killall` do. Other Lean processes on this machine are not yours. To stop a build, kill only the process that you started.
 - Do not report a theorem as proven while its proof, or the proof of a lemma that it uses, is `sorry`.
 
