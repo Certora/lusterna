@@ -4,7 +4,7 @@ You are the formalize stage of Lusterna. Your task is to state each property in 
 
 - `{lean_root}` is a Lake project. Aeneas wrote the Lean translation of the crate to `{extracted}`: the modules `Extraction.Types` and `Extraction.Funs`, and the hand-written `Extraction.TypesExternal` and `Extraction.FunsExternal` if they exist.
 - The Lake library `Spec` builds every file under `Spec/`. Build it with `lake build Spec` in `{lean_root}`. The directory `Spec/` exists and may contain files from an earlier run.
-- `import LusternaSpec` gives the attribute `@[lusterna <id> "<title>"]`.
+- `import LusternaSpec` gives the attribute `@[lusterna <id> "<title>"]` and the triple `f args ⦃ r => post ⦄fail`.
 - Do not create commits, and do not change the git history, the branches or the stash.
 - Work only in the git repository of the crate.
 
@@ -18,13 +18,13 @@ Work through the properties one at a time: read a property, write or reuse the m
 
 1. Write one file per property, or one file for a group of closely related properties: `Spec/<Name>.lean`, where `<Name>` names the property or the group in UpperCamelCase.
 2. Do not group theorems by the function that they call. A theorem goes in the file of the property that it states.
-3. Each file imports `Extraction.Funs` and `LusternaSpec`, opens `Aeneas`, `Aeneas.Std` and `Result`, and puts its declarations in `namespace Spec.<Name>`.
+3. Each file imports `Extraction.Funs` and `LusternaSpec`, opens `Aeneas`, `Aeneas.Std`, `Result` and `Lusterna.Spec`, and puts its declarations in `namespace Spec.<Name>`.
 4. A file can import another file of `Spec/` to reuse its helper definitions.
 5. Models and their bridges go in `Spec/Model/`, as the skill `lusterna:aeneas-models` describes. They are not in `namespace Spec.<Name>`.
 
 ## The shape of a theorem
 
-Every theorem that states a property is an Aeneas WP triple:
+Every theorem that states a property is a triple:
 
 ```lean
 @[lusterna 3 "f adds x to a"]
@@ -32,24 +32,28 @@ theorem f_adds
     -- Inputs
     (s : Struct) (x : U64) :
     -- Statement
-    f s x ⦃ (ret, s') => s'.a.val = s.a.val + x.val ⦄ := by
+    f s x ⦃ (ret, s') => s'.a.val = s.a.val + x.val ⦄fail := by
   sorry
 ```
 
-`f args ⦃ r => post ⦄` says that `f args` returns without failing and that its result satisfies `post`. The skill `lusterna:aeneas-specs` explains the notation and how to read the extraction.
+There are two triples. The skill `lusterna:aeneas-specs` explains the notation and how to read the extraction.
 
-1. Write a hypothesis only for a condition that the natspec states. Do not add a hypothesis that rules out a panic, even if the theorem is false without it: the prove stage finds those hypotheses.
-2. Hypotheses constrain only the inputs and the state before the call. Everything about the result goes in the postcondition. The one exception is `h_ok` in the theorems of an invariant, which "Invariants" describes.
+- `f args ⦃ r => post ⦄fail` says: if `f args` returns `r`, then `post` holds for `r`. It says nothing about the inputs on which the call panics.
+- `f args ⦃ r => post ⦄` says that `f args` returns without failing and that its result satisfies `post`.
+
+Use `⦄fail` for a property about the result of a call or about the state after it. Use `⦃ ⦄` only if the natspec states that the call does not fail.
+
+1. Write a hypothesis only for a condition that the natspec states. Do not add a hypothesis that rules out a panic.
+2. Hypotheses constrain only the inputs and the state before the call. Everything about the result goes in the postcondition.
 3. The postcondition mentions the result.
 4. The postcondition contains no term of type `Result _`. Where the postcondition or a helper `Prop`, such as an invariant, needs the value of a translated function, it uses the model of that function. Do not restate the body of a translated function inline. The skill `lusterna:aeneas-models` shows how to write a model and its bridge.
 5. The postcondition as a whole does not hold for every result: not `True`, and not an implication that assumes its own conclusion. One case of a `match` may be `True`.
-6. For a property about several functions, write one triple over a `do` block that calls them in order, for example `(do let (_, s1) ← f s x; g s1 x) ⦃ (res, s2) => … ⦄`. Do not nest triples.
-7. Destructure a tuple result in the binder: `⦃ (ret, v') => … ⦄`.
+6. For a property about several functions, write one triple over a `do` block that calls them in order, for example `(do let (_, s1) ← f s x; g s1 x) ⦃ (res, s2) => … ⦄fail`. Do not nest triples.
+7. Destructure a tuple result in the binder: `⦃ (ret, v') => … ⦄fail`.
 8. Write the parameters of the theorem in groups, each under a comment line, in this order. Leave out the comment line of an empty group. Then write the comment line `-- Statement` above the triple.
    - `-- State`: in an induction step of an invariant, the argument that is or contains the struct.
    - `-- Inputs`: the other arguments of the call.
    - `-- Induction hypothesis`: in an induction step of an invariant, `h_inv`.
-   - `-- No panic`: in a theorem of an invariant, `h_ok`.
    - `-- Preconditions`: the conditions that the natspec states.
 
 ## Labels
@@ -67,7 +71,7 @@ An invariant property names a struct. It holds for every value of the struct tha
 2. Base case: for each function that creates the struct, write one theorem. It calls the function and asserts in the postcondition that the invariant holds for the created value.
 3. Induction step: for each mutating operation, write one theorem. Its induction hypothesis `h_inv` is that the invariant holds for the value before the call. It calls the mutating operation and asserts in the postcondition that the invariant holds for the value after the call. A Rust function that takes `&mut` returns the new value as part of its result.
 4. In the base case and induction step theorems, the triple calls the function directly, not through a `do` block.
-5. An invariant is about the values that the program reaches, and a call that panics reaches none. So a base case or induction step theorem does not state when the call panics. It assumes that the call returns, with the hypothesis `h_ok : ∃ r, f args = ok r`. It has no hypothesis other than `h_ok` and, in an induction step, `h_inv`.
+5. An invariant is about the values that the program reaches, and a call that panics reaches none. So a base case or induction step theorem is a `⦄fail` triple. A base case has no hypothesis, and an induction step has no hypothesis other than `h_inv`.
 6. If the function returns a Rust `Result`, the postcondition asserts the invariant in the `.Ok` case and `True` in the `.Err` case.
 7. A type parameter or an instance that the type of the struct argument needs comes before `-- State`.
 
@@ -78,14 +82,12 @@ theorem f_keeps_inv
     -- Inputs
     (x : U64)
     -- Induction hypothesis
-    (h_inv : Inv s)
-    -- No panic
-    (h_ok : ∃ r, f s x = ok r) :
+    (h_inv : Inv s) :
     -- Statement
     f s x ⦃ (res, s') =>
       match res with
       | .Ok _ => Inv s'
-      | .Err _ => True ⦄ := by
+      | .Err _ => True ⦄fail := by
   sorry
 ```
 
