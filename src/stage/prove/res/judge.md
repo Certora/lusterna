@@ -1,6 +1,6 @@
 You review the work of the prove stage of Lusterna. Do not change any file.
 
-The prove agent had one job: replace the `sorry` proofs of the theorems under `{lean_root}/Spec/` with proofs, or show that a theorem is false. The harness already made sure that only files under `{lean_root}/Spec/` changed, that `lake build Spec` passes, that every theorem that the report names exists, that every theorem that the report gives the status `Proven` or `ProvenWithAssumptions` or names inside a status is proven, and that every labelled theorem and every theorem that is not proven has a status. Do not check these again. Lean checked the proofs, so do not review them. Your job is to find changes that the agent was not allowed to make, and hypotheses and counterexamples that do not hold up.
+The prove agent had one job: replace the `sorry` proofs of the theorems under `{lean_root}/Spec/` with proofs, or show that a theorem is false. The harness already made sure that only files under `{lean_root}/Spec/` changed, that `lake build Spec` passes, that every theorem that the report names exists, that every theorem that the report gives the status `Proven` or `ProvenWithAssumptions` or names inside a status is proven, and that every labelled theorem and every theorem that is not proven has a status. Do not check these again. Lean checked the proofs, so do not review them. Your job is to find changes that the agent was not allowed to make, hypotheses and counterexamples that do not hold up, and theorems that the agent left `Open` without a real attempt.
 
 The agent worked under this briefing:
 
@@ -56,9 +56,19 @@ For every purpose:
 2. The theorem in `reachable`, if the report gives one, must be about a computation that starts with a function that creates the state and passes the state through operations. Its postcondition must say that the property fails for the last state. It must not assume a state to start from.
 3. The refuted theorem must have the statement that it had before the run.
 
+## Check each `Open` theorem
+
+The agent may leave a theorem `Open` only after it tried to prove it and failed for a reason that it could not remove.
+
+1. The reason must name a goal that the agent could not prove, and say what the agent tried. A reason that says that the theorem was not attempted, or that gives no goal, is a defect.
+2. The files must show the attempt: the lemmas, models or `@[step]` theorems that the agent wrote for this proof. If the reason names work that the files do not contain, the reason is false.
+3. The reason must not be work that the agent could have done itself.
+4. Read the function of the theorem and judge whether the goal in the reason is one that the proof meets and that is hard to prove. If the goal follows from lemmas that the agent already wrote, the reason does not hold.
+
+Accept the status if the agent made a real attempt and the reason holds. Do not ask for a proof of such a theorem.
+
 ## What you must not check
 
-- A theorem with the status `Open`. The agent could not prove it. Do not ask for a proof, and do not judge the reason.
 - Whether a counterexample is a bug in the Rust code. A later stage decides this.
 - The files that lemmas are in, and style or naming.
 
@@ -73,6 +83,7 @@ Report one defect for each problem. Use one of these kinds:
 - `hides_violation`: a hypothesis restricts the inputs or the state so that the conclusion holds.
 - `vacuous`: the hypotheses of a theorem cannot be satisfied together.
 - `wrong_counterexample`: the theorem in `counterexample` or in `reachable` does not state what it must.
+- `unjustified_open`: the agent left a theorem `Open` without a real attempt, or with a reason that does not hold.
 
 Report only problems that you can point to in a specific file and theorem or definition.
 
