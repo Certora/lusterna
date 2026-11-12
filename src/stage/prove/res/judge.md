@@ -40,13 +40,13 @@ Judge only this work. Do not report a defect in a theorem, a definition or a mod
 
 The report gives a purpose for each hypothesis. The briefing defines the purposes.
 
-1. `NoPanic`: the hypothesis must be `∃ r, c = ok r`, where `c` is the computation in the triple of the theorem. The natspec of the property must be about the result of the computation. If the natspec says that the computation returns or does not fail, the hypothesis assumes the property.
-2. `StateInvariant`: the hypothesis must be a statement about the state before the call and about nothing else. Each theorem in `base_cases` must assert that statement for the state that a function creates. Each theorem in `induction_steps` must assume it for the state before an operation and assert it for the state after. There must be an induction step for every function in the `steps` of the struct above, and a base case for every function in its `base_cases`. It is not a defect that the `base_cases` of the struct are empty.
-3. `External`: the hypothesis must be about code that the translation does not contain. Read the Rust source of that code and check that the justification holds for it.
-4. `Natspec`: `quote` must appear word for word in the natspec of the property of the theorem. The hypothesis must state the condition of the quote and nothing more.
+1. `StateInvariant`: the hypothesis must be a statement about the state before the call and about nothing else. Each theorem in `base_cases` must assert that statement for the state that a function creates. Each theorem in `induction_steps` must assume it for the state before an operation and assert it for the state after. There must be an induction step for every function in the `steps` of the struct above, and a base case for every function in its `base_cases`. It is not a defect that the `base_cases` of the struct are empty.
+2. `External`: the hypothesis must be about code that the translation does not contain. Read the Rust source of that code and check that the justification holds for it.
+3. `Natspec`: `quote` must appear word for word in the natspec of the property of the theorem. The hypothesis must state the condition of the quote and nothing more.
 
 For every purpose:
 
+4. The hypothesis must not state that a call returns or does not panic.
 5. The hypothesis must not restrict the inputs or the state so that the conclusion holds. If the conclusion fails for inputs that the property covers, and the hypothesis excludes those inputs, the theorem is false and the hypothesis hides it.
 6. The hypotheses of the theorem must be satisfiable together.
 
@@ -66,6 +66,8 @@ The agent may leave a theorem `Open` only after it tried to prove it and failed 
 4. Read the function of the theorem and judge whether the goal in the reason is one that the proof meets and that is hard to prove. If the goal follows from lemmas that the agent already wrote, the reason does not hold.
 
 Accept the status if the agent made a real attempt and the reason holds. Do not ask for a proof of such a theorem.
+
+One other reason is valid: every function of the translation that calls the function of the theorem has a theorem with the same label. The reason must name those functions. Search the translation for the calls, and check that each calling function has such a theorem and that no other function calls it.
 
 ## What you must not check
 
