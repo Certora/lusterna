@@ -85,6 +85,17 @@ theorem spec_fspec (α) (x : Result α) (p : Post α) : spec x p → fspec x p :
 theorem fspec_to_spec {α} {m : Result α} {p : Post α} (h_ok : ∃ r, m = ok r)
   (h : fspec m p) : spec m p := by grind
 
+/-- A triple of `m` with any postcondition and an `fspec` of `m` give the triple with the
+postcondition of the `fspec`. -/
+theorem spec_of_fspec {α} {m : Result α} {p q : Post α} (h_ret : spec m q) (h : fspec m p) :
+    spec m p :=
+  let ⟨r, hr⟩ : ∃ r, m = ok r := by
+    cases m using Result.cases with
+    | ret x => exact ⟨x, rfl⟩
+    | vis e k => simp at h_ret
+    | div => simp at h_ret
+  fspec_to_spec ⟨r, hr⟩ h
+
 /-- A triple that assumes that `m` returns gives an `fspec` of `m`. -/
 theorem fspec_of_spec {α} {m : Result α} {p : Post α}
   (h : (∃ r, m = ok r) → spec m p) : fspec m p := by apply fspec_iff.mpr; grind
