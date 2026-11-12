@@ -22,9 +22,6 @@ const BRIEFING_TEMPLATE: &str = include_str!("res/briefing.md");
 
 const JUDGE_PROMPT_TEMPLATE: &str = include_str!("res/judge.md");
 
-/// The `SKILL.md` of the skill `aeneas-partial-correctness`.
-const AENEAS_PARTIAL_CORRECTNESS_SKILL: &str = include_str!("res/aeneas-partial-correctness.md");
-
 /// The `SKILL.md` of the skill `aeneas-tactics`.
 const AENEAS_TACTICS_SKILL: &str = include_str!("res/aeneas-tactics.md");
 
@@ -85,8 +82,6 @@ pub struct AdditionalAssumption {
 /// The purpose of an added extra assumption
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub enum AssumptionPurpose {
-    /// It states that the computation in the theorem's triple does not panic.
-    NoPanic,
     /// Assumes another invariant that holds in the pre-state.
     /// Must supply
     /// - The FQNs of the (proven) base cases
@@ -195,13 +190,7 @@ impl Stage for ProveStage {
     }
 
     fn skills(&self) -> Vec<(&'static str, String)> {
-        vec![
-            ("aeneas-tactics", AENEAS_TACTICS_SKILL.to_owned()),
-            (
-                "aeneas-partial-correctness",
-                AENEAS_PARTIAL_CORRECTNESS_SKILL.to_owned(),
-            ),
-        ]
+        vec![("aeneas-tactics", AENEAS_TACTICS_SKILL.to_owned())]
     }
 
     fn feedback_prompt(gate_failed: &Self::GateFailure) -> String {

@@ -568,9 +568,11 @@ mod tests {
                     "Spec.FAdds.f_adds".to_owned(),
                     TheoremStatus::ProvenWithAssumptions {
                         assumptions: vec![AdditionalAssumption {
-                            name: "h_ok".to_owned(),
+                            name: "h_ext".to_owned(),
                             reason: String::new(),
-                            purpose: AssumptionPurpose::NoPanic,
+                            purpose: AssumptionPurpose::External {
+                                justification: String::new(),
+                            },
                         }],
                     },
                 ),
@@ -706,7 +708,7 @@ mod tests {
             json!({"properties": {
                 "1": {"Rule": {"theorems": {
                     "Spec.FAdds.f_adds": {"ProvenWithAssumptions": {"assumptions": [
-                        {"name": "h_ok", "reason": "", "purpose": "NoPanic"}
+                        {"name": "h_ext", "reason": "", "purpose": {"External": {"justification": ""}}}
                     ]}}
                 }}},
                 "2": {"Induction": {
