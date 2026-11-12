@@ -1,4 +1,5 @@
-import Aeneas
+module
+public import Aeneas
 
 /-!
 # `fspec`
@@ -7,6 +8,8 @@ A triple for a computation that may panic: `fspec m p` holds if `p` holds for th
 returns, and also if `m` panics or diverges. It is built like `Aeneas.Std.WP.dspec`, and `step`
 works on it.
 -/
+
+@[expose] public section
 
 namespace Lusterna.Spec
 
@@ -127,7 +130,7 @@ macro_rules
 open Lean PrettyPrinter Delaborator SubExpr in
 /-- Delaborator for `fspec e post` → `e ⦃ binders => body ⦄fail`. -/
 @[scoped delab app.Lusterna.Spec.fspec]
-def delabFSpec : Delab := do
+meta def delabFSpec : Delab := do
   let e ← getExpr
   guard <| e.isAppOfArity ``fspec 3
   let asSpec := mkAppN (mkConst ``spec e.getAppFn.constLevels!) e.getAppArgs

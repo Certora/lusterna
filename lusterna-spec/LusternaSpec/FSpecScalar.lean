@@ -1,4 +1,7 @@
-import LusternaSpec.FSpec
+module
+public import LusternaSpec.FSpec
+import all Aeneas.Std.Scalar.Ops.Add
+import all Aeneas.Std.Scalar.Ops.Neg
 
 /-!
 # `fspec` theorems for the arithmetic of scalars
@@ -7,6 +10,8 @@ Each theorem is the `fspec` version of a `spec` theorem of Aeneas. The hypothese
 theorem are in the postcondition, in front of its postcondition. Each section names the Aeneas
 file that its theorems belong in.
 -/
+
+@[expose] public section
 
 namespace Lusterna.Spec
 
