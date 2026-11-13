@@ -68,6 +68,7 @@ The models are under `{lean_root}/Spec/Model/`, as the skill `aeneas-models` des
 5. Each base case and induction step theorem is a `⦄fail` triple.
 6. A base case theorem must have no hypothesis, and an induction step theorem no hypothesis other than `h_inv`.
 7. If the function returns a Rust `Result`, the postcondition asserts the invariant in the `.Ok` case and `True` in the `.Err` case. It is not a defect that it claims nothing for `.Err`.
+8. Each entry of `exceptions` names an induction step of the property, and its reason can be read from the natspec. Check only the natspec, not the code.
 
 ## Check each skipped property
 
@@ -91,6 +92,7 @@ Report one defect for each problem. Use one of these kinds:
 - `wrong_helper`: a helper `def` does not match the property, or restates a translated function instead of using its model.
 - `wrong_model`: a model does not match its translated function, has no bridge, or has a bridge that is not an equality, is not a `⦄fail` triple or has a hypothesis. Also for a second model of the same function.
 - `incomplete_induction`: a mutating operation of the struct of an invariant is missing from `steps`, `steps` lists a function that is not one, or a function that creates the struct is missing from `base_cases`.
+- `wrong_exception`: an entry of `exceptions` names no induction step of the property, or the natspec does not give its reason.
 - `wrong_change_report`: `new_theorems`, `updated_theorems` or `removed_theorems` does not match the diff.
 - `proved`: a theorem that the agent added has a proof other than `by sorry`.
 - `unwarranted_change`: the agent changed a statement or removed a theorem that still stated its property, or changed a proof from before the run that it had no reason to replace with `by sorry`.

@@ -543,6 +543,7 @@ mod tests {
                     PropertyFormalizationStatus::Formalized {
                         file: PathBuf::from("Spec/FAdds.lean"),
                         theorems: vec!["Spec.FAdds.f_adds".to_owned()],
+                        exceptions: BTreeMap::new(),
                     },
                 ),
                 (
@@ -550,6 +551,7 @@ mod tests {
                     PropertyFormalizationStatus::Formalized {
                         file: PathBuf::from("Spec/Inv.lean"),
                         theorems: vec!["Spec.Inv.new".to_owned(), "Spec.Inv.f".to_owned()],
+                        exceptions: BTreeMap::new(),
                     },
                 ),
             ]),

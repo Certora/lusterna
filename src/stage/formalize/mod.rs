@@ -96,6 +96,10 @@ pub enum PropertyFormalizationStatus {
         file: PathBuf,
         /// The full Lean names of the theorems that express the property.
         theorems: Vec<String>,
+        /// The induction steps whose operation the natspec names as an
+        /// exception to the invariant, by full Lean name, each with the reason
+        /// that the natspec gives.
+        exceptions: BTreeMap<String, String>,
     },
     Skipped(SkipReason),
 }
