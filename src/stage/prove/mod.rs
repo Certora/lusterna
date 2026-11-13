@@ -53,16 +53,17 @@ pub enum TheoremStatus {
     ProvenWithAssumptions {
         assumptions: Vec<AdditionalAssumption>,
     },
-    /// False as stated and no reasonable additions of assumption can be added
-    /// to prove it.
+    /// Still `sorry`: false as stated, and no assumption that the briefing
+    /// allows makes it provable.
     Refuted {
-        /// The FQN of a proven theorem: a state and inputs that satisfy the
-        /// hypotheses of the theorem and for which its conclusion fails.
-        counterexample: String,
-        /// The FQN of a proven theorem: a run of the program, from a function
-        /// that creates the state, to a state that violates the property.
-        /// `None` if the agent found no such run.
-        reachable: Option<String>,
+        /// An explanation of a counterexample that follows the Rust code: the
+        /// values of the inputs and of the state fields that the hypotheses
+        /// and the conclusion read, which satisfy the hypotheses; each branch
+        /// taken and each value computed on the way to the result; why the
+        /// conclusion fails for the result; the invariants and caller
+        /// conditions that were checked and do not rule it out; and the goal
+        /// at which the proof attempt stopped.
+        reason: String,
     },
     /// Still `sorry`.
     Open { reason: String },
@@ -72,9 +73,9 @@ pub enum TheoremStatus {
         /// The reason, as the natspec gives it.
         reason: String,
     },
-    /// Neither proven nor refuted: the proof or the counterexample holds only
-    /// because the translation drops a write through a `core.cell.RefMut`
-    /// that the conclusion depends on.
+    /// Neither proven nor refuted: the proof holds only because the
+    /// translation drops a write through a `core.cell.RefMut` that the
+    /// conclusion depends on.
     DroppedWrite {
         /// The full Lean name of the function that writes through the
         /// `RefMut`.

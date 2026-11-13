@@ -17,9 +17,7 @@
 //! A theorem is proven if `Lusterna.Spec.check` reports no axioms for it.
 //!
 //! The report claims that a theorem is proven if it
-//! - gives the theorem the status `Proven` or `ProvenWithAssumptions`,
-//! - names it as the `counterexample` or the `reachable` of a `Refuted`
-//!   theorem, or
+//! - gives the theorem the status `Proven` or `ProvenWithAssumptions`, or
 //! - names it in the `base_cases` or the `induction_steps` of a
 //!   `StateInvariant` assumption.
 
@@ -193,19 +191,9 @@ fn theorems_claimed_proven(report: &ProveReport) -> BTreeSet<&String> {
                     }
                 }
             }
-            // Not the theorem itself, but its counterexample and, if the
-            // report gives one, its `reachable` theorem
-            TheoremStatus::Refuted {
-                counterexample,
-                reachable,
-            } => {
-                claimed_proven.insert(counterexample);
-                if let Some(reachable) = reachable {
-                    claimed_proven.insert(reachable);
-                }
-            }
             // No theorem
-            TheoremStatus::Open { .. }
+            TheoremStatus::Refuted { .. }
+            | TheoremStatus::Open { .. }
             | TheoremStatus::Exception { .. }
             | TheoremStatus::DroppedWrite { .. } => {}
         }
@@ -596,15 +584,13 @@ mod tests {
         }
     }
 
-    /// The theorems under `Spec/`: the rule theorem and the base case are
-    /// proven, the induction step is not, and its counterexample and a lemma
-    /// are proven.
+    /// The theorems under `Spec/`: the rule theorem, the base case and a lemma
+    /// are proven, and the induction step is not.
     fn spec_theorems() -> Vec<TheoremCheck> {
         vec![
             labelled("Spec.FAdds.f_adds", 1, "module.Struct.f", true),
             labelled("Spec.Inv.new", 2, "module.Struct.new", true),
             labelled("Spec.Inv.f", 2, "module.Struct.f", false),
-            unlabelled("Spec.Inv.f_counterexample", true),
             unlabelled("Spec.InvAux.lemma", true),
         ]
     }
@@ -629,8 +615,7 @@ mod tests {
                 (
                     "Spec.Inv.f".to_owned(),
                     TheoremStatus::Refuted {
-                        counterexample: "Spec.Inv.f_counterexample".to_owned(),
-                        reachable: None,
+                        reason: String::new(),
                     },
                 ),
             ]),
@@ -668,22 +653,6 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unknown_reachable() {
-        let mut report = report();
-        report.theorems.insert(
-            "Spec.Inv.f".to_owned(),
-            TheoremStatus::Refuted {
-                counterexample: "Spec.Inv.f_counterexample".to_owned(),
-                reachable: Some("Spec.Inv.f_run".to_owned()),
-            },
-        );
-        assert!(matches!(
-            check_report(&report, &spec_theorems()),
-            Err(ProveGateFailure::UnknownTheorems { names }) if names == ["Spec.Inv.f_run"]
-        ));
-    }
-
-    #[test]
     fn rejects_proven_status_of_unproven_theorem() {
         let mut report = report();
         report
@@ -693,17 +662,6 @@ mod tests {
             check_report(&report, &spec_theorems()),
             Err(ProveGateFailure::NotProven { theorems })
                 if theorems == [("Spec.Inv.f".to_owned(), vec!["sorryAx".to_owned()])]
-        ));
-    }
-
-    #[test]
-    fn rejects_unproven_counterexample() {
-        let mut spec_theorems = spec_theorems();
-        spec_theorems[3] = unlabelled("Spec.Inv.f_counterexample", false);
-        assert!(matches!(
-            check_report(&report(), &spec_theorems),
-            Err(ProveGateFailure::NotProven { theorems })
-                if theorems == [("Spec.Inv.f_counterexample".to_owned(), vec!["sorryAx".to_owned()])]
         ));
     }
 
@@ -743,7 +701,7 @@ mod tests {
     #[test]
     fn rejects_unproven_lemma_without_status() {
         let mut spec_theorems = spec_theorems();
-        spec_theorems[4] = unlabelled("Spec.InvAux.lemma", false);
+        spec_theorems[3] = unlabelled("Spec.InvAux.lemma", false);
         assert!(matches!(
             check_report(&report(), &spec_theorems),
             Err(ProveGateFailure::MissingStatus { theorems }) if theorems == ["Spec.InvAux.lemma"]
@@ -753,32 +711,32 @@ mod tests {
     #[test]
     fn rejects_unexplained_dropped_write() {
         let mut spec_theorems = spec_theorems();
-        spec_theorems[3].drops_writes = Some(true);
+        spec_theorems[1].drops_writes = Some(true);
         assert!(matches!(
             check_report(&report(), &spec_theorems),
             Err(ProveGateFailure::UnexplainedDroppedWrites { theorems })
-                if theorems == ["Spec.Inv.f_counterexample"]
+                if theorems == ["Spec.Inv.new"]
         ));
     }
 
     #[test]
     fn explained_dropped_write_passes() {
         let mut spec_theorems = spec_theorems();
-        spec_theorems[3].drops_writes = Some(true);
+        spec_theorems[1].drops_writes = Some(true);
         let mut report = report();
         report
             .dropped_writes
-            .insert("Spec.Inv.f_counterexample".to_owned(), String::new());
+            .insert("Spec.Inv.new".to_owned(), String::new());
         check_report(&report, &spec_theorems).unwrap();
     }
 
     #[test]
     fn dropped_write_status_passes() {
         let mut spec_theorems = spec_theorems();
-        spec_theorems[3].drops_writes = Some(true);
+        spec_theorems[1].drops_writes = Some(true);
         let mut report = report();
         report.theorems.insert(
-            "Spec.Inv.f".to_owned(),
+            "Spec.Inv.new".to_owned(),
             TheoremStatus::DroppedWrite {
                 function: String::new(),
                 reason: String::new(),
@@ -801,8 +759,7 @@ mod tests {
                 "2": {"Induction": {
                     "base_cases": {"module.Struct.new": [["Spec.Inv.new", "Proven"]]},
                     "steps": {"module.Struct.f": [["Spec.Inv.f", {"Refuted": {
-                        "counterexample": "Spec.Inv.f_counterexample",
-                        "reachable": null
+                        "reason": ""
                     }}]]}
                 }}
             }})

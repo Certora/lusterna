@@ -1,6 +1,6 @@
 ---
 name: aeneas-tactics
-description: How to prove a theorem about an Aeneas translation with `step`: the two triples, the theorem that each call needs, branches, which tactic fits which goal, slow proofs, and how to state a counterexample. Use when you write or repair a proof in `Spec/`.
+description: How to prove a theorem about an Aeneas translation with `step`: the two triples, the theorem that each call needs, branches, which tactic fits which goal, and slow proofs. Use when you write or repair a proof in `Spec/`.
 ---
 
 # Proving theorems about an Aeneas translation
@@ -224,26 +224,6 @@ If the function uses the operator `loop`, apply `loop.spec_decr_nat`. It takes a
 - Give a hard fact as a `have` before the tactic that needs it.
 - If a proof takes more than a minute to check, split it into lemmas.
 - If Lean reports that the maximum number of heartbeats has been reached, put `set_option maxHeartbeats 1000000 in` in front of the theorem. Do not set a larger value. If that is not enough, split the proof into lemmas.
-
-## A counterexample
-
-A counterexample of a theorem states that there are values for its parameters that satisfy every hypothesis, and that its conclusion fails for them. A `⦄fail` triple fails only if the call returns a value for which the postcondition does not hold. For a theorem `g_keeps_inv` with the hypothesis `h_inv : Covered s` and the conclusion `s.g y ⦃ s' => Covered s' ⦄fail`:
-
-```lean
-theorem g_keeps_inv_counterexample :
-    ∃ (s : Struct) (y : U64), Covered s ∧ ¬ (s.g y ⦃ s' => Covered s' ⦄fail) := by
-  refine ⟨⟨0#u64, 0#u64, 0#u64⟩, 1#u64, ?_, ?_⟩
-  · simp [Covered, Struct.getTotal]
-  · simp [Struct.g, Covered, Struct.getTotal]
-```
-
-A theorem for `reachable` is a `⦃ ⦄` triple over a `do` block, so that it also shows that the block returns. The block starts with a function that creates the state, and the postcondition says that the property fails. For a function `Struct.new` that creates a `Struct` with every field zero:
-
-```lean
-theorem g_breaks_inv_reachable :
-    (do let s ← Struct.new; s.g 1#u64) ⦃ s' => ¬ Covered s' ⦄ := by
-  simp [Struct.new, Struct.g, Covered, Struct.getTotal]
-```
 
 ## The Aeneas documentation
 
