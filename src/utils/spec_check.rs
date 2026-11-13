@@ -53,6 +53,10 @@ pub struct TheoremCheck {
     /// The axioms that leave the theorem unproven: empty if it is proven.
     /// `None` if the check ran without `axioms`.
     pub axioms: Option<Vec<String>>,
+    /// The theorem depends on `Lusterna.refMutWriteDropped`: a write through
+    /// a `core.cell.RefMut` that it goes through is dropped. `None` if the
+    /// check ran without `axioms`.
+    pub drops_writes: Option<bool>,
 }
 
 /// Runs `Lusterna.Spec.check` on the modules under `Spec/` of the Lean project
@@ -104,7 +108,7 @@ mod tests {
 
     #[test]
     fn parses_check_output() {
-        let line = r#"{"axioms":["sorryAx"],"function":"LusternaSpecTest.f","id":4,"issues":[{"canFail":{"reason":"LusternaSpecTest.f r"}}],"module":"LusternaSpecTest.Fixture","name":"LusternaSpecTest.f_fixpoint","title":"f is a fixpoint"}"#;
+        let line = r#"{"axioms":["sorryAx"],"dropsWrites":true,"function":"LusternaSpecTest.f","id":4,"issues":[{"canFail":{"reason":"LusternaSpecTest.f r"}}],"module":"LusternaSpecTest.Fixture","name":"LusternaSpecTest.f_fixpoint","title":"f is a fixpoint"}"#;
         let check: TheoremCheck = serde_json::from_str(line).unwrap();
         assert_eq!(check.id, Some(4));
         assert_eq!(
@@ -114,8 +118,9 @@ mod tests {
             }]
         );
         assert_eq!(check.axioms, Some(vec!["sorryAx".to_owned()]));
+        assert_eq!(check.drops_writes, Some(true));
 
-        let line = r#"{"axioms":null,"function":null,"id":null,"issues":["notATriple","ignoresResult","vacuous"],"module":"M","name":"M.two","title":null}"#;
+        let line = r#"{"axioms":null,"dropsWrites":null,"function":null,"id":null,"issues":["notATriple","ignoresResult","vacuous"],"module":"M","name":"M.two","title":null}"#;
         let check: TheoremCheck = serde_json::from_str(line).unwrap();
         assert_eq!(check.id, None);
         assert_eq!(check.function, None);
@@ -124,5 +129,6 @@ mod tests {
             vec![Issue::NotATriple, Issue::IgnoresResult, Issue::Vacuous]
         );
         assert_eq!(check.axioms, None);
+        assert_eq!(check.drops_writes, None);
     }
 }

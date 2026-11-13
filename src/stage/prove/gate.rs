@@ -544,6 +544,7 @@ mod tests {
             function: None,
             issues: Vec::new(),
             axioms: Some(axioms),
+            drops_writes: Some(false),
         }
     }
 
