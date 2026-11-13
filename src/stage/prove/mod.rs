@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     stage::{
-        Stage, StageName,
+        INVARIANTS_SKILL, Stage, StageName,
         formalize::{Induction, PropertyFormalizationStatus},
         properties::{Properties, PropertyId},
     },
@@ -199,14 +199,20 @@ impl Stage for ProveStage {
     }
 
     fn briefing(&self) -> String {
+        let induction =
+            serde_json::to_string_pretty(&self.input.induction).expect("the induction serializes");
         BRIEFING_TEMPLATE
             .replace("{lean_root}", &self.input.lean_root.display().to_string())
             .replace("{extracted}", &self.input.extracted.display().to_string())
             .replace("{properties}", &self.input.properties.display().to_string())
+            .replace("{induction}", &induction)
     }
 
     fn skills(&self) -> Vec<(&'static str, String)> {
-        vec![("aeneas-tactics", AENEAS_TACTICS_SKILL.to_owned())]
+        vec![
+            ("aeneas-tactics", AENEAS_TACTICS_SKILL.to_owned()),
+            ("invariants", INVARIANTS_SKILL.to_owned()),
+        ]
     }
 
     fn feedback_prompt(gate_failed: &Self::GateFailure) -> String {
@@ -219,15 +225,13 @@ impl Stage for ProveStage {
 
     fn judge_prompt(&self, _output: &Self::Output, report: &Self::Report) -> Option<String> {
         let report = serde_json::to_string_pretty(report).expect("the report serializes");
-        let induction =
-            serde_json::to_string_pretty(&self.input.induction).expect("the induction serializes");
         Some(
             JUDGE_PROMPT_TEMPLATE
                 .replace("{lean_root}", &self.input.lean_root.display().to_string())
                 .replace("{extracted}", &self.input.extracted.display().to_string())
                 .replace("{properties}", &self.input.properties.display().to_string())
+                .replace("{invariants}", INVARIANTS_SKILL)
                 .replace("{briefing}", &self.briefing())
-                .replace("{induction}", &induction)
                 .replace("{report}", &report),
         )
     }
@@ -254,7 +258,7 @@ mod tests {
     fn briefing_fills_every_placeholder() {
         let briefing = stage().briefing();
 
-        for placeholder in ["{lean_root}", "{extracted}", "{properties}"] {
+        for placeholder in ["{lean_root}", "{extracted}", "{properties}", "{induction}"] {
             assert!(!briefing.contains(placeholder), "{placeholder} is left");
         }
         assert!(briefing.contains("`/c/lusterna/properties.json`"));
@@ -279,8 +283,8 @@ mod tests {
         for placeholder in [
             "{extracted}",
             "{properties}",
+            "{invariants}",
             "{briefing}",
-            "{induction}",
             "{report}",
         ] {
             assert!(!prompt.contains(placeholder), "{placeholder} is left");
