@@ -19,8 +19,9 @@ Work through the properties one at a time: read a property, write or reuse the m
 1. Write one file per property, or one file for a group of closely related properties: `Spec/<Name>.lean`, where `<Name>` names the property or the group in UpperCamelCase.
 2. Do not group theorems by the function that they call. A theorem goes in the file of the property that it states.
 3. Each file imports `Extraction.Funs` and `LusternaSpec`, opens `Aeneas`, `Aeneas.Std`, `Result` and `Lusterna.Spec`, and puts its declarations in `namespace Spec.<Name>`.
-4. A file can import another file of `Spec/` to reuse its helper definitions.
-5. Models and their bridges go in `Spec/Model/`, as the skill `lusterna:aeneas-models` describes. They are not in `namespace Spec.<Name>`.
+4. Each file that you create starts, after its imports, with a module doc comment `/-! ... -/` that says what the file holds and what uses it.
+5. A file can import another file of `Spec/` to reuse its helper definitions.
+6. Models and their bridges go in `Spec/Model/`, as the skill `lusterna:aeneas-models` describes. They are not in `namespace Spec.<Name>`.
 
 ## The shape of a theorem
 

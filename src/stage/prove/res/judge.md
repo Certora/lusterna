@@ -35,6 +35,7 @@ Judge only this work. Do not report a defect in a theorem, a definition or a mod
 1. The statement of a labelled theorem must differ from its statement before the run only by hypotheses added under the comment line `-- Additional assumptions`. Its conclusion, its other hypotheses and its label must be unchanged.
 2. No model, no helper `def` and no statement of a bridge from before the run may be changed.
 3. Each hypothesis that the agent added must be in the report, under its theorem and with the name that it has in the file. The report must list no hypothesis that is not in the file.
+4. Each Lean file that the agent created must have a module doc comment `/-! ... -/` after its imports.
 
 ## Check each added hypothesis
 
@@ -46,9 +47,9 @@ The report gives a purpose for each hypothesis. The briefing defines the purpose
 
 For every purpose:
 
-4. The hypothesis must not state that a call returns or does not panic.
-5. The hypothesis must not restrict the inputs or the state so that the conclusion holds. If the conclusion fails for inputs that the property covers, and the hypothesis excludes those inputs, the theorem is false and the hypothesis hides it.
-6. The hypotheses of the theorem must be satisfiable together.
+1. The hypothesis must not state that a call returns or does not panic.
+2. The hypothesis must not restrict the inputs or the state so that the conclusion holds. If the conclusion fails for inputs that the property covers, and the hypothesis excludes those inputs, the theorem is false and the hypothesis hides it.
+3. The hypotheses of the theorem must be satisfiable together.
 
 ## Check each `Refuted` theorem
 
@@ -94,8 +95,9 @@ Report one defect for each problem. Use one of these kinds:
 - `wrong_counterexample`: the theorem in `counterexample` or in `reachable` does not state what it must.
 - `unjustified_open`: the agent left a theorem `Open` without a real attempt, or with a reason that does not hold.
 - `wrong_dropped_write`: an entry of `dropped_writes` leaves out a write or its explanation does not hold, or a `DroppedWrite` status does not hold.
+- `missing_header`: a Lean file that the agent created has no module doc comment.
 
-Report only problems that you can point to in a specific file and theorem or definition.
+Report only problems that you can point to in a specific file and theorem or definition, or for `missing_header` in a specific file.
 
 ## How to write a defect
 

@@ -36,6 +36,7 @@ Judge only this work. Do not report a defect in a theorem, a definition or a mod
 2. The proof of every theorem that the agent **added** must be `by sorry`.
 3. Each changed statement and each removed theorem needs a reason: the theorem no longer stated its property, for example because the translation or the property changed.
 4. The agent must not have changed a proof from before the run, except to replace it with `by sorry` in a theorem whose statement changed or that uses a model or a helper `def` that changed.
+5. Each Lean file that the agent created must have a module doc comment `/-! ... -/` after its imports.
 
 ## Check each formalized property
 
@@ -95,8 +96,9 @@ Report one defect for each problem. Use one of these kinds:
 - `unwarranted_change`: the agent changed a statement or removed a theorem that still stated its property, or changed a proof from before the run that it had no reason to replace with `by sorry`.
 - `wrong_skip`: the reason of a skipped property does not hold.
 - `wrong_grouping`: a file groups theorems by the function that they call, or mixes unrelated properties.
+- `missing_header`: a Lean file that the agent created has no module doc comment.
 
-Report only problems that you can point to in a specific file and theorem or definition. Do not report style or naming.
+Report only problems that you can point to in a specific file and theorem or definition, or for `missing_header` in a specific file. Do not report style or naming.
 
 Do not check whether a call can panic. Do not report that a `⦃ ⦄` theorem is false because the call can panic, and do not ask for a hypothesis that rules out a panic. The prove stage shows whether the theorem holds.
 

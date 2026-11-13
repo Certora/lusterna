@@ -46,6 +46,7 @@ Do not change anything else. In particular, do not change a model, a helper `def
 2. Other lemmas for the theorems of one property go in `Spec/<Name>Aux.lean`, so that the property file stays readable. `Spec/<Name>.lean` imports it. `Spec/<Name>Aux.lean` cannot import `Spec/<Name>.lean`, because Lean does not allow two files to import each other.
 3. A lemma that the theorems of several properties use goes in a file under `Spec/Lemmas/`. So does a `@[step]` theorem about a function of the crate that uses no `def` of a property file, because it holds for every call of that function.
 4. A lemma for a bridge goes in the file of the model, above the bridge.
+5. Each Lean file that you create starts, after its imports, with a module doc comment `/-! ... -/` that says what the file holds and what uses it.
 
 ## Additional assumptions
 
