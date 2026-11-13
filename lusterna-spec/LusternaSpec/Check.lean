@@ -17,7 +17,8 @@ triple `m ⦃ r => post r ⦄`, `m ⦃ r => post r ⦄div` or `m ⦃ r => post r
 The last two rules look into the predicates that `post` uses, except the ones declared in Lean,
 Aeneas or their dependencies.
 
-With `axioms := true` it also reports, for every theorem, the axioms that leave it unproven.
+With `axioms := true` it also reports, for every theorem, the axioms that leave it unproven, and
+whether it depends on `Lusterna.refMutWriteDropped`.
 -/
 
 open Lean Elab Meta
@@ -204,13 +205,17 @@ structure TheoremCheck where
   /-- What `unprovenAxioms` returns for the theorem: empty if it is proven. `none` if `check` ran
   without `axioms`. -/
   axioms : Option (Array Name)
+  /-- The theorem depends on `Lusterna.refMutWriteDropped`, which LusternaLib's `deref_mut` of
+  `core.cell.RefMut` uses. `none` if `check` ran without `axioms`. -/
+  dropsWrites : Option Bool
 deriving ToJson
 
-/-- The axioms that `thm` depends on and that leave it unproven, sorted: `sorryAx` and the axioms
+/-- The axioms of `thmAxioms` that leave a theorem unproven, sorted: `sorryAx` and the axioms
 declared in the modules `idxs`. `native_decide` declares such an axiom. -/
-private def unprovenAxioms (thm : Name) (idxs : Array ModuleIdx) : MetaM (Array Name) := do
+private def unprovenAxioms (thmAxioms : Array Name) (idxs : Array ModuleIdx) :
+    MetaM (Array Name) := do
   let env ← getEnv
-  let axioms := (← collectAxioms thm).filter fun a =>
+  let axioms := thmAxioms.filter fun a =>
     a == ``sorryAx || (env.getModuleIdxFor? a).any idxs.contains
   return axioms.qsort Name.lt
 
@@ -240,7 +245,7 @@ private def checkTriple (qn : Name) : MetaM (Option Name × Array Issue) := do
 
 /-- Prints one `TheoremCheck` as a JSON line for each theorem declared in `modules`. Only the
 statements of theorems with `@[lusterna]` are checked. With `axioms`, each line has the
-`unprovenAxioms` of its theorem. Throws if a module is not imported. -/
+`unprovenAxioms` of its theorem and `dropsWrites`. Throws if a module is not imported. -/
 def check (modules : Array Name) (axioms : Bool := false) : MetaM Unit := do
   let env ← getEnv
   let idxs ← modules.mapM fun mod => do
@@ -253,13 +258,15 @@ def check (modules : Array Name) (axioms : Bool := false) : MetaM Unit := do
       if thm.isInternal then continue
       let label := lusternaAttr.getParam? env thm
       let (function, issues) ← if label.isSome then checkTriple thm else pure (none, #[])
+      let thmAxioms ← if axioms then some <$> collectAxioms thm else pure none
       let result : TheoremCheck := {
         function, issues
         «name» := thm
         «module» := mod
         id := label.map (·.1)
         title := label.map (·.2)
-        axioms := ← if axioms then some <$> unprovenAxioms thm idxs else pure none
+        axioms := ← thmAxioms.mapM (unprovenAxioms · idxs)
+        dropsWrites := thmAxioms.map (·.contains `Lusterna.refMutWriteDropped)
       }
       IO.println (toJson result).compress
 

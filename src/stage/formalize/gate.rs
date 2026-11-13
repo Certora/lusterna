@@ -529,6 +529,7 @@ mod tests {
             function: Some(function.to_owned()),
             issues: Vec::new(),
             axioms: None,
+            drops_writes: None,
         }
     }
 

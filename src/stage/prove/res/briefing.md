@@ -65,6 +65,16 @@ Otherwise:
 
 A later stage reads the Rust code and decides whether a counterexample is a bug. Do not do that analysis.
 
+## Writes through a `RefMut`
+
+The translation drops every write through a `core.cell.RefMut`: `core.cell.RefMut.Insts.CoreOpsDerefDerefMut.deref_mut` returns the value, and the `RefMut` stays unchanged after the write. A theorem whose proof goes through such a write depends on the axiom `Lusterna.refMutWriteDropped`, and `lake build` warns about it.
+
+Do this for each theorem that depends on this axiom and that you report as proven, or name as a `counterexample`, as `reachable`, or in the `base_cases` or `induction_steps` of a `StateInvariant`:
+
+1. Find the calls of `deref_mut` in the functions that its proof goes through, and read the Rust source of each write.
+2. If, in the Rust code, none of these writes changes a value that the conclusion of the theorem reads, add an entry for the theorem to `dropped_writes`.
+3. Otherwise give the theorem the status `DroppedWrite`. If the status of another theorem names it, give that theorem this status instead. Do not look for another proof of such a theorem.
+
 ## When you are done
 
 The harness checks these conditions after you stop. If one fails, you get the error and must continue.
@@ -75,8 +85,9 @@ The harness checks these conditions after you stop. If one fails, you get the er
 4. A theorem that you report as proven does not depend on `sorry`, directly or through a lemma, and does not depend on an axiom that a file under `Spec/` declares.
 5. The same holds for each theorem that you name in a status: in `counterexample` or `reachable`, or in the `base_cases` or `induction_steps` of a `StateInvariant`.
 6. Your report gives a status for every labelled theorem, and for every other theorem under `Spec/` that is not proven.
+7. Each theorem of conditions 4 and 5 that depends on `Lusterna.refMutWriteDropped` has an entry in `dropped_writes`.
 
-A reviewer then checks that you changed only what "What you may change" allows, that each hypothesis that you added follows the rules of "Additional assumptions", and that you worked on each theorem that you report as `Open`.
+A reviewer then checks that you changed only what "What you may change" allows, that each hypothesis that you added follows the rules of "Additional assumptions", that you worked on each theorem that you report as `Open`, and that each entry of `dropped_writes` and each `DroppedWrite` status holds.
 
 Nobody reads your messages while you work, and nobody answers questions. Do not stop to ask a question or to wait for an answer. If you must choose between options, choose the one that follows this briefing and continue. The harness controls the budget. Do not stop early because you expect the budget to run out. Do not return your report while a theorem is left that you did not work on, or while a build is running.
 
