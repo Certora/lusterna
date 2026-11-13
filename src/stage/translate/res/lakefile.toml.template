@@ -18,3 +18,4 @@ globs = ["Extraction.+"]
 [[lean_lib]]
 name = "Spec"
 globs = ["Spec.+"]
+moreLeanArgs = ["--memory=8192"]

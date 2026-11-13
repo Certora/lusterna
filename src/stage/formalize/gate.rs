@@ -17,8 +17,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fmt, fs,
-    io::{self, Write},
+    fmt, io,
     path::{Path, PathBuf},
 };
 
@@ -27,14 +26,13 @@ use serde::{Deserialize, Serialize};
 use crate::{
     stage::{
         self,
-        formalize::{
-            FormalizeOutput, FormalizeStage, PropertyStatus,
-            properties::{Properties, PropertyId, PropertyKind},
-        },
+        formalize::{FormalizeOutput, FormalizeStage, PropertyFormalizationStatus},
+        properties::{Properties, PropertyId, PropertyKind},
     },
     utils::{
         git::{self, GitError},
         lean::{self, LakeError},
+        spec_check::{self, Issue, SpecCheckError, TheoremCheck},
     },
 };
 
@@ -46,8 +44,8 @@ pub enum FormalizeGateError {
     Io(#[from] io::Error),
     #[error("Lake error: {0}")]
     Lake(#[from] LakeError),
-    #[error("cannot parse the output of `Lusterna.Spec.check`: {0}")]
-    Check(#[from] serde_json::Error),
+    #[error(transparent)]
+    Check(#[from] SpecCheckError),
 }
 
 #[derive(Debug, derive_more::Display, Serialize, Deserialize, Clone)]
@@ -71,21 +69,6 @@ pub enum FormalizeGateFailure {
     UncoveredInduction { missing: Vec<(PropertyId, String)> },
 }
 
-/// A problem with the statement of a labelled theorem, as
-/// `Lusterna.Spec.check` reports it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, derive_more::Display)]
-#[serde(rename_all = "camelCase")]
-pub enum Issue {
-    #[display("the conclusion is not an Aeneas WP triple")]
-    NotATriple,
-    #[display("the postcondition does not mention the result")]
-    IgnoresResult,
-    #[display("the postcondition contains a computation that can fail: {reason}")]
-    CanFail { reason: String },
-    #[display("the postcondition holds for every result")]
-    Vacuous,
-}
-
 /// A mismatch between the `@[lusterna]` labels in `Spec/` and the report.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LabelProblem {
@@ -106,19 +89,6 @@ pub enum LabelProblem {
         unlabelled: Vec<String>,
         unreported: Vec<String>,
     },
-}
-
-/// What `Lusterna.Spec.check` prints for one theorem.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct TheoremCheck {
-    name: String,
-    module: String,
-    id: Option<PropertyId>,
-    title: Option<String>,
-    /// The head constant of the computation in the theorem's triple.
-    function: Option<String>,
-    issues: Vec<Issue>,
 }
 
 type GateStop = stage::GateStop<FormalizeStage>;
@@ -152,11 +122,7 @@ pub(super) fn run_gate(
     let spec = lean_root.join("Spec").canonicalize()?;
 
     // Only files under `Spec/` may change
-    let repo_root = git::toplevel(lean_root)?;
-    let files: Vec<PathBuf> = git::uncommitted_files(lean_root)?
-        .into_iter()
-        .filter(|f| !repo_root.join(f).starts_with(&spec))
-        .collect();
+    let files = git::uncommitted_files_outside(lean_root, &spec)?;
     if !files.is_empty() {
         return Err(FormalizeGateFailure::ChangedOutsideSpec { files }.into());
     }
@@ -186,54 +152,9 @@ pub(super) fn run_gate(
         e => GateStop::from(e),
     })?;
 
-    let checks = run_check(lean_root, &spec_modules(&spec, "Spec")?)?;
+    let checks = spec_check::run(lean_root, false)?;
     check_theorems(properties, report, &checks)?;
     Ok(())
-}
-
-/// Returns the module names of the `.lean` files under `dir`, whose module
-/// name is `module`.
-fn spec_modules(dir: &Path, module: &str) -> io::Result<Vec<String>> {
-    let mut modules = Vec::new();
-    for entry in fs::read_dir(dir)? {
-        let path = entry?.path();
-        if path.is_dir() {
-            let name = path.file_name().unwrap().to_string_lossy();
-            modules.extend(spec_modules(&path, &format!("{module}.{name}"))?);
-        } else if path.extension() == Some("lean".as_ref()) {
-            let name = path.file_stem().unwrap().to_string_lossy();
-            modules.push(format!("{module}.{name}"));
-        }
-    }
-    Ok(modules)
-}
-
-/// Runs `Lusterna.Spec.check` on `modules` in the Lean project at
-/// `lean_root`.
-fn run_check(
-    lean_root: &Path,
-    modules: &[String],
-) -> Result<Vec<TheoremCheck>, FormalizeGateError> {
-    if modules.is_empty() {
-        return Ok(Vec::new());
-    }
-    let imports: String = modules.iter().map(|m| format!("import {m}\n")).collect();
-    let names = modules
-        .iter()
-        .map(|m| format!("`{m}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let mut driver = tempfile::Builder::new().suffix(".lean").tempfile()?;
-    write!(
-        driver,
-        "import LusternaSpec\n{imports}#eval Lusterna.Spec.check #[{names}]\n"
-    )?;
-    let output = lean::lake_env_lean(lean_root, driver.path())?;
-    output
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| serde_json::from_str(line).map_err(FormalizeGateError::from))
-        .collect()
 }
 
 /// Checks the theorems in `Spec/` against the properties and the report, and
@@ -280,7 +201,9 @@ fn check_labels(
             continue;
         };
         // The report must mark the label's property as formalized
-        let Some(PropertyStatus::Formalized { file, .. }) = report.property_status.get(&id) else {
+        let Some(PropertyFormalizationStatus::Formalized { file, .. }) =
+            report.property_status.get(&id)
+        else {
             problems.push(LabelProblem::UnreportedLabel {
                 theorem: check.name.clone(),
                 id,
@@ -317,7 +240,7 @@ fn check_labels(
     // ones
     for (id, status) in &report.property_status {
         // Skip skipped properties
-        let PropertyStatus::Formalized { theorems, .. } = status else {
+        let PropertyFormalizationStatus::Formalized { theorems, .. } = status else {
             continue;
         };
         let reported: BTreeSet<&str> = theorems.iter().map(String::as_str).collect();
@@ -362,7 +285,8 @@ fn check_induction(
             continue;
         };
         // Skip skipped properties
-        let Some(PropertyStatus::Formalized { .. }) = report.property_status.get(&property.id)
+        let Some(PropertyFormalizationStatus::Formalized { .. }) =
+            report.property_status.get(&property.id)
         else {
             continue;
         };
@@ -533,7 +457,7 @@ impl FormalizeGateFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stage::formalize::{Induction, properties::Property};
+    use crate::stage::{formalize::Induction, properties::Property};
 
     fn properties() -> Properties {
         Properties(vec![
@@ -561,14 +485,14 @@ mod tests {
             property_status: BTreeMap::from([
                 (
                     1,
-                    PropertyStatus::Formalized {
+                    PropertyFormalizationStatus::Formalized {
                         file: PathBuf::from("Spec/DepositAdds.lean"),
                         theorems: vec!["Spec.DepositAdds.adds".to_owned()],
                     },
                 ),
                 (
                     2,
-                    PropertyStatus::Formalized {
+                    PropertyFormalizationStatus::Formalized {
                         file: PathBuf::from("Spec/Solvent.lean"),
                         theorems: vec![
                             "Spec.Solvent.new".to_owned(),
@@ -604,6 +528,7 @@ mod tests {
             title: Some(title.to_owned()),
             function: Some(function.to_owned()),
             issues: Vec::new(),
+            axioms: None,
         }
     }
 
@@ -631,28 +556,6 @@ mod tests {
                 "vault.Vault.deposit",
             ),
         ]
-    }
-
-    #[test]
-    fn parses_check_output() {
-        let line = r#"{"function":"LusternaSpecTest.f","id":4,"issues":[{"canFail":{"reason":"LusternaSpecTest.f r"}}],"module":"LusternaSpecTest.Fixture","name":"LusternaSpecTest.f_fixpoint","title":"f is a fixpoint"}"#;
-        let check: TheoremCheck = serde_json::from_str(line).unwrap();
-        assert_eq!(check.id, Some(4));
-        assert_eq!(
-            check.issues,
-            vec![Issue::CanFail {
-                reason: "LusternaSpecTest.f r".to_owned()
-            }]
-        );
-
-        let line = r#"{"function":null,"id":null,"issues":["notATriple","ignoresResult","vacuous"],"module":"M","name":"M.two","title":null}"#;
-        let check: TheoremCheck = serde_json::from_str(line).unwrap();
-        assert_eq!(check.id, None);
-        assert_eq!(check.function, None);
-        assert_eq!(
-            check.issues,
-            vec![Issue::NotATriple, Issue::IgnoresResult, Issue::Vacuous]
-        );
     }
 
     #[test]

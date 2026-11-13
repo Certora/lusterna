@@ -10,7 +10,12 @@
 //! 4. `translate`: translates the code reachable from the entrypoints, with the
 //!    default opaque patterns and those of the spec passed to Charon.
 //! 5. `formalize`: states each property as Lean theorems about the translation,
-//!    without proofs. Runs only if the spec has properties.
+//!    without proofs. Runs only if the spec has properties. The pipeline writes
+//!    the output of the stage to `lusterna/formalize.json` in the crate root.
+//! 6. `prove`: proves the theorems of the formalize stage, or shows that a
+//!    theorem is false. Runs only if the spec has properties. It reads
+//!    `lusterna/formalize.json`, and the pipeline writes the output of the
+//!    stage to `lusterna/prove.json` in the crate root.
 //!
 //! A run starts only if the repository has no uncommitted changes other than
 //! the spec file (unless `--allow-dirty`), the tools of `TOOLS` are on `PATH`,
@@ -37,6 +42,7 @@ use crate::{
         exec::{StageExec, StageExecutionError},
         formalize::{FormalizeInput, FormalizeOutput, FormalizeStage},
         pre_translate::{PreTranslateInput, PreTranslateStage},
+        prove::{ProveInput, ProveOutput, ProveStage},
         translate::{
             DEFAULT_OPAQUE, TranslateInput, TranslateOutput, TranslateStage, solana_opaque,
         },
@@ -62,6 +68,8 @@ pub enum PipelineError {
     Translate(StageExecutionError<TranslateStage>),
     #[error("Error in Formalize stage: {0}")]
     Formalize(StageExecutionError<FormalizeStage>),
+    #[error("Error in Prove stage: {0}")]
+    Prove(StageExecutionError<ProveStage>),
     /// Committing the work of a stage failed.
     #[error(transparent)]
     Git(#[from] GitError),
@@ -87,6 +95,9 @@ pub enum PipelineError {
     /// Writing the spec or the properties to the crate failed.
     #[error("IO error: {0}")]
     Io(#[from] io::Error),
+    /// The file that holds the output of the formalize stage does not parse.
+    #[error("cannot parse the formalize output in `{0}`: {1}")]
+    FormalizeOutput(PathBuf, serde_json::Error),
 }
 
 /// The steps of a pipeline run, in the order in which they run. A step
@@ -100,6 +111,7 @@ pub enum PipelineStep {
     PreTranslate,
     Translate,
     Formalize,
+    Prove,
 }
 
 /// A pipeline of stages, configured by a spec. See the module documentation.
@@ -172,6 +184,11 @@ impl Pipeline {
         // 5. Run the formalize stage
         if self.runs(PipelineStep::Formalize) && !self.spec.properties.0.is_empty() {
             self.run_formalize()?;
+        }
+
+        // 6. Run the prove stage
+        if self.runs(PipelineStep::Prove) && !self.spec.properties.0.is_empty() {
+            self.run_prove()?;
         }
         Ok(())
     }
@@ -308,10 +325,46 @@ impl Pipeline {
         let output = self
             .exec_stage::<FormalizeStage>(input)
             .map_err(PipelineError::Formalize)?;
+        fs::write(
+            lusterna_dir.join("formalize.json"),
+            serde_json::to_string_pretty(&output).expect("the formalize output serializes"),
+        )?;
 
         match git::commit_all(&self.config.repo_root()?, "Lusterna: `formalize` stage")? {
             Some(sha) => info!("Committed `formalize` work in {}", sha),
             None => info!("No `formalize` work to commit"),
+        }
+        Ok(output)
+    }
+
+    fn run_prove(&self) -> Result<ProveOutput, PipelineError> {
+        let lusterna_dir = self.config.crate_root()?.join("lusterna");
+        let lean_root = lusterna_dir.join("lean");
+
+        // Read the output of the formalize stage, which `run_formalize` wrote
+        let formalize_path = lusterna_dir.join("formalize.json");
+        let formalized: FormalizeOutput =
+            serde_json::from_str(&fs::read_to_string(&formalize_path)?)
+                .map_err(|e| PipelineError::FormalizeOutput(formalize_path, e))?;
+
+        let input = ProveInput {
+            extracted: lean_root.join("Extraction"),
+            lean_root,
+            properties: lusterna_dir.join("properties.json"),
+            property_status: formalized.property_status,
+            induction: formalized.induction,
+        };
+        let output = self
+            .exec_stage::<ProveStage>(input)
+            .map_err(PipelineError::Prove)?;
+        fs::write(
+            lusterna_dir.join("prove.json"),
+            serde_json::to_string_pretty(&output).expect("the prove output serializes"),
+        )?;
+
+        match git::commit_all(&self.config.repo_root()?, "Lusterna: `prove` stage")? {
+            Some(sha) => info!("Committed `prove` work in {}", sha),
+            None => info!("No `prove` work to commit"),
         }
         Ok(output)
     }

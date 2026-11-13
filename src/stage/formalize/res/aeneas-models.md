@@ -17,9 +17,8 @@ def getTotal (s : Struct) : Int :=
   s.a.val + s.b.val - s.c.val
 
 @[step]
-theorem get_total.spec (s : Struct)
-    (h_ok : ∃ r, get_total s = ok r) :
-    get_total s ⦃ r => (r.val : Int) = s.getTotal ⦄ := by
+theorem get_total.spec (s : Struct) :
+    get_total s ⦃ r => (r.val : Int) = s.getTotal ⦄fail := by
   sorry
 
 end my_crate.module.Struct
@@ -47,8 +46,8 @@ A function without a body, such as an `axiom` in `FunsExternal.lean`, gets no mo
 ## The bridge
 
 1. The bridge is a theorem named `<function>.spec` with `@[step]`, and its body is `:= by sorry`. It carries no `@[lusterna]` label.
-2. It is a triple that calls the translated function on plain arguments. Its postcondition states that the result equals the model: `r = model args`, or `r.val = model args` for a scalar, or one equality per component for a tuple.
-3. Its only hypothesis is `h_ok : ∃ r, f args = ok r`: the call returns. Do not state when the function panics.
+2. It is a `⦄fail` triple that calls the translated function on plain arguments. Its postcondition states that the result equals the model: `r = model args`, or `r.val = model args` for a scalar, or one equality per component for a tuple.
+3. It has no hypothesis. Do not state when the function panics.
 4. Write only the equality. A weaker relation, such as `r.val ≥ …`, is a lemma for the proof, not a bridge.
 
 ## Files and names
