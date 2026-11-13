@@ -205,7 +205,9 @@ fn theorems_claimed_proven(report: &ProveReport) -> BTreeSet<&String> {
                 }
             }
             // No theorem
-            TheoremStatus::Open { .. } | TheoremStatus::DroppedWrite { .. } => {}
+            TheoremStatus::Open { .. }
+            | TheoremStatus::Exception { .. }
+            | TheoremStatus::DroppedWrite { .. } => {}
         }
     }
     claimed_proven
@@ -543,6 +545,7 @@ mod tests {
                     PropertyFormalizationStatus::Formalized {
                         file: PathBuf::from("Spec/FAdds.lean"),
                         theorems: vec!["Spec.FAdds.f_adds".to_owned()],
+                        exceptions: BTreeMap::new(),
                     },
                 ),
                 (
@@ -550,6 +553,7 @@ mod tests {
                     PropertyFormalizationStatus::Formalized {
                         file: PathBuf::from("Spec/Inv.lean"),
                         theorems: vec!["Spec.Inv.new".to_owned(), "Spec.Inv.f".to_owned()],
+                        exceptions: BTreeMap::new(),
                     },
                 ),
             ]),

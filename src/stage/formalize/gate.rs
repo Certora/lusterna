@@ -488,6 +488,7 @@ mod tests {
                     PropertyFormalizationStatus::Formalized {
                         file: PathBuf::from("Spec/DepositAdds.lean"),
                         theorems: vec!["Spec.DepositAdds.adds".to_owned()],
+                        exceptions: BTreeMap::new(),
                     },
                 ),
                 (
@@ -498,6 +499,7 @@ mod tests {
                             "Spec.Solvent.new".to_owned(),
                             "Spec.Solvent.deposit".to_owned(),
                         ],
+                        exceptions: BTreeMap::new(),
                     },
                 ),
             ]),
