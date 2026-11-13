@@ -44,12 +44,14 @@ The report gives a purpose for each hypothesis. The briefing defines the purpose
 1. `StateInvariant`: the hypothesis must be a statement about the state before the call and about nothing else. The invariant and its theorems must be in a file of their own, in the shape that the skill `lusterna:invariants` gives, except for what the briefing allows: an induction step may assume another invariant under `-- Additional assumptions`, and two invariants whose induction steps each assume the other share a file. Each theorem in `base_cases` must assert that statement for the state that a function creates. Each theorem in `induction_steps` must assume it for the state before an operation and assert it for the state after. There must be an induction step for every function in the `steps` of the struct in the `induction` of the briefing, and a base case for every function in its `base_cases`. If the struct has no entry there, search the translation for its mutating operations and for the functions that create it, as the skill defines them, and check them the same way. It is not a defect that the `base_cases` of the struct are empty.
 2. `External`: the hypothesis must be about code that the translation does not contain. Read the Rust source of that code and check that the justification holds for it.
 3. `Natspec`: `quote` must appear word for word in the natspec of the property of the theorem. The hypothesis must state the condition of the quote and nothing more.
+4. `CallerPrecondition`: search the translation for every call of the function of the theorem. `callers` must list each function that calls it, and no other. For each caller, read its code: the condition must hold for the arguments that it passes, on every path to the call, for the reason that its entry gives. The hypothesis may only be about the arguments of the function, including the state that the caller passes. Search the Rust source too: if a function that the translation does not contain calls the function, or code outside the crate can call it, the purpose does not apply.
 
 For every purpose:
 
-1. The hypothesis must not state that a call returns or does not panic.
-2. The hypothesis must not restrict the inputs or the state so that the conclusion holds. If the conclusion fails for inputs that the property covers, and the hypothesis excludes those inputs, the theorem is false and the hypothesis hides it.
-3. The hypotheses of the theorem must be satisfiable together.
+1. The hypothesis must be about the inputs and the state before the call, not about the result of the call. Only an `External` hypothesis may be about the result of a function that the translation does not contain.
+2. The hypothesis must not state that a call returns or does not panic.
+3. The hypothesis must not restrict the inputs or the state so that the conclusion holds, except a `CallerPrecondition` that holds as above. If the conclusion fails for inputs that the property covers, and the hypothesis excludes those inputs, the theorem is false and the hypothesis hides it.
+4. The hypotheses of the theorem must be satisfiable together.
 
 ## Check each `Refuted` theorem
 
@@ -90,7 +92,7 @@ Report one defect for each problem. Use one of these kinds:
 - `wrong_assumption_report`: a hypothesis that the agent added is missing from the report or has another name there, or the report lists a hypothesis that is not in the file.
 - `wrong_purpose`: a hypothesis does not meet the rule of its purpose.
 - `incomplete_invariant`: the theorems of a `StateInvariant` do not assert the statement of the hypothesis, are not in a file of their own in the shape of the skill, or a function in the `steps` or the `base_cases` of the struct has no theorem.
-- `hides_violation`: a hypothesis restricts the inputs or the state so that the conclusion holds.
+- `hides_violation`: a hypothesis is about the result of the call, or restricts the inputs or the state so that the conclusion holds.
 - `vacuous`: the hypotheses of a theorem cannot be satisfied together.
 - `wrong_counterexample`: the theorem in `counterexample` or in `reachable` does not state what it must.
 - `unjustified_open`: the agent left a theorem `Open` without a real attempt, or with a reason that does not hold.

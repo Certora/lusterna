@@ -106,6 +106,14 @@ pub enum AssumptionPurpose {
     /// The natspec states this condition, and the theorem lacks it. `quote` is
     /// the part of the natspec that states it, copied exactly.
     Natspec { quote: String },
+    /// A condition on the arguments that every caller of the function of the
+    /// theorem establishes.
+    CallerPrecondition {
+        /// Each function of the translation that calls the function of the
+        /// theorem, by its full Lean name, with where it establishes the
+        /// condition.
+        callers: BTreeMap<String, String>,
+    },
 }
 
 /// Report from the agent once done with proving
