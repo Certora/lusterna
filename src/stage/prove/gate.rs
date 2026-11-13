@@ -205,7 +205,9 @@ fn theorems_claimed_proven(report: &ProveReport) -> BTreeSet<&String> {
                 }
             }
             // No theorem
-            TheoremStatus::Open { .. } | TheoremStatus::DroppedWrite { .. } => {}
+            TheoremStatus::Open { .. }
+            | TheoremStatus::Exception { .. }
+            | TheoremStatus::DroppedWrite { .. } => {}
         }
     }
     claimed_proven

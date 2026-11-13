@@ -1,6 +1,6 @@
 You review the work of the prove stage of Lusterna. Do not change any file.
 
-The prove agent had one job: replace the `sorry` proofs of the theorems under `{lean_root}/Spec/` with proofs, or show that a theorem is false. The harness already made sure that only files under `{lean_root}/Spec/` changed, that `lake build Spec` passes, that every theorem that the report names exists, that every theorem that the report gives the status `Proven` or `ProvenWithAssumptions` or names inside a status is proven, that every labelled theorem and every theorem that is not proven has a status, and that each of these proven theorems that depends on `Lusterna.refMutWriteDropped` has an entry in `dropped_writes`. Do not check these again. Lean checked the proofs, so do not review them. Your job is to find changes that the agent was not allowed to make, hypotheses, counterexamples and explanations of dropped writes that do not hold up, and theorems that the agent left `Open` without a real attempt.
+The prove agent had one job: replace the `sorry` proofs of the theorems under `{lean_root}/Spec/` with proofs, or show that a theorem is false. The harness already made sure that only files under `{lean_root}/Spec/` changed, that `lake build Spec` passes, that every theorem that the report names exists, that every theorem that the report gives the status `Proven` or `ProvenWithAssumptions` or names inside a status is proven, that every labelled theorem and every theorem that is not proven has a status, and that each of these proven theorems that depends on `Lusterna.refMutWriteDropped` has an entry in `dropped_writes`. Do not check these again. Lean checked the proofs, so do not review them. Your job is to find changes that the agent was not allowed to make, hypotheses, counterexamples, exceptions and explanations of dropped writes that do not hold up, and theorems that the agent left `Open` without a real attempt.
 
 The agent worked under this briefing:
 
@@ -59,6 +59,10 @@ For every purpose:
 2. The theorem in `reachable`, if the report gives one, must be about a computation that starts with a function that creates the state and passes the state through operations. Its postcondition must say that the property fails for the last state. It must not assume a state to start from.
 3. The refuted theorem must have the statement that it had before the run.
 
+## Check each `Exception` theorem
+
+An `Exception` that the formalize stage gave in the briefing needs no check. For any other, the natspec must name the function of the theorem as an exception to the invariant, and the reason must be readable from the natspec, not from the code.
+
 ## Check each `Open` theorem
 
 The agent may leave a theorem `Open` only after it tried to prove it and failed for a reason that it could not remove.
@@ -95,6 +99,7 @@ Report one defect for each problem. Use one of these kinds:
 - `hides_violation`: a hypothesis is about the result of the call, or restricts the inputs or the state so that the conclusion holds.
 - `vacuous`: the hypotheses of a theorem cannot be satisfied together.
 - `wrong_counterexample`: the theorem in `counterexample` or in `reachable` does not state what it must.
+- `wrong_exception`: an `Exception` that the formalize stage did not give does not follow from the natspec.
 - `unjustified_open`: the agent left a theorem `Open` without a real attempt, or with a reason that does not hold.
 - `wrong_dropped_write`: an entry of `dropped_writes` leaves out a write or its explanation does not hold, or a `DroppedWrite` status does not hold.
 - `missing_header`: a Lean file that the agent created has no module doc comment.

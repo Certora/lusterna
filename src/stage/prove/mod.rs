@@ -66,6 +66,12 @@ pub enum TheoremStatus {
     },
     /// Still `sorry`.
     Open { reason: String },
+    /// Still `sorry`: the natspec names the function of the theorem as an
+    /// exception to the invariant.
+    Exception {
+        /// The reason, as the natspec gives it.
+        reason: String,
+    },
     /// Neither proven nor refuted: the proof or the counterexample holds only
     /// because the translation drops a write through a `core.cell.RefMut`
     /// that the conclusion depends on.
@@ -209,11 +215,25 @@ impl Stage for ProveStage {
     fn briefing(&self) -> String {
         let induction =
             serde_json::to_string_pretty(&self.input.induction).expect("the induction serializes");
+        // The induction steps that the formalize stage excepted, with their reasons
+        let mut exceptions = BTreeMap::new();
+        for status in self.input.property_status.values() {
+            if let PropertyFormalizationStatus::Formalized {
+                exceptions: property_exceptions,
+                ..
+            } = status
+            {
+                exceptions.extend(property_exceptions);
+            }
+        }
+        let exceptions =
+            serde_json::to_string_pretty(&exceptions).expect("the exceptions serialize");
         BRIEFING_TEMPLATE
             .replace("{lean_root}", &self.input.lean_root.display().to_string())
             .replace("{extracted}", &self.input.extracted.display().to_string())
             .replace("{properties}", &self.input.properties.display().to_string())
             .replace("{induction}", &induction)
+            .replace("{exceptions}", &exceptions)
     }
 
     fn skills(&self) -> Vec<(&'static str, String)> {
@@ -266,7 +286,13 @@ mod tests {
     fn briefing_fills_every_placeholder() {
         let briefing = stage().briefing();
 
-        for placeholder in ["{lean_root}", "{extracted}", "{properties}", "{induction}"] {
+        for placeholder in [
+            "{lean_root}",
+            "{extracted}",
+            "{properties}",
+            "{induction}",
+            "{exceptions}",
+        ] {
             assert!(!briefing.contains(placeholder), "{placeholder} is left");
         }
         assert!(briefing.contains("`/c/lusterna/properties.json`"));

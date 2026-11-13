@@ -16,6 +16,12 @@ The formalize stage reported, for each struct of an invariant property, the func
 {induction}
 </induction>
 
+The formalize stage excepted these induction steps, because the natspec names their function as an exception to the invariant. Do not prove them. Report each as `Exception`, with the reason given here:
+
+<exceptions>
+{exceptions}
+</exceptions>
+
 ## What to prove
 
 1. Prove the bridges first. The proofs of the other theorems use them.
@@ -67,9 +73,10 @@ First find the functions of the translation that call the function of the theore
 
 Otherwise:
 
-1. Prove a counterexample in Lean: a theorem stating that there are a state and inputs that satisfy every hypothesis of the theorem and for which its conclusion fails. Put it in the property file, below the theorem, and leave the proof of the theorem `sorry`. Report its name in `counterexample`.
-2. The state of a counterexample may be one that the program never reaches. For an induction step this means that the invariant is not strong enough for the induction, not that the code is wrong. Check whether another invariant of the state rules the counterexample out. If one does, add it as a `StateInvariant` hypothesis and prove the theorem. The arguments of a counterexample may also be ones that no caller of the function passes. If so, add the condition that the callers establish as a `CallerPrecondition` hypothesis and prove the theorem.
-3. If neither does, try to prove that the program reaches a violating state: a theorem over a `do` block that starts with a function that creates the state, calls operations on it, and ends in a state for which the property fails. Report its name in `reachable`. If the translation has no function that creates the state, you cannot prove this.
+1. If the natspec names the function of the theorem as an exception to the invariant, report the theorem as `Exception`, with the reason that the natspec gives. The reason must follow from the natspec alone, not from the code.
+2. Prove a counterexample in Lean: a theorem stating that there are a state and inputs that satisfy every hypothesis of the theorem and for which its conclusion fails. Put it in the property file, below the theorem, and leave the proof of the theorem `sorry`. Report its name in `counterexample`.
+3. The state of a counterexample may be one that the program never reaches. For an induction step this means that the invariant is not strong enough for the induction, not that the code is wrong. Check whether another invariant of the state rules the counterexample out. If one does, add it as a `StateInvariant` hypothesis and prove the theorem. The arguments of a counterexample may also be ones that no caller of the function passes. If so, add the condition that the callers establish as a `CallerPrecondition` hypothesis and prove the theorem.
+4. If neither does, try to prove that the program reaches a violating state: a theorem over a `do` block that starts with a function that creates the state, calls operations on it, and ends in a state for which the property fails. Report its name in `reachable`. If the translation has no function that creates the state, you cannot prove this.
 
 A later stage reads the Rust code and decides whether a counterexample is a bug. Do not do that analysis.
 
@@ -95,7 +102,7 @@ The harness checks these conditions after you stop. If one fails, you get the er
 6. Your report gives a status for every labelled theorem, and for every other theorem under `Spec/` that is not proven.
 7. Each theorem of conditions 4 and 5 that depends on `Lusterna.refMutWriteDropped` has an entry in `dropped_writes`.
 
-A reviewer then checks that you changed only what "What you may change" allows, that each hypothesis that you added follows the rules of "Additional assumptions", that you worked on each theorem that you report as `Open`, and that each entry of `dropped_writes` and each `DroppedWrite` status holds.
+A reviewer then checks that you changed only what "What you may change" allows, that each hypothesis that you added follows the rules of "Additional assumptions", that you worked on each theorem that you report as `Open`, that each `Exception` that the formalize stage did not give holds, and that each entry of `dropped_writes` and each `DroppedWrite` status holds.
 
 Nobody reads your messages while you work, and nobody answers questions. Do not stop to ask a question or to wait for an answer. If you must choose between options, choose the one that follows this briefing and continue. The harness controls the budget. Do not stop early because you expect the budget to run out. Do not return your report while a theorem is left that you did not work on, or while a build is running.
 
