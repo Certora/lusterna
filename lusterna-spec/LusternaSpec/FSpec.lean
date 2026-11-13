@@ -79,6 +79,10 @@ theorem fspec_iff {α} {m : Result α} {p : Post α} : fspec m p ↔ ∀ r, m = 
   | vis e k => simp
   | div => simp
 
+/-- `fspec` holds for every computation with the postcondition `True`. -/
+theorem fspec_true {α} (m : Result α) : fspec m (fun _ => True) :=
+  fspec_iff.mpr fun _ _ => trivial
+
 /-- A triple gives an `fspec`. `step` uses it to apply a `spec` theorem to an `fspec` goal. -/
 theorem spec_fspec (α) (x : Result α) (p : Post α) : spec x p → fspec x p := by
   intro h; grind[fspec_iff]

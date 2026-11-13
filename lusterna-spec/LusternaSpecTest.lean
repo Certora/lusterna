@@ -20,6 +20,17 @@ info: {"axioms":[],"dropsWrites":false,"function":null,"id":null,"issues":[],"mo
 #guard_msgs in
 #eval Lusterna.Spec.check #[`LusternaSpecTest.Fixture] (axioms := true)
 
+#step_skip LusternaSpecTest.f
+
+open Aeneas.Std Result Lusterna.Spec in
+example (x : U32) : (do let _ ← LusternaSpecTest.f x; ok x) ⦃ r => r = x ⦄fail := by
+  step
+  simp
+
+/-- error: `Nat.succ` does not return a `Result` -/
+#guard_msgs in
+#step_skip Nat.succ
+
 /-- error: @[lusterna] needs a non-empty title -/
 #guard_msgs in
 @[lusterna 1 " "]

@@ -80,13 +80,13 @@ Unfold only the function of the theorem. Do not unfold a function that it calls:
 1. **Arithmetic on scalars.** `LusternaSpec` has `⦄fail` theorems for it. Each one has the hypotheses of the `⦃ ⦄` theorem of Aeneas in its postcondition: if `x + y` returns `z`, then `x.val + y.val ≤ U64.max` and `z.val = x.val + y.val`.
 2. **A function with a bridge.** The bridge is its theorem.
 3. **A function of the crate whose result the proof needs.** State a `@[step]` theorem about it that says what the proof needs, and prove it like any other theorem: unfold the function and use `step`. If the function leaves the values of the property unchanged, the theorem says that.
-4. **A function whose result the proof does not need.** State a theorem with the postcondition `True`. Its proof is always the same:
+4. **A function whose result the proof does not need.** `#step_skip` adds, for each function that it names, the `@[step]` theorem `<function>.fspec_skip` with the postcondition `True`. One line covers several functions:
 
 ```lean
-@[step]
-theorem Struct.log.fspec_any (s : Struct) : s.log ⦃ _ => True ⦄fail :=
-  fspec_iff.mpr fun _ _ => trivial
+#step_skip Struct.log
 ```
+
+A proof sees the `@[step]` theorems of its own file and of the files that it imports. Among them, `step` takes the first theorem that applies, and does not try another one when the proof gets stuck later. `<function>.fspec_skip` is a `⦄fail` theorem that always applies, so on a `⦄fail` goal `step` then uses no other theorem of the function, `⦃ ⦄` theorems included. Use `#step_skip` only for a function whose result no proof that sees it needs.
 
 With these theorems the proof of `f` does not look into `get_total` or `log`:
 
@@ -171,7 +171,7 @@ theorem Struct.get_total.total_spec (s : Struct)
 ## Which tactic for which goal
 
 | Goal | Try first | Then |
-|---|---|---|
+| --- | --- | --- |
 | The next call of a function | `step` | `step with <theorem>` |
 | Arithmetic on scalars and their bounds | `scalar_tac` | `agrind` |
 | Arithmetic with products of variables | `scalar_tac +nonLin` | a `have` for the product, then `scalar_tac` |
