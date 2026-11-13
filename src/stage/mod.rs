@@ -13,6 +13,10 @@ use std::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
+/// The `SKILL.md` of the skill `invariants`, which the formalize and prove
+/// stages share.
+const INVARIANTS_SKILL: &str = include_str!("res/invariants.md");
+
 #[derive(Debug, Serialize, Deserialize, derive_more::Display)]
 pub enum StageName {
     Orientate,

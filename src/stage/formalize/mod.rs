@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     stage::{
-        Stage, StageName,
+        INVARIANTS_SKILL, Stage, StageName,
         properties::{Properties, PropertyId},
     },
     utils::git::{self, GitError},
@@ -171,6 +171,7 @@ impl Stage for FormalizeStage {
         vec![
             ("aeneas-specs", AENEAS_SPECS_SKILL.to_owned()),
             ("aeneas-models", AENEAS_MODELS_SKILL.to_owned()),
+            ("invariants", INVARIANTS_SKILL.to_owned()),
         ]
     }
 
@@ -268,7 +269,7 @@ mod tests {
     fn skill_has_front_matter() {
         let skills = stage().skills();
 
-        assert_eq!(skills.len(), 2);
+        assert_eq!(skills.len(), 3);
         for (name, content) in skills {
             assert!(content.starts_with(&format!("---\nname: {name}\n")));
         }

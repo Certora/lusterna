@@ -441,8 +441,8 @@ impl FormalizeGateFailure {
             FormalizeGateFailure::UncoveredInduction { missing } => format!(
                 "These functions in `base_cases` or `steps` have no labelled theorem of the \
                  invariant property whose triple calls them directly:\n\n{}\n\n\
-                 Write the base case or the induction step for each one, as \"Invariants\" in \
-                 your briefing describes.",
+                 Write the base case or the induction step for each one, as the skill \
+                 `lusterna:invariants` describes.",
                 list(
                     missing
                         .iter()
