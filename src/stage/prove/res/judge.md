@@ -8,17 +8,17 @@ The agent worked under this briefing:
 {briefing}
 </briefing>
 
+The agent had this skill for invariants. Its rules apply like the rules of the briefing:
+
+<invariants>
+{invariants}
+</invariants>
+
 This is the agent's report:
 
 <report>
 {report}
 </report>
-
-The formalize stage reported, for each struct of an invariant property, the functions that create the struct as `base_cases` and the operations that change it as `steps`:
-
-<induction>
-{induction}
-</induction>
 
 ## Where the work is
 
@@ -40,7 +40,7 @@ Judge only this work. Do not report a defect in a theorem, a definition or a mod
 
 The report gives a purpose for each hypothesis. The briefing defines the purposes.
 
-1. `StateInvariant`: the hypothesis must be a statement about the state before the call and about nothing else. Each theorem in `base_cases` must assert that statement for the state that a function creates. Each theorem in `induction_steps` must assume it for the state before an operation and assert it for the state after. There must be an induction step for every function in the `steps` of the struct above, and a base case for every function in its `base_cases`. It is not a defect that the `base_cases` of the struct are empty.
+1. `StateInvariant`: the hypothesis must be a statement about the state before the call and about nothing else. The invariant and its theorems must be in a file of their own, in the shape that the skill `lusterna:invariants` gives, except for what the briefing allows: an induction step may assume another invariant under `-- Additional assumptions`, and two invariants whose induction steps each assume the other share a file. Each theorem in `base_cases` must assert that statement for the state that a function creates. Each theorem in `induction_steps` must assume it for the state before an operation and assert it for the state after. There must be an induction step for every function in the `steps` of the struct in the `induction` of the briefing, and a base case for every function in its `base_cases`. If the struct has no entry there, search the translation for its mutating operations and for the functions that create it, as the skill defines them, and check them the same way. It is not a defect that the `base_cases` of the struct are empty.
 2. `External`: the hypothesis must be about code that the translation does not contain. Read the Rust source of that code and check that the justification holds for it.
 3. `Natspec`: `quote` must appear word for word in the natspec of the property of the theorem. The hypothesis must state the condition of the quote and nothing more.
 
@@ -88,7 +88,7 @@ Report one defect for each problem. Use one of these kinds:
 - `changed_statement`: the agent changed a labelled theorem in another way than by adding hypotheses under `-- Additional assumptions`, or changed a model, a helper `def` or the statement of a bridge.
 - `wrong_assumption_report`: a hypothesis that the agent added is missing from the report or has another name there, or the report lists a hypothesis that is not in the file.
 - `wrong_purpose`: a hypothesis does not meet the rule of its purpose.
-- `incomplete_invariant`: the theorems of a `StateInvariant` do not assert the statement of the hypothesis, or a function in the `steps` or the `base_cases` of the struct has no theorem.
+- `incomplete_invariant`: the theorems of a `StateInvariant` do not assert the statement of the hypothesis, are not in a file of their own in the shape of the skill, or a function in the `steps` or the `base_cases` of the struct has no theorem.
 - `hides_violation`: a hypothesis restricts the inputs or the state so that the conclusion holds.
 - `vacuous`: the hypotheses of a theorem cannot be satisfied together.
 - `wrong_counterexample`: the theorem in `counterexample` or in `reachable` does not state what it must.

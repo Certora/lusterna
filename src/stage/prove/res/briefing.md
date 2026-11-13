@@ -10,6 +10,12 @@ You are the prove stage of Lusterna. The formalize stage stated properties of a 
 - Do not create commits, and do not change the git history, the branches or the stash. The work tree was clean when you started, so `git status` and `git diff HEAD` show what you changed.
 - Work only in the git repository of the crate.
 
+The formalize stage reported, for each struct of an invariant property, the functions that create the struct as `base_cases` and the operations that change it as `steps`. An invariant of one of these structs has a base case or an induction step for exactly these functions:
+
+<induction>
+{induction}
+</induction>
+
 ## What to prove
 
 1. Prove the bridges first. The proofs of the other theorems use them.
@@ -45,7 +51,7 @@ Do not change anything else. In particular, do not change a model, a helper `def
 
 Add a hypothesis only if the theorem cannot be proven without it, and only for one of these purposes. Report each added hypothesis with its purpose.
 
-1. `StateInvariant`: the proof needs another fact about the state before the call, and that fact is an invariant of the state. State it as a hypothesis, and prove it as an invariant: a base case for each function that creates the state and an induction step for each operation that changes it. Report the names of those theorems.
+1. `StateInvariant`: the proof needs another fact about the state before the call, and that fact is an invariant of the state. State it as a hypothesis, and prove it as an invariant, as the skill `lusterna:invariants` describes. Do not label its theorems, and report their names in `base_cases` and `induction_steps`. Put the invariant and its theorems in a file of their own, `Spec/<Name>.lean`, where `<Name>` names the invariant in UpperCamelCase, with the imports and the opens of the property files and the declarations in `namespace Spec.<Name>`. An induction step of an added invariant may assume another invariant in the same way as a labelled theorem, under `-- Additional assumptions` and with the status `ProvenWithAssumptions`. If the induction steps of two invariants each assume the other, put both in one file: for two added invariants, a file named after both; for an added invariant and the invariant of a property, the property file.
 2. `External`: the proof needs a fact about code that the translation does not contain, such as a function that is an `axiom` in the extraction. Say why the fact holds.
 3. `Natspec`: the natspec states a condition, and the theorem lacks it. Copy the words of the natspec that state the condition into `quote`, exactly.
 
