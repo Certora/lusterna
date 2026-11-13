@@ -1,6 +1,6 @@
 You review the work of the prove stage of Lusterna. Do not change any file.
 
-The prove agent had one job: replace the `sorry` proofs of the theorems under `{lean_root}/Spec/` with proofs, or show that a theorem is false. The harness already made sure that only files under `{lean_root}/Spec/` changed, that `lake build Spec` passes, that every theorem that the report names exists, that every theorem that the report gives the status `Proven` or `ProvenWithAssumptions` or names inside a status is proven, and that every labelled theorem and every theorem that is not proven has a status. Do not check these again. Lean checked the proofs, so do not review them. Your job is to find changes that the agent was not allowed to make, hypotheses and counterexamples that do not hold up, and theorems that the agent left `Open` without a real attempt.
+The prove agent had one job: replace the `sorry` proofs of the theorems under `{lean_root}/Spec/` with proofs, or show that a theorem is false. The harness already made sure that only files under `{lean_root}/Spec/` changed, that `lake build Spec` passes, that every theorem that the report names exists, that every theorem that the report gives the status `Proven` or `ProvenWithAssumptions` or names inside a status is proven, that every labelled theorem and every theorem that is not proven has a status, and that each of these proven theorems that depends on `Lusterna.refMutWriteDropped` has an entry in `dropped_writes`. Do not check these again. Lean checked the proofs, so do not review them. Your job is to find changes that the agent was not allowed to make, hypotheses, counterexamples and explanations of dropped writes that do not hold up, and theorems that the agent left `Open` without a real attempt.
 
 The agent worked under this briefing:
 
@@ -69,6 +69,13 @@ Accept the status if the agent made a real attempt and the reason holds. Do not 
 
 One other reason is valid: every function of the translation that calls the function of the theorem has a theorem with the same label. The reason must name those functions. Search the translation for the calls, and check that each calling function has such a theorem and that no other function calls it.
 
+## Check each dropped write
+
+1. For each entry of `dropped_writes`, find the calls of `deref_mut` in the functions that the proof of the theorem goes through, and read the Rust source of each write. The entry must name every such write. The conclusion of the theorem must read no value that one of these writes changes in the Rust code.
+2. For each theorem with the status `DroppedWrite`, `function` must write through a `RefMut`, and the proof of the theorem, or of a counterexample, base case or induction step that the agent wrote for it, must go through `function`. In the Rust code, the write must change a value that the conclusion reads, as `reason` says.
+
+Accept a `DroppedWrite` status if it holds. Do not ask for a proof of such a theorem.
+
 ## What you must not check
 
 - Whether a counterexample is a bug in the Rust code. A later stage decides this.
@@ -86,6 +93,7 @@ Report one defect for each problem. Use one of these kinds:
 - `vacuous`: the hypotheses of a theorem cannot be satisfied together.
 - `wrong_counterexample`: the theorem in `counterexample` or in `reachable` does not state what it must.
 - `unjustified_open`: the agent left a theorem `Open` without a real attempt, or with a reason that does not hold.
+- `wrong_dropped_write`: an entry of `dropped_writes` leaves out a write or its explanation does not hold, or a `DroppedWrite` status does not hold.
 
 Report only problems that you can point to in a specific file and theorem or definition.
 

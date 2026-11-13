@@ -489,8 +489,8 @@ impl ProveGateFailure {
                  theorem, find the writes through a `RefMut` in the functions that its proof \
                  goes through. If its conclusion does not depend on them, add an entry to \
                  `dropped_writes` that names the writes and says why. Otherwise give the \
-                 theorem, or the theorem whose counterexample it is, the status \
-                 `DroppedWrite`.",
+                 theorem the status `DroppedWrite`. If the status of another theorem names \
+                 it, give that theorem this status instead.",
                 code_list(theorems)
             ),
         }
