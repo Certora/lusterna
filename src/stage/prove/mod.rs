@@ -66,6 +66,17 @@ pub enum TheoremStatus {
     },
     /// Still `sorry`.
     Open { reason: String },
+    /// Neither proven nor refuted: the proof or the counterexample holds only
+    /// because the translation drops a write through a `core.cell.RefMut`
+    /// that the conclusion depends on.
+    DroppedWrite {
+        /// The full Lean name of the function that writes through the
+        /// `RefMut`.
+        function: String,
+        /// The type behind the `RefMut`, and how the conclusion depends on
+        /// the write.
+        reason: String,
+    },
 }
 
 /// An additional assumption that was added to an existing theorem
@@ -103,6 +114,11 @@ pub enum AssumptionPurpose {
 pub struct ProveReport {
     /// The theorems (fully qualified lean name) and their proof status
     pub theorems: BTreeMap<String, TheoremStatus>,
+    /// For each theorem that the report claims to be proven and that depends
+    /// on `Lusterna.refMutWriteDropped`: the writes through a
+    /// `core.cell.RefMut` that its proof goes through, and why its conclusion
+    /// does not depend on them.
+    pub dropped_writes: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -253,6 +269,7 @@ mod tests {
                     reason: "{lean_root}".to_owned(),
                 },
             )]),
+            dropped_writes: BTreeMap::new(),
         };
         let output = ProveOutput {
             properties: BTreeMap::new(),

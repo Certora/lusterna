@@ -6,6 +6,8 @@
 //! 4. Every theorem that the report claims to be proven is proven.
 //! 5. Every labelled theorem and every theorem that is not proven has a status
 //!    in the report.
+//! 6. Every theorem that the report claims to be proven and that depends on
+//!    `Lusterna.refMutWriteDropped` has an entry in its `dropped_writes`.
 //!
 //! Then it groups the statuses of the report by property.
 //!
@@ -73,6 +75,8 @@ pub enum ProveGateFailure {
     },
     #[display("{} theorems have no status", theorems.len())]
     MissingStatus { theorems: Vec<String> },
+    #[display("{} theorems drop writes without an explanation", theorems.len())]
+    UnexplainedDroppedWrites { theorems: Vec<String> },
 }
 
 type GateStop = stage::GateStop<ProveStage>;
@@ -142,7 +146,8 @@ fn check_report(
     let claimed_proven = theorems_claimed_proven(report);
     check_names_exist(report, &claimed_proven, spec_theorems)?;
     check_claims_are_proven(&claimed_proven, spec_theorems)?;
-    check_statuses_are_complete(report, spec_theorems)
+    check_statuses_are_complete(report, spec_theorems)?;
+    check_dropped_writes_explained(report, &claimed_proven, spec_theorems)
 }
 
 /// Returns the theorem with the full Lean name `name`.
@@ -200,22 +205,22 @@ fn theorems_claimed_proven(report: &ProveReport) -> BTreeSet<&String> {
                 }
             }
             // No theorem
-            TheoremStatus::Open { .. } => {}
+            TheoremStatus::Open { .. } | TheoremStatus::DroppedWrite { .. } => {}
         }
     }
     claimed_proven
 }
 
-/// Fails if `report` gives a status to a theorem that is not in
-/// `spec_theorems`, or if a theorem in `claimed_proven` is not in
-/// `spec_theorems`.
+/// Fails if `report` gives a status or a `dropped_writes` entry to a theorem
+/// that is not in `spec_theorems`, or if a theorem in `claimed_proven` is not
+/// in `spec_theorems`.
 fn check_names_exist(
     report: &ProveReport,
     claimed_proven: &BTreeSet<&String>,
     spec_theorems: &[TheoremCheck],
 ) -> Result<(), ProveGateFailure> {
     let mut unknown = BTreeSet::new();
-    for name in report.theorems.keys() {
+    for name in report.theorems.keys().chain(report.dropped_writes.keys()) {
         if find_theorem(spec_theorems, name).is_none() {
             unknown.insert(name.clone());
         }
@@ -273,6 +278,31 @@ fn check_statuses_are_complete(
     }
     if !missing.is_empty() {
         return Err(ProveGateFailure::MissingStatus { theorems: missing });
+    }
+    Ok(())
+}
+
+/// Fails if a theorem in `claimed_proven` depends on
+/// `Lusterna.refMutWriteDropped` and has no entry in the `dropped_writes` of
+/// `report`. Skips a name that is not in `spec_theorems`.
+fn check_dropped_writes_explained(
+    report: &ProveReport,
+    claimed_proven: &BTreeSet<&String>,
+    spec_theorems: &[TheoremCheck],
+) -> Result<(), ProveGateFailure> {
+    let mut unexplained = Vec::new();
+    for name in claimed_proven {
+        let Some(theorem) = find_theorem(spec_theorems, name) else {
+            continue;
+        };
+        if theorem.drops_writes == Some(true) && !report.dropped_writes.contains_key(*name) {
+            unexplained.push((*name).clone());
+        }
+    }
+    if !unexplained.is_empty() {
+        return Err(ProveGateFailure::UnexplainedDroppedWrites {
+            theorems: unexplained,
+        });
     }
     Ok(())
 }
@@ -449,6 +479,20 @@ impl ProveGateFailure {
                  not finished.",
                 code_list(theorems)
             ),
+            ProveGateFailure::UnexplainedDroppedWrites { theorems } => format!(
+                "Your report claims that these theorems are proven, but each depends on the \
+                 axiom `Lusterna.refMutWriteDropped`, and your report gives them no entry in \
+                 `dropped_writes`:\n\n{}\n\n\
+                 The proof of each goes through `deref_mut` of a `core.cell.RefMut`, and the \
+                 translation drops every write through a `RefMut`. A theorem that holds only \
+                 because such a write is lost says nothing about the Rust code. For each \
+                 theorem, find the writes through a `RefMut` in the functions that its proof \
+                 goes through. If its conclusion does not depend on them, add an entry to \
+                 `dropped_writes` that names the writes and says why. Otherwise give the \
+                 theorem, or the theorem whose counterexample it is, the status \
+                 `DroppedWrite`.",
+                code_list(theorems)
+            ),
         }
     }
 }
@@ -586,6 +630,7 @@ mod tests {
                     },
                 ),
             ]),
+            dropped_writes: BTreeMap::new(),
         }
     }
 
@@ -699,6 +744,43 @@ mod tests {
             check_report(&report(), &spec_theorems),
             Err(ProveGateFailure::MissingStatus { theorems }) if theorems == ["Spec.InvAux.lemma"]
         ));
+    }
+
+    #[test]
+    fn rejects_unexplained_dropped_write() {
+        let mut spec_theorems = spec_theorems();
+        spec_theorems[3].drops_writes = Some(true);
+        assert!(matches!(
+            check_report(&report(), &spec_theorems),
+            Err(ProveGateFailure::UnexplainedDroppedWrites { theorems })
+                if theorems == ["Spec.Inv.f_counterexample"]
+        ));
+    }
+
+    #[test]
+    fn explained_dropped_write_passes() {
+        let mut spec_theorems = spec_theorems();
+        spec_theorems[3].drops_writes = Some(true);
+        let mut report = report();
+        report
+            .dropped_writes
+            .insert("Spec.Inv.f_counterexample".to_owned(), String::new());
+        check_report(&report, &spec_theorems).unwrap();
+    }
+
+    #[test]
+    fn dropped_write_status_passes() {
+        let mut spec_theorems = spec_theorems();
+        spec_theorems[3].drops_writes = Some(true);
+        let mut report = report();
+        report.theorems.insert(
+            "Spec.Inv.f".to_owned(),
+            TheoremStatus::DroppedWrite {
+                function: String::new(),
+                reason: String::new(),
+            },
+        );
+        check_report(&report, &spec_theorems).unwrap();
     }
 
     #[test]
