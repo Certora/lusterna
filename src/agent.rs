@@ -20,6 +20,9 @@ const DEFAULT_ALLOWED_TOOLS: &[&str] =
 
 const DISALLOWED_TOOLS: &[&str] = &["ScheduleWakeup"];
 
+/// The settings of `claude` for `AgentOptions::sandbox`.
+const SANDBOX_SETTINGS: &str = r#"{"sandbox": {"enabled": true, "failIfUnavailable": true, "allowUnsandboxedCommands": false}, "permissions": {"blockWritesOutsideWorkingDirectories": true}}"#;
+
 /// The tools and the environment of `claude`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -30,6 +33,10 @@ pub struct AgentOptions {
     pub disallowed_tools: Vec<String>,
     /// Environment variables of `claude`
     pub env: Vec<(String, String)>,
+    /// Confines the writes of Bash and of the file tools to the working
+    /// directory and to a temporary directory that lasts for one run of
+    /// `claude`, and blocks the network of Bash
+    pub sandbox: bool,
 }
 
 impl Default for AgentOptions {
@@ -41,6 +48,7 @@ impl Default for AgentOptions {
                 .collect(),
             disallowed_tools: DISALLOWED_TOOLS.iter().map(|s| s.to_string()).collect(),
             env: Vec::new(),
+            sandbox: false,
         }
     }
 }
@@ -268,6 +276,25 @@ impl Agent {
             ]);
             plugin_dir = Some(dir);
         }
+        // The temporary directory of a sandboxed run: `claude` sets `$TMPDIR`
+        // of Bash below it, and the file tools may write to it.
+        //
+        // It is in `/tmp`: `claude` does not use a `CLAUDE_CODE_TMPDIR` in the
+        // system temporary directory of macOS (`/var/folders/…`).
+        let mut scratch_dir = None;
+        if self.options.sandbox {
+            let dir = tempfile::Builder::new()
+                .prefix("lusterna-")
+                .tempdir_in("/tmp")?;
+            let path = fs::canonicalize(dir.path())?;
+            args.extend([
+                "--add-dir".into(),
+                path.to_string_lossy().into_owned(),
+                "--settings".into(),
+                SANDBOX_SETTINGS.into(),
+            ]);
+            scratch_dir = Some((dir, path));
+        }
         let mut result = None;
 
         let mut cmnd = Command::new("claude");
@@ -279,6 +306,9 @@ impl Agent {
             cmnd.current_dir(dir);
         }
         cmnd.envs(self.options.env.iter().map(|(k, v)| (k, v)));
+        if let Some((_, path)) = &scratch_dir {
+            cmnd.env("CLAUDE_CODE_TMPDIR", path);
+        }
         let mut cmnd = cmnd.spawn()?;
 
         let mut stdin = cmnd.stdin.take().expect("stdin is piped");
@@ -312,6 +342,7 @@ impl Agent {
         let stderr = stderr.join().expect("stderr reader panicked")?;
         drop(briefing_file);
         drop(plugin_dir);
+        drop(scratch_dir);
 
         if !status.success() {
             if result

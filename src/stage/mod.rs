@@ -171,8 +171,9 @@ where
 
 /// The options of an agent that builds Lean, which the formalize and prove
 /// stages share: its commands run in the foreground, one at a time, Bash stops
-/// a command after `cfg.command_timeout` minutes, and Lean runs only through
-/// `lake build`, whose lakefile limits its memory.
+/// a command after `cfg.command_timeout` minutes, Lean runs only through
+/// `lake build`, whose lakefile limits its memory, and the agent runs in the
+/// sandbox of `AgentOptions::sandbox`.
 fn lean_agent_options(cfg: &Config) -> AgentOptions {
     let timeout_ms = (cfg.command_timeout * 60_000).to_string();
     let mut options = AgentOptions::default();
@@ -187,5 +188,6 @@ fn lean_agent_options(cfg: &Config) -> AgentOptions {
         ("BASH_DEFAULT_TIMEOUT_MS".to_owned(), timeout_ms.clone()),
         ("BASH_MAX_TIMEOUT_MS".to_owned(), timeout_ms),
     ];
+    options.sandbox = true;
     options
 }
