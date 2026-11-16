@@ -113,6 +113,10 @@ pub struct Induction {
     /// The full Lean names of the mutating operations of the struct, which
     /// the induction steps call.
     pub steps: Vec<String>,
+    /// The full Lean names of the unmodelled operations of the struct, each
+    /// with the value of the struct that it changes and the write that the
+    /// translation drops.
+    pub unmodelled_steps: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]

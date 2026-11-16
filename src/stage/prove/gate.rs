@@ -550,6 +550,7 @@ mod tests {
                 Induction {
                     base_cases: vec!["module.Struct.new".to_owned()],
                     steps: vec!["module.Struct.f".to_owned()],
+                    unmodelled_steps: BTreeMap::new(),
                 },
             )]),
         }

@@ -10,7 +10,7 @@ You are the prove stage of Lusterna. The formalize stage stated properties of a 
 - Do not create commits, and do not change the git history, the branches or the stash. The work tree was clean when you started, so `git status` and `git diff HEAD` show what you changed.
 - Work only in the git repository of the crate.
 
-The formalize stage reported, for each struct of an invariant property, the functions that create the struct as `base_cases` and the operations that change it as `steps`. An invariant of one of these structs has a base case or an induction step for exactly these functions:
+The formalize stage reported, for each struct of an invariant property, the functions that create the struct as `base_cases`, the operations that change it as `steps`, and the operations whose changes the translation drops as `unmodelled_steps`. An invariant of one of these structs has a base case or an induction step for exactly the functions in `base_cases` and `steps`:
 
 <induction>
 {induction}

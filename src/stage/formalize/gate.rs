@@ -508,6 +508,7 @@ mod tests {
                 Induction {
                     base_cases: vec!["vault.Vault.new".to_owned()],
                     steps: vec!["vault.Vault.deposit".to_owned()],
+                    unmodelled_steps: BTreeMap::new(),
                 },
             )]),
             new_theorems: Vec::new(),
