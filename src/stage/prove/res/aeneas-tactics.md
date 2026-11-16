@@ -224,6 +224,10 @@ If the function uses the operator `loop`, apply `loop.spec_decr_nat`. It takes a
 - Give a hard fact as a `have` before the tactic that needs it.
 - If a proof takes more than a minute to check, split it into lemmas.
 - If Lean reports that the maximum number of heartbeats has been reached, put `set_option maxHeartbeats 1000000 in` in front of the theorem. Do not set a larger value. If that is not enough, split the proof into lemmas.
+- If a build reaches the heartbeat limit or the recursion limit, or the Bash tool stops it, look first for one of these causes:
+  1. `simp`, `simp_all` or `scalar_tac` on a goal or hypotheses with large terms, such as the value of a structure written out field by field, or the unfolded body of a function. First reduce the goal and the hypotheses to the values that the goal needs, with a `@[step]` theorem that states only these values or with their equations. Then close the goal.
+  2. `rfl`, `decide` or `subst_vars; trivial` on an equality of large structures. Use `with_reducible rfl`.
+  3. `step` inside `repeat'`, `iterate` or `all_goals try (first | …)`. Write out the steps of the slow proof.
 
 ## The Aeneas documentation
 
