@@ -11,6 +11,10 @@
 //!    each of its `base_cases` and `steps` is called by a labelled theorem of
 //!    that invariant.
 //!
+//! TODO: no list of `induction` may name a replacement of the translate stage
+//! (`_lusterna`) or a function that Aeneas generated for a loop (`_loop`). Only
+//! the judge checks this; a gate check would be stricter.
+//!
 //! Labelled theorem: a theorem tagged `@[lusterna id "title"]`, which states
 //! the property with that `id` and `title` in the properties file. Untagged
 //! theorems are helper lemmas.

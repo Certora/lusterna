@@ -9,6 +9,8 @@ An invariant of a struct holds for every value of the struct that the program cr
 
 Decide which functions these are from the Rust source of the crate, not from the translation alone: the translation does not contain every caller of a function.
 
+The translate stage replaced some functions for the translation: the replacement of `f` is `f_lusterna` in `src/lusterna/`, and `f` calls it. A replacement is part of its original, and a function that Aeneas generates for a loop of `f`, whose name starts with the name of `f` followed by `_loop`, is part of `f`. List neither in `induction`: list the original instead, and count a call inside them as a call inside the original.
+
 1. A function changes the struct if it writes into a whole value of the struct, directly or through a function that it calls. The value may be an argument, inside an argument, behind a `RefMut`, or built by the function. A function that has only a part of the struct, such as the value of one of its fields, does not change the struct, even if its caller passes it that part.
 2. A base case is a function of the translation that builds a value of the struct: it returns a new value, or it writes every field of a value that it takes as `&mut` without reading the old value first.
 3. A helper is a function that changes the struct, that the crate does not export, and whose every call in the Rust source of the crate is inside a function of the translation that changes the struct. The invariant only has to hold between operations, not in the middle of one. A function is exported if every module on its path from the crate root is `pub`, or if a `pub use` re-exports it. An exported function is never a helper.
