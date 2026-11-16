@@ -110,7 +110,7 @@ struct TheoremsView {
     pub dropped_writes: Option<String>,
 }
 
-#[derive(Serialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Serialize, Clone, Copy)]
 enum TheoremStatusView {
     #[serde(rename = "Proven")]
     Proven,
@@ -158,24 +158,12 @@ enum AssumptionPurposeView {
 struct InductionView {
     /// The struct name, as the invariant properties give it
     pub name: String,
-    /// The ids of the invariant properties on the struct, in column order
-    pub invariants: Vec<PropertyId>,
-    /// The rows of the functions that create the struct
-    pub base_cases: Vec<InductionRowView>,
-    /// The rows of the mutating operations of the struct
-    pub steps: Vec<InductionRowView>,
+    /// Lean FQNs of the functions that create the struct
+    pub base_cases: Vec<String>,
+    /// Lean FQNs of the mutating operations of the struct
+    pub steps: Vec<String>,
     pub unmodelled_steps: Vec<UnmodelledStepView>,
     pub helpers: Vec<HelperView>,
-}
-
-#[derive(Serialize, Clone)]
-struct InductionRowView {
-    /// Lean FQN of the function
-    pub function: String,
-    /// The status of the theorems of each property of `invariants` for
-    /// `function`, in the same order. `NotRun` if the prove stage did not
-    /// run, `None` if the property has no theorem for `function`.
-    pub cells: Vec<Option<TheoremStatusView>>,
 }
 
 #[derive(Serialize, Clone)]
@@ -229,7 +217,7 @@ impl ReportView {
         let mut inductions = Vec::new();
         if let Some(formalize) = &formalize_report {
             for (name, induction) in &formalize.induction {
-                inductions.push(InductionView::new(name, induction, properties, prove_output));
+                inductions.push(InductionView::new(name, induction));
             }
         }
 
@@ -445,29 +433,7 @@ fn code_list(items: &[String]) -> String {
 
 impl InductionView {
     /// `name` is the struct of `induction`.
-    fn new(
-        name: &str,
-        induction: &Induction,
-        properties: &Properties,
-        prove: Option<&ProveOutput>,
-    ) -> Self {
-        // The invariant properties on the struct, one column each
-        let mut invariants = Vec::new();
-        for property in &properties.0 {
-            if matches!(&property.kind, PropertyKind::Invariant { r#struct } if r#struct == name) {
-                invariants.push(property.id);
-            }
-        }
-
-        let mut base_cases = Vec::new();
-        for function in &induction.base_cases {
-            base_cases.push(InductionRowView::new(function, &invariants, prove));
-        }
-        let mut steps = Vec::new();
-        for function in &induction.steps {
-            steps.push(InductionRowView::new(function, &invariants, prove));
-        }
-
+    fn new(name: &str, induction: &Induction) -> Self {
         let mut unmodelled_steps = Vec::new();
         for (function, write) in &induction.unmodelled_steps {
             unmodelled_steps.push(UnmodelledStepView {
@@ -485,46 +451,10 @@ impl InductionView {
 
         Self {
             name: name.to_owned(),
-            invariants,
-            base_cases,
-            steps,
+            base_cases: induction.base_cases.clone(),
+            steps: induction.steps.clone(),
             unmodelled_steps,
             helpers,
         }
     }
-}
-
-impl InductionRowView {
-    fn new(function: &str, invariants: &[PropertyId], prove: Option<&ProveOutput>) -> Self {
-        let mut cells = Vec::new();
-        for id in invariants {
-            cells.push(induction_cell(function, *id, prove));
-        }
-        Self {
-            function: function.to_owned(),
-            cells,
-        }
-    }
-}
-
-/// Returns the worst status of the theorems of the property `id` for
-/// `function`. `NotRun` if the prove stage did not run, `None` if the property
-/// has no theorem for `function`.
-fn induction_cell(
-    function: &str,
-    id: PropertyId,
-    prove: Option<&ProveOutput>,
-) -> Option<TheoremStatusView> {
-    let Some(prove) = prove else {
-        return Some(TheoremStatusView::NotRun);
-    };
-    let Some(PropertyProofStatus::Induction { base_cases, steps }) = prove.properties.get(&id)
-    else {
-        return None;
-    };
-    let theorems = base_cases.get(function).or_else(|| steps.get(function))?;
-    theorems
-        .iter()
-        .map(|(_, status)| TheoremStatusView::from(status))
-        .max()
 }

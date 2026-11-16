@@ -1,5 +1,7 @@
 {% if translate.rust_changes %}
-Changes to the Rust code:
+#### Changes to the Rust code
+
+The Rust code that Charon or Aeneas failed on, what the agent replaced it with, and the test that checks that the replacement computes the same as the original.
 
 {% for c in translate.rust_changes %}
 - `{{ c.file }}`, `{{ c.item }}`: {{ c.replaced }} Charon or Aeneas failed on the original: {{ c.failure }}{% if c.test %} Equivalence test: `{{ c.test }}`.{% endif %}
@@ -8,7 +10,9 @@ Changes to the Rust code:
 
 {% endif %}
 {% if translate.extract_changes %}
-Changes to `lusterna/extract-args.sh`:
+#### Changes to the extraction
+
+The changes to the options that `lusterna/extract-args.sh` passes to Charon and Aeneas.
 
 {% for c in translate.extract_changes %}
 - {{ c.change }} Reason: {{ c.reason }}
@@ -16,7 +20,9 @@ Changes to `lusterna/extract-args.sh`:
 
 {% endif %}
 {% if translate.lean_definitions %}
-Lean definitions that replace an axiom:
+#### Lean definitions
+
+Aeneas translates some Rust items to axioms, Lean declarations without a definition. The agent gave these a Lean definition of what the Rust item computes, so the proofs can use it.
 
 | Lean name | Rust item |
 |-----------|-----------|
@@ -26,7 +32,9 @@ Lean definitions that replace an axiom:
 
 {% endif %}
 {% if translate.kept_axioms %}
-Axioms that stay:
+#### Axioms
+
+These items stay axioms because they match an opaque pattern. Lean has no definition for them, so the proofs hold for any implementation of them.
 
 | Lean name | Opaque pattern |
 |-----------|----------------|
@@ -36,11 +44,13 @@ Axioms that stay:
 
 {% endif %}
 {% if translate.unmatched_opaque_patterns %}
-Opaque patterns that match nothing: `{{ translate.unmatched_opaque_patterns | join("`, `") }}`
+#### Unused opaque patterns
+
+These opaque patterns match no item, so they have no effect: `{{ translate.unmatched_opaque_patterns | join("`, `") }}`
 
 {% endif %}
 {% if translate.notes %}
-Notes:
+#### Notes
 
 {% for n in translate.notes %}
 - {{ n }}
