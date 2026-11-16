@@ -8,7 +8,7 @@ The agent worked under this briefing:
 {briefing}
 </briefing>
 
-The agent had this skill for invariants. Its rules apply like the rules of the briefing:
+The agent had these skills for invariants. Their rules apply like the rules of the briefing:
 
 <invariants>
 {invariants}
@@ -41,7 +41,7 @@ Judge only this work. Do not report a defect in a theorem, a definition or a mod
 
 The report gives a purpose for each hypothesis. The briefing defines the purposes.
 
-1. `StateInvariant`: the hypothesis must be a statement about the state before the call and about nothing else. The invariant and its theorems must be in a file of their own, in the shape that the skill `lusterna:invariants` gives, except for what the briefing allows: an induction step may assume another invariant under `-- Additional assumptions`, and two invariants whose induction steps each assume the other share a file. Each theorem in `base_cases` must assert that statement for the state that a function creates. Each theorem in `induction_steps` must assume it for the state before an operation and assert it for the state after. There must be an induction step for every function in the `steps` of the struct in the `induction` of the briefing, and a base case for every function in its `base_cases`. If the struct has no entry there, search the translation for its mutating operations and for the functions that create it, as the skill defines them, and check them the same way. It is not a defect that the `base_cases` of the struct are empty.
+1. `StateInvariant`: the hypothesis must be a statement about the state before the call and about nothing else. The invariant and its theorems must be in a file of their own, in the shape that the skill `lusterna:invariants` gives, except for what the briefing allows: an induction step may assume another invariant under `-- Additional assumptions`, and two invariants whose induction steps each assume the other share a file. Each theorem in `base_cases` must assert that statement for the state that a function creates. Each theorem in `induction_steps` must assume it for the state before an operation and assert it for the state after. There must be an induction step for every function in the `steps` of the struct in the `induction` of the briefing, and a base case for every function in its `base_cases`. If the struct has no entry there, search the translation and the Rust source for its mutating operations and base cases, as the skill `lusterna:induction` defines them, and check them the same way. It is not a defect that the `base_cases` of the struct are empty.
 2. `External`: the hypothesis must be about code that the translation does not contain. Read the Rust source of that code and check that the justification holds for it.
 3. `Natspec`: `quote` must appear word for word in the natspec of the property of the theorem. The hypothesis must state the condition of the quote and nothing more.
 4. `CallerPrecondition`: search the translation for every call of the function of the theorem. `callers` must list each function that calls it, and no other. For each caller, read its code: the condition must hold for the arguments that it passes, on every path to the call, for the reason that its entry gives. The hypothesis may only be about the arguments of the function, including the state that the caller passes. Search the Rust source too: if a function that the translation does not contain calls the function, or code outside the crate can call it, the purpose does not apply.
@@ -77,8 +77,6 @@ The agent may leave a theorem `Open` only after it tried to prove it and failed 
 4. Read the function of the theorem and judge whether the goal in the reason is one that the proof meets and that is hard to prove. If the goal follows from lemmas that the agent already wrote, the reason does not hold.
 
 Accept the status if the agent made a real attempt and the reason holds. Do not ask for a proof of such a theorem.
-
-One other reason is valid: every function of the translation that calls the function of the theorem has a theorem with the same label. The reason must name those functions. Search the translation for the calls, and check that each calling function has such a theorem and that no other function calls it.
 
 ## Check each dropped write
 

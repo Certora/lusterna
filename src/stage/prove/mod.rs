@@ -260,7 +260,7 @@ impl Stage for ProveStage {
                 .replace("{lean_root}", &self.input.lean_root.display().to_string())
                 .replace("{extracted}", &self.input.extracted.display().to_string())
                 .replace("{properties}", &self.input.properties.display().to_string())
-                .replace("{invariants}", INVARIANTS_SKILL)
+                .replace("{invariants}", &format!("{INDUCTION_SKILL}\n\n{INVARIANTS_SKILL}"))
                 .replace("{briefing}", &self.briefing())
                 .replace("{report}", &report),
         )
