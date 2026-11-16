@@ -1,17 +1,11 @@
 ---
 name: invariants
-description: How to state an invariant of a struct as Lean theorems about an Aeneas translation: which functions need a base case or an induction step, and the shape of those theorems. Use when you state an invariant.
+description: How to state an invariant of a struct as Lean theorems about an Aeneas translation: the shape of its base cases and induction steps. Use when you state an invariant.
 ---
 
 # Invariants of a struct
 
-An invariant of a struct holds for every value of the struct that the program creates, and keeps holding after every change. It is proven by induction: a base case for each function that creates the struct, and an induction step for each mutating operation.
-
-## The functions
-
-1. The mutating operations of the struct are the outermost functions, among those reachable from the entrypoints, that take the struct or a value containing it as `&mut`, so that the translation returns its new value. A function that does not change the struct is not one. A helper that only such a function calls is not one either, because the invariant only has to hold between operations, not in the middle of one.
-2. The base cases are every function that creates a value of the struct.
-3. The unmodelled operations of the struct are the outermost functions, among those reachable from the entrypoints, that change a value of the struct through a write that the translation drops, such as a write through a `RefMut`. The translation does not return the new value, so an unmodelled operation gets no theorem for it. A mutating operation that also changes another value of the struct this way is an unmodelled operation too.
+An invariant of a struct holds for every value of the struct that the program creates, and keeps holding after every change. It is proven by induction: a base case for each function that creates the struct, and an induction step for each mutating operation. The skill `lusterna:induction` defines these functions.
 
 ## The theorems
 

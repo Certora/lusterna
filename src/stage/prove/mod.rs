@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     stage::{
-        INVARIANTS_SKILL, Stage, StageName,
+        INDUCTION_SKILL, INVARIANTS_SKILL, Stage, StageName,
         formalize::{Induction, PropertyFormalizationStatus},
         properties::{Properties, PropertyId},
     },
@@ -240,6 +240,7 @@ impl Stage for ProveStage {
     fn skills(&self) -> Vec<(&'static str, String)> {
         vec![
             ("aeneas-tactics", AENEAS_TACTICS_SKILL.to_owned()),
+            ("induction", INDUCTION_SKILL.to_owned()),
             ("invariants", INVARIANTS_SKILL.to_owned()),
         ]
     }
@@ -259,7 +260,7 @@ impl Stage for ProveStage {
                 .replace("{lean_root}", &self.input.lean_root.display().to_string())
                 .replace("{extracted}", &self.input.extracted.display().to_string())
                 .replace("{properties}", &self.input.properties.display().to_string())
-                .replace("{invariants}", INVARIANTS_SKILL)
+                .replace("{invariants}", &format!("{INDUCTION_SKILL}\n\n{INVARIANTS_SKILL}"))
                 .replace("{briefing}", &self.briefing())
                 .replace("{report}", &report),
         )
