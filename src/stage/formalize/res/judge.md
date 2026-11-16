@@ -61,14 +61,15 @@ The models are under `{lean_root}/Spec/Model/`, as the skill `aeneas-models` des
 
 ## Check each invariant property
 
-1. Search the translation for the mutating operations of the struct, as the skill `lusterna:invariants` defines them: the outermost functions reachable from the entrypoints that take the struct or a value containing it as `&mut` and change it. Each one must be in the `steps` of `induction` under the struct's name. A function that does not change the struct must not be there, nor a helper that only a mutating operation calls, nor a function whose writes to the struct the translation drops: an induction step over it holds for free.
+1. Search the translation for the mutating operations of the struct, as the skill `lusterna:invariants` defines them: the outermost functions reachable from the entrypoints that take the struct or a value containing it as `&mut` and change it. Each one must be in the `steps` of `induction` under the struct's name. A function that does not change the struct must not be there, nor a helper that only a mutating operation calls.
 2. Search the translation for every function that creates a value of the struct. Each one must be in the `base_cases` of `induction` under the struct's name.
-3. A function that is not in the translation cannot be a base case or a step. It is not a defect that `induction` does not list it.
-4. Each induction step theorem assumes the invariant for the value before the call, as `h_inv`, and asserts it for the value after the call. Each base case theorem asserts it for the created value.
-5. Each base case and induction step theorem is a `⦄fail` triple.
-6. A base case theorem must have no hypothesis, and an induction step theorem no hypothesis other than `h_inv`.
-7. If the function returns a Rust `Result`, the postcondition asserts the invariant in the `.Ok` case and `True` in the `.Err` case. It is not a defect that it claims nothing for `.Err`.
-8. Each entry of `exceptions` names an induction step of the property, and its reason can be read from the natspec. Check only the natspec, not the code.
+3. Search the translation for the unmodelled operations of the struct, as the skill defines them: follow the calls of `deref_mut` on a `RefMut` of the struct up to the outermost functions. Each one must be in the `unmodelled_steps` of `induction` under the struct's name, and each entry there must name a function that changes a value of the struct this way, and that value and write. Read the Rust source of each write.
+4. A function that is not in the translation cannot be a base case or a step. It is not a defect that `induction` does not list it.
+5. Each induction step theorem assumes the invariant for the value before the call, as `h_inv`, and asserts it for the value after the call. Each base case theorem asserts it for the created value.
+6. Each base case and induction step theorem is a `⦄fail` triple.
+7. A base case theorem must have no hypothesis, and an induction step theorem no hypothesis other than `h_inv`.
+8. If the function returns a Rust `Result`, the postcondition asserts the invariant in the `.Ok` case and `True` in the `.Err` case. It is not a defect that it claims nothing for `.Err`.
+9. Each entry of `exceptions` names an induction step of the property, and its reason can be read from the natspec. Check only the natspec, not the code.
 
 ## Check each skipped property
 
@@ -91,7 +92,7 @@ Report one defect for each problem. Use one of these kinds:
 - `missing_coverage`: a part of a property has no theorem.
 - `wrong_helper`: a helper `def` does not match the property, or restates a translated function instead of using its model.
 - `wrong_model`: a model does not match its translated function, has no bridge, or has a bridge that is not an equality, is not a `⦄fail` triple or has a hypothesis. Also for a second model of the same function.
-- `incomplete_induction`: a mutating operation of the struct of an invariant is missing from `steps`, `steps` lists a function that is not one, or a function that creates the struct is missing from `base_cases`.
+- `incomplete_induction`: a mutating operation of the struct of an invariant is missing from `steps`, `steps` lists a function that is not one, a function that creates the struct is missing from `base_cases`, or `unmodelled_steps` misses an unmodelled operation or has an entry that does not hold.
 - `wrong_exception`: an entry of `exceptions` names no induction step of the property, or the natspec does not give its reason.
 - `wrong_change_report`: `new_theorems`, `updated_theorems` or `removed_theorems` does not match the diff.
 - `proved`: a theorem that the agent added has a proof other than `by sorry`.
