@@ -32,10 +32,11 @@ const AENEAS_SPECS_SKILL: &str = include_str!("res/aeneas-specs.md");
 const AENEAS_MODELS_SKILL: &str = include_str!("res/aeneas-models.md");
 
 /// The judge prompt of the formalize stage, with `{lean_root}`,
-/// `{extracted}`, `{properties}`, `{briefing}`, `{skills}` and `{report}`
-/// standing for the Lean project root, the directory of the extraction, the
-/// JSON file of the properties, the agent briefing, the `SKILL.md` content of
-/// the agent's skills and the agent's report.
+/// `{extracted}`, `{properties}`, `{crate_root}`, `{briefing}`, `{skills}`
+/// and `{report}` standing for the Lean project root, the directory of the
+/// extraction, the JSON file of the properties, the root of the crate, the
+/// agent briefing, the `SKILL.md` content of the agent's skills and the
+/// agent's report.
 const JUDGE_PROMPT_TEMPLATE: &str = include_str!("res/judge.md");
 
 #[derive(Deserialize, Serialize)]
@@ -221,6 +222,7 @@ impl Stage for FormalizeStage {
                 .replace("{lean_root}", &self.input.lean_root.display().to_string())
                 .replace("{extracted}", &self.input.extracted.display().to_string())
                 .replace("{properties}", &self.input.properties.display().to_string())
+                .replace("{crate_root}", &self.input.crate_root.display().to_string())
                 .replace(
                     "{skills}",
                     &self
@@ -289,6 +291,7 @@ mod tests {
         for placeholder in [
             "{extracted}",
             "{properties}",
+            "{crate_root}",
             "{briefing}",
             "{skills}",
             "{report}",

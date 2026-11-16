@@ -22,7 +22,7 @@ This is the agent's report:
 
 ## Where the work is
 
-The properties are in `{properties}`. The spec files are under `{lean_root}/Spec/`, and the report names the file of each formalized property. The translation is in `{extracted}`. Before you judge a statement, read the definitions of the functions and types that it uses. Do not judge a function by its name.
+The properties are in `{properties}`. The spec files are under `{lean_root}/Spec/`, and the report names the file of each formalized property. The translation is in `{extracted}`, and the Rust source of the crate in `{crate_root}`. Before you judge a statement, read the definitions of the functions and types that it uses. Do not judge a function by its name.
 
 Do not trust the report. Compare it with the files that you find.
 
@@ -61,15 +61,16 @@ The models are under `{lean_root}/Spec/Model/`, as the skill `aeneas-models` des
 
 ## Check each invariant property
 
-1. Search the translation for the mutating operations of the struct, as the skill `lusterna:invariants` defines them: the outermost functions reachable from the entrypoints that take the struct or a value containing it as `&mut` and change it. Each one must be in the `steps` of `induction` under the struct's name. A function that does not change the struct must not be there, nor a helper that only a mutating operation calls.
-2. Search the translation for every function that creates a value of the struct. Each one must be in the `base_cases` of `induction` under the struct's name.
-3. Search the translation for the unmodelled operations of the struct, as the skill defines them: follow the calls of `deref_mut` on a `RefMut` of the struct up to the outermost functions. Each one must be in the `unmodelled_steps` of `induction` under the struct's name, and each entry there must name a function that changes a value of the struct this way, and that value and write. Read the Rust source of each write.
-4. A function that is not in the translation cannot be a base case or a step. It is not a defect that `induction` does not list it.
-5. Each induction step theorem assumes the invariant for the value before the call, as `h_inv`, and asserts it for the value after the call. Each base case theorem asserts it for the created value.
-6. Each base case and induction step theorem is a `⦄fail` triple.
-7. A base case theorem must have no hypothesis, and an induction step theorem no hypothesis other than `h_inv`.
-8. If the function returns a Rust `Result`, the postcondition asserts the invariant in the `.Ok` case and `True` in the `.Err` case. It is not a defect that it claims nothing for `.Err`.
-9. Each entry of `exceptions` names an induction step of the property, and its reason can be read from the natspec. Check only the natspec, not the code.
+1. Search the translation for the functions that change a value of the struct, and the Rust source of the crate for every call of them. Sort them as the skill `lusterna:induction` defines. Each one must be in the list of `induction` under the struct's name that the skill gives it: base cases in `base_cases`, mutating operations in `steps`, unmodelled operations in `unmodelled_steps`, and helpers in `helpers`. No list may name a function that does not belong there.
+2. For each entry of `helpers`, check that the crate does not export the function, that every call of it in the Rust source of the crate is inside a function of the translation that changes the struct, and that the entry lists these functions. That a function is `pub` in its module does not decide whether the crate exports it.
+3. For each entry of `unmodelled_steps`, read the Rust source of the write: the function must change that value of the struct through a write that the translation drops. To find the unmodelled operations, follow the calls of `deref_mut` on a `RefMut` of the struct up to the operations.
+4. Each base case must build its value: return a new value, or write every field of a value that it takes as `&mut` without reading the old value first.
+5. A function that is not in the translation cannot be in `induction`. It is not a defect that `induction` does not list it.
+6. Each induction step theorem assumes the invariant for the value before the call, as `h_inv`, and asserts it for the value after the call. Each base case theorem asserts it for the created value.
+7. Each base case and induction step theorem is a `⦄fail` triple.
+8. A base case theorem must have no hypothesis, and an induction step theorem no hypothesis other than `h_inv`.
+9. If the function returns a Rust `Result`, the postcondition asserts the invariant in the `.Ok` case and `True` in the `.Err` case. It is not a defect that it claims nothing for `.Err`.
+10. Each entry of `exceptions` names an induction step of the property, and its reason can be read from the natspec. Check only the natspec, not the code.
 
 ## Check each skipped property
 
@@ -92,7 +93,7 @@ Report one defect for each problem. Use one of these kinds:
 - `missing_coverage`: a part of a property has no theorem.
 - `wrong_helper`: a helper `def` does not match the property, or restates a translated function instead of using its model.
 - `wrong_model`: a model does not match its translated function, has no bridge, or has a bridge that is not an equality, is not a `⦄fail` triple or has a hypothesis. Also for a second model of the same function.
-- `incomplete_induction`: a mutating operation of the struct of an invariant is missing from `steps`, `steps` lists a function that is not one, a function that creates the struct is missing from `base_cases`, or `unmodelled_steps` misses an unmodelled operation or has an entry that does not hold.
+- `incomplete_induction`: a function is missing from the list of `induction` that the skill `lusterna:induction` gives it, a list names a function that does not belong there, or an entry of `helpers` or `unmodelled_steps` does not hold.
 - `wrong_exception`: an entry of `exceptions` names no induction step of the property, or the natspec does not give its reason.
 - `wrong_change_report`: `new_theorems`, `updated_theorems` or `removed_theorems` does not match the diff.
 - `proved`: a theorem that the agent added has a proof other than `by sorry`.
