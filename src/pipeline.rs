@@ -8,7 +8,9 @@
 //!    crate so that it builds on the host, without changing what it computes on
 //!    its target.
 //! 4. `translate`: translates the code reachable from the entrypoints, with the
-//!    default opaque patterns and those of the spec passed to Charon.
+//!    default opaque patterns and those of the spec passed to Charon. The
+//!    pipeline writes the output of the stage to `lusterna/translate.json` in
+//!    the crate root.
 //! 5. `formalize`: states each property as Lean theorems about the translation,
 //!    without proofs. Runs only if the spec has properties. The pipeline writes
 //!    the output of the stage to `lusterna/formalize.json` in the crate root.
@@ -16,6 +18,10 @@
 //!    theorem is false. Runs only if the spec has properties. It reads
 //!    `lusterna/formalize.json`, and the pipeline writes the output of the
 //!    stage to `lusterna/prove.json` in the crate root.
+//! 7. The pipeline writes the report of the run to `lusterna/report.md` in the
+//!    crate root, from `lusterna/translate.json`, `lusterna/formalize.json` and
+//!    `lusterna/prove.json`. The report shows a stage whose file is missing as
+//!    skipped.
 //!
 //! A run starts only if the repository has no uncommitted changes other than
 //! the spec file (unless `--allow-dirty`), the tools of `TOOLS` are on `PATH`,
@@ -28,11 +34,17 @@
 //! ## Partial Runs
 //!
 //! The `--start-at` option skips the steps before the named [`Step`], and the
-//! `--stop-after` option ends the pipeline after the named [`Step`].
+//! `--stop-after` option ends the pipeline after the named [`Step`]. The report
+//! is written even with `--stop-after`.
 
-use std::{env, fs, io, path::PathBuf, time::Instant};
+use std::{
+    env, fs, io,
+    path::{Path, PathBuf},
+    time::Instant,
+};
 
 use log::info;
+use serde::de::DeserializeOwned;
 
 use crate::{
     config::{Config, ConfigError, Platform},
@@ -43,6 +55,7 @@ use crate::{
         formalize::{FormalizeInput, FormalizeOutput, FormalizeStage},
         pre_translate::{PreTranslateInput, PreTranslateStage},
         prove::{ProveInput, ProveOutput, ProveStage},
+        report,
         translate::{
             DEFAULT_OPAQUE, TranslateInput, TranslateOutput, TranslateStage, solana_opaque,
         },
@@ -98,6 +111,12 @@ pub enum PipelineError {
     /// The file that holds the output of the formalize stage does not parse.
     #[error("cannot parse the formalize output in `{0}`: {1}")]
     FormalizeOutput(PathBuf, serde_json::Error),
+    /// A file that holds the output of a stage does not parse.
+    #[error("cannot parse the stage output in `{0}`: {1}")]
+    StageOutput(PathBuf, serde_json::Error),
+    /// The report templates do not render.
+    #[error("cannot render the report: {0}")]
+    Report(#[from] minijinja::Error),
 }
 
 /// The steps of a pipeline run, in the order in which they run. A step
@@ -112,6 +131,9 @@ pub enum PipelineStep {
     Translate,
     Formalize,
     Prove,
+    /// Writes the report of the run to the crate. Runs even with
+    /// `--stop-after`. `--start-at report` writes only the report.
+    Report,
 }
 
 /// A pipeline of stages, configured by a spec. See the module documentation.
@@ -190,7 +212,9 @@ impl Pipeline {
         if self.runs(PipelineStep::Prove) && !self.spec.properties.0.is_empty() {
             self.run_prove()?;
         }
-        Ok(())
+
+        // 7. Write the report (always)
+        self.write_report()
     }
 
     fn write_spec(&self) -> Result<(), PipelineError> {
@@ -306,6 +330,10 @@ impl Pipeline {
         let output = self
             .exec_stage::<TranslateStage>(input)
             .map_err(PipelineError::Translate)?;
+        fs::write(
+            self.config.crate_root()?.join("lusterna/translate.json"),
+            serde_json::to_string_pretty(&output).expect("the translate output serializes"),
+        )?;
 
         match git::commit_all(&self.config.repo_root()?, "Lusterna: `translate` stage")? {
             Some(sha) => info!("Committed `translate` work in {}", sha),
@@ -371,6 +399,33 @@ impl Pipeline {
         Ok(output)
     }
 
+    /// Writes the report of the run to `lusterna/report.md`, from the outputs
+    /// of the stages in `lusterna/`.
+    fn write_report(&self) -> Result<(), PipelineError> {
+        let lusterna_dir = self.config.crate_root()?.join("lusterna");
+        fs::create_dir_all(&lusterna_dir)?;
+        let translate: Option<TranslateOutput> = read_output(&lusterna_dir.join("translate.json"))?;
+        let formalize: Option<FormalizeOutput> = read_output(&lusterna_dir.join("formalize.json"))?;
+        let prove: Option<ProveOutput> = read_output(&lusterna_dir.join("prove.json"))?;
+
+        let report = report::render(
+            cargo::package_name(&self.config.manifest()?)?,
+            &self.spec.properties,
+            // The pipeline does not keep the report of the pre-translate stage
+            None,
+            translate.map(|output| output.report),
+            formalize,
+            prove.as_ref(),
+        )?;
+        fs::write(lusterna_dir.join("report.md"), report)?;
+
+        match git::commit_all(&self.config.repo_root()?, "Lusterna: report")? {
+            Some(sha) => info!("Committed the report in {}", sha),
+            None => info!("No report changes to commit"),
+        }
+        Ok(())
+    }
+
     fn exec_stage<S: Stage>(&self, input: S::Input) -> Result<S::Output, StageExecutionError<S>> {
         let stage = S::setup(input).map_err(StageExecutionError::SetupError)?;
         let t = Instant::now();
@@ -380,6 +435,19 @@ impl Pipeline {
         log::info!("Executed `{}` in {}", S::NAME, format_elapsed(t));
         Ok(output)
     }
+}
+
+/// Reads the stage output in `path`, or returns `None` if `path` does not
+/// exist.
+fn read_output<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, PipelineError> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    serde_json::from_str(&text)
+        .map(Some)
+        .map_err(|e| PipelineError::StageOutput(path.to_owned(), e))
 }
 
 /// Returns the Charon `--opaque` patterns: the default patterns, the Solana

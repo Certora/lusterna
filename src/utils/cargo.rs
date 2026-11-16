@@ -45,6 +45,8 @@ pub enum CargoError {
     },
     #[error("`features` in `{manifest}` is not a table")]
     FeaturesNotTable { manifest: PathBuf },
+    #[error("`{manifest}` has no `package.name`")]
+    NoPackageName { manifest: PathBuf },
     #[error("cannot write `{manifest}`: {source}")]
     WriteManifest {
         manifest: PathBuf,
@@ -221,6 +223,18 @@ fn read_manifest(manifest: &Path) -> Result<DocumentMut, CargoError> {
         manifest: manifest.to_owned(),
         source,
     })
+}
+
+/// Returns the `package.name` of `manifest`.
+pub fn package_name(manifest: &Path) -> Result<String, CargoError> {
+    let doc = read_manifest(manifest)?;
+    doc.get("package")
+        .and_then(|package| package.get("name"))
+        .and_then(|name| name.as_str())
+        .map(str::to_owned)
+        .ok_or_else(|| CargoError::NoPackageName {
+            manifest: manifest.to_owned(),
+        })
 }
 
 /// Adds the feature `name` with no dependencies to `manifest`, unless it
