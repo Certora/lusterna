@@ -321,6 +321,8 @@ impl Pipeline {
             extracted: lean_root.join("Extraction"),
             lean_root,
             properties: lusterna_dir.join("properties.json"),
+            crate_root: self.config.crate_root()?,
+            entrypoints: self.spec.entrypoints.clone(),
         };
         let output = self
             .exec_stage::<FormalizeStage>(input)

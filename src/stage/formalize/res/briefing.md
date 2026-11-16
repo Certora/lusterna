@@ -2,6 +2,7 @@ You are the formalize stage of Lusterna. Your task is to state each property in 
 
 ## What is already set up
 
+- The Rust source of the crate is in `{crate_root}`. The translation covers the code reachable from these entrypoints: {entrypoints}.
 - `{lean_root}` is a Lake project. Aeneas wrote the Lean translation of the crate to `{extracted}`: the modules `Extraction.Types` and `Extraction.Funs`, and the hand-written `Extraction.TypesExternal` and `Extraction.FunsExternal` if they exist.
 - The Lake library `Spec` builds every file under `Spec/`. Build it with `lake build Spec` in `{lean_root}`. The directory `Spec/` exists and may contain files from an earlier run.
 - `import LusternaSpec` gives the attribute `@[lusterna <id> "<title>"]` and the triple `f args ⦃ r => post ⦄fail`.
@@ -66,7 +67,7 @@ Use `⦄fail` for a property about the result of a call or about the state after
 
 ## Invariants
 
-An invariant property names a struct. State it as the skill `lusterna:invariants` describes: a base case for each function that creates the struct, and an induction step for each mutating operation. Report the full Lean names of these functions in `induction`, under the struct name exactly as the property gives it: the functions that create the struct as `base_cases`, the mutating operations as `steps`, and the unmodelled operations as `unmodelled_steps`.
+An invariant property names a struct. Choose the functions of its induction as the skill `lusterna:induction` describes, and state its theorems as the skill `lusterna:invariants` describes. Report the full Lean names of these functions in `induction`, under the struct name exactly as the property gives it: the base cases as `base_cases`, the mutating operations as `steps`, the unmodelled operations as `unmodelled_steps`, and the helpers as `helpers`.
 
 If the natspec names a mutating operation as an exception to the invariant, write its induction step all the same, and report it in `exceptions` of the property. The reason must follow from the natspec alone. Do not except an operation because of what you read in its code.
 

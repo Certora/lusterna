@@ -20,8 +20,9 @@ pub use gate::{FormalizeGateError, FormalizeGateFailure};
 const BASE_PROMPT_TEMPLATE: &str = include_str!("res/prompt.md");
 
 /// The agent briefing of the formalize stage, with `{lean_root}`,
-/// `{extracted}` and `{properties}` standing for the Lean project root, the
-/// directory of the extraction and the JSON file of the properties.
+/// `{extracted}`, `{properties}`, `{crate_root}` and `{entrypoints}` standing
+/// for the Lean project root, the directory of the extraction, the JSON file
+/// of the properties, the root of the crate and its entrypoints.
 const BRIEFING_TEMPLATE: &str = include_str!("res/briefing.md");
 
 /// The `SKILL.md` of the skill `aeneas-specs`.
@@ -53,6 +54,10 @@ pub struct FormalizeInput {
     pub lean_root: PathBuf,
     /// Absolute path to the JSON file of the properties to formalize
     pub properties: PathBuf,
+    /// Absolute path to the root of the crate
+    pub crate_root: PathBuf,
+    /// The Rust paths from which the translation covers the reachable code
+    pub entrypoints: Vec<String>,
 }
 
 /// A problem outside `Spec/` that stops the stage, for example a dependency of
@@ -117,6 +122,12 @@ pub struct Induction {
     /// with the value of the struct that it changes and the write that the
     /// translation drops.
     pub unmodelled_steps: BTreeMap<String, String>,
+    /// The full Lean names of the helpers of the struct, each with the full
+    /// Lean names of the functions of the translation that call it. A helper
+    /// changes the struct but is never the outermost function that changes
+    /// it: every call of it is inside another function that changes the
+    /// struct, so the operation that calls it covers its change.
+    pub helpers: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
@@ -173,6 +184,17 @@ impl Stage for FormalizeStage {
             .replace("{lean_root}", &self.input.lean_root.display().to_string())
             .replace("{extracted}", &self.input.extracted.display().to_string())
             .replace("{properties}", &self.input.properties.display().to_string())
+            .replace("{crate_root}", &self.input.crate_root.display().to_string())
+            .replace(
+                "{entrypoints}",
+                &self
+                    .input
+                    .entrypoints
+                    .iter()
+                    .map(|e| format!("`{e}`"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )
     }
 
     fn skills(&self) -> Vec<(&'static str, String)> {
@@ -227,6 +249,8 @@ mod tests {
                 extracted: PathBuf::from("/c/lusterna/lean/Extraction"),
                 lean_root: PathBuf::from("/c/lusterna/lean"),
                 properties: PathBuf::from("/c/lusterna/properties.json"),
+                crate_root: PathBuf::from("/c"),
+                entrypoints: vec!["crate::vault".to_owned()],
             },
             properties: Properties(Vec::new()),
         }
@@ -236,7 +260,13 @@ mod tests {
     fn briefing_fills_every_placeholder() {
         let briefing = stage().briefing();
 
-        for placeholder in ["{lean_root}", "{extracted}", "{properties}"] {
+        for placeholder in [
+            "{lean_root}",
+            "{extracted}",
+            "{properties}",
+            "{crate_root}",
+            "{entrypoints}",
+        ] {
             assert!(!briefing.contains(placeholder), "{placeholder} is left");
         }
         assert!(briefing.contains("`/c/lusterna/properties.json`"));
