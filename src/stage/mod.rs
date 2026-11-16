@@ -13,6 +13,8 @@ use std::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
+use crate::{agent::AgentOptions, config::Config};
+
 /// The `SKILL.md` of the skill `invariants`, which the formalize and prove
 /// stages share.
 const INVARIANTS_SKILL: &str = include_str!("res/invariants.md");
@@ -117,6 +119,12 @@ pub trait Stage: Sized + Serialize + DeserializeOwned {
         Vec::new()
     }
 
+    /// The tools and the environment of the agent. By default, the agent has
+    /// the default `AgentOptions`.
+    fn agent_options(&self, _cfg: &Config) -> AgentOptions {
+        AgentOptions::default()
+    }
+
     /// Returns the feedback prompt for the agent for a failed gate check
     fn feedback_prompt(gate_failed: &Self::GateFailure) -> String;
 
@@ -159,4 +167,25 @@ where
             GateStop::Error(e) => f.debug_tuple("Error").field(e).finish(),
         }
     }
+}
+
+/// The options of an agent that builds Lean, which the formalize and prove
+/// stages share: its commands run in the foreground, one at a time, Bash stops
+/// a command after `cfg.command_timeout` minutes, and Lean runs only through
+/// `lake build`, whose lakefile limits its memory.
+fn lean_agent_options(cfg: &Config) -> AgentOptions {
+    let timeout_ms = (cfg.command_timeout * 60_000).to_string();
+    let mut options = AgentOptions::default();
+    options
+        .disallowed_tools
+        .extend(["Bash(lean *)".to_owned(), "Bash(lake env *)".to_owned()]);
+    options.env = vec![
+        (
+            "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS".to_owned(),
+            "1".to_owned(),
+        ),
+        ("BASH_DEFAULT_TIMEOUT_MS".to_owned(), timeout_ms.clone()),
+        ("BASH_MAX_TIMEOUT_MS".to_owned(), timeout_ms),
+    ];
+    options
 }

@@ -6,9 +6,12 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    agent::AgentOptions,
+    config::Config,
     stage::{
         INDUCTION_SKILL, INVARIANTS_SKILL, Stage, StageName,
         formalize::{Induction, PropertyFormalizationStatus},
+        lean_agent_options,
         properties::{Properties, PropertyId},
     },
     utils::git::{self, GitError},
@@ -216,7 +219,8 @@ impl Stage for ProveStage {
     fn briefing(&self) -> String {
         let induction =
             serde_json::to_string_pretty(&self.input.induction).expect("the induction serializes");
-        // The induction steps that the formalize stage excepted, with their reasons
+        // The induction steps that the formalize stage excepted, with their
+        // reasons
         let mut exceptions = BTreeMap::new();
         for status in self.input.property_status.values() {
             if let PropertyFormalizationStatus::Formalized {
@@ -235,6 +239,10 @@ impl Stage for ProveStage {
             .replace("{properties}", &self.input.properties.display().to_string())
             .replace("{induction}", &induction)
             .replace("{exceptions}", &exceptions)
+    }
+
+    fn agent_options(&self, cfg: &Config) -> AgentOptions {
+        lean_agent_options(cfg)
     }
 
     fn skills(&self) -> Vec<(&'static str, String)> {
@@ -260,7 +268,10 @@ impl Stage for ProveStage {
                 .replace("{lean_root}", &self.input.lean_root.display().to_string())
                 .replace("{extracted}", &self.input.extracted.display().to_string())
                 .replace("{properties}", &self.input.properties.display().to_string())
-                .replace("{invariants}", &format!("{INDUCTION_SKILL}\n\n{INVARIANTS_SKILL}"))
+                .replace(
+                    "{invariants}",
+                    &format!("{INDUCTION_SKILL}\n\n{INVARIANTS_SKILL}"),
+                )
                 .replace("{briefing}", &self.briefing())
                 .replace("{report}", &report),
         )

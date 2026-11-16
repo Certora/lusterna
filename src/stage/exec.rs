@@ -184,6 +184,7 @@ impl<S: Stage> StageExec<S> {
         if self.worker.is_none() {
             let mut agent = Agent::default();
             agent.set_briefing(format!("{}\n\n{WAIT_FOR_SUBAGENTS}", self.stage.briefing()));
+            agent.set_options(self.stage.agent_options(cfg));
             for (name, content) in self.stage.skills() {
                 agent.add_skill(name, content);
             }

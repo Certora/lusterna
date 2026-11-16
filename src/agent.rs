@@ -20,6 +20,31 @@ const DEFAULT_ALLOWED_TOOLS: &[&str] =
 
 const DISALLOWED_TOOLS: &[&str] = &["ScheduleWakeup"];
 
+/// The tools and the environment of `claude`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentOptions {
+    /// Tools that run without asking
+    pub allowed_tools: Vec<String>,
+    /// Tools and permission rules, such as `Bash(lean *)`, that are denied
+    pub disallowed_tools: Vec<String>,
+    /// Environment variables of `claude`
+    pub env: Vec<(String, String)>,
+}
+
+impl Default for AgentOptions {
+    fn default() -> Self {
+        Self {
+            allowed_tools: DEFAULT_ALLOWED_TOOLS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            disallowed_tools: DISALLOWED_TOOLS.iter().map(|s| s.to_string()).collect(),
+            env: Vec::new(),
+        }
+    }
+}
+
 const DEFAULT_MODEL: &str = "opus";
 
 const SUBMIT_STRUCTURED_OUTPUT: &str =
@@ -63,7 +88,8 @@ pub struct ModelUsage {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Agent {
     briefing: Option<String>,
-    allowed_tools: Vec<String>,
+    #[serde(flatten)]
+    options: AgentOptions,
     effort: Option<Effort>,
     max_budged: Option<f64>,
     model: String,
@@ -80,10 +106,7 @@ impl Default for Agent {
     fn default() -> Self {
         Self {
             briefing: None,
-            allowed_tools: DEFAULT_ALLOWED_TOOLS
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
+            options: AgentOptions::default(),
             effort: Default::default(),
             max_budged: None,
             usage: Default::default(),
@@ -137,6 +160,10 @@ impl Agent {
         self.dir = Some(dir)
     }
 
+    pub fn set_options(&mut self, options: AgentOptions) {
+        self.options = options
+    }
+
     /// Makes `run` return the agent's structured output, as JSON matching
     /// `schema`, instead of its final message.
     pub fn set_json_schema(&mut self, schema: String) {
@@ -146,8 +173,8 @@ impl Agent {
     /// Makes the skill `name` with the `SKILL.md` content `content` available
     /// to the agent as `lusterna:<name>`.
     pub fn add_skill(&mut self, name: &str, content: String) {
-        if !self.allowed_tools.iter().any(|t| t == "Skill") {
-            self.allowed_tools.push("Skill".to_owned());
+        if !self.options.allowed_tools.iter().any(|t| t == "Skill") {
+            self.options.allowed_tools.push("Skill".to_owned());
         }
         self.skills.push((name.to_owned(), content))
     }
@@ -205,9 +232,9 @@ impl Agent {
             "--permission-mode".into(),
             "dontAsk".into(),
             "--allowedTools".into(),
-            self.allowed_tools.join(","),
+            self.options.allowed_tools.join(","),
             "--disallowedTools".into(),
-            DISALLOWED_TOOLS.join(","),
+            self.options.disallowed_tools.join(","),
             "--model".into(),
             self.model.clone(),
             "--setting-sources".into(),
@@ -251,6 +278,7 @@ impl Agent {
         if let Some(dir) = &self.dir {
             cmnd.current_dir(dir);
         }
+        cmnd.envs(self.options.env.iter().map(|(k, v)| (k, v)));
         let mut cmnd = cmnd.spawn()?;
 
         let mut stdin = cmnd.stdin.take().expect("stdin is piped");

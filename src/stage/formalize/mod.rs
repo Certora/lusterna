@@ -6,8 +6,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    agent::AgentOptions,
+    config::Config,
     stage::{
-        INDUCTION_SKILL, INVARIANTS_SKILL, Stage, StageName,
+        INDUCTION_SKILL, INVARIANTS_SKILL, Stage, StageName, lean_agent_options,
         properties::{Properties, PropertyId},
     },
     utils::git::{self, GitError},
@@ -196,6 +198,10 @@ impl Stage for FormalizeStage {
                     .collect::<Vec<_>>()
                     .join(", "),
             )
+    }
+
+    fn agent_options(&self, cfg: &Config) -> AgentOptions {
+        lean_agent_options(cfg)
     }
 
     fn skills(&self) -> Vec<(&'static str, String)> {

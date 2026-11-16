@@ -29,6 +29,7 @@ pub const DEFAULT_MAX_BUDGED_USD: f64 = 50.0;
 
 pub const DEFAULT_MODEL: &str = "opus";
 pub const DEFAULT_EFFORT: Effort = Effort::Medium;
+pub const DEFAULT_COMMAND_TIMEOUT_MINUTES: u64 = 20;
 
 #[derive(clap::Args)]
 pub struct Config {
@@ -46,6 +47,10 @@ pub struct Config {
     /// Claude effort level
     #[arg(long, global = true, value_enum, default_value_t = DEFAULT_EFFORT)]
     pub(crate) effort: Effort,
+    /// Minutes after which the Bash tool stops a command of the formalize and
+    /// prove agents
+    #[arg(long, global = true, default_value_t = DEFAULT_COMMAND_TIMEOUT_MINUTES)]
+    pub(crate) command_timeout: u64,
 
     /// Aeneas checkout
     #[arg(long, env = "AENEAS_ROOT")]

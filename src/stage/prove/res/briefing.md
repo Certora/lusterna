@@ -36,7 +36,7 @@ The skill `lusterna:aeneas-tactics` shows how to prove a theorem with `step`, wh
 
 1. Prove a theorem with `step`. Unfold only the function that the theorem is about.
 2. Do not unfold a function that it calls. Use a `@[step]` theorem about the called function, and write one if there is none.
-3. Build one module at a time with `lake build Spec.<Module>`, and never run two builds at the same time. Stop a build that runs for more than ten minutes, and split the proof that it was checking into lemmas.
+3. Build one module at a time with `lake build Spec.<Module>`. Run the command on its own, without `timeout`, a pipe or `&`. The Bash tool stops a command that runs too long and says so in its result. If it stops a build, split the proof that it was checking into lemmas.
 
 ## What you may change
 
