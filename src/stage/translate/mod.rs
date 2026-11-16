@@ -110,7 +110,7 @@ pub struct TranslateInput {
     pub platform: Platform,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct TranslateOutput {
     // Absolute path of the crate's root
     pub crate_root: PathBuf,

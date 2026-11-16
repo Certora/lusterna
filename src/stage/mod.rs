@@ -3,6 +3,7 @@ pub mod formalize;
 pub mod pre_translate;
 pub mod properties;
 pub mod prove;
+pub mod report;
 pub mod translate;
 
 use std::{
