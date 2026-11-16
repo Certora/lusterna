@@ -17,6 +17,10 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 /// stages share.
 const INVARIANTS_SKILL: &str = include_str!("res/invariants.md");
 
+/// The `SKILL.md` of the skill `induction`, which the formalize and prove
+/// stages share.
+const INDUCTION_SKILL: &str = include_str!("res/induction.md");
+
 #[derive(Debug, Serialize, Deserialize, derive_more::Display)]
 pub enum StageName {
     Orientate,
