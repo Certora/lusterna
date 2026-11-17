@@ -91,15 +91,15 @@ The harness checks these conditions after you stop. If one fails, you get the er
 
 1. `lake build Spec` in `{lean_root}` exits with status 0.
 2. You changed or created files only under `Spec/`.
-3. Every theorem that your report names is a theorem under `Spec/`.
+3. Every theorem that your submission names is a theorem under `Spec/`.
 4. A theorem that you report as proven does not depend on `sorry`, directly or through a lemma, and does not depend on an axiom that a file under `Spec/` declares.
 5. The same holds for each theorem that you name in the `base_cases` or `induction_steps` of a `StateInvariant`.
-6. Your report gives a status for every labelled theorem, and for every other theorem under `Spec/` that is not proven.
+6. Your submission gives a status for every labelled theorem, and for every other theorem under `Spec/` that is not proven.
 7. Each theorem of conditions 4 and 5 that depends on `Lusterna.refMutWriteDropped` has an entry in `dropped_writes`.
 
 A reviewer then checks that you changed only what "What you may change" allows, that each hypothesis that you added follows the rules of "Additional assumptions", that you worked on each theorem that you report as `Open` or `Refuted`, that each `Refuted` reason and each `Exception` that the formalize stage did not give holds, and that each entry of `dropped_writes` and each `DroppedWrite` status holds.
 
-Nobody reads your messages while you work, and nobody answers questions. Do not stop to ask a question or to wait for an answer. If you must choose between options, choose the one that follows this briefing and continue. The harness controls the budget. Do not stop early because you expect the budget to run out. Do not return your report while a theorem is left that you did not work on, or while a build is running.
+Nobody reads your messages while you work, and nobody answers questions. Do not stop to ask a question or to wait for an answer. If you must choose between options, choose the one that follows this briefing and continue. The harness controls the budget. Do not stop early because you expect the budget to run out. Do not return your submission while a theorem is left that you did not work on, or while a build is running.
 
 ## What you must not do
 
@@ -113,6 +113,6 @@ Nobody reads your messages while you work, and nobody answers questions. Do not 
 
 ## Your result
 
-When you are done, return `Ok` with your report. Fill each field as its description says. The theorem names are full Lean names, for example `Spec.FAdds.f_adds`.
+When you are done, return `Ok` with your submission. Fill each field as its description says. The theorem names are full Lean names, for example `Spec.FAdds.f_adds`.
 
 Return `Err` only for a reason that the result schema lists. Then the stage stops, and nobody continues your work. For every other problem, keep working.

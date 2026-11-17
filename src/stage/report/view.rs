@@ -6,12 +6,12 @@ use serde::Serialize;
 
 use crate::stage::{
     formalize::{FormalizeOutput, Induction, PropertyFormalizationStatus, SkipReason},
-    pre_translate::PreTranslateReport,
+    pre_translate::PreTranslateSubmission,
     properties::{Properties, Property, PropertyId, PropertyKind},
     prove::{
         AdditionalAssumption, AssumptionPurpose, PropertyProofStatus, ProveOutput, TheoremStatus,
     },
-    translate::TranslateReport,
+    translate::TranslateSubmission,
 };
 
 #[derive(Serialize)]
@@ -189,9 +189,9 @@ pub(super) struct ReportView {
     properties: Vec<PropertyView>,
     inductions: Vec<InductionView>,
     /// `None` if the stage was skipped
-    pre_translate: Option<PreTranslateReport>,
+    pre_translate: Option<PreTranslateSubmission>,
     /// `None` if the stage was skipped
-    translate: Option<TranslateReport>,
+    translate: Option<TranslateSubmission>,
     /// `None` if the stage was skipped
     formalize: Option<FormalizeOutput>,
 }
@@ -200,22 +200,22 @@ impl ReportView {
     pub(super) fn new(
         crate_name: String,
         properties: &Properties,
-        pre_translate_report: Option<PreTranslateReport>,
-        translate_report: Option<TranslateReport>,
-        formalize_report: Option<FormalizeOutput>,
+        pre_translate_submission: Option<PreTranslateSubmission>,
+        translate_submission: Option<TranslateSubmission>,
+        formalize_submission: Option<FormalizeOutput>,
         prove_output: Option<&ProveOutput>,
     ) -> Self {
         let mut property_views = Vec::new();
         for property in &properties.0 {
             property_views.push(PropertyView::new(
                 property,
-                formalize_report.as_ref(),
+                formalize_submission.as_ref(),
                 prove_output,
             ));
         }
 
         let mut inductions = Vec::new();
-        if let Some(formalize) = &formalize_report {
+        if let Some(formalize) = &formalize_submission {
             for (name, induction) in &formalize.induction {
                 inductions.push(InductionView::new(name, induction));
             }
@@ -225,9 +225,9 @@ impl ReportView {
             crate_name,
             properties: property_views,
             inductions,
-            pre_translate: pre_translate_report,
-            translate: translate_report,
-            formalize: formalize_report,
+            pre_translate: pre_translate_submission,
+            translate: translate_submission,
+            formalize: formalize_submission,
         }
     }
 }
@@ -290,7 +290,10 @@ fn theorem_views(names: &[String], proof: Option<&PropertyProofStatus>) -> Vec<T
     let statuses = proof.map(theorem_statuses).unwrap_or_default();
     let mut views = Vec::new();
     for name in names {
-        views.push(TheoremsView::new(name, statuses.get(name.as_str()).copied()));
+        views.push(TheoremsView::new(
+            name,
+            statuses.get(name.as_str()).copied(),
+        ));
     }
     views
 }
@@ -344,9 +347,11 @@ impl TheoremsView {
             Some(TheoremStatus::DroppedWrite { function, reason }) => {
                 (Some(reason.clone()), Some(function.clone()), Vec::new())
             }
-            Some(TheoremStatus::ProvenWithAssumptions { assumptions }) => {
-                (None, None, assumptions.iter().map(AssumptionView::from).collect())
-            }
+            Some(TheoremStatus::ProvenWithAssumptions { assumptions }) => (
+                None,
+                None,
+                assumptions.iter().map(AssumptionView::from).collect(),
+            ),
             Some(TheoremStatus::Proven) | None => (None, None, Vec::new()),
         };
 
@@ -412,7 +417,10 @@ impl From<&AdditionalAssumption> for AssumptionView {
                     .iter()
                     .map(|(caller, condition)| format!("`{caller}`: {condition}"))
                     .collect();
-                (AssumptionPurposeView::CallerPrecondition, callers.join("; "))
+                (
+                    AssumptionPurposeView::CallerPrecondition,
+                    callers.join("; "),
+                )
             }
         };
 

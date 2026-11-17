@@ -2,21 +2,21 @@
 //!
 //! 1. Only files under `Spec/` differ from `HEAD`.
 //! 2. `lake build Spec` passes.
-//! 3. Every theorem that the report names is a theorem under `Spec/`.
-//! 4. Every theorem that the report claims to be proven is proven.
+//! 3. Every theorem that the submission names is a theorem under `Spec/`.
+//! 4. Every theorem that the submission claims to be proven is proven.
 //! 5. Every labelled theorem and every theorem that is not proven has a status
-//!    in the report.
-//! 6. Every theorem that the report claims to be proven and that depends on
+//!    in the submission.
+//! 6. Every theorem that the submission claims to be proven and that depends on
 //!    `Lusterna.refMutWriteDropped` has an entry in its `dropped_writes`.
 //!
-//! Then it groups the statuses of the report by property.
+//! Then it groups the statuses of the submission by property.
 //!
 //! Labelled theorem: a theorem tagged `@[lusterna id "title"]`, which states
 //! the property with that `id`.
 //!
 //! A theorem is proven if `Lusterna.Spec.check` reports no axioms for it.
 //!
-//! The report claims that a theorem is proven if it
+//! The submission claims that a theorem is proven if it
 //! - gives the theorem the status `Proven` or `ProvenWithAssumptions`, or
 //! - names it in the `base_cases` or the `induction_steps` of a
 //!   `StateInvariant` assumption.
@@ -35,8 +35,8 @@ use crate::{
         formalize::PropertyFormalizationStatus,
         properties::{Properties, PropertyId, PropertyKind},
         prove::{
-            AssumptionPurpose, PropertyProofStatus, ProveInput, ProveOutput, ProveReport,
-            ProveStage, TheoremStatus,
+            AssumptionPurpose, PropertyProofStatus, ProveInput, ProveOutput, ProveStage,
+            ProveSubmission, TheoremStatus,
         },
     },
     utils::{
@@ -64,7 +64,7 @@ pub enum ProveGateFailure {
     ChangedOutsideSpec { files: Vec<PathBuf> },
     #[display("lake build Spec failed")]
     BuildFailed { output: String },
-    #[display("the report names {} theorems that do not exist", names.len())]
+    #[display("the submission names {} theorems that do not exist", names.len())]
     UnknownTheorems { names: Vec<String> },
     /// Each theorem with the axioms that it depends on.
     #[display("{} theorems are not proven", theorems.len())]
@@ -96,20 +96,25 @@ where
 
 /// Runs the gate checks on the work of the agent in the Lean project at
 /// `input.lean_root`, and stops at the first check that fails. If all checks
-/// pass, returns the statuses of `report`, grouped by property.
+/// pass, returns the statuses of `submission`, grouped by property.
 pub(super) fn run_gate(
     input: &ProveInput,
     properties: &Properties,
-    report: &ProveReport,
+    submission: &ProveSubmission,
 ) -> Result<ProveOutput, GateStop> {
     check_only_spec_changed(&input.lean_root)?;
     check_spec_builds(&input.lean_root)?;
 
     // What Lean reports about each theorem under `Spec/`
     let spec_theorems = spec_check::run(&input.lean_root, true)?;
-    check_report(report, &spec_theorems)?;
+    check_submission(submission, &spec_theorems)?;
 
-    Ok(group_by_property(input, properties, report, &spec_theorems))
+    Ok(group_by_property(
+        input,
+        properties,
+        submission,
+        &spec_theorems,
+    ))
 }
 
 /// Fails if a file outside `Spec/` differs from `HEAD`.
@@ -135,17 +140,17 @@ fn check_spec_builds(lean_root: &Path) -> Result<(), GateStop> {
     }
 }
 
-/// Checks `report` against `spec_theorems`, the theorems under `Spec/`, and
+/// Checks `submission` against `spec_theorems`, the theorems under `Spec/`, and
 /// returns the first check that fails.
-fn check_report(
-    report: &ProveReport,
+fn check_submission(
+    submission: &ProveSubmission,
     spec_theorems: &[TheoremCheck],
 ) -> Result<(), ProveGateFailure> {
-    let claimed_proven = theorems_claimed_proven(report);
-    check_names_exist(report, &claimed_proven, spec_theorems)?;
+    let claimed_proven = theorems_claimed_proven(submission);
+    check_names_exist(submission, &claimed_proven, spec_theorems)?;
     check_claims_are_proven(&claimed_proven, spec_theorems)?;
-    check_statuses_are_complete(report, spec_theorems)?;
-    check_dropped_writes_explained(report, &claimed_proven, spec_theorems)
+    check_statuses_are_complete(submission, spec_theorems)?;
+    check_dropped_writes_explained(submission, &claimed_proven, spec_theorems)
 }
 
 /// Returns the theorem with the full Lean name `name`.
@@ -162,11 +167,11 @@ fn is_proven(theorem: &TheoremCheck) -> bool {
     }
 }
 
-/// Returns the full Lean names of the theorems that `report` claims to be
+/// Returns the full Lean names of the theorems that `submission` claims to be
 /// proven.
-fn theorems_claimed_proven(report: &ProveReport) -> BTreeSet<&String> {
+fn theorems_claimed_proven(submission: &ProveSubmission) -> BTreeSet<&String> {
     let mut claimed_proven = BTreeSet::new();
-    for (name, status) in &report.theorems {
+    for (name, status) in &submission.theorems {
         match status {
             // The theorem itself
             TheoremStatus::Proven => {
@@ -201,16 +206,20 @@ fn theorems_claimed_proven(report: &ProveReport) -> BTreeSet<&String> {
     claimed_proven
 }
 
-/// Fails if `report` gives a status or a `dropped_writes` entry to a theorem
-/// that is not in `spec_theorems`, or if a theorem in `claimed_proven` is not
-/// in `spec_theorems`.
+/// Fails if `submission` gives a status or a `dropped_writes` entry to a
+/// theorem that is not in `spec_theorems`, or if a theorem in `claimed_proven`
+/// is not in `spec_theorems`.
 fn check_names_exist(
-    report: &ProveReport,
+    submission: &ProveSubmission,
     claimed_proven: &BTreeSet<&String>,
     spec_theorems: &[TheoremCheck],
 ) -> Result<(), ProveGateFailure> {
     let mut unknown = BTreeSet::new();
-    for name in report.theorems.keys().chain(report.dropped_writes.keys()) {
+    for name in submission
+        .theorems
+        .keys()
+        .chain(submission.dropped_writes.keys())
+    {
         if find_theorem(spec_theorems, name).is_none() {
             unknown.insert(name.clone());
         }
@@ -253,16 +262,16 @@ fn check_claims_are_proven(
 }
 
 /// Fails if a labelled theorem, or a theorem that is not proven, has no status
-/// in `report`.
+/// in `submission`.
 fn check_statuses_are_complete(
-    report: &ProveReport,
+    submission: &ProveSubmission,
     spec_theorems: &[TheoremCheck],
 ) -> Result<(), ProveGateFailure> {
     let mut missing = Vec::new();
     for theorem in spec_theorems {
         let is_labelled = theorem.id.is_some();
         let needs_status = is_labelled || !is_proven(theorem);
-        if needs_status && !report.theorems.contains_key(&theorem.name) {
+        if needs_status && !submission.theorems.contains_key(&theorem.name) {
             missing.push(theorem.name.clone());
         }
     }
@@ -274,9 +283,9 @@ fn check_statuses_are_complete(
 
 /// Fails if a theorem in `claimed_proven` depends on
 /// `Lusterna.refMutWriteDropped` and has no entry in the `dropped_writes` of
-/// `report`. Skips a name that is not in `spec_theorems`.
+/// `submission`. Skips a name that is not in `spec_theorems`.
 fn check_dropped_writes_explained(
-    report: &ProveReport,
+    submission: &ProveSubmission,
     claimed_proven: &BTreeSet<&String>,
     spec_theorems: &[TheoremCheck],
 ) -> Result<(), ProveGateFailure> {
@@ -285,7 +294,7 @@ fn check_dropped_writes_explained(
         let Some(theorem) = find_theorem(spec_theorems, name) else {
             continue;
         };
-        if theorem.drops_writes == Some(true) && !report.dropped_writes.contains_key(*name) {
+        if theorem.drops_writes == Some(true) && !submission.dropped_writes.contains_key(*name) {
             unexplained.push((*name).clone());
         }
     }
@@ -298,11 +307,11 @@ fn check_dropped_writes_explained(
 }
 
 /// Returns, for each property that the formalize stage formalized, the
-/// statuses in `report` of the theorems with its label.
+/// statuses in `submission` of the theorems with its label.
 fn group_by_property(
     input: &ProveInput,
     properties: &Properties,
-    report: &ProveReport,
+    submission: &ProveSubmission,
     spec_theorems: &[TheoremCheck],
 ) -> ProveOutput {
     let mut output = BTreeMap::new();
@@ -313,7 +322,7 @@ fn group_by_property(
         else {
             continue;
         };
-        let theorems = labelled_theorems(property.id, report, spec_theorems);
+        let theorems = labelled_theorems(property.id, submission, spec_theorems);
         let status = match &property.kind {
             PropertyKind::Rule { .. } => rule_status(theorems),
             PropertyKind::Invariant { r#struct } => {
@@ -332,10 +341,10 @@ fn group_by_property(
 }
 
 /// Returns the theorems with the label of the property `id`, each with its
-/// status in `report`. Leaves out a theorem without a status.
+/// status in `submission`. Leaves out a theorem without a status.
 fn labelled_theorems<'a>(
     id: PropertyId,
-    report: &ProveReport,
+    submission: &ProveSubmission,
     spec_theorems: &'a [TheoremCheck],
 ) -> Vec<(&'a TheoremCheck, TheoremStatus)> {
     let mut theorems = Vec::new();
@@ -343,7 +352,7 @@ fn labelled_theorems<'a>(
         if theorem.id != Some(id) {
             continue;
         }
-        if let Some(status) = report.theorems.get(&theorem.name) {
+        if let Some(status) = submission.theorems.get(&theorem.name) {
             theorems.push((theorem, status.clone()));
         }
     }
@@ -438,7 +447,7 @@ impl ProveGateFailure {
                  Fix the first error and run `lake build Spec` again until it passes.",
             ),
             ProveGateFailure::UnknownTheorems { names } => format!(
-                "Your report names these theorems, but no theorem under `Spec/` has that \
+                "Your submission names these theorems, but no theorem under `Spec/` has that \
                  name:\n\n{}\n\n\
                  Use the full Lean name of each theorem, and name only theorems that exist.",
                 code_list(names)
@@ -453,25 +462,25 @@ impl ProveGateFailure {
                     items.push(format!("{}: {}", code(name), axioms_as_code.join(", ")));
                 }
                 format!(
-                    "Your report gives these theorems the status `Proven` or \
+                    "Your submission gives these theorems the status `Proven` or \
                      `ProvenWithAssumptions`, or names them in the status of another theorem, \
                      but they are not proven. Each depends on the axioms after its name:\n\n{}\n\n\
                      `sorryAx` means that the proof, or the proof of a lemma that it uses, is \
                      `sorry`. Any other axiom is declared in a file under `Spec/`, which \
-                     `native_decide` also does. Finish the proof, or report the theorem as \
+                     `native_decide` also does. Finish the proof, or submission the theorem as \
                      `Open`.",
                     bullet_list(&items)
                 )
             }
             ProveGateFailure::MissingStatus { theorems } => format!(
-                "These theorems have no status in your report:\n\n{}\n\n\
+                "These theorems have no status in your submission:\n\n{}\n\n\
                  Give a status for every labelled theorem and for every theorem whose proof is \
                  not finished.",
                 code_list(theorems)
             ),
             ProveGateFailure::UnexplainedDroppedWrites { theorems } => format!(
-                "Your report claims that these theorems are proven, but each depends on the \
-                 axiom `Lusterna.refMutWriteDropped`, and your report gives them no entry in \
+                "Your submission claims that these theorems are proven, but each depends on the \
+                 axiom `Lusterna.refMutWriteDropped`, and your submission gives them no entry in \
                  `dropped_writes`:\n\n{}\n\n\
                  The proof of each goes through `deref_mut` of a `core.cell.RefMut`, and the \
                  translation drops every write through a `RefMut`. A theorem that holds only \
@@ -597,9 +606,9 @@ mod tests {
         ]
     }
 
-    /// A report that matches `spec_theorems`.
-    fn report() -> ProveReport {
-        ProveReport {
+    /// A submission that matches `spec_theorems`.
+    fn submission() -> ProveSubmission {
+        ProveSubmission {
             theorems: BTreeMap::from([
                 (
                     "Spec.FAdds.f_adds".to_owned(),
@@ -626,42 +635,42 @@ mod tests {
     }
 
     #[test]
-    fn consistent_report_passes() {
-        check_report(&report(), &spec_theorems()).unwrap();
+    fn consistent_submission_passes() {
+        check_submission(&submission(), &spec_theorems()).unwrap();
     }
 
     #[test]
     fn open_theorem_passes() {
-        let mut report = report();
-        report.theorems.insert(
+        let mut submission = submission();
+        submission.theorems.insert(
             "Spec.Inv.f".to_owned(),
             TheoremStatus::Open {
                 reason: String::new(),
             },
         );
-        check_report(&report, &spec_theorems()).unwrap();
+        check_submission(&submission, &spec_theorems()).unwrap();
     }
 
     #[test]
     fn rejects_status_of_unknown_theorem() {
-        let mut report = report();
-        report
+        let mut submission = submission();
+        submission
             .theorems
             .insert("Spec.Inv.g".to_owned(), TheoremStatus::Proven);
         assert!(matches!(
-            check_report(&report, &spec_theorems()),
+            check_submission(&submission, &spec_theorems()),
             Err(ProveGateFailure::UnknownTheorems { names }) if names == ["Spec.Inv.g"]
         ));
     }
 
     #[test]
     fn rejects_proven_status_of_unproven_theorem() {
-        let mut report = report();
-        report
+        let mut submission = submission();
+        submission
             .theorems
             .insert("Spec.Inv.f".to_owned(), TheoremStatus::Proven);
         assert!(matches!(
-            check_report(&report, &spec_theorems()),
+            check_submission(&submission, &spec_theorems()),
             Err(ProveGateFailure::NotProven { theorems })
                 if theorems == [("Spec.Inv.f".to_owned(), vec!["sorryAx".to_owned()])]
         ));
@@ -669,8 +678,8 @@ mod tests {
 
     #[test]
     fn rejects_unproven_induction_step_of_assumed_invariant() {
-        let mut report = report();
-        report.theorems.insert(
+        let mut submission = submission();
+        submission.theorems.insert(
             "Spec.FAdds.f_adds".to_owned(),
             TheoremStatus::ProvenWithAssumptions {
                 assumptions: vec![AdditionalAssumption {
@@ -684,7 +693,7 @@ mod tests {
             },
         );
         assert!(matches!(
-            check_report(&report, &spec_theorems()),
+            check_submission(&submission, &spec_theorems()),
             Err(ProveGateFailure::NotProven { theorems })
                 if theorems == [("Spec.Inv.f".to_owned(), vec!["sorryAx".to_owned()])]
         ));
@@ -692,10 +701,10 @@ mod tests {
 
     #[test]
     fn rejects_labelled_theorem_without_status() {
-        let mut report = report();
-        report.theorems.remove("Spec.Inv.new");
+        let mut submission = submission();
+        submission.theorems.remove("Spec.Inv.new");
         assert!(matches!(
-            check_report(&report, &spec_theorems()),
+            check_submission(&submission, &spec_theorems()),
             Err(ProveGateFailure::MissingStatus { theorems }) if theorems == ["Spec.Inv.new"]
         ));
     }
@@ -705,7 +714,7 @@ mod tests {
         let mut spec_theorems = spec_theorems();
         spec_theorems[3] = unlabelled("Spec.InvAux.lemma", false);
         assert!(matches!(
-            check_report(&report(), &spec_theorems),
+            check_submission(&submission(), &spec_theorems),
             Err(ProveGateFailure::MissingStatus { theorems }) if theorems == ["Spec.InvAux.lemma"]
         ));
     }
@@ -715,7 +724,7 @@ mod tests {
         let mut spec_theorems = spec_theorems();
         spec_theorems[1].drops_writes = Some(true);
         assert!(matches!(
-            check_report(&report(), &spec_theorems),
+            check_submission(&submission(), &spec_theorems),
             Err(ProveGateFailure::UnexplainedDroppedWrites { theorems })
                 if theorems == ["Spec.Inv.new"]
         ));
@@ -725,31 +734,31 @@ mod tests {
     fn explained_dropped_write_passes() {
         let mut spec_theorems = spec_theorems();
         spec_theorems[1].drops_writes = Some(true);
-        let mut report = report();
-        report
+        let mut submission = submission();
+        submission
             .dropped_writes
             .insert("Spec.Inv.new".to_owned(), String::new());
-        check_report(&report, &spec_theorems).unwrap();
+        check_submission(&submission, &spec_theorems).unwrap();
     }
 
     #[test]
     fn dropped_write_status_passes() {
         let mut spec_theorems = spec_theorems();
         spec_theorems[1].drops_writes = Some(true);
-        let mut report = report();
-        report.theorems.insert(
+        let mut submission = submission();
+        submission.theorems.insert(
             "Spec.Inv.new".to_owned(),
             TheoremStatus::DroppedWrite {
                 function: String::new(),
                 reason: String::new(),
             },
         );
-        check_report(&report, &spec_theorems).unwrap();
+        check_submission(&submission, &spec_theorems).unwrap();
     }
 
     #[test]
     fn groups_statuses_by_property() {
-        let output = group_by_property(&input(), &properties(), &report(), &spec_theorems());
+        let output = group_by_property(&input(), &properties(), &submission(), &spec_theorems());
         assert_eq!(
             serde_json::to_value(&output).unwrap(),
             json!({"properties": {

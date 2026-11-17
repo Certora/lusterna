@@ -6,8 +6,8 @@ mod view;
 use minijinja::{Environment, UndefinedBehavior, syntax::SyntaxConfig, value::Serde};
 
 use crate::stage::{
-    formalize::FormalizeOutput, pre_translate::PreTranslateReport, properties::Properties,
-    prove::ProveOutput, translate::TranslateReport,
+    formalize::FormalizeOutput, pre_translate::PreTranslateSubmission, properties::Properties,
+    prove::ProveOutput, translate::TranslateSubmission,
 };
 
 use view::ReportView;
@@ -18,7 +18,10 @@ const TEMPLATES: [(&str, &str); 7] = [
     ("summary.md", include_str!("templates/summary.md")),
     ("induction.md", include_str!("templates/induction.md")),
     ("property.md", include_str!("templates/property.md")),
-    ("pre_translate.md", include_str!("templates/pre_translate.md")),
+    (
+        "pre_translate.md",
+        include_str!("templates/pre_translate.md"),
+    ),
     ("translate.md", include_str!("templates/translate.md")),
     ("formalize.md", include_str!("templates/formalize.md")),
 ];
@@ -28,8 +31,8 @@ const TEMPLATES: [(&str, &str); 7] = [
 pub fn render(
     crate_name: String,
     properties: &Properties,
-    pre_translate: Option<PreTranslateReport>,
-    translate: Option<TranslateReport>,
+    pre_translate: Option<PreTranslateSubmission>,
+    translate: Option<TranslateSubmission>,
     formalize: Option<FormalizeOutput>,
     prove: Option<&ProveOutput>,
 ) -> Result<String, minijinja::Error> {

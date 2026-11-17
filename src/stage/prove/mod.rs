@@ -126,14 +126,14 @@ pub enum AssumptionPurpose {
     },
 }
 
-/// Report from the agent once done with proving
+/// Submission from the agent once done with proving
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ProveReport {
+pub struct ProveSubmission {
     /// The theorems (fully qualified lean name) and their proof status
     pub theorems: BTreeMap<String, TheoremStatus>,
-    /// For each theorem that the report claims to be proven and that depends
-    /// on `Lusterna.refMutWriteDropped`: the writes through a
+    /// For each theorem that the submission claims to be proven and that
+    /// depends on `Lusterna.refMutWriteDropped`: the writes through a
     /// `core.cell.RefMut` that its proof goes through, and why its conclusion
     /// does not depend on them.
     pub dropped_writes: BTreeMap<String, String>,
@@ -193,7 +193,7 @@ impl Stage for ProveStage {
 
     type Output = ProveOutput;
 
-    type Report = ProveReport;
+    type Submission = ProveSubmission;
 
     type Blocker = ProveBlocker;
 
@@ -257,12 +257,20 @@ impl Stage for ProveStage {
         gate_failed.to_feedback_prompt()
     }
 
-    fn gate_check(&self, report: &Self::Report) -> Result<Self::Output, super::GateStop<Self>> {
-        gate::run_gate(&self.input, &self.properties, report)
+    fn gate_check(
+        &self,
+        submission: &Self::Submission,
+    ) -> Result<Self::Output, super::GateStop<Self>> {
+        gate::run_gate(&self.input, &self.properties, submission)
     }
 
-    fn judge_prompt(&self, _output: &Self::Output, report: &Self::Report) -> Option<String> {
-        let report = serde_json::to_string_pretty(report).expect("the report serializes");
+    fn judge_prompt(
+        &self,
+        _output: &Self::Output,
+        submission: &Self::Submission,
+    ) -> Option<String> {
+        let submission =
+            serde_json::to_string_pretty(submission).expect("the submission serializes");
         Some(
             JUDGE_PROMPT_TEMPLATE
                 .replace("{lean_root}", &self.input.lean_root.display().to_string())
@@ -273,7 +281,7 @@ impl Stage for ProveStage {
                     &format!("{INDUCTION_SKILL}\n\n{INVARIANTS_SKILL}"),
                 )
                 .replace("{briefing}", &self.briefing())
-                .replace("{report}", &report),
+                .replace("{submission}", &submission),
         )
     }
 }
@@ -313,7 +321,7 @@ mod tests {
 
     #[test]
     fn judge_prompt_fills_every_placeholder() {
-        let report = ProveReport {
+        let submission = ProveSubmission {
             theorems: BTreeMap::from([(
                 "Spec.FAdds.f_adds".to_owned(),
                 TheoremStatus::Open {
@@ -325,14 +333,14 @@ mod tests {
         let output = ProveOutput {
             properties: BTreeMap::new(),
         };
-        let prompt = stage().judge_prompt(&output, &report).unwrap();
+        let prompt = stage().judge_prompt(&output, &submission).unwrap();
 
         for placeholder in [
             "{extracted}",
             "{properties}",
             "{invariants}",
             "{briefing}",
-            "{report}",
+            "{submission}",
         ] {
             assert!(!prompt.contains(placeholder), "{placeholder} is left");
         }

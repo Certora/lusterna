@@ -25,9 +25,9 @@ const BASE_PROMPT_TEMPLATE: &str = include_str!("res/prompt.md");
 const SOLANA_HOST_BUILD_SKILL: &str = include_str!("res/solana-host-build.md");
 
 /// The judge prompt of the pre-translate stage, with `{workspace_root}`,
-/// `{base_commit}`, `{briefing}` and `{report}` standing for the workspace
+/// `{base_commit}`, `{briefing}` and `{submission}` standing for the workspace
 /// root, the hash of `HEAD` when setup ran, the agent briefing and the agent's
-/// report.
+/// submission.
 const JUDGE_PROMPT_TEMPLATE: &str = include_str!("res/judge.md");
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -42,7 +42,7 @@ pub struct PreTranslateInput {
 
 /// Every change that the agent made since the start of the stage.
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
-pub struct PreTranslateReport {
+pub struct PreTranslateSubmission {
     /// Each change, including each patched copy of a dependency.
     pub changes: Vec<PreTranslateChange>,
 }
@@ -105,7 +105,7 @@ impl Stage for PreTranslateStage {
 
     type Output = ();
 
-    type Report = PreTranslateReport;
+    type Submission = PreTranslateSubmission;
 
     type Blocker = Never;
 
@@ -171,7 +171,7 @@ impl Stage for PreTranslateStage {
         }
     }
 
-    fn gate_check(&self, _report: &PreTranslateReport) -> Result<(), GateStop<Self>> {
+    fn gate_check(&self, _submission: &PreTranslateSubmission) -> Result<(), GateStop<Self>> {
         let base_commit = &self.base_commit;
 
         // No tracked file may change, except `.rs` files, `Cargo.lock` and the
@@ -215,7 +215,11 @@ impl Stage for PreTranslateStage {
         })
     }
 
-    fn judge_prompt(&self, _output: &Self::Output, report: &PreTranslateReport) -> Option<String> {
+    fn judge_prompt(
+        &self,
+        _output: &Self::Output,
+        submission: &PreTranslateSubmission,
+    ) -> Option<String> {
         let base_commit = &self.base_commit;
         Some(
             JUDGE_PROMPT_TEMPLATE
@@ -226,8 +230,8 @@ impl Stage for PreTranslateStage {
                 .replace("{base_commit}", base_commit)
                 .replace("{briefing}", &self.briefing())
                 .replace(
-                    "{report}",
-                    &serde_json::to_string_pretty(report).expect("the report serializes"),
+                    "{submission}",
+                    &serde_json::to_string_pretty(submission).expect("the submission serializes"),
                 ),
         )
     }
@@ -238,7 +242,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn judge_prompt_contains_the_report() {
+    fn judge_prompt_contains_the_submission() {
         let stage = PreTranslateStage {
             input: PreTranslateInput {
                 workspace_root: PathBuf::from("/ws"),
@@ -247,7 +251,7 @@ mod tests {
             },
             base_commit: "abc123".to_owned(),
         };
-        let report = PreTranslateReport {
+        let submission = PreTranslateSubmission {
             changes: vec![PreTranslateChange {
                 file: "src/lib.rs".to_owned(),
                 change: "gated a size check".to_owned(),
@@ -255,9 +259,9 @@ mod tests {
             }],
         };
 
-        let prompt = stage.judge_prompt(&(), &report).unwrap();
+        let prompt = stage.judge_prompt(&(), &submission).unwrap();
 
-        assert!(prompt.contains(&serde_json::to_string_pretty(&report).unwrap()));
-        assert!(!prompt.contains("{report}"));
+        assert!(prompt.contains(&serde_json::to_string_pretty(&submission).unwrap()));
+        assert!(!prompt.contains("{submission}"));
     }
 }

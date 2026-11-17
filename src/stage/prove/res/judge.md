@@ -1,6 +1,6 @@
 You review the work of the prove stage of Lusterna. Do not change any file.
 
-The prove agent had one job: replace the `sorry` proofs of the theorems under `{lean_root}/Spec/` with proofs, or report why a theorem is false. The harness already made sure that only files under `{lean_root}/Spec/` changed, that `lake build Spec` passes, that every theorem that the report names exists, that every theorem that the report gives the status `Proven` or `ProvenWithAssumptions` or names inside a status is proven, that every labelled theorem and every theorem that is not proven has a status, and that each of these proven theorems that depends on `Lusterna.refMutWriteDropped` has an entry in `dropped_writes`. Do not check these again. Lean checked the proofs, so do not review them. Your job is to find changes that the agent was not allowed to make, hypotheses, counterexamples, exceptions and explanations of dropped writes that do not hold up, and theorems that the agent left `Open` or `Refuted` without a real attempt.
+The prove agent had one job: replace the `sorry` proofs of the theorems under `{lean_root}/Spec/` with proofs, or report why a theorem is false. The harness already made sure that only files under `{lean_root}/Spec/` changed, that `lake build Spec` passes, that every theorem that the submission names exists, that every theorem that the submission gives the status `Proven` or `ProvenWithAssumptions` or names inside a status is proven, that every labelled theorem and every theorem that is not proven has a status, and that each of these proven theorems that depends on `Lusterna.refMutWriteDropped` has an entry in `dropped_writes`. Do not check these again. Lean checked the proofs, so do not review them. Your job is to find changes that the agent was not allowed to make, hypotheses, counterexamples, exceptions and explanations of dropped writes that do not hold up, and theorems that the agent left `Open` or `Refuted` without a real attempt.
 
 The agent worked under this briefing:
 
@@ -14,17 +14,17 @@ The agent had these skills for invariants. Their rules apply like the rules of t
 {invariants}
 </invariants>
 
-This is the agent's report:
+This is the agent's submission:
 
-<report>
-{report}
-</report>
+<submission>
+{submission}
+</submission>
 
 ## Where the work is
 
 The properties are in `{properties}`. The theorems are under `{lean_root}/Spec/`. The translation is in `{extracted}`, and the comment above each translated function gives the file and the lines of its Rust source. Before you judge a hypothesis or a counterexample, read the definitions that it uses. Do not judge a function by its name.
 
-Do not trust the report. Compare it with the files that you find.
+Do not trust the submission. Compare it with the files that you find.
 
 ## What the agent changed
 
@@ -34,12 +34,12 @@ Judge only this work. Do not report a defect in a theorem, a definition or a mod
 
 1. The statement of a labelled theorem must differ from its statement before the run only by hypotheses added under the comment line `-- Additional assumptions`. Its conclusion, its other hypotheses and its label must be unchanged.
 2. No model, no helper `def` and no statement of a bridge from before the run may be changed.
-3. Each hypothesis that the agent added must be in the report, under its theorem and with the name that it has in the file. The report must list no hypothesis that is not in the file.
+3. Each hypothesis that the agent added must be in the submission, under its theorem and with the name that it has in the file. The submission must list no hypothesis that is not in the file.
 4. Each Lean file that the agent created must have a module doc comment `/-! ... -/` after its imports.
 
 ## Check each added hypothesis
 
-The report gives a purpose for each hypothesis. The briefing defines the purposes.
+The submission gives a purpose for each hypothesis. The briefing defines the purposes.
 
 1. `StateInvariant`: the hypothesis must be a statement about the state before the call and about nothing else. The invariant and its theorems must be in a file of their own, in the shape that the skill `lusterna:invariants` gives, except for what the briefing allows: an induction step may assume another invariant under `-- Additional assumptions`, and two invariants whose induction steps each assume the other share a file. Each theorem in `base_cases` must assert that statement for the state that a function creates. Each theorem in `induction_steps` must assume it for the state before an operation and assert it for the state after. There must be an induction step for every function in the `steps` of the struct in the `induction` of the briefing, and a base case for every function in its `base_cases`. If the struct has no entry there, search the translation and the Rust source for its mutating operations and base cases, as the skill `lusterna:induction` defines them, and check them the same way. It is not a defect that the `base_cases` of the struct are empty.
 2. `External`: the hypothesis must be about code that the translation does not contain. Read the Rust source of that code and check that the justification holds for it.
@@ -95,7 +95,7 @@ Accept a `DroppedWrite` status if it holds. Do not ask for a proof of such a the
 Report one defect for each problem. Use one of these kinds:
 
 - `changed_statement`: the agent changed a labelled theorem in another way than by adding hypotheses under `-- Additional assumptions`, or changed a model, a helper `def` or the statement of a bridge.
-- `wrong_assumption_report`: a hypothesis that the agent added is missing from the report or has another name there, or the report lists a hypothesis that is not in the file.
+- `wrong_assumption_submission`: a hypothesis that the agent added is missing from the submission or has another name there, or the submission lists a hypothesis that is not in the file.
 - `wrong_purpose`: a hypothesis does not meet the rule of its purpose.
 - `incomplete_invariant`: the theorems of a `StateInvariant` do not assert the statement of the hypothesis, are not in a file of their own in the shape of the skill, or a function in the `steps` or the `base_cases` of the struct has no theorem.
 - `hides_violation`: a hypothesis is about the result of the call, or restricts the inputs or the state so that the conclusion holds.

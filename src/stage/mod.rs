@@ -79,7 +79,7 @@ pub trait Stage: Sized + Serialize + DeserializeOwned {
     /// The stage's output; used to feed the subsequent stage.
     type Output: Serialize + DeserializeOwned + Clone;
     /// What the agent did, which it returns when it finishes the stage.
-    type Report: Serialize + DeserializeOwned + JsonSchema + Clone;
+    type Submission: Serialize + DeserializeOwned + JsonSchema + Clone;
     /// The reasons for which the agent can stop the stage. Use [`Never`] for
     /// a stage that the agent cannot stop.
     type Blocker: Display + Serialize + DeserializeOwned + JsonSchema;
@@ -132,12 +132,16 @@ pub trait Stage: Sized + Serialize + DeserializeOwned {
     /// The stage's gate checks. These check evaluate whether the agent that
     /// executes the stage worked correctly. If a gate check failed, then
     /// this is returned to the
-    /// `report` is the agent's report.
-    fn gate_check(&self, report: &Self::Report) -> Result<Self::Output, GateStop<Self>>;
+    /// `submission` is the agent's submission.
+    fn gate_check(&self, submission: &Self::Submission) -> Result<Self::Output, GateStop<Self>>;
 
     /// The prompt for the judge, or `None` if the stage has no judge.
     /// By default, no judge is run.
-    fn judge_prompt(&self, _output: &Self::Output, _report: &Self::Report) -> Option<String> {
+    fn judge_prompt(
+        &self,
+        _output: &Self::Output,
+        _submission: &Self::Submission,
+    ) -> Option<String> {
         None
     }
 }

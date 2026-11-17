@@ -1,10 +1,10 @@
 //! Gate checks of the formalize stage, in order:
 //!
 //! 1. Only files under `Spec/` differ from `HEAD`.
-//! 2. The report has a status for exactly the given properties.
+//! 2. The submission has a status for exactly the given properties.
 //! 3. `lake build Spec` passes.
 //! 4. No labelled theorem has an issue reported by `Lusterna.Spec.check`.
-//! 5. The labels match the report: each label's property is formalized, the
+//! 5. The labels match the submission: each label's property is formalized, the
 //!    title matches, the theorem is in the reported file, and each property's
 //!    labelled theorems are the reported ones.
 //! 6. Each formalized invariant has an `induction` entry for its struct, and
@@ -56,7 +56,7 @@ pub enum FormalizeGateError {
 pub enum FormalizeGateFailure {
     #[display("{} files changed outside Spec/", files.len())]
     ChangedOutsideSpec { files: Vec<PathBuf> },
-    #[display("the property statuses of the report do not match the properties")]
+    #[display("the property statuses of the submission do not match the properties")]
     StatusMismatch {
         missing: Vec<PropertyId>,
         unknown: Vec<PropertyId>,
@@ -65,7 +65,7 @@ pub enum FormalizeGateFailure {
     BuildFailed { output: String },
     #[display("{} labelled theorems have issues", theorems.len())]
     IssuesFound { theorems: Vec<(String, Vec<Issue>)> },
-    #[display("{} labels do not match the report", problems.len())]
+    #[display("{} labels do not match the submission", problems.len())]
     LabelMismatch { problems: Vec<LabelProblem> },
     #[display("no induction reported for {}", structs.join(", "))]
     MissingInduction { structs: Vec<String> },
@@ -73,21 +73,21 @@ pub enum FormalizeGateFailure {
     UncoveredInduction { missing: Vec<(PropertyId, String)> },
 }
 
-/// A mismatch between the `@[lusterna]` labels in `Spec/` and the report.
+/// A mismatch between the `@[lusterna]` labels in `Spec/` and the submission.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LabelProblem {
-    /// `theorem` is labelled with `id`, but the report does not mark `id` as
-    /// formalized.
+    /// `theorem` is labelled with `id`, but the submission does not mark `id`
+    /// as formalized.
     UnreportedLabel { theorem: String, id: PropertyId },
     /// The label of `theorem` does not have `title`, the title of its
     /// property.
     WrongTitle { theorem: String, title: String },
-    /// `theorem` is not in `file`, the file that the report gives for its
+    /// `theorem` is not in `file`, the file that the submission gives for its
     /// property.
     WrongFile { theorem: String, file: PathBuf },
-    /// The report lists `unlabelled` for property `id`, but they do not carry
-    /// its label, and `unreported` carry its label, but the report does not
-    /// list them.
+    /// The submission lists `unlabelled` for property `id`, but they do not
+    /// carry its label, and `unreported` carry its label, but the
+    /// submission does not list them.
     TheoremsDiffer {
         id: PropertyId,
         unlabelled: Vec<String>,
@@ -115,13 +115,13 @@ where
 /// Checks the result of the agent:
 ///
 /// - only files under `Spec/` in `lean_root` differ from `HEAD`
-/// - the report gives a status for every property, and for no other id
+/// - the submission gives a status for every property, and for no other id
 /// - `lake build Spec` succeeds in `lean_root`
 /// - the theorems in `Spec/` pass `check_theorems`
 pub(super) fn run_gate(
     lean_root: &Path,
     properties: &Properties,
-    report: &FormalizeOutput,
+    submission: &FormalizeOutput,
 ) -> Result<(), GateStop> {
     let spec = lean_root.join("Spec").canonicalize()?;
 
@@ -131,16 +131,16 @@ pub(super) fn run_gate(
         return Err(FormalizeGateFailure::ChangedOutsideSpec { files }.into());
     }
 
-    // The report must give a status for exactly the properties
-    // Missing: properties given but not in the report
+    // The submission must give a status for exactly the properties
+    // Missing: properties given but not in the submission
     let missing: Vec<PropertyId> = properties
         .0
         .iter()
         .map(|p| p.id)
-        .filter(|id| !report.property_status.contains_key(id))
+        .filter(|id| !submission.property_status.contains_key(id))
         .collect();
-    // Unknown: properties in the report no in the given properties
-    let unknown: Vec<PropertyId> = report
+    // Unknown: properties in the submission no in the given properties
+    let unknown: Vec<PropertyId> = submission
         .property_status
         .keys()
         .copied()
@@ -157,20 +157,20 @@ pub(super) fn run_gate(
     })?;
 
     let checks = spec_check::run(lean_root, false)?;
-    check_theorems(properties, report, &checks)?;
+    check_theorems(properties, submission, &checks)?;
     Ok(())
 }
 
-/// Checks the theorems in `Spec/` against the properties and the report, and
-/// returns the first check that fails.
+/// Checks the theorems in `Spec/` against the properties and the submission,
+/// and returns the first check that fails.
 fn check_theorems(
     properties: &Properties,
-    report: &FormalizeOutput,
+    submission: &FormalizeOutput,
     checks: &[TheoremCheck],
 ) -> Result<(), FormalizeGateFailure> {
     check_issues(checks)?;
-    check_labels(properties, report, checks)?;
-    check_induction(properties, report, checks)
+    check_labels(properties, submission, checks)?;
+    check_induction(properties, submission, checks)
 }
 
 /// Checks that no labelled theorem has an issue.
@@ -188,13 +188,13 @@ fn check_issues(checks: &[TheoremCheck]) -> Result<(), FormalizeGateFailure> {
     Ok(())
 }
 
-/// Checks that every label names a property that the report marks as
-/// formalized, has its title, and is on a theorem in the file that the report
-/// gives for it, and that the labelled theorems of each formalized property are
-/// the theorems that the report lists for it.
+/// Checks that every label names a property that the submission marks as
+/// formalized, has its title, and is on a theorem in the file that the
+/// submission gives for it, and that the labelled theorems of each formalized
+/// property are the theorems that the submission lists for it.
 fn check_labels(
     properties: &Properties,
-    report: &FormalizeOutput,
+    submission: &FormalizeOutput,
     checks: &[TheoremCheck],
 ) -> Result<(), FormalizeGateFailure> {
     let mut problems = Vec::new();
@@ -204,9 +204,9 @@ fn check_labels(
         let Some(id) = check.id else {
             continue;
         };
-        // The report must mark the label's property as formalized
+        // The submission must mark the label's property as formalized
         let Some(PropertyFormalizationStatus::Formalized { file, .. }) =
-            report.property_status.get(&id)
+            submission.property_status.get(&id)
         else {
             problems.push(LabelProblem::UnreportedLabel {
                 theorem: check.name.clone(),
@@ -242,7 +242,7 @@ fn check_labels(
     }
     // The labelled theorems of each formalized property must be the reported
     // ones
-    for (id, status) in &report.property_status {
+    for (id, status) in &submission.property_status {
         // Skip skipped properties
         let PropertyFormalizationStatus::Formalized { theorems, .. } = status else {
             continue;
@@ -278,7 +278,7 @@ fn check_labels(
 /// theorem whose triple calls it.
 fn check_induction(
     properties: &Properties,
-    report: &FormalizeOutput,
+    submission: &FormalizeOutput,
     checks: &[TheoremCheck],
 ) -> Result<(), FormalizeGateFailure> {
     let mut structs_without_induction = BTreeSet::new();
@@ -290,12 +290,12 @@ fn check_induction(
         };
         // Skip skipped properties
         let Some(PropertyFormalizationStatus::Formalized { .. }) =
-            report.property_status.get(&property.id)
+            submission.property_status.get(&property.id)
         else {
             continue;
         };
-        // The report must list the induction of the struct
-        let Some(induction) = report.induction.get(r#struct) else {
+        // The submission must list the induction of the struct
+        let Some(induction) = submission.induction.get(r#struct) else {
             structs_without_induction.insert(r#struct.clone());
             continue;
         };
@@ -334,7 +334,7 @@ impl fmt::Display for LabelProblem {
         match self {
             LabelProblem::UnreportedLabel { theorem, id } => write!(
                 f,
-                "`{theorem}` is labelled with property {id}, which your report does not mark \
+                "`{theorem}` is labelled with property {id}, which your submission does not mark \
                  as `Formalized`"
             ),
             LabelProblem::WrongTitle { theorem, title } => write!(
@@ -343,7 +343,7 @@ impl fmt::Display for LabelProblem {
             ),
             LabelProblem::WrongFile { theorem, file } => write!(
                 f,
-                "`{theorem}` is not in `{}`, the file that your report gives for its property",
+                "`{theorem}` is not in `{}`, the file that your submission gives for its property",
                 file.display()
             ),
             LabelProblem::TheoremsDiffer {
@@ -355,14 +355,14 @@ impl fmt::Display for LabelProblem {
                 if !unlabelled.is_empty() {
                     write!(
                         f,
-                        " your report lists {}, but they do not carry its label;",
+                        " your submission lists {}, but they do not carry its label;",
                         names(unlabelled)
                     )?;
                 }
                 if !unreported.is_empty() {
                     write!(
                         f,
-                        " {} carry its label, but your report does not list them;",
+                        " {} carry its label, but your submission does not list them;",
                         names(unreported)
                     )?;
                 }
@@ -398,7 +398,7 @@ impl FormalizeGateFailure {
                         .collect::<Vec<_>>()
                         .join(", ")
                 };
-                let mut prompt = "Your report must give a status for every property in the \
+                let mut prompt = "Your submission must give a status for every property in the \
                                   properties file, and for no other id."
                     .to_string();
                 if !missing.is_empty() {
@@ -431,12 +431,12 @@ impl FormalizeGateFailure {
                 )
             ),
             FormalizeGateFailure::LabelMismatch { problems } => format!(
-                "The `@[lusterna]` labels in `Spec/` do not match your report:\n\n{}\n\n\
-                 Fix the labels or the report so that they agree.",
+                "The `@[lusterna]` labels in `Spec/` do not match your submission:\n\n{}\n\n\
+                 Fix the labels or the submission so that they agree.",
                 list(problems.iter().map(LabelProblem::to_string).collect())
             ),
             FormalizeGateFailure::MissingInduction { structs } => format!(
-                "Your report has no entry in `induction` for these structs of invariant \
+                "Your submission has no entry in `induction` for these structs of invariant \
                  properties:\n\n{}\n\n\
                  Add the `base_cases` and the `steps` of each struct, under the struct name \
                  exactly as the property gives it.",
@@ -484,7 +484,7 @@ mod tests {
         ])
     }
 
-    fn report() -> FormalizeOutput {
+    fn submission() -> FormalizeOutput {
         FormalizeOutput {
             property_status: BTreeMap::from([
                 (
@@ -568,8 +568,8 @@ mod tests {
     }
 
     #[test]
-    fn consistent_report_passes() {
-        check_theorems(&properties(), &report(), &checks()).unwrap();
+    fn consistent_submission_passes() {
+        check_theorems(&properties(), &submission(), &checks()).unwrap();
     }
 
     #[test]
@@ -577,7 +577,7 @@ mod tests {
         let mut checks = checks();
         checks[0].issues = vec![Issue::Vacuous];
         assert!(matches!(
-            check_theorems(&properties(), &report(), &checks),
+            check_theorems(&properties(), &submission(), &checks),
             Err(FormalizeGateFailure::IssuesFound { .. })
         ));
     }
@@ -596,7 +596,7 @@ mod tests {
             "f",
         ));
         let Err(FormalizeGateFailure::LabelMismatch { problems }) =
-            check_theorems(&properties(), &report(), &checks)
+            check_theorems(&properties(), &submission(), &checks)
         else {
             panic!("expected a label mismatch");
         };
@@ -626,22 +626,22 @@ mod tests {
 
     #[test]
     fn rejects_missing_induction() {
-        let mut report = report();
-        report.induction.clear();
+        let mut submission = submission();
+        submission.induction.clear();
         assert!(matches!(
-            check_theorems(&properties(), &report, &checks()),
+            check_theorems(&properties(), &submission, &checks()),
             Err(FormalizeGateFailure::MissingInduction { structs }) if structs == ["vault::Vault"]
         ));
     }
 
     #[test]
     fn rejects_uncovered_induction() {
-        let mut report = report();
-        let induction = report.induction.get_mut("vault::Vault").unwrap();
+        let mut submission = submission();
+        let induction = submission.induction.get_mut("vault::Vault").unwrap();
         induction.base_cases.push("vault.Vault.default".to_owned());
         induction.steps.push("vault.Vault.withdraw".to_owned());
         assert!(matches!(
-            check_theorems(&properties(), &report, &checks()),
+            check_theorems(&properties(), &submission, &checks()),
             Err(FormalizeGateFailure::UncoveredInduction { missing })
                 if missing == [
                     (2, "vault.Vault.default".to_owned()),

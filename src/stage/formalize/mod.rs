@@ -35,10 +35,10 @@ const AENEAS_MODELS_SKILL: &str = include_str!("res/aeneas-models.md");
 
 /// The judge prompt of the formalize stage, with `{lean_root}`,
 /// `{extracted}`, `{properties}`, `{crate_root}`, `{briefing}`, `{skills}`
-/// and `{report}` standing for the Lean project root, the directory of the
+/// and `{submission}` standing for the Lean project root, the directory of the
 /// extraction, the JSON file of the properties, the root of the crate, the
 /// agent briefing, the `SKILL.md` content of the agent's skills and the
-/// agent's report.
+/// agent's submission.
 const JUDGE_PROMPT_TEMPLATE: &str = include_str!("res/judge.md");
 
 #[derive(Deserialize, Serialize)]
@@ -158,7 +158,7 @@ impl Stage for FormalizeStage {
 
     type Output = FormalizeOutput;
 
-    type Report = FormalizeOutput;
+    type Submission = FormalizeOutput;
 
     type Blocker = FormalizeBlocker;
 
@@ -217,12 +217,19 @@ impl Stage for FormalizeStage {
         gate_failed.to_feedback_prompt()
     }
 
-    fn gate_check(&self, report: &Self::Report) -> Result<Self::Output, super::GateStop<Self>> {
-        gate::run_gate(&self.input.lean_root, &self.properties, report)?;
-        Ok(report.clone())
+    fn gate_check(
+        &self,
+        submission: &Self::Submission,
+    ) -> Result<Self::Output, super::GateStop<Self>> {
+        gate::run_gate(&self.input.lean_root, &self.properties, submission)?;
+        Ok(submission.clone())
     }
 
-    fn judge_prompt(&self, _output: &Self::Output, report: &Self::Report) -> Option<String> {
+    fn judge_prompt(
+        &self,
+        _output: &Self::Output,
+        submission: &Self::Submission,
+    ) -> Option<String> {
         Some(
             JUDGE_PROMPT_TEMPLATE
                 .replace("{lean_root}", &self.input.lean_root.display().to_string())
@@ -240,8 +247,8 @@ impl Stage for FormalizeStage {
                 )
                 .replace("{briefing}", &self.briefing())
                 .replace(
-                    "{report}",
-                    &serde_json::to_string_pretty(report).expect("the report serializes"),
+                    "{submission}",
+                    &serde_json::to_string_pretty(submission).expect("the submission serializes"),
                 ),
         )
     }
@@ -282,7 +289,7 @@ mod tests {
 
     #[test]
     fn judge_prompt_fills_every_placeholder() {
-        let report = FormalizeOutput {
+        let submission = FormalizeOutput {
             property_status: BTreeMap::from([(
                 1,
                 PropertyFormalizationStatus::Skipped(SkipReason::Other("{lean_root}".to_owned())),
@@ -292,7 +299,7 @@ mod tests {
             updated_theorems: Vec::new(),
             removed_theorems: Vec::new(),
         };
-        let prompt = stage().judge_prompt(&report, &report).unwrap();
+        let prompt = stage().judge_prompt(&submission, &submission).unwrap();
 
         for placeholder in [
             "{extracted}",
@@ -300,7 +307,7 @@ mod tests {
             "{crate_root}",
             "{briefing}",
             "{skills}",
-            "{report}",
+            "{submission}",
         ] {
             assert!(!prompt.contains(placeholder), "{placeholder} is left");
         }

@@ -411,9 +411,9 @@ impl Pipeline {
         let report = report::render(
             cargo::package_name(&self.config.manifest()?)?,
             &self.spec.properties,
-            // The pipeline does not keep the report of the pre-translate stage
+            // The pipeline does not keep the submission of the pre-translate stage
             None,
-            translate.map(|output| output.report),
+            translate.map(|output| output.submission),
             formalize,
             prove.as_ref(),
         )?;
