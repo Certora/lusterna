@@ -41,6 +41,6 @@ fn main() -> anyhow::Result<()> {
     let spec: Spec = serde_json::from_str(&fs::read_to_string(&spec_path)?)
         .with_context(|| format!("cannot parse the spec `{}`", spec_path.display()))?;
 
-    Pipeline::new(spec, spec_path, config).run()?;
+    Pipeline::new(spec, spec_path, config)?.run()?;
     Ok(())
 }

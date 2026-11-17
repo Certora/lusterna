@@ -31,9 +31,9 @@ const TEMPLATES: [(&str, &str); 7] = [
 pub fn render(
     crate_name: String,
     properties: &Properties,
-    pre_translate: Option<PreTranslateSubmission>,
-    translate: Option<TranslateSubmission>,
-    formalize: Option<FormalizeSubmission>,
+    pre_translate: Option<&PreTranslateSubmission>,
+    translate: Option<&TranslateSubmission>,
+    formalize: Option<&FormalizeSubmission>,
     prove: Option<&ProveSubmission>,
 ) -> Result<String, minijinja::Error> {
     let mut env = Environment::new();

@@ -41,7 +41,7 @@ pub struct PreTranslateInput {
 }
 
 /// Every change that the agent made since the start of the stage.
-#[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema, Clone, Default)]
 pub struct PreTranslateSubmission {
     /// Each change, including each patched copy of a dependency.
     pub changes: Vec<PreTranslateChange>,

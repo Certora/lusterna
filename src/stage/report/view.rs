@@ -182,30 +182,30 @@ struct HelperView {
 }
 
 #[derive(Serialize)]
-pub(super) struct ReportView {
+pub(super) struct ReportView<'s> {
     crate_name: String,
     properties: Vec<PropertyView>,
     inductions: Vec<InductionView>,
     /// `None` if the stage was skipped
-    pre_translate: Option<PreTranslateSubmission>,
+    pre_translate: Option<&'s PreTranslateSubmission>,
     /// `None` if the stage was skipped
-    translate: Option<TranslateSubmission>,
+    translate: Option<&'s TranslateSubmission>,
     /// `None` if the stage was skipped
-    formalize: Option<FormalizeSubmission>,
+    formalize: Option<&'s FormalizeSubmission>,
 }
 
-impl ReportView {
+impl<'s> ReportView<'s> {
     pub(super) fn new(
         crate_name: String,
         properties: &Properties,
-        pre_translate: Option<PreTranslateSubmission>,
-        translate: Option<TranslateSubmission>,
-        formalize: Option<FormalizeSubmission>,
-        prove: Option<&ProveSubmission>,
+        pre_translate: Option<&'s PreTranslateSubmission>,
+        translate: Option<&'s TranslateSubmission>,
+        formalize: Option<&'s FormalizeSubmission>,
+        prove: Option<&'s ProveSubmission>,
     ) -> Self {
         let mut property_views = Vec::new();
         for property in &properties.0 {
-            property_views.push(PropertyView::new(property, formalize.as_ref(), prove));
+            property_views.push(PropertyView::new(property, formalize, prove));
         }
 
         let mut inductions = Vec::new();
