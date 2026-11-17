@@ -8,7 +8,9 @@ use crate::stage::{
     formalize::{FormalizeSubmission, Induction, PropertyFormalizationStatus, SkipReason},
     pre_translate::PreTranslateSubmission,
     properties::{Properties, Property, PropertyId, PropertyKind},
-    prove::{AdditionalAssumption, AssumptionPurpose, ProveSubmission, TheoremStatus},
+    prove::{
+        AdditionalAssumption, AssumedInvariant, AssumptionPurpose, ProveSubmission, TheoremStatus,
+    },
     translate::TranslateSubmission,
 };
 
@@ -367,16 +369,12 @@ impl From<&SkipReason> for SkipReasonView {
 impl From<&AdditionalAssumption> for AssumptionView {
     fn from(assumption: &AdditionalAssumption) -> Self {
         let (purpose, justification) = match &assumption.purpose {
-            AssumptionPurpose::StateInvariant {
-                base_cases,
-                induction_steps,
-            } => (
+            AssumptionPurpose::StateInvariant(inv) => (
                 AssumptionPurposeView::StateInvariant,
-                format!(
-                    "Base cases: {}. Induction steps: {}.",
-                    code_list(base_cases),
-                    code_list(induction_steps)
-                ),
+                match inv {
+                    AssumedInvariant::Property(id) => format!("Assumes property {id}."),
+                    AssumedInvariant::Additional(name) => format!("Assumes `{name}`."),
+                },
             ),
             AssumptionPurpose::External { justification } => {
                 (AssumptionPurposeView::External, justification.clone())

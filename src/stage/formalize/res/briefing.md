@@ -67,7 +67,7 @@ Use `⦄fail` for a property about the result of a call or about the state after
 
 ## Invariants
 
-An invariant property names a struct. Choose the functions of its induction as the skill `lusterna:induction` describes, and state its theorems as the skill `lusterna:invariants` describes. Report the full Lean names of these functions in `induction`, under the struct name exactly as the property gives it: the base cases as `base_cases`, the mutating operations as `steps`, the unmodelled operations as `unmodelled_steps`, and the helpers as `helpers`.
+An invariant property names a struct. Choose the functions of its induction as the skill `lusterna:induction` describes, and state its theorems as the skill `lusterna:invariants` describes. Report the full Lean names of these functions in `induction`, under the struct name exactly as the property gives it, in the lists that the skill `lusterna:induction` gives.
 
 If the natspec names a mutating operation as an exception to the invariant, write its induction step all the same, and report it in `exceptions` of the property. The reason must follow from the natspec alone. Do not except an operation because of what you read in its code.
 

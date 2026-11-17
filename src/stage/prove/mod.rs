@@ -14,7 +14,7 @@ use crate::{
         INDUCTION_SKILL, INVARIANTS_SKILL, Stage, StageName,
         formalize::{Induction, PropertyFormalizationStatus},
         lean_agent_options,
-        properties::PropertyId,
+        properties::{Properties, Property, PropertyId},
     },
     utils::git::{self, GitError},
 };
@@ -39,14 +39,29 @@ pub struct ProveInput {
     pub lean_root: PathBuf,
     /// Absolute path to the JSON file of the properties
     pub properties: PathBuf,
-    /// The formalization status per property.
-    /// This stage will attempt to construct proves for all theorem for the
-    /// properties with status `Formalized`
-    pub property_status: BTreeMap<PropertyId, PropertyFormalizationStatus>,
+    /// Absolute path to the root of the crate
+    pub crate_root: PathBuf,
+    /// The properties that the formalize stage formalized, by id. This stage
+    /// tries to prove their theorems.
+    pub formalized: BTreeMap<PropertyId, FormalizedProperty>,
     /// For each struct that an invariant property is declared on, keyed by the
     /// struct name as the property gives it, the functions of its base cases
     /// and induction steps.
     pub induction: BTreeMap<String, Induction>,
+}
+
+/// A property that the formalize stage formalized.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FormalizedProperty {
+    pub property: Property,
+    /// The spec file, relative to the Lean project root.
+    pub file: PathBuf,
+    /// The full Lean names of the theorems that express the property.
+    pub theorems: Vec<String>,
+    /// The induction steps whose operation the natspec names as an
+    /// exception to the invariant, by full Lean name, each with the reason
+    /// that the natspec gives.
+    pub exceptions: BTreeMap<String, String>,
 }
 
 /// The state a theorem is in
@@ -105,14 +120,8 @@ pub struct AdditionalAssumption {
 /// The purpose of an added extra assumption
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub enum AssumptionPurpose {
-    /// Assumes another invariant that holds in the pre-state.
-    /// Must supply
-    /// - The FQNs of the (proven) base cases
-    /// - The FQNs of the (proven) induction steps
-    StateInvariant {
-        base_cases: Vec<String>,
-        induction_steps: Vec<String>,
-    },
+    /// Assumes an invariant for the state before the call.
+    StateInvariant(AssumedInvariant),
     /// It is about code outside the translation, which Lean cannot check.
     External { justification: String },
     /// The natspec states this condition, and the theorem lacks it. `quote` is
@@ -128,6 +137,28 @@ pub enum AssumptionPurpose {
     },
 }
 
+/// The invariant that a `StateInvariant` assumption assumes.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub enum AssumedInvariant {
+    /// An invariant property, by its id.
+    Property(PropertyId),
+    /// An invariant that the prove stage added, by its key in
+    /// `additional_invariants`.
+    Additional(String),
+}
+
+/// An invariant that was added by the prove stage to be used as a hypothesis.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AddedInvariant {
+    /// What the invariant states, in plain English.
+    pub natspec: String,
+    /// The struct of the invariant, as `induction` or `additional_inductions`
+    /// names it.
+    pub r#struct: String,
+    /// The full Lean names of its base cases and induction steps.
+    pub theorems: Vec<String>,
+}
+
 /// Submission from the agent once done with proving
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -139,6 +170,13 @@ pub struct ProveSubmission {
     /// `core.cell.RefMut` that its proof goes through, and why its conclusion
     /// does not depend on them.
     pub dropped_writes: BTreeMap<String, String>,
+    /// The invariants that the prove stage added, by the full Lean name of the
+    /// invariant's `def`.
+    pub additional_invariants: BTreeMap<String, AddedInvariant>,
+    /// For each struct of an added invariant that has no entry in `induction`,
+    /// keyed by the struct name, the functions of its base cases and induction
+    /// steps.
+    pub additional_inductions: BTreeMap<String, Induction>,
 }
 
 #[derive(Debug, derive_more::Display, JsonSchema, Serialize, Deserialize)]
@@ -196,14 +234,8 @@ impl Stage for ProveStage {
         // The induction steps that the formalize stage excepted, with their
         // reasons
         let mut exceptions = BTreeMap::new();
-        for status in self.input.property_status.values() {
-            if let PropertyFormalizationStatus::Formalized {
-                exceptions: property_exceptions,
-                ..
-            } = status
-            {
-                exceptions.extend(property_exceptions);
-            }
+        for property in self.input.formalized.values() {
+            exceptions.extend(&property.exceptions);
         }
         let exceptions =
             serde_json::to_string_pretty(&exceptions).expect("the exceptions serialize");
@@ -211,6 +243,7 @@ impl Stage for ProveStage {
             .replace("{lean_root}", &self.input.lean_root.display().to_string())
             .replace("{extracted}", &self.input.extracted.display().to_string())
             .replace("{properties}", &self.input.properties.display().to_string())
+            .replace("{crate_root}", &self.input.crate_root.display().to_string())
             .replace("{induction}", &induction)
             .replace("{exceptions}", &exceptions)
     }
@@ -256,9 +289,40 @@ impl Stage for ProveStage {
     }
 }
 
+/// Returns each property of `properties` that has the status `Formalized` in
+/// `property_status`, by id, with the theorems of that status.
+pub(crate) fn formalized_properties(
+    properties: &Properties,
+    mut property_status: BTreeMap<PropertyId, PropertyFormalizationStatus>,
+) -> BTreeMap<PropertyId, FormalizedProperty> {
+    let mut formalized = BTreeMap::new();
+    for property in &properties.0 {
+        // Skip a property that the formalize stage skipped
+        let Some(PropertyFormalizationStatus::Formalized {
+            file,
+            theorems,
+            exceptions,
+        }) = property_status.remove(&property.id)
+        else {
+            continue;
+        };
+        formalized.insert(
+            property.id,
+            FormalizedProperty {
+                property: property.clone(),
+                file,
+                theorems,
+                exceptions,
+            },
+        );
+    }
+    formalized
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stage::{formalize::SkipReason, properties::PropertyKind};
 
     fn stage() -> ProveStage {
         ProveStage {
@@ -266,7 +330,8 @@ mod tests {
                 extracted: PathBuf::from("/c/lusterna/lean/Extraction"),
                 lean_root: PathBuf::from("/c/lusterna/lean"),
                 properties: PathBuf::from("/c/lusterna/properties.json"),
-                property_status: BTreeMap::new(),
+                crate_root: PathBuf::from("/c"),
+                formalized: BTreeMap::new(),
                 induction: BTreeMap::new(),
             },
         }
@@ -280,6 +345,7 @@ mod tests {
             "{lean_root}",
             "{extracted}",
             "{properties}",
+            "{crate_root}",
             "{induction}",
             "{exceptions}",
         ] {
@@ -298,6 +364,8 @@ mod tests {
                 },
             )]),
             dropped_writes: BTreeMap::new(),
+            additional_invariants: BTreeMap::new(),
+            additional_inductions: BTreeMap::new(),
         };
         let prompt = stage().judge_prompt(&submission).unwrap();
 
@@ -323,5 +391,35 @@ mod tests {
         for (name, content) in stage().skills() {
             assert!(content.starts_with(&format!("---\nname: {name}\n")));
         }
+    }
+
+    #[test]
+    fn formalized_properties_leaves_out_skipped_properties() {
+        let property = |id| Property {
+            id,
+            kind: PropertyKind::Rule { fns: Vec::new() },
+            title: String::new(),
+            natspec: String::new(),
+        };
+        let properties = Properties(vec![property(1), property(2)]);
+        let property_status = BTreeMap::from([
+            (
+                1,
+                PropertyFormalizationStatus::Formalized {
+                    file: PathBuf::from("Spec/F.lean"),
+                    theorems: vec!["Spec.F.f".to_owned()],
+                    exceptions: BTreeMap::new(),
+                },
+            ),
+            (
+                2,
+                PropertyFormalizationStatus::Skipped(SkipReason::Other(String::new())),
+            ),
+        ]);
+
+        let formalized = formalized_properties(&properties, property_status);
+
+        assert_eq!(formalized.keys().collect::<Vec<_>>(), [&1]);
+        assert_eq!(formalized[&1].theorems, ["Spec.F.f"]);
     }
 }

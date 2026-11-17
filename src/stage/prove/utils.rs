@@ -10,8 +10,13 @@ use crate::{
 
 #[cfg(test)]
 pub(super) mod tests {
+    use std::path::PathBuf;
+
     use super::*;
-    use crate::stage::prove::{AdditionalAssumption, AssumptionPurpose};
+    use crate::stage::{
+        properties::{Property, PropertyKind},
+        prove::{AdditionalAssumption, AssumptionPurpose, FormalizedProperty},
+    };
 
     /// A theorem with the label `id` whose triple calls `function`.
     fn labelled(name: &str, id: PropertyId, function: &str, proven: bool) -> TheoremCheck {
@@ -53,6 +58,44 @@ pub(super) mod tests {
         ]
     }
 
+    /// The properties of `spec_theorems`: the rule 1 and the invariant 2.
+    pub(crate) fn formalized() -> BTreeMap<PropertyId, FormalizedProperty> {
+        BTreeMap::from([
+            (
+                1,
+                FormalizedProperty {
+                    property: Property {
+                        id: 1,
+                        kind: PropertyKind::Rule {
+                            fns: vec!["module::Struct::f".to_owned()],
+                        },
+                        title: String::new(),
+                        natspec: String::new(),
+                    },
+                    file: PathBuf::from("Spec/FAdds.lean"),
+                    theorems: vec!["Spec.FAdds.f_adds".to_owned()],
+                    exceptions: BTreeMap::new(),
+                },
+            ),
+            (
+                2,
+                FormalizedProperty {
+                    property: Property {
+                        id: 2,
+                        kind: PropertyKind::Invariant {
+                            r#struct: "module::Struct".to_owned(),
+                        },
+                        title: String::new(),
+                        natspec: String::new(),
+                    },
+                    file: PathBuf::from("Spec/Inv.lean"),
+                    theorems: vec!["Spec.Inv.new".to_owned(), "Spec.Inv.f".to_owned()],
+                    exceptions: BTreeMap::new(),
+                },
+            ),
+        ])
+    }
+
     /// A submission that matches `spec_theorems`.
     pub(crate) fn submission() -> ProveSubmission {
         ProveSubmission {
@@ -78,6 +121,8 @@ pub(super) mod tests {
                 ),
             ]),
             dropped_writes: BTreeMap::new(),
+            additional_invariants: BTreeMap::new(),
+            additional_inductions: BTreeMap::new(),
         }
     }
 }

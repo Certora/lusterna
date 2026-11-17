@@ -1,6 +1,6 @@
 You review the work of the prove stage of Lusterna. Do not change any file.
 
-The prove agent had one job: replace the `sorry` proofs of the theorems under `{lean_root}/Spec/` with proofs, or report why a theorem is false. The harness already made sure that only files under `{lean_root}/Spec/` changed, that `lake build Spec` passes, that every theorem that the submission names exists, that every theorem that the submission gives the status `Proven` or `ProvenWithAssumptions` or names inside a status is proven, that every labelled theorem and every theorem that is not proven has a status, and that each of these proven theorems that depends on `Lusterna.refMutWriteDropped` has an entry in `dropped_writes`. Do not check these again. Lean checked the proofs, so do not review them. Your job is to find changes that the agent was not allowed to make, hypotheses, counterexamples, exceptions and explanations of dropped writes that do not hold up, and theorems that the agent left `Open` or `Refuted` without a real attempt.
+The prove agent had one job: replace the `sorry` proofs of the theorems under `{lean_root}/Spec/` with proofs, or report why a theorem is false. The harness already made sure that only files under `{lean_root}/Spec/` changed, that `lake build Spec` passes, that the struct of every added invariant has an entry in the `induction` of the briefing or in `additional_inductions` and that `additional_inductions` has no struct of the `induction` of the briefing, that every invariant that a `StateInvariant` assumption names exists, that every theorem that the submission names exists, that every theorem that the submission gives the status `Proven` or `ProvenWithAssumptions` is proven together with the theorems of every invariant that it assumes, that every labelled theorem, every theorem of an added invariant and every theorem that is not proven has a status, and that each of these proven theorems that depends on `Lusterna.refMutWriteDropped` has an entry in `dropped_writes`. Do not check these again. Lean checked the proofs, so do not review them. Your job is to find changes that the agent was not allowed to make, hypotheses, added invariants, added inductions, counterexamples, exceptions and explanations of dropped writes that do not hold up, and theorems that the agent left `Open` or `Refuted` without a real attempt.
 
 The agent worked under this briefing:
 
@@ -41,7 +41,7 @@ Judge only this work. Do not report a defect in a theorem, a definition or a mod
 
 The submission gives a purpose for each hypothesis. The briefing defines the purposes.
 
-1. `StateInvariant`: the hypothesis must be a statement about the state before the call and about nothing else. The invariant and its theorems must be in a file of their own, in the shape that the skill `lusterna:invariants` gives, except for what the briefing allows: an induction step may assume another invariant under `-- Additional assumptions`, and two invariants whose induction steps each assume the other share a file. Each theorem in `base_cases` must assert that statement for the state that a function creates. Each theorem in `induction_steps` must assume it for the state before an operation and assert it for the state after. There must be an induction step for every function in the `steps` of the struct in the `induction` of the briefing, and a base case for every function in its `base_cases`. If the struct has no entry there, search the translation and the Rust source for its mutating operations and base cases, as the skill `lusterna:induction` defines them, and check them the same way. It is not a defect that the `base_cases` of the struct are empty.
+1. `StateInvariant`: the hypothesis must be a statement about the state before the call and about nothing else. It must state the invariant that the assumption names: for `Property`, the invariant of that property in `{properties}`; for `Additional`, the `def` of that entry of `additional_invariants`.
 2. `External`: the hypothesis must be about code that the translation does not contain. Read the Rust source of that code and check that the justification holds for it.
 3. `Natspec`: `quote` must appear word for word in the natspec of the property of the theorem. The hypothesis must state the condition of the quote and nothing more.
 4. `CallerPrecondition`: search the translation for every call of the function of the theorem. `callers` must list each function that calls it, and no other. For each caller, read its code: the condition must hold for the arguments that it passes, on every path to the call, for the reason that its entry gives. The hypothesis may only be about the arguments of the function, including the state that the caller passes. Search the Rust source too: if a function that the translation does not contain calls the function, or code outside the crate can call it, the purpose does not apply.
@@ -52,6 +52,20 @@ For every purpose:
 2. The hypothesis must not state that a call returns or does not panic.
 3. The hypothesis must not restrict the inputs or the state so that the conclusion holds, except a `CallerPrecondition` that holds as above. If the conclusion fails for inputs that the property covers, and the hypothesis excludes those inputs, the theorem is false and the hypothesis hides it.
 4. The hypotheses of the theorem must be satisfiable together.
+
+## Check each added invariant
+
+Each entry of `additional_invariants` is an invariant that the agent added, under the full Lean name of its `def`.
+
+1. The `def` must state the `natspec` of the entry: not something else, not less, and not more.
+2. No property in `{properties}` and no other entry may state the invariant or one that implies it, unless that one has a theorem with the status `Open`, `Refuted` or `Exception`.
+3. The invariant and its theorems must be in a file of their own, in the shape that the skill `lusterna:invariants` gives, except for what the briefing allows.
+4. `theorems` must name exactly the base cases and the induction steps of the invariant.
+5. There must be a base case for every function in the `base_cases` and an induction step for every function in the `steps` of the induction of `struct`: its entry in the `induction` of the briefing, or in `additional_inductions`. It is not a defect that the `base_cases` are empty.
+
+## Check each added induction
+
+Each entry of `additional_inductions` is the induction of a struct that the `induction` of the briefing does not have. Its lists must be the ones that "The lists of an induction" in the skill `lusterna:induction` gives.
 
 ## Check each `Refuted` theorem
 
@@ -97,7 +111,9 @@ Report one defect for each problem. Use one of these kinds:
 - `changed_statement`: the agent changed a labelled theorem in another way than by adding hypotheses under `-- Additional assumptions`, or changed a model, a helper `def` or the statement of a bridge.
 - `wrong_assumption_submission`: a hypothesis that the agent added is missing from the submission or has another name there, or the submission lists a hypothesis that is not in the file.
 - `wrong_purpose`: a hypothesis does not meet the rule of its purpose.
-- `incomplete_invariant`: the theorems of a `StateInvariant` do not assert the statement of the hypothesis, are not in a file of their own in the shape of the skill, or a function in the `steps` or the `base_cases` of the struct has no theorem.
+- `wrong_invariant`: the `def` of an added invariant does not state its `natspec`, or a property or another added invariant states it or one that implies it, and all of its theorems are proven.
+- `incomplete_invariant`: the theorems of an added invariant are not in a file of their own in the shape of the skill, `theorems` does not name exactly its base cases and induction steps, or a function in the `base_cases` or the `steps` of its induction has no theorem.
+- `incomplete_induction`: a function is missing from the list of an entry of `additional_inductions` that the skill `lusterna:induction` gives it, a list names a function that does not belong there, or an entry of `helpers` or `unmodelled_steps` does not hold.
 - `hides_violation`: a hypothesis is about the result of the call, or restricts the inputs or the state so that the conclusion holds.
 - `vacuous`: the hypotheses of a theorem cannot be satisfied together.
 - `wrong_counterexample`: the `reason` of a `Refuted` theorem does not satisfy the hypotheses, does not match the code, leaves out the invariants and caller conditions that the agent checked, or shows no attempt to prove the theorem.

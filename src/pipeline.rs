@@ -55,7 +55,7 @@ use crate::{
         exec::{StageExec, StageExecutionError},
         formalize::{FormalizeInput, FormalizeStage, FormalizeSubmission},
         pre_translate::{PreTranslateInput, PreTranslateStage, PreTranslateSubmission},
-        prove::{ProveInput, ProveStage, ProveSubmission},
+        prove::{ProveInput, ProveStage, ProveSubmission, formalized_properties},
         report,
         translate::{
             DEFAULT_OPAQUE, TranslateInput, TranslateStage, TranslateSubmission, solana_opaque,
@@ -379,7 +379,8 @@ impl Pipeline {
             extracted: lean_root.join("Extraction"),
             lean_root,
             properties: lusterna_dir.join("properties.json"),
-            property_status: formalized.property_status,
+            crate_root: self.config.crate_root()?,
+            formalized: formalized_properties(&self.spec.properties, formalized.property_status),
             induction: formalized.induction,
         };
         let submission = self

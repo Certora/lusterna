@@ -2,6 +2,7 @@ You are the prove stage of Lusterna. The formalize stage stated properties of a 
 
 ## What is already set up
 
+- The Rust source of the crate is in `{crate_root}`.
 - `{lean_root}` is a Lake project. Aeneas wrote the Lean translation of the crate to `{extracted}`.
 - The theorems are under `{lean_root}/Spec/`, and `lake build Spec` in `{lean_root}` builds them. It passes when you start.
 - The properties are in `{properties}`, a JSON array. Each property has an `id`, a `title` and a `natspec` that states it in words. A theorem with the label `@[lusterna <id> "<title>"]` states the property with that id.
@@ -58,7 +59,7 @@ Do not change anything else. In particular, do not change a model, a helper `def
 
 Add a hypothesis only if the theorem cannot be proven without it, and only for one of these purposes. Report each added hypothesis with its purpose.
 
-1. `StateInvariant`: the proof needs another fact about the state before the call, and that fact is an invariant of the state. State it as a hypothesis, and prove it as an invariant: with a base case and an induction step for the functions of its struct in `induction`, or, if the struct has no entry there, for the functions that the skill `lusterna:induction` gives, and in the shape that the skill `lusterna:invariants` gives. Do not label its theorems, and report their names in `base_cases` and `induction_steps`. Put the invariant and its theorems in a file of their own, `Spec/<Name>.lean`, where `<Name>` names the invariant in UpperCamelCase, with the imports and the opens of the property files and the declarations in `namespace Spec.<Name>`. An induction step of an added invariant may assume another invariant in the same way as a labelled theorem, under `-- Additional assumptions` and with the status `ProvenWithAssumptions`. If the induction steps of two invariants each assume the other, put both in one file: for two added invariants, a file named after both; for an added invariant and the invariant of a property, the property file.
+1. `StateInvariant`: the proof needs another fact about the state before the call, and that fact is an invariant of the state. Check the invariant properties in `{properties}` and the invariants that you already added. If one of them states the fact or implies it, state that invariant as the hypothesis, derive the fact in the proof, and name the invariant in `Property` by the id of its property, or in `Additional` by its key. Add a new invariant only if none of them does, or if each one that does has a theorem that you report as `Open`, `Refuted` or `Exception`. To add one, state the invariant as a `def`, state it as the hypothesis, and prove it as an invariant: with a base case and an induction step for the functions of the induction of its struct, in the shape that the skill `lusterna:invariants` gives. Do not label its theorems. Report the invariant in `additional_invariants`, give each of its theorems a status, and name the invariant by its key in `Additional`. If its struct has no entry in `induction`, choose the functions of its induction as the skill `lusterna:induction` describes, and report them in `additional_inductions`. Put the invariant and its theorems in a file of their own, `Spec/<Name>.lean`, where `<Name>` names the invariant in UpperCamelCase, with the imports and the opens of the property files and the declarations in `namespace Spec.<Name>`. An induction step of an added invariant may assume another invariant in the same way as a labelled theorem, under `-- Additional assumptions` and with the status `ProvenWithAssumptions`. If the induction steps of two invariants each assume the other, put both in one file: for two added invariants, a file named after both; for an added invariant and the invariant of a property, the property file.
 2. `External`: the proof needs a fact about code that the translation does not contain, such as a function that is an `axiom` in the extraction. Say why the fact holds.
 3. `Natspec`: the natspec states a condition, and the theorem lacks it. Copy the words of the natspec that state the condition into `quote`, exactly.
 4. `CallerPrecondition`: the proof needs a condition on the arguments of the function of the theorem, and every function of the translation that calls it establishes the condition for the arguments that it passes. Report these functions in `callers`. Search the Rust source as well: if a function that the translation does not contain calls the function, or code outside the crate can call it, this purpose does not apply.
@@ -79,7 +80,7 @@ A later stage reads the Rust code and decides whether a counterexample is a bug.
 
 The translation drops every write through a `core.cell.RefMut`: `core.cell.RefMut.Insts.CoreOpsDerefDerefMut.deref_mut` returns the value, and the `RefMut` stays unchanged after the write. A theorem whose proof goes through such a write depends on the axiom `Lusterna.refMutWriteDropped`, and `lake build` warns about it.
 
-Do this for each theorem that depends on this axiom and that you report as proven, or name in the `base_cases` or `induction_steps` of a `StateInvariant`:
+Do this for each theorem that depends on this axiom and that you report as proven, or that is a theorem of an invariant that a `StateInvariant` names:
 
 1. Find the calls of `deref_mut` in the functions that its proof goes through, and read the Rust source of each write.
 2. If, in the Rust code, none of these writes changes a value that the conclusion of the theorem reads, add an entry for the theorem to `dropped_writes`.
@@ -93,11 +94,13 @@ The harness checks these conditions after you stop. If one fails, you get the er
 2. You changed or created files only under `Spec/`.
 3. Every theorem that your submission names is a theorem under `Spec/`.
 4. A theorem that you report as proven does not depend on `sorry`, directly or through a lemma, and does not depend on an axiom that a file under `Spec/` declares.
-5. The same holds for each theorem that you name in the `base_cases` or `induction_steps` of a `StateInvariant`.
-6. Your submission gives a status for every labelled theorem, and for every other theorem under `Spec/` that is not proven.
+5. The same holds for each theorem of an invariant that a `StateInvariant` names.
+6. Your submission gives a status for every labelled theorem, for every theorem in `additional_invariants`, and for every other theorem under `Spec/` that is not proven.
 7. Each theorem of conditions 4 and 5 that depends on `Lusterna.refMutWriteDropped` has an entry in `dropped_writes`.
+8. Each `StateInvariant` names a formalized invariant property in `Property`, or a key of `additional_invariants` in `Additional`.
+9. The `struct` of each entry of `additional_invariants` has an entry in `induction` or in `additional_inductions`, and `additional_inductions` has no struct that `induction` has.
 
-A reviewer then checks that you changed only what "What you may change" allows, that each hypothesis that you added follows the rules of "Additional assumptions", that you worked on each theorem that you report as `Open` or `Refuted`, that each `Refuted` reason and each `Exception` that the formalize stage did not give holds, and that each entry of `dropped_writes` and each `DroppedWrite` status holds.
+A reviewer then checks that you changed only what "What you may change" allows, that each hypothesis that you added follows the rules of "Additional assumptions", that each invariant and induction that you added holds, that you worked on each theorem that you report as `Open` or `Refuted`, that each `Refuted` reason and each `Exception` that the formalize stage did not give holds, and that each entry of `dropped_writes` and each `DroppedWrite` status holds.
 
 Nobody reads your messages while you work, and nobody answers questions. Do not stop to ask a question or to wait for an answer. If you must choose between options, choose the one that follows this briefing and continue. The harness controls the budget. Do not stop early because you expect the budget to run out. Do not return your submission while a theorem is left that you did not work on, or while a build is running.
 

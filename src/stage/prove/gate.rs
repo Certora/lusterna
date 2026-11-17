@@ -2,11 +2,14 @@
 //!
 //! 1. Only files under `Spec/` differ from `HEAD`.
 //! 2. `lake build Spec` passes.
-//! 3. Every theorem that the submission names is a theorem under `Spec/`.
-//! 4. Every theorem that the submission claims to be proven is proven.
-//! 5. Every labelled theorem and every theorem that is not proven has a status
-//!    in the submission.
-//! 6. Every theorem that the submission claims to be proven and that depends on
+//! 3. The struct of every added invariant has an induction, and
+//!    `additional_inductions` has no struct that the input `induction` has.
+//! 4. Every invariant that a `StateInvariant` assumption names exists.
+//! 5. Every theorem that the submission names is a theorem under `Spec/`.
+//! 6. Every theorem that the submission claims to be proven is proven.
+//! 7. Every labelled theorem, every theorem of an added invariant and every
+//!    theorem that is not proven has a status in the submission.
+//! 8. Every theorem that the submission claims to be proven and that depends on
 //!    `Lusterna.refMutWriteDropped` has an entry in its `dropped_writes`.
 //!
 //! Then it groups the statuses of the submission by property.
@@ -18,11 +21,10 @@
 //!
 //! The submission claims that a theorem is proven if it
 //! - gives the theorem the status `Proven` or `ProvenWithAssumptions`, or
-//! - names it in the `base_cases` or the `induction_steps` of a
-//!   `StateInvariant` assumption.
+//! - it is a theorem of the invariant that a `StateInvariant` assumption names.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     io,
     path::{Path, PathBuf},
 };
@@ -30,7 +32,14 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    stage::prove::{AssumptionPurpose, ProveInput, ProveSubmission, TheoremStatus},
+    stage::{
+        formalize::Induction,
+        properties::{PropertyId, PropertyKind},
+        prove::{
+            AddedInvariant, AssumptionPurpose, FormalizedProperty, ProveInput, ProveSubmission,
+            TheoremStatus,
+        },
+    },
     utils::{
         git::{self, GitError},
         lean::{self, LakeError},
@@ -67,6 +76,18 @@ pub enum ProveGateFailure {
     MissingStatus { theorems: Vec<String> },
     #[display("{} theorems drop writes without an explanation", theorems.len())]
     UnexplainedDroppedWrites { theorems: Vec<String> },
+    #[display(
+        "the submission assumes {} invariants that do not exist",
+        properties.len() + added.len()
+    )]
+    UnknownInvariants {
+        properties: Vec<PropertyId>,
+        added: Vec<String>,
+    },
+    #[display("{} structs of added invariants have no induction", structs.len())]
+    MissingInduction { structs: Vec<String> },
+    #[display("{} structs of additional_inductions already have an induction", structs.len())]
+    ReplacedInduction { structs: Vec<String> },
 }
 
 /// Runs the gate checks on the work of the agent in the Lean project at
@@ -81,10 +102,13 @@ pub(super) fn run_gate(
     if let Some(failure) = check_spec_builds(&input.lean_root)? {
         return Ok(Some(failure));
     }
+    if let Err(failure) = check_added_inductions(&input.induction, submission) {
+        return Ok(Some(failure));
+    }
 
     // What Lean reports about each theorem under `Spec/`
     let spec_theorems = spec_check::run(&input.lean_root, true)?;
-    Ok(check_submission(submission, &spec_theorems).err())
+    Ok(check_submission(submission, &spec_theorems, &input.formalized).err())
 }
 
 /// Fails if a file outside `Spec/` differs from `HEAD`.
@@ -108,13 +132,72 @@ fn check_spec_builds(lean_root: &Path) -> Result<Option<ProveGateFailure>, Prove
     }
 }
 
+/// Checks the inductions of the invariants that `submission` adds against
+/// `induction`, the induction that the formalize stage chose, and returns the
+/// first check that fails.
+///
+/// Unlike the formalize gate, it does not check that each function in the
+/// `base_cases` and `steps` of an induction is called by a theorem of the
+/// invariant: `Lusterna.Spec.check` reports the function of a theorem only for
+/// a labelled theorem, and the theorems of an added invariant have no label.
+fn check_added_inductions(
+    induction: &BTreeMap<String, Induction>,
+    submission: &ProveSubmission,
+) -> Result<(), ProveGateFailure> {
+    check_added_invariants_have_induction(induction, submission)?;
+    check_added_inductions_are_new(induction, submission)
+}
+
+/// Fails if the struct of an invariant in `additional_invariants` has an entry
+/// in neither `induction` nor `additional_inductions`.
+fn check_added_invariants_have_induction(
+    induction: &BTreeMap<String, Induction>,
+    submission: &ProveSubmission,
+) -> Result<(), ProveGateFailure> {
+    let mut missing = BTreeSet::new();
+    for invariant in submission.additional_invariants.values() {
+        let r#struct = &invariant.r#struct;
+        if !induction.contains_key(r#struct)
+            && !submission.additional_inductions.contains_key(r#struct)
+        {
+            missing.insert(r#struct.clone());
+        }
+    }
+    if !missing.is_empty() {
+        return Err(ProveGateFailure::MissingInduction {
+            structs: missing.into_iter().collect(),
+        });
+    }
+    Ok(())
+}
+
+/// Fails if `additional_inductions` has an entry for a struct that `induction`
+/// has.
+fn check_added_inductions_are_new(
+    induction: &BTreeMap<String, Induction>,
+    submission: &ProveSubmission,
+) -> Result<(), ProveGateFailure> {
+    let mut replaced = Vec::new();
+    for r#struct in submission.additional_inductions.keys() {
+        if induction.contains_key(r#struct) {
+            replaced.push(r#struct.clone());
+        }
+    }
+    if !replaced.is_empty() {
+        return Err(ProveGateFailure::ReplacedInduction { structs: replaced });
+    }
+    Ok(())
+}
+
 /// Checks `submission` against `spec_theorems`, the theorems under `Spec/`, and
 /// returns the first check that fails.
 fn check_submission(
     submission: &ProveSubmission,
     spec_theorems: &[TheoremCheck],
+    props: &BTreeMap<PropertyId, FormalizedProperty>,
 ) -> Result<(), ProveGateFailure> {
-    let claimed_proven = theorems_claimed_proven(submission);
+    check_assumed_invariants_exist(submission, props)?;
+    let claimed_proven = theorems_claimed_proven(submission, props);
     check_names_exist(submission, &claimed_proven, spec_theorems)?;
     check_claims_are_proven(&claimed_proven, spec_theorems)?;
     check_statuses_are_complete(submission, spec_theorems)?;
@@ -137,7 +220,11 @@ fn is_proven(theorem: &TheoremCheck) -> bool {
 
 /// Returns the full Lean names of the theorems that `submission` claims to be
 /// proven.
-fn theorems_claimed_proven(submission: &ProveSubmission) -> BTreeSet<&String> {
+fn theorems_claimed_proven<'a>(
+    submission: &'a ProveSubmission,
+    prop_status: &'a BTreeMap<PropertyId, FormalizedProperty>,
+) -> BTreeSet<&'a String> {
+    let additional_invs: &BTreeMap<String, AddedInvariant> = &submission.additional_invariants;
     let mut claimed_proven = BTreeSet::new();
     for (name, status) in &submission.theorems {
         match status {
@@ -150,16 +237,28 @@ fn theorems_claimed_proven(submission: &ProveSubmission) -> BTreeSet<&String> {
             TheoremStatus::ProvenWithAssumptions { assumptions } => {
                 claimed_proven.insert(name);
                 for assumption in assumptions {
-                    if let AssumptionPurpose::StateInvariant {
-                        base_cases,
-                        induction_steps,
-                    } = &assumption.purpose
-                    {
-                        for theorem in base_cases {
-                            claimed_proven.insert(theorem);
-                        }
-                        for theorem in induction_steps {
-                            claimed_proven.insert(theorem);
+                    if let AssumptionPurpose::StateInvariant(inv) = &assumption.purpose {
+                        match inv {
+                            super::AssumedInvariant::Property(pid) => {
+                                if let Some(FormalizedProperty { theorems, .. }) =
+                                    prop_status.get(pid)
+                                {
+                                    for thm in theorems {
+                                        claimed_proven.insert(thm);
+                                    }
+                                } else {
+                                    unreachable!()
+                                }
+                            }
+                            super::AssumedInvariant::Additional(inv) => {
+                                if let Some(added_inv) = additional_invs.get(inv) {
+                                    for thm in &added_inv.theorems {
+                                        claimed_proven.insert(thm);
+                                    }
+                                } else {
+                                    unreachable!()
+                                }
+                            }
                         }
                     }
                 }
@@ -174,9 +273,52 @@ fn theorems_claimed_proven(submission: &ProveSubmission) -> BTreeSet<&String> {
     claimed_proven
 }
 
+/// Fails if a `StateInvariant` assumption in `submission` names a property that
+/// is not an invariant property in `props`, or an added invariant that is not a
+/// key of `additional_invariants`.
+fn check_assumed_invariants_exist(
+    submission: &ProveSubmission,
+    props: &BTreeMap<PropertyId, FormalizedProperty>,
+) -> Result<(), ProveGateFailure> {
+    let mut properties = BTreeSet::new();
+    let mut added = BTreeSet::new();
+    for status in submission.theorems.values() {
+        let TheoremStatus::ProvenWithAssumptions { assumptions } = status else {
+            continue;
+        };
+        for assumption in assumptions {
+            let AssumptionPurpose::StateInvariant(invariant) = &assumption.purpose else {
+                continue;
+            };
+            match invariant {
+                super::AssumedInvariant::Property(pid) => {
+                    let is_formalized_invariant = props
+                        .get(pid)
+                        .is_some_and(|p| matches!(p.property.kind, PropertyKind::Invariant { .. }));
+                    if !is_formalized_invariant {
+                        properties.insert(*pid);
+                    }
+                }
+                super::AssumedInvariant::Additional(inv) => {
+                    if !submission.additional_invariants.contains_key(inv) {
+                        added.insert(inv.clone());
+                    }
+                }
+            }
+        }
+    }
+    if !properties.is_empty() || !added.is_empty() {
+        return Err(ProveGateFailure::UnknownInvariants {
+            properties: properties.into_iter().collect(),
+            added: added.into_iter().collect(),
+        });
+    }
+    Ok(())
+}
+
 /// Fails if `submission` gives a status or a `dropped_writes` entry to a
 /// theorem that is not in `spec_theorems`, or if a theorem in `claimed_proven`
-/// is not in `spec_theorems`.
+/// or in `additional_invariants` is not in `spec_theorems`.
 fn check_names_exist(
     submission: &ProveSubmission,
     claimed_proven: &BTreeSet<&String>,
@@ -195,6 +337,13 @@ fn check_names_exist(
     for name in claimed_proven {
         if find_theorem(spec_theorems, name).is_none() {
             unknown.insert((*name).clone());
+        }
+    }
+    for invariant in submission.additional_invariants.values() {
+        for name in &invariant.theorems {
+            if find_theorem(spec_theorems, name).is_none() {
+                unknown.insert(name.clone());
+            }
         }
     }
     if !unknown.is_empty() {
@@ -229,16 +378,22 @@ fn check_claims_are_proven(
     Ok(())
 }
 
-/// Fails if a labelled theorem, or a theorem that is not proven, has no status
-/// in `submission`.
+/// Fails if a labelled theorem, a theorem in `additional_invariants`, or a
+/// theorem that is not proven, has no status in `submission`.
 fn check_statuses_are_complete(
     submission: &ProveSubmission,
     spec_theorems: &[TheoremCheck],
 ) -> Result<(), ProveGateFailure> {
+    let mut added = BTreeSet::new();
+    for invariant in submission.additional_invariants.values() {
+        for theorem in &invariant.theorems {
+            added.insert(theorem);
+        }
+    }
     let mut missing = Vec::new();
     for theorem in spec_theorems {
         let is_labelled = theorem.id.is_some();
-        let needs_status = is_labelled || !is_proven(theorem);
+        let needs_status = is_labelled || added.contains(&theorem.name) || !is_proven(theorem);
         if needs_status && !submission.theorems.contains_key(&theorem.name) {
             missing.push(theorem.name.clone());
         }
@@ -340,8 +495,8 @@ impl ProveGateFailure {
                 }
                 format!(
                     "Your submission gives these theorems the status `Proven` or \
-                     `ProvenWithAssumptions`, or names them in the status of another theorem, \
-                     but they are not proven. Each depends on the axioms after its name:\n\n{}\n\n\
+                     `ProvenWithAssumptions`, or they are theorems of an invariant that a \
+                     `StateInvariant` names, but they are not proven. Each depends on the axioms after its name:\n\n{}\n\n\
                      `sorryAx` means that the proof, or the proof of a lemma that it uses, is \
                      `sorry`. Any other axiom is declared in a file under `Spec/`, which \
                      `native_decide` also does. Finish the proof, or submission the theorem as \
@@ -351,8 +506,8 @@ impl ProveGateFailure {
             }
             ProveGateFailure::MissingStatus { theorems } => format!(
                 "These theorems have no status in your submission:\n\n{}\n\n\
-                 Give a status for every labelled theorem and for every theorem whose proof is \
-                 not finished.",
+                 Give a status for every labelled theorem, for every theorem in \
+                 `additional_invariants`, and for every theorem whose proof is not finished.",
                 code_list(theorems)
             ),
             ProveGateFailure::UnexplainedDroppedWrites { theorems } => format!(
@@ -369,6 +524,37 @@ impl ProveGateFailure {
                  it, give that theorem this status instead.",
                 code_list(theorems)
             ),
+            ProveGateFailure::UnknownInvariants { properties, added } => {
+                let mut items = Vec::new();
+                for pid in properties {
+                    items.push(format!("`Property({pid})`"));
+                }
+                for inv in added {
+                    items.push(format!("`Additional({inv})`"));
+                }
+                format!(
+                    "These `StateInvariant` assumptions in your submission name an invariant \
+                     that does not exist:\n\n{}\n\n\
+                     `Property` must name an invariant property that the formalize stage \
+                     formalized, and \
+                     `Additional` must name a key of `additional_invariants`.",
+                    bullet_list(&items)
+                )
+            }
+            ProveGateFailure::MissingInduction { structs } => format!(
+                "Your submission adds invariants on these structs, but neither the induction of \
+                 the briefing nor your `additional_inductions` has an entry for them:\n\n{}\n\n\
+                 Add the functions of the induction of each struct to `additional_inductions`, \
+                 under the struct name that the `struct` of the invariant gives, as the skill \
+                 `lusterna:induction` describes.",
+                code_list(structs)
+            ),
+            ProveGateFailure::ReplacedInduction { structs } => format!(
+                "Your `additional_inductions` has entries for these structs, but the induction of \
+                 the briefing already has them, and that induction is final:\n\n{}\n\n\
+                 Remove these entries from `additional_inductions`.",
+                code_list(structs)
+            ),
         }
     }
 }
@@ -377,13 +563,43 @@ impl ProveGateFailure {
 mod tests {
     use super::*;
     use crate::stage::prove::{
-        AdditionalAssumption, AssumptionPurpose,
-        utils::tests::{spec_theorems, submission, unlabelled},
+        AddedInvariant, AdditionalAssumption, AssumedInvariant, AssumptionPurpose,
+        utils::tests::{formalized, spec_theorems, submission, unlabelled},
     };
+
+    /// The status of a theorem proven with one hypothesis that assumes
+    /// `invariant`.
+    fn assuming(invariant: AssumedInvariant) -> TheoremStatus {
+        TheoremStatus::ProvenWithAssumptions {
+            assumptions: vec![AdditionalAssumption {
+                name: "h_inv".to_owned(),
+                reason: String::new(),
+                purpose: AssumptionPurpose::StateInvariant(invariant),
+            }],
+        }
+    }
+
+    /// `submission` with the added invariant `Spec.InvAux.inv`, whose only
+    /// theorem is `Spec.InvAux.lemma`, proven.
+    fn submission_with_added_invariant() -> ProveSubmission {
+        let mut submission = submission();
+        submission.additional_invariants.insert(
+            "Spec.InvAux.inv".to_owned(),
+            AddedInvariant {
+                natspec: String::new(),
+                r#struct: "module::Struct".to_owned(),
+                theorems: vec!["Spec.InvAux.lemma".to_owned()],
+            },
+        );
+        submission
+            .theorems
+            .insert("Spec.InvAux.lemma".to_owned(), TheoremStatus::Proven);
+        submission
+    }
 
     #[test]
     fn consistent_submission_passes() {
-        check_submission(&submission(), &spec_theorems()).unwrap();
+        check_submission(&submission(), &spec_theorems(), &formalized()).unwrap();
     }
 
     #[test]
@@ -395,7 +611,7 @@ mod tests {
                 reason: String::new(),
             },
         );
-        check_submission(&submission, &spec_theorems()).unwrap();
+        check_submission(&submission, &spec_theorems(), &formalized()).unwrap();
     }
 
     #[test]
@@ -405,7 +621,7 @@ mod tests {
             .theorems
             .insert("Spec.Inv.g".to_owned(), TheoremStatus::Proven);
         assert!(matches!(
-            check_submission(&submission, &spec_theorems()),
+            check_submission(&submission, &spec_theorems(), &formalized()),
             Err(ProveGateFailure::UnknownTheorems { names }) if names == ["Spec.Inv.g"]
         ));
     }
@@ -417,7 +633,7 @@ mod tests {
             .theorems
             .insert("Spec.Inv.f".to_owned(), TheoremStatus::Proven);
         assert!(matches!(
-            check_submission(&submission, &spec_theorems()),
+            check_submission(&submission, &spec_theorems(), &formalized()),
             Err(ProveGateFailure::NotProven { theorems })
                 if theorems == [("Spec.Inv.f".to_owned(), vec!["sorryAx".to_owned()])]
         ));
@@ -428,21 +644,151 @@ mod tests {
         let mut submission = submission();
         submission.theorems.insert(
             "Spec.FAdds.f_adds".to_owned(),
-            TheoremStatus::ProvenWithAssumptions {
-                assumptions: vec![AdditionalAssumption {
-                    name: "h_inv2".to_owned(),
-                    reason: String::new(),
-                    purpose: AssumptionPurpose::StateInvariant {
-                        base_cases: vec!["Spec.Inv.new".to_owned()],
-                        induction_steps: vec!["Spec.Inv.f".to_owned()],
-                    },
-                }],
-            },
+            assuming(AssumedInvariant::Property(2)),
         );
         assert!(matches!(
-            check_submission(&submission, &spec_theorems()),
+            check_submission(&submission, &spec_theorems(), &formalized()),
             Err(ProveGateFailure::NotProven { theorems })
                 if theorems == [("Spec.Inv.f".to_owned(), vec!["sorryAx".to_owned()])]
+        ));
+    }
+
+    #[test]
+    fn rejects_assumed_property_that_is_not_an_invariant() {
+        let mut submission = submission();
+        submission.theorems.insert(
+            "Spec.FAdds.f_adds".to_owned(),
+            assuming(AssumedInvariant::Property(1)),
+        );
+        assert!(matches!(
+            check_submission(&submission, &spec_theorems(), &formalized()),
+            Err(ProveGateFailure::UnknownInvariants { properties, added })
+                if properties == [1] && added.is_empty()
+        ));
+    }
+
+    #[test]
+    fn rejects_assumed_property_that_is_not_formalized() {
+        let mut submission = submission();
+        submission.theorems.insert(
+            "Spec.FAdds.f_adds".to_owned(),
+            assuming(AssumedInvariant::Property(3)),
+        );
+        assert!(matches!(
+            check_submission(&submission, &spec_theorems(), &formalized()),
+            Err(ProveGateFailure::UnknownInvariants { properties, added })
+                if properties == [3] && added.is_empty()
+        ));
+    }
+
+    #[test]
+    fn rejects_unknown_added_invariant() {
+        let mut submission = submission();
+        submission.theorems.insert(
+            "Spec.FAdds.f_adds".to_owned(),
+            assuming(AssumedInvariant::Additional("Spec.InvAux.inv".to_owned())),
+        );
+        assert!(matches!(
+            check_submission(&submission, &spec_theorems(), &formalized()),
+            Err(ProveGateFailure::UnknownInvariants { properties, added })
+                if properties.is_empty() && added == ["Spec.InvAux.inv"]
+        ));
+    }
+
+    #[test]
+    fn assumed_added_invariant_passes() {
+        let mut submission = submission_with_added_invariant();
+        submission.theorems.insert(
+            "Spec.FAdds.f_adds".to_owned(),
+            assuming(AssumedInvariant::Additional("Spec.InvAux.inv".to_owned())),
+        );
+        check_submission(&submission, &spec_theorems(), &formalized()).unwrap();
+    }
+
+    #[test]
+    fn rejects_unproven_theorem_of_assumed_added_invariant() {
+        let mut spec_theorems = spec_theorems();
+        spec_theorems[3] = unlabelled("Spec.InvAux.lemma", false);
+        let mut submission = submission_with_added_invariant();
+        submission.theorems.insert(
+            "Spec.FAdds.f_adds".to_owned(),
+            assuming(AssumedInvariant::Additional("Spec.InvAux.inv".to_owned())),
+        );
+        assert!(matches!(
+            check_submission(&submission, &spec_theorems, &formalized()),
+            Err(ProveGateFailure::NotProven { theorems })
+                if theorems == [("Spec.InvAux.lemma".to_owned(), vec!["sorryAx".to_owned()])]
+        ));
+    }
+
+    #[test]
+    fn rejects_theorem_of_added_invariant_without_status() {
+        let mut submission = submission_with_added_invariant();
+        submission.theorems.remove("Spec.InvAux.lemma");
+        assert!(matches!(
+            check_submission(&submission, &spec_theorems(), &formalized()),
+            Err(ProveGateFailure::MissingStatus { theorems }) if theorems == ["Spec.InvAux.lemma"]
+        ));
+    }
+
+    #[test]
+    fn rejects_unknown_theorem_of_added_invariant() {
+        let mut submission = submission_with_added_invariant();
+        submission
+            .additional_invariants
+            .get_mut("Spec.InvAux.inv")
+            .unwrap()
+            .theorems
+            .push("Spec.InvAux.step".to_owned());
+        assert!(matches!(
+            check_submission(&submission, &spec_theorems(), &formalized()),
+            Err(ProveGateFailure::UnknownTheorems { names }) if names == ["Spec.InvAux.step"]
+        ));
+    }
+
+    /// An induction with no functions.
+    fn empty_induction() -> Induction {
+        Induction {
+            base_cases: Vec::new(),
+            steps: Vec::new(),
+            unmodelled_steps: BTreeMap::new(),
+            helpers: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn added_invariant_with_induction_of_briefing_passes() {
+        let induction = BTreeMap::from([("module::Struct".to_owned(), empty_induction())]);
+        check_added_inductions(&induction, &submission_with_added_invariant()).unwrap();
+    }
+
+    #[test]
+    fn added_invariant_with_added_induction_passes() {
+        let mut submission = submission_with_added_invariant();
+        submission
+            .additional_inductions
+            .insert("module::Struct".to_owned(), empty_induction());
+        check_added_inductions(&BTreeMap::new(), &submission).unwrap();
+    }
+
+    #[test]
+    fn rejects_added_invariant_without_induction() {
+        assert!(matches!(
+            check_added_inductions(&BTreeMap::new(), &submission_with_added_invariant()),
+            Err(ProveGateFailure::MissingInduction { structs }) if structs == ["module::Struct"]
+        ));
+    }
+
+    #[test]
+    fn rejects_added_induction_for_struct_of_briefing() {
+        let induction = BTreeMap::from([("module::Struct".to_owned(), empty_induction())]);
+        let mut submission = submission_with_added_invariant();
+        submission
+            .additional_inductions
+            .insert("module::Struct".to_owned(), empty_induction());
+        assert!(matches!(
+            check_added_inductions(&induction, &submission),
+            Err(ProveGateFailure::ReplacedInduction { structs }) if structs == ["module::Struct"]
         ));
     }
 
@@ -451,7 +797,7 @@ mod tests {
         let mut submission = submission();
         submission.theorems.remove("Spec.Inv.new");
         assert!(matches!(
-            check_submission(&submission, &spec_theorems()),
+            check_submission(&submission, &spec_theorems(), &formalized()),
             Err(ProveGateFailure::MissingStatus { theorems }) if theorems == ["Spec.Inv.new"]
         ));
     }
@@ -461,7 +807,7 @@ mod tests {
         let mut spec_theorems = spec_theorems();
         spec_theorems[3] = unlabelled("Spec.InvAux.lemma", false);
         assert!(matches!(
-            check_submission(&submission(), &spec_theorems),
+            check_submission(&submission(), &spec_theorems, &formalized()),
             Err(ProveGateFailure::MissingStatus { theorems }) if theorems == ["Spec.InvAux.lemma"]
         ));
     }
@@ -471,7 +817,7 @@ mod tests {
         let mut spec_theorems = spec_theorems();
         spec_theorems[1].drops_writes = Some(true);
         assert!(matches!(
-            check_submission(&submission(), &spec_theorems),
+            check_submission(&submission(), &spec_theorems, &formalized()),
             Err(ProveGateFailure::UnexplainedDroppedWrites { theorems })
                 if theorems == ["Spec.Inv.new"]
         ));
@@ -485,7 +831,7 @@ mod tests {
         submission
             .dropped_writes
             .insert("Spec.Inv.new".to_owned(), String::new());
-        check_submission(&submission, &spec_theorems).unwrap();
+        check_submission(&submission, &spec_theorems, &formalized()).unwrap();
     }
 
     #[test]
@@ -500,7 +846,7 @@ mod tests {
                 reason: String::new(),
             },
         );
-        check_submission(&submission, &spec_theorems).unwrap();
+        check_submission(&submission, &spec_theorems, &formalized()).unwrap();
     }
 
     #[test]
