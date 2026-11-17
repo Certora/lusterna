@@ -13,11 +13,13 @@ use crate::stage::{
 use view::ReportView;
 
 /// The templates of the report, by name. `report.md` includes the others.
-const TEMPLATES: [(&str, &str); 7] = [
+const TEMPLATES: [(&str, &str); 9] = [
     ("report.md", include_str!("templates/report.md")),
     ("summary.md", include_str!("templates/summary.md")),
     ("induction.md", include_str!("templates/induction.md")),
     ("property.md", include_str!("templates/property.md")),
+    ("invariant.md", include_str!("templates/invariant.md")),
+    ("theorems.md", include_str!("templates/theorems.md")),
     (
         "pre_translate.md",
         include_str!("templates/pre_translate.md"),

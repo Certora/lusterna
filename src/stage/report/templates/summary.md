@@ -3,6 +3,16 @@
 {% for p in properties %}
 | {{ p.id }} | [{{ p.title }}](#property-{{ p.id }}) | {% if p.struct_name %}invariant on `{{ p.struct_name }}`{% else %}rule{% endif %} | {{ p.status }} | {{ p.proven_thms }}/{{ p.total_thms }} |
 {% endfor %}
+{% if additional_invariants %}
+
+Additionally, the following invariants were added to prove above properties:
+
+| Invariant | Kind | Status | Proven theorems |
+|-----------|------|--------|-----------------|
+{% for i in additional_invariants %}
+| [`{{ i.name }}`](#invariant-{{ i.name }}) | invariant on `{{ i.struct_name }}` | {{ i.status }} | {{ i.proven_thms }}/{{ i.total_thms }} |
+{% endfor %}
+{% endif %}
 
 A property has the first of these statuses that one of its theorems has:
 

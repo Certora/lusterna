@@ -16,6 +16,16 @@ Read the reason of every theorem that is not proven, and check every added assum
 {% for p in properties %}
 {% include "property.md" %}
 {% endfor %}
+{% if additional_invariants %}
+
+## Additional invariants
+
+The prove stage added these invariants, because proofs of the properties assume them. A proof that assumes an invariant holds only if the invariant holds, so each one is proven by induction like an invariant property.
+
+{% for i in additional_invariants %}
+{% include "invariant.md" %}
+{% endfor %}
+{% endif %}
 
 ## Induction
 

@@ -9,7 +9,8 @@ use crate::stage::{
     pre_translate::PreTranslateSubmission,
     properties::{Properties, Property, PropertyId, PropertyKind},
     prove::{
-        AdditionalAssumption, AssumedInvariant, AssumptionPurpose, ProveSubmission, TheoremStatus,
+        AddedInvariant, AdditionalAssumption, AssumedInvariant, AssumptionPurpose, ProveSubmission,
+        TheoremStatus,
     },
     translate::TranslateSubmission,
 };
@@ -47,6 +48,22 @@ struct PropertyView {
     ///
     /// - `total_thms = theorems.len()`
     /// - `proven_thms = theorems.iter().filter(|t| t.is_proven()).count()`
+    pub theorems: Vec<TheoremsView>,
+}
+
+#[derive(Serialize)]
+struct AddedInvariantView {
+    /// Lean FQN of the `def` of the invariant
+    pub name: String,
+    /// What the invariant states, in plain English
+    pub natspec: String,
+    pub struct_name: String,
+    pub status: PropertyStatusView,
+    pub total_thms: usize,
+    /// Number of theorems of this invariant that are proven, with or without
+    /// added assumptions
+    pub proven_thms: usize,
+    /// The base cases and induction steps of the invariant
     pub theorems: Vec<TheoremsView>,
 }
 
@@ -187,6 +204,8 @@ struct HelperView {
 pub(super) struct ReportView<'s> {
     crate_name: String,
     properties: Vec<PropertyView>,
+    /// The invariants that the prove stage added
+    additional_invariants: Vec<AddedInvariantView>,
     inductions: Vec<InductionView>,
     /// `None` if the stage was skipped
     pre_translate: Option<&'s PreTranslateSubmission>,
@@ -210,9 +229,23 @@ impl<'s> ReportView<'s> {
             property_views.push(PropertyView::new(property, formalize, prove));
         }
 
+        let mut additional_invariants = Vec::new();
+        if let Some(prove) = prove {
+            for (name, invariant) in &prove.additional_invariants {
+                additional_invariants.push(AddedInvariantView::new(name, invariant, prove));
+            }
+        }
+
+        // The inductions that the formalize stage chose, and the ones that
+        // the prove stage added
         let mut inductions = Vec::new();
         if let Some(formalize) = &formalize {
             for (name, induction) in &formalize.induction {
+                inductions.push(InductionView::new(name, induction));
+            }
+        }
+        if let Some(prove) = prove {
+            for (name, induction) in &prove.additional_inductions {
                 inductions.push(InductionView::new(name, induction));
             }
         }
@@ -220,6 +253,7 @@ impl<'s> ReportView<'s> {
         Self {
             crate_name,
             properties: property_views,
+            additional_invariants,
             inductions,
             pre_translate,
             translate,
@@ -254,15 +288,7 @@ impl PropertyView {
             Some(_) => PropertyStatusView::Skipped,
             None => property_status(&theorems),
         };
-        let proven_thms = theorems
-            .iter()
-            .filter(|t| {
-                matches!(
-                    t.status,
-                    TheoremStatusView::Proven | TheoremStatusView::ProvenWithAssumptions
-                )
-            })
-            .count();
+        let proven_thms = count_proven(&theorems);
 
         Self {
             id: property.id,
@@ -278,6 +304,38 @@ impl PropertyView {
             theorems,
         }
     }
+}
+
+impl AddedInvariantView {
+    /// `name` is the key of `invariant` in the `additional_invariants` of
+    /// `prove`.
+    fn new(name: &str, invariant: &AddedInvariant, prove: &ProveSubmission) -> Self {
+        let theorems = theorem_views(&invariant.theorems, Some(prove));
+        Self {
+            name: name.to_owned(),
+            natspec: invariant.natspec.clone(),
+            struct_name: invariant.r#struct.clone(),
+            status: property_status(&theorems),
+            total_thms: theorems.len(),
+            proven_thms: count_proven(&theorems),
+            theorems,
+        }
+    }
+}
+
+/// Returns the number of `theorems` that are proven, with or without added
+/// assumptions.
+fn count_proven(theorems: &[TheoremsView]) -> usize {
+    let mut proven = 0;
+    for theorem in theorems {
+        if matches!(
+            theorem.status,
+            TheoremStatusView::Proven | TheoremStatusView::ProvenWithAssumptions
+        ) {
+            proven += 1;
+        }
+    }
+    proven
 }
 
 /// Returns a view of each theorem of `names`, with its status in `prove`.
@@ -372,8 +430,12 @@ impl From<&AdditionalAssumption> for AssumptionView {
             AssumptionPurpose::StateInvariant(inv) => (
                 AssumptionPurposeView::StateInvariant,
                 match inv {
-                    AssumedInvariant::Property(id) => format!("Assumes property {id}."),
-                    AssumedInvariant::Additional(name) => format!("Assumes `{name}`."),
+                    AssumedInvariant::Property(id) => {
+                        format!("Assumes [P{id}](#property-{id}).")
+                    }
+                    AssumedInvariant::Additional(name) => {
+                        format!("Assumes [`{name}`](#invariant-{name}).")
+                    }
                 },
             ),
             AssumptionPurpose::External { justification } => {
