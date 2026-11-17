@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     stage::{
-        formalize::{FormalizeOutput, PropertyFormalizationStatus},
+        formalize::{FormalizeSubmission, PropertyFormalizationStatus},
         properties::{Properties, PropertyId, PropertyKind},
     },
     utils::{
@@ -103,7 +103,7 @@ pub enum LabelProblem {
 pub(super) fn run_gate(
     lean_root: &Path,
     properties: &Properties,
-    submission: &FormalizeOutput,
+    submission: &FormalizeSubmission,
 ) -> Result<Option<FormalizeGateFailure>, FormalizeGateError> {
     let spec = lean_root.join("Spec").canonicalize()?;
 
@@ -152,7 +152,7 @@ pub(super) fn run_gate(
 /// and returns the first check that fails.
 fn check_theorems(
     properties: &Properties,
-    submission: &FormalizeOutput,
+    submission: &FormalizeSubmission,
     checks: &[TheoremCheck],
 ) -> Result<(), FormalizeGateFailure> {
     check_issues(checks)?;
@@ -181,7 +181,7 @@ fn check_issues(checks: &[TheoremCheck]) -> Result<(), FormalizeGateFailure> {
 /// property are the theorems that the submission lists for it.
 fn check_labels(
     properties: &Properties,
-    submission: &FormalizeOutput,
+    submission: &FormalizeSubmission,
     checks: &[TheoremCheck],
 ) -> Result<(), FormalizeGateFailure> {
     let mut problems = Vec::new();
@@ -265,7 +265,7 @@ fn check_labels(
 /// theorem whose triple calls it.
 fn check_induction(
     properties: &Properties,
-    submission: &FormalizeOutput,
+    submission: &FormalizeSubmission,
     checks: &[TheoremCheck],
 ) -> Result<(), FormalizeGateFailure> {
     let mut structs_without_induction = BTreeSet::new();
@@ -471,8 +471,8 @@ mod tests {
         ])
     }
 
-    fn submission() -> FormalizeOutput {
-        FormalizeOutput {
+    fn submission() -> FormalizeSubmission {
+        FormalizeSubmission {
             property_status: BTreeMap::from([
                 (
                     1,

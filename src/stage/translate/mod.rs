@@ -19,10 +19,8 @@ pub use {
     gate::TranslateGateFailure,
     setup::TranslateSetupErr,
     stubs::StubsError,
-    submission::{TranslateBlocker, TranslateOutput},
+    submission::{TranslateBlocker, TranslateSubmission},
 };
-
-type TranslateSubmission = TranslateOutput;
 
 /// Logs at info level with the translate stage's name as the log target.
 macro_rules! translate_info {
@@ -161,8 +159,6 @@ fn make_briefing(
 impl Stage for TranslateStage {
     type Input = TranslateInput;
 
-    type Output = TranslateOutput;
-
     type Submission = TranslateSubmission;
 
     type Blocker = TranslateBlocker;
@@ -256,9 +252,5 @@ impl Stage for TranslateStage {
                     &serde_json::to_string_pretty(submission).expect("the submission serializes"),
                 ),
         )
-    }
-
-    fn finalize(&self, submission: Self::Submission) -> Self::Output {
-        submission
     }
 }

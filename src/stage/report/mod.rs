@@ -1,13 +1,13 @@
-//! Renders the report of a pipeline run as Markdown from the outputs of the
-//! stages, with the templates in `templates/`.
+//! Renders the report of a pipeline run as Markdown from the submissions of
+//! the stages, with the templates in `templates/`.
 
 mod view;
 
 use minijinja::{Environment, UndefinedBehavior, syntax::SyntaxConfig, value::Serde};
 
 use crate::stage::{
-    formalize::FormalizeOutput, pre_translate::PreTranslateOutput, properties::Properties,
-    prove::ProveOutput, translate::TranslateOutput,
+    formalize::FormalizeSubmission, pre_translate::PreTranslateSubmission, properties::Properties,
+    prove::ProveSubmission, translate::TranslateSubmission,
 };
 
 use view::ReportView;
@@ -26,15 +26,15 @@ const TEMPLATES: [(&str, &str); 7] = [
     ("formalize.md", include_str!("templates/formalize.md")),
 ];
 
-/// Returns the report of the crate `crate_name`. A stage output is `None` if
-/// the stage did not run.
+/// Returns the report of the crate `crate_name`. A stage submission is `None`
+/// if the stage did not run.
 pub fn render(
     crate_name: String,
     properties: &Properties,
-    pre_translate: Option<PreTranslateOutput>,
-    translate: Option<TranslateOutput>,
-    formalize: Option<FormalizeOutput>,
-    prove: Option<&ProveOutput>,
+    pre_translate: Option<PreTranslateSubmission>,
+    translate: Option<TranslateSubmission>,
+    formalize: Option<FormalizeSubmission>,
+    prove: Option<&ProveSubmission>,
 ) -> Result<String, minijinja::Error> {
     let mut env = Environment::new();
     env.set_undefined_behavior(UndefinedBehavior::Strict);

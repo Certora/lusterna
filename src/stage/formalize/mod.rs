@@ -134,7 +134,7 @@ pub struct Induction {
 }
 
 #[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
-pub struct FormalizeOutput {
+pub struct FormalizeSubmission {
     pub property_status: BTreeMap<PropertyId, PropertyFormalizationStatus>,
     /// For each struct that an invariant property is declared on, keyed by the
     /// struct name as the property gives it, the functions of its base cases
@@ -151,14 +151,10 @@ pub struct FormalizeOutput {
     pub removed_theorems: Vec<String>,
 }
 
-type FormalizeSubmission = FormalizeOutput;
-
 impl Stage for FormalizeStage {
     const NAME: super::StageName = StageName::Formalize;
 
     type Input = FormalizeInput;
-
-    type Output = FormalizeOutput;
 
     type Submission = FormalizeSubmission;
 
@@ -249,10 +245,6 @@ impl Stage for FormalizeStage {
                 ),
         )
     }
-
-    fn finalize(&self, submission: Self::Submission) -> Self::Output {
-        submission
-    }
 }
 
 #[cfg(test)]
@@ -290,7 +282,7 @@ mod tests {
 
     #[test]
     fn judge_prompt_fills_every_placeholder() {
-        let submission = FormalizeOutput {
+        let submission = FormalizeSubmission {
             property_status: BTreeMap::from([(
                 1,
                 PropertyFormalizationStatus::Skipped(SkipReason::Other("{lean_root}".to_owned())),

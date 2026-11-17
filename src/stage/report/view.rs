@@ -1,17 +1,15 @@
 /* Template Views */
 
-use std::{collections::BTreeMap, path::PathBuf};
+use std::path::PathBuf;
 
 use serde::Serialize;
 
 use crate::stage::{
-    formalize::{FormalizeOutput, Induction, PropertyFormalizationStatus, SkipReason},
-    pre_translate::PreTranslateOutput,
+    formalize::{FormalizeSubmission, Induction, PropertyFormalizationStatus, SkipReason},
+    pre_translate::PreTranslateSubmission,
     properties::{Properties, Property, PropertyId, PropertyKind},
-    prove::{
-        AdditionalAssumption, AssumptionPurpose, PropertyProofStatus, ProveOutput, TheoremStatus,
-    },
-    translate::TranslateOutput,
+    prove::{AdditionalAssumption, AssumptionPurpose, ProveSubmission, TheoremStatus},
+    translate::TranslateSubmission,
 };
 
 #[derive(Serialize)]
@@ -189,33 +187,29 @@ pub(super) struct ReportView {
     properties: Vec<PropertyView>,
     inductions: Vec<InductionView>,
     /// `None` if the stage was skipped
-    pre_translate: Option<PreTranslateOutput>,
+    pre_translate: Option<PreTranslateSubmission>,
     /// `None` if the stage was skipped
-    translate: Option<TranslateOutput>,
+    translate: Option<TranslateSubmission>,
     /// `None` if the stage was skipped
-    formalize: Option<FormalizeOutput>,
+    formalize: Option<FormalizeSubmission>,
 }
 
 impl ReportView {
     pub(super) fn new(
         crate_name: String,
         properties: &Properties,
-        pre_translate_output: Option<PreTranslateOutput>,
-        translate_output: Option<TranslateOutput>,
-        formalize_output: Option<FormalizeOutput>,
-        prove_output: Option<&ProveOutput>,
+        pre_translate: Option<PreTranslateSubmission>,
+        translate: Option<TranslateSubmission>,
+        formalize: Option<FormalizeSubmission>,
+        prove: Option<&ProveSubmission>,
     ) -> Self {
         let mut property_views = Vec::new();
         for property in &properties.0 {
-            property_views.push(PropertyView::new(
-                property,
-                formalize_output.as_ref(),
-                prove_output,
-            ));
+            property_views.push(PropertyView::new(property, formalize.as_ref(), prove));
         }
 
         let mut inductions = Vec::new();
-        if let Some(formalize) = &formalize_output {
+        if let Some(formalize) = &formalize {
             for (name, induction) in &formalize.induction {
                 inductions.push(InductionView::new(name, induction));
             }
@@ -225,9 +219,9 @@ impl ReportView {
             crate_name,
             properties: property_views,
             inductions,
-            pre_translate: pre_translate_output,
-            translate: translate_output,
-            formalize: formalize_output,
+            pre_translate,
+            translate,
+            formalize,
         }
     }
 }
@@ -235,19 +229,18 @@ impl ReportView {
 impl PropertyView {
     fn new(
         property: &Property,
-        formalize: Option<&FormalizeOutput>,
-        prove: Option<&ProveOutput>,
+        formalize: Option<&FormalizeSubmission>,
+        prove: Option<&ProveSubmission>,
     ) -> Self {
         let (struct_name, fns) = match &property.kind {
             PropertyKind::Rule { fns } => (None, fns.clone()),
             PropertyKind::Invariant { r#struct } => (Some(r#struct.clone()), Vec::new()),
         };
 
-        let proof = prove.and_then(|prove| prove.properties.get(&property.id));
         let (file, skip_reason, theorems) =
             match formalize.and_then(|formalize| formalize.property_status.get(&property.id)) {
                 Some(PropertyFormalizationStatus::Formalized { file, theorems, .. }) => {
-                    (Some(file.clone()), None, theorem_views(theorems, proof))
+                    (Some(file.clone()), None, theorem_views(theorems, prove))
                 }
                 Some(PropertyFormalizationStatus::Skipped(reason)) => {
                     (None, Some(SkipReasonView::from(reason)), Vec::new())
@@ -285,35 +278,14 @@ impl PropertyView {
     }
 }
 
-/// Returns a view of each theorem of `names`, with its status in `proof`.
-fn theorem_views(names: &[String], proof: Option<&PropertyProofStatus>) -> Vec<TheoremsView> {
-    let statuses = proof.map(theorem_statuses).unwrap_or_default();
+/// Returns a view of each theorem of `names`, with its status in `prove`.
+fn theorem_views(names: &[String], prove: Option<&ProveSubmission>) -> Vec<TheoremsView> {
     let mut views = Vec::new();
     for name in names {
-        views.push(TheoremsView::new(
-            name,
-            statuses.get(name.as_str()).copied(),
-        ));
+        let status = prove.and_then(|prove| prove.theorems.get(name));
+        views.push(TheoremsView::new(name, status));
     }
     views
-}
-
-/// Returns the status of each theorem of `proof`, by theorem name.
-fn theorem_statuses(proof: &PropertyProofStatus) -> BTreeMap<&str, &TheoremStatus> {
-    let mut statuses = BTreeMap::new();
-    match proof {
-        PropertyProofStatus::Rule { theorems } => {
-            for (name, status) in theorems {
-                statuses.insert(name.as_str(), status);
-            }
-        }
-        PropertyProofStatus::Induction { base_cases, steps } => {
-            for (name, status) in base_cases.values().chain(steps.values()).flatten() {
-                statuses.insert(name.as_str(), status);
-            }
-        }
-    }
-    statuses
 }
 
 /// Returns the worst status of `theorems`, leaving out exceptions. `NotRun`

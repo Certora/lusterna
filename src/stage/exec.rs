@@ -1,10 +1,10 @@
 //! Runs a stage as a state machine with these phases:
 //!
 //! - `Attempt`: the agent works on the stage and returns a submission.
-//! - `Gate`: the stage's gate checks the submission and builds the stage's
-//!   output.
-//! - `Judge`: the judge reviews the output. A stage without a judge skips it.
-//! - `Done`: the output passed.
+//! - `Gate`: the stage's gate checks the submission.
+//! - `Judge`: the judge reviews the submission. A stage without a judge skips
+//!   it.
+//! - `Done`: the submission passed.
 //!
 //! If the gate fails or the judge finds defects, the next attempt gets their
 //! feedback as its prompt. All attempts run in the same agent session. The
@@ -73,7 +73,7 @@ enum Phase<S: Stage> {
     Attempt { prompt: String },
     Gate { submission: S::Submission },
     Judge { submission: S::Submission },
-    Done(S::Output),
+    Done(S::Submission),
 }
 
 impl<S: Stage> StageExec<S> {
@@ -92,13 +92,13 @@ impl<S: Stage> StageExec<S> {
         }
     }
 
-    /// Runs the stage until it is done and returns its output. Calls
-    /// `on_change` with the new state after every transition.
+    /// Runs the stage until it is done and returns the submission that passed.
+    /// Calls `on_change` with the new state after every transition.
     pub fn run(
         mut self,
         cfg: &Config,
         mut on_change: Option<&mut dyn FnMut(&Self)>,
-    ) -> Result<S::Output, StageExecutionError<S>> {
+    ) -> Result<S::Submission, StageExecutionError<S>> {
         loop {
             let next = match &self.phase {
                 Phase::Attempt { prompt } => {
@@ -149,7 +149,7 @@ impl<S: Stage> StageExec<S> {
                     if defects.is_empty() {
                         stage_info!(S::NAME, "judge found no defects, continuing");
                         log_stage_spent::<S>(cfg, self.worker_cost, self.judge_cost);
-                        Phase::Done(self.stage.finalize(submission))
+                        Phase::Done(submission)
                     } else {
                         stage_info!(S::NAME, "judge found defects");
                         stage_debug!(
@@ -164,7 +164,7 @@ impl<S: Stage> StageExec<S> {
                         self.retry(cfg, AttemptRejected::Judge(defects))?
                     }
                 }
-                Phase::Done(output) => return Ok(output.clone()),
+                Phase::Done(submission) => return Ok(submission.clone()),
             };
             self.phase = next;
             if let Some(on_change) = &mut on_change {
@@ -320,7 +320,7 @@ impl<S: Stage> StageExec<S> {
     }
 }
 
-/// Why the execution of a stage stopped without an output.
+/// Why the execution of a stage stopped without a submission that passed.
 #[derive(thiserror::Error)]
 pub enum StageExecutionError<S: Stage> {
     /// The stage's setup failed.
@@ -384,7 +384,7 @@ impl<S: Stage> fmt::Display for AttemptRejected<S> {
     }
 }
 
-/// A defect the judge found in a stage's output.
+/// A defect the judge found in a stage's submission.
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone, PartialEq, Eq)]
 pub struct Defect {
     /// One of the defect kinds that the stage's judge prompt lists.
@@ -459,12 +459,12 @@ mod tests {
     use super::*;
     use crate::stage::{
         Never,
-        pre_translate::PreTranslateOutput,
-        translate::{TranslateBlocker, TranslateOutput},
+        pre_translate::PreTranslateSubmission,
+        translate::{TranslateBlocker, TranslateSubmission},
     };
 
-    type TranslateResult = AgentResult<TranslateOutput, TranslateBlocker>;
-    type PreTranslateResult = AgentResult<PreTranslateOutput, Never>;
+    type TranslateResult = AgentResult<TranslateSubmission, TranslateBlocker>;
+    type PreTranslateResult = AgentResult<PreTranslateSubmission, Never>;
 
     #[test]
     fn agent_result_schemas_are_draft_07_objects() {

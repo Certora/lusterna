@@ -76,8 +76,6 @@ pub trait Stage: Sized + Serialize + DeserializeOwned {
     const NAME: StageName;
     /// The stage's input.
     type Input: Serialize + DeserializeOwned;
-    /// The stage's output; used to feed the subsequent stage.
-    type Output: Serialize + DeserializeOwned + Clone;
     /// What the agent did, which it returns when it finishes the stage.
     type Submission: Serialize + DeserializeOwned + JsonSchema + Clone;
     /// The reasons for which the agent can stop the stage. Use [`Never`] for
@@ -140,8 +138,6 @@ pub trait Stage: Sized + Serialize + DeserializeOwned {
 
     /// The prompt for the judge, or `None` if the stage has no judge.
     fn judge_prompt(&self, submission: &Self::Submission) -> Option<String>;
-
-    fn finalize(&self, submission: Self::Submission) -> Self::Output;
 }
 
 /// The blocker type of a stage that the agent cannot stop.

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// Every change that the agent made since the start of the stage.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct TranslateOutput {
+pub struct TranslateSubmission {
     /// Each change to `lusterna/extract-args.sh`.
     pub extract_changes: Vec<ExtractChange>,
     /// Each change to the Rust code, including each replaced logging macro.

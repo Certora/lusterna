@@ -42,12 +42,10 @@ pub struct PreTranslateInput {
 
 /// Every change that the agent made since the start of the stage.
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
-pub struct PreTranslateOutput {
+pub struct PreTranslateSubmission {
     /// Each change, including each patched copy of a dependency.
     pub changes: Vec<PreTranslateChange>,
 }
-
-type PreTranslateSubmission = PreTranslateOutput;
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
 pub struct PreTranslateChange {
@@ -105,9 +103,7 @@ pub struct PreTranslateStage {
 impl Stage for PreTranslateStage {
     type Input = PreTranslateInput;
 
-    type Output = PreTranslateOutput;
-
-    type Submission = PreTranslateOutput;
+    type Submission = PreTranslateSubmission;
 
     type Blocker = Never;
 
@@ -233,10 +229,6 @@ impl Stage for PreTranslateStage {
                 ),
         )
     }
-
-    fn finalize(&self, submission: Self::Submission) -> Self::Output {
-        submission
-    }
 }
 
 #[cfg(test)]
@@ -253,7 +245,7 @@ mod tests {
             },
             base_commit: "abc123".to_owned(),
         };
-        let submission = PreTranslateOutput {
+        let submission = PreTranslateSubmission {
             changes: vec![PreTranslateChange {
                 file: "src/lib.rs".to_owned(),
                 change: "gated a size check".to_owned(),

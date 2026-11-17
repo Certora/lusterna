@@ -3,137 +3,15 @@ use std::collections::BTreeMap;
 use crate::{
     stage::{
         properties::PropertyId,
-        prove::{PropertyProofStatus, ProveSubmission, TheoremStatus},
+        prove::{ProveSubmission, TheoremStatus},
     },
     utils::spec_check::TheoremCheck,
 };
 
-/// Returns the theorems with the label of the property `id`, each with its
-/// status in `submission`. Leaves out a theorem without a status.
-pub(super) fn labelled_theorems<'a>(
-    id: PropertyId,
-    submission: &ProveSubmission,
-    spec_theorems: &'a [TheoremCheck],
-) -> Vec<(&'a TheoremCheck, TheoremStatus)> {
-    let mut theorems = Vec::new();
-    for theorem in spec_theorems {
-        if theorem.id != Some(id) {
-            continue;
-        }
-        if let Some(status) = submission.theorems.get(&theorem.name) {
-            theorems.push((theorem, status.clone()));
-        }
-    }
-    theorems
-}
-
-/// Returns the status of a rule property from the statuses of its theorems.
-pub(super) fn rule_status(theorems: Vec<(&TheoremCheck, TheoremStatus)>) -> PropertyProofStatus {
-    let mut statuses = BTreeMap::new();
-    for (theorem, status) in theorems {
-        statuses.insert(theorem.name.clone(), status);
-    }
-    PropertyProofStatus::Rule { theorems: statuses }
-}
-
-/// Returns the status of an invariant property from the statuses of its
-/// theorems. A theorem whose triple calls one of `base_case_functions` is a
-/// base case, and every other theorem is an induction step. Each theorem is
-/// listed under the function that its triple calls, or under its own name if
-/// `Lusterna.Spec.check` reports no function for it.
-pub(super) fn induction_status(
-    theorems: Vec<(&TheoremCheck, TheoremStatus)>,
-    base_case_functions: &[String],
-) -> PropertyProofStatus {
-    let mut base_cases: BTreeMap<String, Vec<(String, TheoremStatus)>> = BTreeMap::new();
-    let mut steps: BTreeMap<String, Vec<(String, TheoremStatus)>> = BTreeMap::new();
-    for (theorem, status) in theorems {
-        let function = match &theorem.function {
-            Some(function) => function.clone(),
-            None => theorem.name.clone(),
-        };
-        let group = if base_case_functions.contains(&function) {
-            &mut base_cases
-        } else {
-            &mut steps
-        };
-        group
-            .entry(function)
-            .or_default()
-            .push((theorem.name.clone(), status));
-    }
-    PropertyProofStatus::Induction { base_cases, steps }
-}
-
 #[cfg(test)]
 pub(super) mod tests {
-    use std::path::PathBuf;
-
     use super::*;
-    use crate::stage::{
-        formalize::{Induction, PropertyFormalizationStatus},
-        properties::{Properties, Property, PropertyKind},
-        prove::{AdditionalAssumption, AssumptionPurpose, ProveInput},
-    };
-
-    /// A rule property with the id 1 and an invariant property with the id 2.
-    pub(crate) fn properties() -> Properties {
-        Properties(vec![
-            Property {
-                id: 1,
-                kind: PropertyKind::Rule {
-                    fns: vec!["module::f".to_owned()],
-                },
-                title: "f adds".to_owned(),
-                natspec: String::new(),
-            },
-            Property {
-                id: 2,
-                kind: PropertyKind::Invariant {
-                    r#struct: "module::Struct".to_owned(),
-                },
-                title: "Inv holds".to_owned(),
-                natspec: String::new(),
-            },
-        ])
-    }
-
-    /// An input in which both properties are formalized, and `Struct::new`
-    /// creates the struct of the invariant.
-    pub(crate) fn input() -> ProveInput {
-        ProveInput {
-            extracted: PathBuf::new(),
-            lean_root: PathBuf::new(),
-            properties: PathBuf::new(),
-            property_status: BTreeMap::from([
-                (
-                    1,
-                    PropertyFormalizationStatus::Formalized {
-                        file: PathBuf::from("Spec/FAdds.lean"),
-                        theorems: vec!["Spec.FAdds.f_adds".to_owned()],
-                        exceptions: BTreeMap::new(),
-                    },
-                ),
-                (
-                    2,
-                    PropertyFormalizationStatus::Formalized {
-                        file: PathBuf::from("Spec/Inv.lean"),
-                        theorems: vec!["Spec.Inv.new".to_owned(), "Spec.Inv.f".to_owned()],
-                        exceptions: BTreeMap::new(),
-                    },
-                ),
-            ]),
-            induction: BTreeMap::from([(
-                "module::Struct".to_owned(),
-                Induction {
-                    base_cases: vec!["module.Struct.new".to_owned()],
-                    steps: vec!["module.Struct.f".to_owned()],
-                    unmodelled_steps: BTreeMap::new(),
-                    helpers: BTreeMap::new(),
-                },
-            )]),
-        }
-    }
+    use crate::stage::prove::{AdditionalAssumption, AssumptionPurpose};
 
     /// A theorem with the label `id` whose triple calls `function`.
     fn labelled(name: &str, id: PropertyId, function: &str, proven: bool) -> TheoremCheck {

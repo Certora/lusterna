@@ -1,7 +1,8 @@
 mod gate;
+#[cfg(test)]
 mod utils;
 
-use std::{collections::BTreeMap, fs, io, path::PathBuf};
+use std::{collections::BTreeMap, io, path::PathBuf};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -13,13 +14,9 @@ use crate::{
         INDUCTION_SKILL, INVARIANTS_SKILL, Stage, StageName,
         formalize::{Induction, PropertyFormalizationStatus},
         lean_agent_options,
-        properties::{Properties, PropertyId, PropertyKind},
-        prove::utils::{induction_status, labelled_theorems, rule_status},
+        properties::PropertyId,
     },
-    utils::{
-        git::{self, GitError},
-        spec_check::{self, TheoremCheck},
-    },
+    utils::git::{self, GitError},
 };
 
 pub use gate::{ProveGateError, ProveGateFailure};
@@ -144,33 +141,6 @@ pub struct ProveSubmission {
     pub dropped_writes: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ProveOutput {
-    pub properties: BTreeMap<PropertyId, PropertyProofStatus>,
-    /// For each theorem that the submission claims to be proven and that
-    /// depends on `Lusterna.refMutWriteDropped`: the writes through a
-    /// `core.cell.RefMut` that its proof goes through, and why its conclusion
-    /// does not depend on them.
-    pub dropped_writes: BTreeMap<String, String>,
-}
-
-/// A property proof groups together multiple theorem proofs that belong to one
-/// property
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub enum PropertyProofStatus {
-    Rule {
-        theorems: BTreeMap<String, TheoremStatus>,
-    },
-    Induction {
-        /// Bases cases mapping to the name of the corresponding theorem and its
-        /// proof status
-        base_cases: BTreeMap<String, Vec<(String, TheoremStatus)>>,
-        /// Induction steps mapping to the name of the corresponding theorem and
-        /// its proof status
-        steps: BTreeMap<String, Vec<(String, TheoremStatus)>>,
-    },
-}
-
 #[derive(Debug, derive_more::Display, JsonSchema, Serialize, Deserialize)]
 #[display("{reason}")]
 pub struct ProveBlocker {
@@ -192,16 +162,12 @@ pub enum ProveSetupError {
 #[derive(Deserialize, Serialize)]
 pub struct ProveStage {
     input: ProveInput,
-    /// The content of `input.properties`.
-    properties: Properties,
 }
 
 impl Stage for ProveStage {
     const NAME: super::StageName = StageName::Prove;
 
     type Input = ProveInput;
-
-    type Output = ProveOutput;
 
     type Submission = ProveSubmission;
 
@@ -217,9 +183,7 @@ impl Stage for ProveStage {
         if !git::is_clean(&input.lean_root)? {
             return Err(ProveSetupError::Dirty(input.lean_root));
         }
-        let properties = serde_json::from_str(&fs::read_to_string(&input.properties)?)
-            .map_err(|e| ProveSetupError::Properties(input.properties.clone(), e))?;
-        Ok(Self { input, properties })
+        Ok(Self { input })
     }
 
     fn base_prompt(&self) -> String {
@@ -290,58 +254,11 @@ impl Stage for ProveStage {
                 .replace("{submission}", &submission),
         )
     }
-
-    fn finalize(&self, submission: Self::Submission) -> Self::Output {
-        // this must succeed, otherwise the gate would've failed before
-        let spec_theorems = spec_check::run(&self.input.lean_root, true).unwrap();
-        self.output_group_by_property(submission, &spec_theorems)
-    }
-}
-
-impl ProveStage {
-    /// Returns, for each property that the formalize stage formalized, the
-    /// statuses in `submission` of the theorems with its label.
-    fn output_group_by_property(
-        &self,
-        submission: ProveSubmission,
-        spec_theorems: &[TheoremCheck],
-    ) -> ProveOutput {
-        let mut output = BTreeMap::new();
-        for property in &self.properties.0 {
-            // A property that the formalize stage skipped has no theorems
-            let Some(PropertyFormalizationStatus::Formalized { .. }) =
-                self.input.property_status.get(&property.id)
-            else {
-                continue;
-            };
-            let theorems = labelled_theorems(property.id, &submission, spec_theorems);
-            let status = match &property.kind {
-                PropertyKind::Rule { .. } => rule_status(theorems),
-                PropertyKind::Invariant { r#struct } => {
-                    // The functions that create the struct, as the formalize
-                    // stage reported them
-                    let base_case_functions: &[String] = match self.input.induction.get(r#struct) {
-                        Some(induction) => &induction.base_cases,
-                        None => &[],
-                    };
-                    induction_status(theorems, base_case_functions)
-                }
-            };
-            output.insert(property.id, status);
-        }
-        ProveOutput {
-            properties: output,
-            dropped_writes: submission.dropped_writes,
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
-
     use super::*;
-    use utils::tests::{input, properties, spec_theorems, submission};
 
     fn stage() -> ProveStage {
         ProveStage {
@@ -352,7 +269,6 @@ mod tests {
                 property_status: BTreeMap::new(),
                 induction: BTreeMap::new(),
             },
-            properties: Properties(Vec::new()),
         }
     }
 
@@ -407,30 +323,5 @@ mod tests {
         for (name, content) in stage().skills() {
             assert!(content.starts_with(&format!("---\nname: {name}\n")));
         }
-    }
-
-    #[test]
-    fn groups_statuses_by_property() {
-        let stage = ProveStage {
-            input: input(),
-            properties: properties(),
-        };
-        let output = stage.output_group_by_property(submission(), &spec_theorems());
-        assert_eq!(
-            serde_json::to_value(&output).unwrap(),
-            json!({"properties": {
-                "1": {"Rule": {"theorems": {
-                    "Spec.FAdds.f_adds": {"ProvenWithAssumptions": {"assumptions": [
-                        {"name": "h_ext", "reason": "", "purpose": {"External": {"justification": ""}}}
-                    ]}}
-                }}},
-                "2": {"Induction": {
-                    "base_cases": {"module.Struct.new": [["Spec.Inv.new", "Proven"]]},
-                    "steps": {"module.Struct.f": [["Spec.Inv.f", {"Refuted": {
-                        "reason": ""
-                    }}]]}
-                }}
-            }, "dropped_writes": {}})
-        );
     }
 }
