@@ -151,6 +151,8 @@ pub struct FormalizeOutput {
     pub removed_theorems: Vec<String>,
 }
 
+type FormalizeSubmission = FormalizeOutput;
+
 impl Stage for FormalizeStage {
     const NAME: super::StageName = StageName::Formalize;
 
@@ -158,7 +160,7 @@ impl Stage for FormalizeStage {
 
     type Output = FormalizeOutput;
 
-    type Submission = FormalizeOutput;
+    type Submission = FormalizeSubmission;
 
     type Blocker = FormalizeBlocker;
 
@@ -220,16 +222,11 @@ impl Stage for FormalizeStage {
     fn gate_check(
         &self,
         submission: &Self::Submission,
-    ) -> Result<Self::Output, super::GateStop<Self>> {
-        gate::run_gate(&self.input.lean_root, &self.properties, submission)?;
-        Ok(submission.clone())
+    ) -> Result<Option<FormalizeGateFailure>, FormalizeGateError> {
+        gate::run_gate(&self.input.lean_root, &self.properties, submission)
     }
 
-    fn judge_prompt(
-        &self,
-        _output: &Self::Output,
-        submission: &Self::Submission,
-    ) -> Option<String> {
+    fn judge_prompt(&self, submission: &Self::Submission) -> Option<String> {
         Some(
             JUDGE_PROMPT_TEMPLATE
                 .replace("{lean_root}", &self.input.lean_root.display().to_string())
@@ -251,6 +248,10 @@ impl Stage for FormalizeStage {
                     &serde_json::to_string_pretty(submission).expect("the submission serializes"),
                 ),
         )
+    }
+
+    fn finalize(&self, submission: Self::Submission) -> Self::Output {
+        submission
     }
 }
 
@@ -299,7 +300,7 @@ mod tests {
             updated_theorems: Vec::new(),
             removed_theorems: Vec::new(),
         };
-        let prompt = stage().judge_prompt(&submission, &submission).unwrap();
+        let prompt = stage().judge_prompt(&submission).unwrap();
 
         for placeholder in [
             "{extracted}",

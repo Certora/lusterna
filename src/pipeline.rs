@@ -413,7 +413,7 @@ impl Pipeline {
             &self.spec.properties,
             // The pipeline does not keep the submission of the pre-translate stage
             None,
-            translate.map(|output| output.submission),
+            translate,
             formalize,
             prove.as_ref(),
         )?;

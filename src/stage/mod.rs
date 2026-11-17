@@ -133,17 +133,15 @@ pub trait Stage: Sized + Serialize + DeserializeOwned {
     /// executes the stage worked correctly. If a gate check failed, then
     /// this is returned to the
     /// `submission` is the agent's submission.
-    fn gate_check(&self, submission: &Self::Submission) -> Result<Self::Output, GateStop<Self>>;
+    fn gate_check(
+        &self,
+        submission: &Self::Submission,
+    ) -> Result<Option<Self::GateFailure>, Self::GateExecutionError>;
 
     /// The prompt for the judge, or `None` if the stage has no judge.
-    /// By default, no judge is run.
-    fn judge_prompt(
-        &self,
-        _output: &Self::Output,
-        _submission: &Self::Submission,
-    ) -> Option<String> {
-        None
-    }
+    fn judge_prompt(&self, submission: &Self::Submission) -> Option<String>;
+
+    fn finalize(&self, submission: Self::Submission) -> Self::Output;
 }
 
 /// The blocker type of a stage that the agent cannot stop.
@@ -153,24 +151,6 @@ pub enum Never {}
 impl Display for Never {
     fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {}
-    }
-}
-
-/// Why a check stopped the gate.
-pub enum GateStop<S: Stage> {
-    Failure(S::GateFailure),
-    Error(S::GateExecutionError),
-}
-
-impl<S: Stage> fmt::Debug for GateStop<S>
-where
-    S::GateFailure: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            GateStop::Failure(e) => f.debug_tuple("Failure").field(e).finish(),
-            GateStop::Error(e) => f.debug_tuple("Error").field(e).finish(),
-        }
     }
 }
 

@@ -22,7 +22,7 @@
 //!   `StateInvariant` assumption.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     io,
     path::{Path, PathBuf},
 };
@@ -30,15 +30,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    stage::{
-        self,
-        formalize::PropertyFormalizationStatus,
-        properties::{Properties, PropertyId, PropertyKind},
-        prove::{
-            AssumptionPurpose, PropertyProofStatus, ProveInput, ProveOutput, ProveStage,
-            ProveSubmission, TheoremStatus,
-        },
-    },
+    stage::prove::{AssumptionPurpose, ProveInput, ProveSubmission, TheoremStatus},
     utils::{
         git::{self, GitError},
         lean::{self, LakeError},
@@ -77,64 +69,40 @@ pub enum ProveGateFailure {
     UnexplainedDroppedWrites { theorems: Vec<String> },
 }
 
-type GateStop = stage::GateStop<ProveStage>;
-
-impl From<ProveGateFailure> for GateStop {
-    fn from(failure: ProveGateFailure) -> Self {
-        GateStop::Failure(failure)
-    }
-}
-
-impl<E> From<E> for GateStop
-where
-    ProveGateError: From<E>,
-{
-    fn from(error: E) -> Self {
-        GateStop::Error(error.into())
-    }
-}
-
 /// Runs the gate checks on the work of the agent in the Lean project at
-/// `input.lean_root`, and stops at the first check that fails. If all checks
-/// pass, returns the statuses of `submission`, grouped by property.
+/// `input.lean_root`, and returns the first check that fails.
 pub(super) fn run_gate(
     input: &ProveInput,
-    properties: &Properties,
     submission: &ProveSubmission,
-) -> Result<ProveOutput, GateStop> {
-    check_only_spec_changed(&input.lean_root)?;
-    check_spec_builds(&input.lean_root)?;
+) -> Result<Option<ProveGateFailure>, ProveGateError> {
+    if let Some(failure) = check_only_spec_changed(&input.lean_root)? {
+        return Ok(Some(failure));
+    }
+    if let Some(failure) = check_spec_builds(&input.lean_root)? {
+        return Ok(Some(failure));
+    }
 
     // What Lean reports about each theorem under `Spec/`
     let spec_theorems = spec_check::run(&input.lean_root, true)?;
-    check_submission(submission, &spec_theorems)?;
-
-    Ok(group_by_property(
-        input,
-        properties,
-        submission,
-        &spec_theorems,
-    ))
+    Ok(check_submission(submission, &spec_theorems).err())
 }
 
 /// Fails if a file outside `Spec/` differs from `HEAD`.
-fn check_only_spec_changed(lean_root: &Path) -> Result<(), GateStop> {
+fn check_only_spec_changed(lean_root: &Path) -> Result<Option<ProveGateFailure>, ProveGateError> {
     let spec = lean_root.join("Spec").canonicalize()?;
     let files = git::uncommitted_files_outside(lean_root, &spec)?;
     if !files.is_empty() {
-        return Err(ProveGateFailure::ChangedOutsideSpec { files }.into());
+        return Ok(Some(ProveGateFailure::ChangedOutsideSpec { files }));
     }
-    Ok(())
+    Ok(None)
 }
 
 /// Fails if `lake build Spec` fails.
-fn check_spec_builds(lean_root: &Path) -> Result<(), GateStop> {
+fn check_spec_builds(lean_root: &Path) -> Result<Option<ProveGateFailure>, ProveGateError> {
     match lean::lake_build(lean_root, &["Spec"]) {
-        Ok(()) => Ok(()),
+        Ok(()) => Ok(None),
         // The build ran and failed. The agent can fix this.
-        Err(LakeError::Build { output, .. }) => {
-            Err(ProveGateFailure::BuildFailed { output }.into())
-        }
+        Err(LakeError::Build { output, .. }) => Ok(Some(ProveGateFailure::BuildFailed { output })),
         // `lake` could not run. The agent cannot fix this.
         Err(error) => Err(error.into()),
     }
@@ -306,97 +274,6 @@ fn check_dropped_writes_explained(
     Ok(())
 }
 
-/// Returns, for each property that the formalize stage formalized, the
-/// statuses in `submission` of the theorems with its label.
-fn group_by_property(
-    input: &ProveInput,
-    properties: &Properties,
-    submission: &ProveSubmission,
-    spec_theorems: &[TheoremCheck],
-) -> ProveOutput {
-    let mut output = BTreeMap::new();
-    for property in &properties.0 {
-        // A property that the formalize stage skipped has no theorems
-        let Some(PropertyFormalizationStatus::Formalized { .. }) =
-            input.property_status.get(&property.id)
-        else {
-            continue;
-        };
-        let theorems = labelled_theorems(property.id, submission, spec_theorems);
-        let status = match &property.kind {
-            PropertyKind::Rule { .. } => rule_status(theorems),
-            PropertyKind::Invariant { r#struct } => {
-                // The functions that create the struct, as the formalize stage
-                // reported them
-                let base_case_functions: &[String] = match input.induction.get(r#struct) {
-                    Some(induction) => &induction.base_cases,
-                    None => &[],
-                };
-                induction_status(theorems, base_case_functions)
-            }
-        };
-        output.insert(property.id, status);
-    }
-    ProveOutput { properties: output }
-}
-
-/// Returns the theorems with the label of the property `id`, each with its
-/// status in `submission`. Leaves out a theorem without a status.
-fn labelled_theorems<'a>(
-    id: PropertyId,
-    submission: &ProveSubmission,
-    spec_theorems: &'a [TheoremCheck],
-) -> Vec<(&'a TheoremCheck, TheoremStatus)> {
-    let mut theorems = Vec::new();
-    for theorem in spec_theorems {
-        if theorem.id != Some(id) {
-            continue;
-        }
-        if let Some(status) = submission.theorems.get(&theorem.name) {
-            theorems.push((theorem, status.clone()));
-        }
-    }
-    theorems
-}
-
-/// Returns the status of a rule property from the statuses of its theorems.
-fn rule_status(theorems: Vec<(&TheoremCheck, TheoremStatus)>) -> PropertyProofStatus {
-    let mut statuses = BTreeMap::new();
-    for (theorem, status) in theorems {
-        statuses.insert(theorem.name.clone(), status);
-    }
-    PropertyProofStatus::Rule { theorems: statuses }
-}
-
-/// Returns the status of an invariant property from the statuses of its
-/// theorems. A theorem whose triple calls one of `base_case_functions` is a
-/// base case, and every other theorem is an induction step. Each theorem is
-/// listed under the function that its triple calls, or under its own name if
-/// `Lusterna.Spec.check` reports no function for it.
-fn induction_status(
-    theorems: Vec<(&TheoremCheck, TheoremStatus)>,
-    base_case_functions: &[String],
-) -> PropertyProofStatus {
-    let mut base_cases: BTreeMap<String, Vec<(String, TheoremStatus)>> = BTreeMap::new();
-    let mut steps: BTreeMap<String, Vec<(String, TheoremStatus)>> = BTreeMap::new();
-    for (theorem, status) in theorems {
-        let function = match &theorem.function {
-            Some(function) => function.clone(),
-            None => theorem.name.clone(),
-        };
-        let group = if base_case_functions.contains(&function) {
-            &mut base_cases
-        } else {
-            &mut steps
-        };
-        group
-            .entry(function)
-            .or_default()
-            .push((theorem.name.clone(), status));
-    }
-    PropertyProofStatus::Induction { base_cases, steps }
-}
-
 /// Returns `text` as inline code in Markdown.
 fn code(text: &str) -> String {
     format!("`{text}`")
@@ -498,141 +375,11 @@ impl ProveGateFailure {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
-
     use super::*;
-    use crate::stage::{
-        formalize::Induction,
-        properties::Property,
-        prove::{AdditionalAssumption, AssumptionPurpose},
+    use crate::stage::prove::{
+        AdditionalAssumption, AssumptionPurpose,
+        utils::tests::{spec_theorems, submission, unlabelled},
     };
-
-    /// A rule property with the id 1 and an invariant property with the id 2.
-    fn properties() -> Properties {
-        Properties(vec![
-            Property {
-                id: 1,
-                kind: PropertyKind::Rule {
-                    fns: vec!["module::f".to_owned()],
-                },
-                title: "f adds".to_owned(),
-                natspec: String::new(),
-            },
-            Property {
-                id: 2,
-                kind: PropertyKind::Invariant {
-                    r#struct: "module::Struct".to_owned(),
-                },
-                title: "Inv holds".to_owned(),
-                natspec: String::new(),
-            },
-        ])
-    }
-
-    /// An input in which both properties are formalized, and `Struct::new`
-    /// creates the struct of the invariant.
-    fn input() -> ProveInput {
-        ProveInput {
-            extracted: PathBuf::new(),
-            lean_root: PathBuf::new(),
-            properties: PathBuf::new(),
-            property_status: BTreeMap::from([
-                (
-                    1,
-                    PropertyFormalizationStatus::Formalized {
-                        file: PathBuf::from("Spec/FAdds.lean"),
-                        theorems: vec!["Spec.FAdds.f_adds".to_owned()],
-                        exceptions: BTreeMap::new(),
-                    },
-                ),
-                (
-                    2,
-                    PropertyFormalizationStatus::Formalized {
-                        file: PathBuf::from("Spec/Inv.lean"),
-                        theorems: vec!["Spec.Inv.new".to_owned(), "Spec.Inv.f".to_owned()],
-                        exceptions: BTreeMap::new(),
-                    },
-                ),
-            ]),
-            induction: BTreeMap::from([(
-                "module::Struct".to_owned(),
-                Induction {
-                    base_cases: vec!["module.Struct.new".to_owned()],
-                    steps: vec!["module.Struct.f".to_owned()],
-                    unmodelled_steps: BTreeMap::new(),
-                    helpers: BTreeMap::new(),
-                },
-            )]),
-        }
-    }
-
-    /// A theorem with the label `id` whose triple calls `function`.
-    fn labelled(name: &str, id: PropertyId, function: &str, proven: bool) -> TheoremCheck {
-        TheoremCheck {
-            id: Some(id),
-            function: Some(function.to_owned()),
-            ..unlabelled(name, proven)
-        }
-    }
-
-    /// A theorem without a label. If it is not `proven`, it depends on
-    /// `sorryAx`.
-    fn unlabelled(name: &str, proven: bool) -> TheoremCheck {
-        let axioms = if proven {
-            Vec::new()
-        } else {
-            vec!["sorryAx".to_owned()]
-        };
-        TheoremCheck {
-            name: name.to_owned(),
-            module: String::new(),
-            id: None,
-            title: None,
-            function: None,
-            issues: Vec::new(),
-            axioms: Some(axioms),
-            drops_writes: Some(false),
-        }
-    }
-
-    /// The theorems under `Spec/`: the rule theorem, the base case and a lemma
-    /// are proven, and the induction step is not.
-    fn spec_theorems() -> Vec<TheoremCheck> {
-        vec![
-            labelled("Spec.FAdds.f_adds", 1, "module.Struct.f", true),
-            labelled("Spec.Inv.new", 2, "module.Struct.new", true),
-            labelled("Spec.Inv.f", 2, "module.Struct.f", false),
-            unlabelled("Spec.InvAux.lemma", true),
-        ]
-    }
-
-    /// A submission that matches `spec_theorems`.
-    fn submission() -> ProveSubmission {
-        ProveSubmission {
-            theorems: BTreeMap::from([
-                (
-                    "Spec.FAdds.f_adds".to_owned(),
-                    TheoremStatus::ProvenWithAssumptions {
-                        assumptions: vec![AdditionalAssumption {
-                            name: "h_ext".to_owned(),
-                            reason: String::new(),
-                            purpose: AssumptionPurpose::External {
-                                justification: String::new(),
-                            },
-                        }],
-                    },
-                ),
-                ("Spec.Inv.new".to_owned(), TheoremStatus::Proven),
-                (
-                    "Spec.Inv.f".to_owned(),
-                    TheoremStatus::Refuted {
-                        reason: String::new(),
-                    },
-                ),
-            ]),
-            dropped_writes: BTreeMap::new(),
-        }
-    }
 
     #[test]
     fn consistent_submission_passes() {
@@ -754,27 +501,6 @@ mod tests {
             },
         );
         check_submission(&submission, &spec_theorems).unwrap();
-    }
-
-    #[test]
-    fn groups_statuses_by_property() {
-        let output = group_by_property(&input(), &properties(), &submission(), &spec_theorems());
-        assert_eq!(
-            serde_json::to_value(&output).unwrap(),
-            json!({"properties": {
-                "1": {"Rule": {"theorems": {
-                    "Spec.FAdds.f_adds": {"ProvenWithAssumptions": {"assumptions": [
-                        {"name": "h_ext", "reason": "", "purpose": {"External": {"justification": ""}}}
-                    ]}}
-                }}},
-                "2": {"Induction": {
-                    "base_cases": {"module.Struct.new": [["Spec.Inv.new", "Proven"]]},
-                    "steps": {"module.Struct.f": [["Spec.Inv.f", {"Refuted": {
-                        "reason": ""
-                    }}]]}
-                }}
-            }})
-        );
     }
 
     #[test]

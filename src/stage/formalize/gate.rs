@@ -29,8 +29,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     stage::{
-        self,
-        formalize::{FormalizeOutput, FormalizeStage, PropertyFormalizationStatus},
+        formalize::{FormalizeOutput, PropertyFormalizationStatus},
         properties::{Properties, PropertyId, PropertyKind},
     },
     utils::{
@@ -95,23 +94,6 @@ pub enum LabelProblem {
     },
 }
 
-type GateStop = stage::GateStop<FormalizeStage>;
-
-impl From<FormalizeGateFailure> for GateStop {
-    fn from(failure: FormalizeGateFailure) -> Self {
-        GateStop::Failure(failure)
-    }
-}
-
-impl<E> From<E> for GateStop
-where
-    FormalizeGateError: From<E>,
-{
-    fn from(error: E) -> Self {
-        GateStop::Error(error.into())
-    }
-}
-
 /// Checks the result of the agent:
 ///
 /// - only files under `Spec/` in `lean_root` differ from `HEAD`
@@ -122,13 +104,13 @@ pub(super) fn run_gate(
     lean_root: &Path,
     properties: &Properties,
     submission: &FormalizeOutput,
-) -> Result<(), GateStop> {
+) -> Result<Option<FormalizeGateFailure>, FormalizeGateError> {
     let spec = lean_root.join("Spec").canonicalize()?;
 
     // Only files under `Spec/` may change
     let files = git::uncommitted_files_outside(lean_root, &spec)?;
     if !files.is_empty() {
-        return Err(FormalizeGateFailure::ChangedOutsideSpec { files }.into());
+        return Ok(Some(FormalizeGateFailure::ChangedOutsideSpec { files }));
     }
 
     // The submission must give a status for exactly the properties
@@ -147,18 +129,23 @@ pub(super) fn run_gate(
         .filter(|id| !properties.0.iter().any(|p| p.id == *id))
         .collect();
     if !missing.is_empty() || !unknown.is_empty() {
-        return Err(FormalizeGateFailure::StatusMismatch { missing, unknown }.into());
+        return Ok(Some(FormalizeGateFailure::StatusMismatch {
+            missing,
+            unknown,
+        }));
     }
 
     // Running `lake build Spec` must succeed in the lean root
-    lean::lake_build(lean_root, &["Spec"]).map_err(|e| match e {
-        LakeError::Build { output, .. } => FormalizeGateFailure::BuildFailed { output }.into(),
-        e => GateStop::from(e),
-    })?;
+    match lean::lake_build(lean_root, &["Spec"]) {
+        Ok(_) => (),
+        Err(LakeError::Build { output, .. }) => {
+            return Ok(Some(FormalizeGateFailure::BuildFailed { output }));
+        }
+        Err(e) => return Err(e.into()),
+    }
 
     let checks = spec_check::run(lean_root, false)?;
-    check_theorems(properties, submission, &checks)?;
-    Ok(())
+    Ok(check_theorems(properties, submission, &checks).err())
 }
 
 /// Checks the theorems in `Spec/` against the properties and the submission,

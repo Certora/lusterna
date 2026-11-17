@@ -6,12 +6,12 @@ use serde::Serialize;
 
 use crate::stage::{
     formalize::{FormalizeOutput, Induction, PropertyFormalizationStatus, SkipReason},
-    pre_translate::PreTranslateSubmission,
+    pre_translate::PreTranslateOutput,
     properties::{Properties, Property, PropertyId, PropertyKind},
     prove::{
         AdditionalAssumption, AssumptionPurpose, PropertyProofStatus, ProveOutput, TheoremStatus,
     },
-    translate::TranslateSubmission,
+    translate::TranslateOutput,
 };
 
 #[derive(Serialize)]
@@ -189,9 +189,9 @@ pub(super) struct ReportView {
     properties: Vec<PropertyView>,
     inductions: Vec<InductionView>,
     /// `None` if the stage was skipped
-    pre_translate: Option<PreTranslateSubmission>,
+    pre_translate: Option<PreTranslateOutput>,
     /// `None` if the stage was skipped
-    translate: Option<TranslateSubmission>,
+    translate: Option<TranslateOutput>,
     /// `None` if the stage was skipped
     formalize: Option<FormalizeOutput>,
 }
@@ -200,22 +200,22 @@ impl ReportView {
     pub(super) fn new(
         crate_name: String,
         properties: &Properties,
-        pre_translate_submission: Option<PreTranslateSubmission>,
-        translate_submission: Option<TranslateSubmission>,
-        formalize_submission: Option<FormalizeOutput>,
+        pre_translate_output: Option<PreTranslateOutput>,
+        translate_output: Option<TranslateOutput>,
+        formalize_output: Option<FormalizeOutput>,
         prove_output: Option<&ProveOutput>,
     ) -> Self {
         let mut property_views = Vec::new();
         for property in &properties.0 {
             property_views.push(PropertyView::new(
                 property,
-                formalize_submission.as_ref(),
+                formalize_output.as_ref(),
                 prove_output,
             ));
         }
 
         let mut inductions = Vec::new();
-        if let Some(formalize) = &formalize_submission {
+        if let Some(formalize) = &formalize_output {
             for (name, induction) in &formalize.induction {
                 inductions.push(InductionView::new(name, induction));
             }
@@ -225,9 +225,9 @@ impl ReportView {
             crate_name,
             properties: property_views,
             inductions,
-            pre_translate: pre_translate_submission,
-            translate: translate_submission,
-            formalize: formalize_submission,
+            pre_translate: pre_translate_output,
+            translate: translate_output,
+            formalize: formalize_output,
         }
     }
 }

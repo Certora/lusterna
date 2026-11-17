@@ -6,8 +6,8 @@ mod view;
 use minijinja::{Environment, UndefinedBehavior, syntax::SyntaxConfig, value::Serde};
 
 use crate::stage::{
-    formalize::FormalizeOutput, pre_translate::PreTranslateSubmission, properties::Properties,
-    prove::ProveOutput, translate::TranslateSubmission,
+    formalize::FormalizeOutput, pre_translate::PreTranslateOutput, properties::Properties,
+    prove::ProveOutput, translate::TranslateOutput,
 };
 
 use view::ReportView;
@@ -31,8 +31,8 @@ const TEMPLATES: [(&str, &str); 7] = [
 pub fn render(
     crate_name: String,
     properties: &Properties,
-    pre_translate: Option<PreTranslateSubmission>,
-    translate: Option<TranslateSubmission>,
+    pre_translate: Option<PreTranslateOutput>,
+    translate: Option<TranslateOutput>,
     formalize: Option<FormalizeOutput>,
     prove: Option<&ProveOutput>,
 ) -> Result<String, minijinja::Error> {

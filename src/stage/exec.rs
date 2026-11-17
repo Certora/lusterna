@@ -38,7 +38,7 @@ use crate::{
     agent::{Agent, AgentError},
     config::Config,
     log::{stage_debug, stage_info},
-    stage::{GateStop, Stage},
+    stage::Stage,
     utils::format_elapsed,
 };
 
@@ -70,16 +70,9 @@ pub struct StageExec<S: Stage> {
 
 #[derive(Serialize, Deserialize)]
 enum Phase<S: Stage> {
-    Attempt {
-        prompt: String,
-    },
-    Gate {
-        submission: S::Submission,
-    },
-    Judge {
-        submission: S::Submission,
-        output: S::Output,
-    },
+    Attempt { prompt: String },
+    Gate { submission: S::Submission },
+    Judge { submission: S::Submission },
     Done(S::Output),
 }
 
@@ -125,39 +118,38 @@ impl<S: Stage> StageExec<S> {
                     }
                 }
                 Phase::Gate { submission } => {
-                    match self.stage.gate_check(submission) {
-                        Ok(o) => {
-                            stage_info!(S::NAME, "gate passed");
-                            Phase::Judge {
-                                submission: submission.clone(),
-                                output: o.clone(),
-                            }
-                        }
-                        Err(GateStop::Failure(failure)) => {
+                    match self
+                        .stage
+                        .gate_check(submission)
+                        .map_err(StageExecutionError::GateExecutionError)?
+                    {
+                        Some(failure) => {
                             stage_info!(S::NAME, "Gate failed: {}", failure);
                             // get the feedback prompt
                             self.retry(cfg, AttemptRejected::Gate(failure.clone()))?
                         }
-                        Err(GateStop::Error(e)) => {
-                            return Err(StageExecutionError::GateExecutionError(e));
+                        None => {
+                            stage_info!(S::NAME, "gate passed");
+                            Phase::Judge {
+                                submission: submission.clone(),
+                            }
                         }
                     }
                 }
-                Phase::Judge { submission, output } => {
+                Phase::Judge { submission } => {
                     // need to clone these to circumvent borrow errors
-                    let output = output.clone();
                     let submission = submission.clone();
 
                     if self.worker_cost + self.judge_cost >= cfg.stage_max_budget {
                         return Err(StageExecutionError::BudgetExhausted(None));
                     }
-                    let (defects, cost_usd) = self.run_judge(&output, &submission, cfg)?;
+                    let (defects, cost_usd) = self.run_judge(&submission, cfg)?;
                     self.judge_cost = cost_usd;
 
                     if defects.is_empty() {
                         stage_info!(S::NAME, "judge found no defects, continuing");
                         log_stage_spent::<S>(cfg, self.worker_cost, self.judge_cost);
-                        Phase::Done(output)
+                        Phase::Done(self.stage.finalize(submission))
                     } else {
                         stage_info!(S::NAME, "judge found defects");
                         stage_debug!(
@@ -264,13 +256,12 @@ impl<S: Stage> StageExec<S> {
 
     fn run_judge(
         &mut self,
-        output: &S::Output,
         submission: &S::Submission,
         cfg: &Config,
     ) -> Result<(Vec<Defect>, f64), AgentError> {
         let remaining = cfg.stage_max_budget - self.worker_cost - self.judge_cost;
 
-        let Some(base_prompt) = self.stage.judge_prompt(output, submission) else {
+        let Some(base_prompt) = self.stage.judge_prompt(submission) else {
             stage_info!(S::NAME, "stage has no judge, continuing");
             return Ok((vec![], 0.0));
         };
@@ -468,12 +459,12 @@ mod tests {
     use super::*;
     use crate::stage::{
         Never,
-        pre_translate::PreTranslateSubmission,
-        translate::{TranslateBlocker, TranslateSubmission},
+        pre_translate::PreTranslateOutput,
+        translate::{TranslateBlocker, TranslateOutput},
     };
 
-    type TranslateResult = AgentResult<TranslateSubmission, TranslateBlocker>;
-    type PreTranslateResult = AgentResult<PreTranslateSubmission, Never>;
+    type TranslateResult = AgentResult<TranslateOutput, TranslateBlocker>;
+    type PreTranslateResult = AgentResult<PreTranslateOutput, Never>;
 
     #[test]
     fn agent_result_schemas_are_draft_07_objects() {
