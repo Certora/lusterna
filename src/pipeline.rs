@@ -249,7 +249,8 @@ impl Pipeline {
 
     fn commit(&self, stage: StageName) -> Result<(), PipelineError> {
         let name = stage.as_str().to_ascii_lowercase();
-        match git::commit_all(&self.config.repo_root()?, "Lusterna: `formalize` stage")? {
+        let msg = format!("Lusterna: `{}` stage", name);
+        match git::commit_all(&self.config.repo_root()?, &msg)? {
             Some(sha) => info!("Committed `{}` work in {}", name, sha),
             None => info!("No `{}` work to commit", name),
         }
