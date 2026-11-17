@@ -31,8 +31,8 @@ struct PropertyView {
     /// The spec file of the formalization, relative to the Lean project root.
     /// `None` if the property was skipped or the formalize stage did not run.
     pub file: Option<PathBuf>,
-    /// Number of theorems this property is formalized in. Must be be 0 if
-    /// `skip_reason` is given.
+    /// Number of theorems this property is formalized in, leaving out
+    /// exceptions. Must be be 0 if `skip_reason` is given.
     pub total_thms: usize,
     /// Number of theorems of this property that are proven, with or without
     /// added assumptions. Must be at most `total_thms`
@@ -46,7 +46,7 @@ struct PropertyView {
     /// The theorems in which this property was formalized.
     /// The following must hold:
     ///
-    /// - `total_thms = theorems.len()`
+    /// - `total_thms = theorems.iter().filter(|t| !t.is_exception()).count()`
     /// - `proven_thms = theorems.iter().filter(|t| t.is_proven()).count()`
     pub theorems: Vec<TheoremsView>,
 }
@@ -59,6 +59,7 @@ struct AddedInvariantView {
     pub natspec: String,
     pub struct_name: String,
     pub status: PropertyStatusView,
+    /// Number of theorems of this invariant, leaving out exceptions
     pub total_thms: usize,
     /// Number of theorems of this invariant that are proven, with or without
     /// added assumptions
@@ -298,7 +299,7 @@ impl PropertyView {
             fns,
             status,
             file,
-            total_thms: theorems.len(),
+            total_thms: count_without_exceptions(&theorems),
             proven_thms,
             skip_reason,
             theorems,
@@ -316,7 +317,7 @@ impl AddedInvariantView {
             natspec: invariant.natspec.clone(),
             struct_name: invariant.r#struct.clone(),
             status: property_status(&theorems),
-            total_thms: theorems.len(),
+            total_thms: count_without_exceptions(&theorems),
             proven_thms: count_proven(&theorems),
             theorems,
         }
@@ -336,6 +337,17 @@ fn count_proven(theorems: &[TheoremsView]) -> usize {
         }
     }
     proven
+}
+
+/// Returns the number of `theorems` that do not have the status `Exception`.
+fn count_without_exceptions(theorems: &[TheoremsView]) -> usize {
+    let mut count = 0;
+    for theorem in theorems {
+        if !matches!(theorem.status, TheoremStatusView::Exception) {
+            count += 1;
+        }
+    }
+    count
 }
 
 /// Returns a view of each theorem of `names`, with its status in `prove`.
