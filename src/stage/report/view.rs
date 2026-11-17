@@ -350,12 +350,14 @@ fn count_without_exceptions(theorems: &[TheoremsView]) -> usize {
     count
 }
 
-/// Returns a view of each theorem of `names`, with its status in `prove`.
+/// Returns a view of each theorem of `names`, with its status and its entry of
+/// `dropped_writes` in `prove`.
 fn theorem_views(names: &[String], prove: Option<&ProveSubmission>) -> Vec<TheoremsView> {
     let mut views = Vec::new();
     for name in names {
         let status = prove.and_then(|prove| prove.theorems.get(name));
-        views.push(TheoremsView::new(name, status));
+        let dropped_writes = prove.and_then(|prove| prove.dropped_writes.get(name));
+        views.push(TheoremsView::new(name, status, dropped_writes));
     }
     views
 }
@@ -380,8 +382,9 @@ fn property_status(theorems: &[TheoremsView]) -> PropertyStatusView {
 }
 
 impl TheoremsView {
-    /// `status` is `None` if the prove stage did not run.
-    fn new(name: &str, status: Option<&TheoremStatus>) -> Self {
+    /// `status` is `None` if the prove stage did not run. `dropped_writes` is
+    /// the entry of the theorem in the `dropped_writes` of the prove stage.
+    fn new(name: &str, status: Option<&TheoremStatus>, dropped_writes: Option<&String>) -> Self {
         let (reason, dropped_write_function, assumptions) = match status {
             Some(
                 TheoremStatus::Refuted { reason }
@@ -405,7 +408,7 @@ impl TheoremsView {
             reason,
             dropped_write_function,
             assumptions,
-            dropped_writes: None,
+            dropped_writes: dropped_writes.cloned(),
         }
     }
 }
