@@ -1,3 +1,7 @@
+| Date | Crate Name | Commit | Lusterna Commit | Aeneas Version |
+|------|------------|--------|-----------------|----------------|
+| {{ date }} | {{ crate_name }} | `{{ commit[:7] }}` | N/A | `{{ aeneas_rev[:7] }}` |
+
 This report summarizes the formal verification that Lusterna did for *{{ crate_name }}*.
 
 {% set formalized = properties | selectattr("file") | list %}

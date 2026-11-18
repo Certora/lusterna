@@ -1,6 +1,6 @@
 /* Template Views */
 
-use std::path::PathBuf;
+use std::{path::PathBuf, time::SystemTime};
 
 use serde::Serialize;
 
@@ -204,7 +204,13 @@ struct HelperView {
 
 #[derive(Serialize)]
 pub(super) struct ReportView<'s> {
+    /// The day of the run, as `YYYY-MM-DD`
+    date: String,
     crate_name: String,
+    /// The commit of the crate's repository that the run starts from
+    commit: &'s str,
+    /// The commit of the Aeneas checkout
+    aeneas_rev: &'s str,
     /// The Charon `--start-from` patterns of the translation
     entrypoints: &'s [String],
     properties: Vec<PropertyView>,
@@ -222,6 +228,8 @@ pub(super) struct ReportView<'s> {
 impl<'s> ReportView<'s> {
     pub(super) fn new(
         crate_name: String,
+        commit: &'s str,
+        aeneas_rev: &'s str,
         entrypoints: &'s [String],
         properties: &Properties,
         pre_translate: Option<&'s PreTranslateSubmission>,
@@ -255,8 +263,12 @@ impl<'s> ReportView<'s> {
             }
         }
 
+        let now = humantime::format_rfc3339_seconds(SystemTime::now()).to_string();
         Self {
+            date: now[..10].to_owned(),
             crate_name,
+            commit,
+            aeneas_rev,
             entrypoints,
             properties: property_views,
             additional_invariants,

@@ -145,6 +145,9 @@ pub struct Pipeline {
     spec_path: PathBuf,
     config: Config,
     submissions: Submissions,
+    /// The commit of the repository that the run starts from.
+    /// Recorded after `pre_check` passed.
+    commit: Option<String>,
 }
 
 impl Pipeline {
@@ -156,6 +159,7 @@ impl Pipeline {
             spec_path,
             config,
             submissions: Submissions::new(&lusterna_dir)?,
+            commit: None,
         })
     }
 
@@ -169,6 +173,7 @@ impl Pipeline {
     /// Runs the steps of the pipeline in order and stops at the first error.
     pub fn run(mut self) -> Result<(), PipelineError> {
         self.pre_check()?;
+        self.commit = Some(git::head_rev(&self.config.repo_root()?)?);
 
         // 1. Infer the entrypoints and properties
         if self.runs(PipelineStep::Infer) && self.spec.infer {
@@ -405,6 +410,8 @@ impl Pipeline {
 
         let report = report::render(
             cargo::package_name(&self.config.manifest()?)?,
+            self.commit.as_deref().expect("`run` sets the commit"),
+            &self.config.aeneas_rev()?,
             &self.spec.entrypoints,
             &self.spec.properties,
             // The pipeline does not keep the submission of the pre-translate stage
