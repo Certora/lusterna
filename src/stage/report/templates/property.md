@@ -1,6 +1,6 @@
 <a id="property-{{ p.id }}"></a>
 
-### P{{ p.id }}: {{ p.title }}
+#### P{{ p.id }}: {{ p.title }}
 
 > {{ p.natspec | replace("\n", "\n> ") }}
 
@@ -10,7 +10,7 @@
 
 {% if p.skip_reason %}
 
-#### Not formalized
+##### Not formalized
 
 Formalize did not state this property as Lean theorems, so it is not verified. Reason: {{ p.skip_reason.kind }}. {{ p.skip_reason.details }}
 
@@ -21,7 +21,7 @@ Formalize did not state this property as Lean theorems, so it is not verified. R
 {% endwith %}
 {% else %}
 
-#### Theorems
+##### Theorems
 
 Skipped: this run has no output of the formalize stage.
 

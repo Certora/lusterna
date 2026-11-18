@@ -3,7 +3,7 @@
 
 <a id="invariant-{{ i.name }}"></a>
 
-### Additional: {{ i.title }}
+#### Additional: {{ i.title }}
 
 > {{ i.natspec | replace("\n", "\n> ") }}
 

@@ -1,4 +1,4 @@
-#### Theorems
+##### Theorems
 
 <details>
 <summary>List of Theorems</summary>
@@ -17,7 +17,7 @@ The theorems in `{{ file }}` state this property.
 {% set exceptions = theorems | selectattr("status", "eq", "Exception") | list %}
 {% if exceptions %}
 
-#### Exceptions
+##### Exceptions
 
 {% for t in exceptions %}
 - `{{ t.name }}`: {{ t.reason }}
@@ -26,10 +26,10 @@ The theorems in `{{ file }}` state this property.
 {% set refuted = theorems | selectattr("status", "eq", "Refuted") | list %}
 {% if refuted %}
 
-#### Counterexamples
+##### Counterexamples
 {% for t in refuted %}
 
-##### `{{ t.name }}`
+###### `{{ t.name }}`
 
 > {{ t.reason | replace("\n", "\n> ") }}
 {% endfor %}
@@ -37,7 +37,7 @@ The theorems in `{{ file }}` state this property.
 {% set open = theorems | selectattr("status", "eq", "Open") | list %}
 {% if open %}
 
-#### Open
+##### Open
 
 {% for t in open %}
 - `{{ t.name }}`: {{ t.reason }}
@@ -46,7 +46,7 @@ The theorems in `{{ file }}` state this property.
 {% set assumed = theorems | selectattr("assumptions") | list %}
 {% if assumed %}
 
-#### Added assumptions
+##### Added assumptions
 
 {% for t in assumed %}
 - `{{ t.name }}`
@@ -56,7 +56,7 @@ The theorems in `{{ file }}` state this property.
 {% endfor %}
 {% endif %}
 
-#### Unprovable
+##### Unprovable
 
 {% for t in theorems | selectattr("status", "eq", "Unprovable") %}
 - `{{ t.name }}`: The write is in `{{ t.dropped_write_function }}`. {{ t.reason }}

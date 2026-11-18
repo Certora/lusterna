@@ -10,7 +10,7 @@
 
 {% include "overview.md" %}
 
-## Details
+### Details
 
 Each section gives the property as the spec states it, the Lean theorems that formalize it, and the result of each theorem.
 
