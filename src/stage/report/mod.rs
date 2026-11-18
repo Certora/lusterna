@@ -13,9 +13,10 @@ use crate::stage::{
 use view::ReportView;
 
 /// The templates of the report, by name. `report.md` includes the others.
-const TEMPLATES: [(&str, &str); 9] = [
+const TEMPLATES: [(&str, &str); 10] = [
     ("report.md", include_str!("templates/report.md")),
     ("summary.md", include_str!("templates/summary.md")),
+    ("overview.md", include_str!("templates/overview.md")),
     ("induction.md", include_str!("templates/induction.md")),
     ("property.md", include_str!("templates/property.md")),
     ("invariant.md", include_str!("templates/invariant.md")),
@@ -28,10 +29,11 @@ const TEMPLATES: [(&str, &str); 9] = [
     ("formalize.md", include_str!("templates/formalize.md")),
 ];
 
-/// Returns the report of the crate `crate_name`. A stage submission is `None`
-/// if the stage did not run.
+/// Returns the report of the crate `crate_name`, translated from
+/// `entrypoints`. A stage submission is `None` if the stage did not run.
 pub fn render(
     crate_name: String,
+    entrypoints: &[String],
     properties: &Properties,
     pre_translate: Option<&PreTranslateSubmission>,
     translate: Option<&TranslateSubmission>,
@@ -53,6 +55,7 @@ pub fn render(
 
     let view = ReportView::new(
         crate_name,
+        entrypoints,
         properties,
         pre_translate,
         translate,

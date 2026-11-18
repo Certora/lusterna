@@ -4,13 +4,9 @@
 
 > {{ p.natspec | replace("\n", "\n> ") }}
 
-{% if p.struct_name %}
-This property is an invariant on `{{ p.struct_name }}`. Its theorems are the base cases and induction steps of `{{ p.struct_name }}` in [Induction](#induction).
-{% else %}
-This property is a rule over `{{ p.fns | join("`, `") }}`.
-{% endif %}
-
-Status: **{{ p.status }}**
+| Kind | Formalization | Status |
+|------|---------------|--------|
+| {% if p.struct_name %}Invariant on `{{ p.struct_name }}`{% else %}Rule over `{{ p.fns | join("`, `") }}`{% endif %} | {% if p.file %}`{{ p.file }}`{% else %}None{% endif %} | **{{ p.status }}** |
 
 {% if p.skip_reason %}
 
@@ -20,11 +16,7 @@ Formalize did not state this property as Lean theorems, so it is not verified. R
 
 {% elif p.file %}
 
-#### Theorems
-
-The theorems in `{{ p.file }}` state this property.
-
-{% with theorems = p.theorems %}
+{% with theorems = p.theorems, file = p.file %}
 {% include "theorems.md" %}
 {% endwith %}
 {% else %}

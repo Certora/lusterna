@@ -1,8 +1,4 @@
-# Verification report: `{{ crate_name }}`
-
-This report shows which properties of `{{ crate_name }}` Lusterna verified. Lusterna translates the Rust code to Lean, states each property of the spec as Lean theorems about the translation, and proves them. A theorem counts as proven only if Lean accepts its proof and the proof does not use `sorry`.
-
-The proofs are about the Lean translation, not the Rust code itself. The section [Stage details](#stage-details) lists every change that Lusterna made to the crate or to the translation, so you can check that the translation still matches the crate.
+# Lusterna Verification Report
 
 ## Summary
 
@@ -10,22 +6,24 @@ The proofs are about the Lean translation, not the Rust code itself. The section
 
 ## Properties
 
-Each section gives the property as the spec states it, the Lean theorems that formalize it, and the result for each theorem.
-Read the reason of every theorem that is not proven, and check every added assumption: a proof with an added assumption only holds where the assumption holds. In addition, invariants may be incomplete if induction steps are missing (refer to [Induction](#induction)).
+### Overview
+
+{% include "overview.md" %}
+
+## Details
+
+Each section gives the property as the spec states it, the Lean theorems that formalize it, and the result of each theorem.
+
+Invariants are proven by induction over the base cases and induction steps that Lusterna infers (see [Induction](#induction)), so an invariant is incomplete if an induction step is missing. An invariant can name exceptions that break it by design. Their theorems have the status **Exception** and do not count toward the status of the property.
+
+A property that was not formalized has the status **Skipped**. If the prove stage did not finish, every formalized property has the status **Not run**.
 
 {% for p in properties %}
 {% include "property.md" %}
 {% endfor %}
-{% if additional_invariants %}
-
-## Additional invariants
-
-The prove stage added these invariants, because proofs of the properties assume them. A proof that assumes an invariant holds only if the invariant holds, so each one is proven by induction like an invariant property.
-
 {% for i in additional_invariants %}
 {% include "invariant.md" %}
 {% endfor %}
-{% endif %}
 
 ## Induction
 
@@ -37,6 +35,8 @@ Skipped: this run has no output of the formalize stage.
 
 ## Stage details
 
+<a id="details-pre-translate"></a>
+
 ### Pre-translate
 
 Pre-translate runs only if the crate does not build on the host. An agent then changes the crate so that it builds, without changing what it computes on its target, and a separate agent checks the changes.
@@ -46,6 +46,8 @@ Pre-translate runs only if the crate does not build on the host. An agent then c
 {% else %}
 Skipped: this run has no output of the pre-translate stage.
 {% endif %}
+
+<a id="details-translate"></a>
 
 ### Translate
 

@@ -12,7 +12,7 @@ An invariant is proven by induction over the functions that create or change its
 
 - `{{ f }}`
 {% else %}
-None. This means that either the relevant functions where not translated (not reached from given entry point) or they could not be modelled (see below)
+None. This means that either the relevant functions were not translated (not reached from given entry point) or they could not be modelled (see below).
 {% endfor %}
 
 #### Induction steps
@@ -21,7 +21,7 @@ None. This means that either the relevant functions where not translated (not re
 
 - `{{ f }}`
 {% else %}
-None. This means that either the relevant functions where not translated (not reached from given entry point) or they could not be modelled (see below)
+None. This means that either the relevant functions were not translated (not reached from given entry point) or they could not be modelled (see below).
 {% endfor %}
 
 {% if s.unmodelled_steps %}

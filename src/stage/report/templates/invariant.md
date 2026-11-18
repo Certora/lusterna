@@ -1,15 +1,16 @@
+
+---
+
 <a id="invariant-{{ i.name }}"></a>
 
-### `{{ i.name }}`
+### Additional: `{{ i.name }}`
 
 > {{ i.natspec | replace("\n", "\n> ") }}
 
-This invariant is on `{{ i.struct_name }}`. Its theorems are the base cases and induction steps of `{{ i.struct_name }}` in [Induction](#induction).
+| Kind | Status |
+|------|--------|
+| Invariant on `{{ i.struct_name }}` | **{{ i.status }}** |
 
-Status: **{{ i.status }}**
-
-#### Theorems
-
-{% with theorems = i.theorems %}
+{% with theorems = i.theorems, file = none %}
 {% include "theorems.md" %}
 {% endwith %}

@@ -94,11 +94,11 @@ enum SkipKindView {
 enum PropertyStatusView {
     #[serde(rename = "Proven")]
     Proven,
-    #[serde(rename = "Proven with assumptions")]
+    #[serde(rename = "Proven\\*")]
     ProvenWithAssumptions,
     #[serde(rename = "Open")]
     Open,
-    #[serde(rename = "Dropped write")]
+    #[serde(rename = "Unprovable")]
     DroppedWrite,
     #[serde(rename = "Refuted")]
     Refuted,
@@ -132,11 +132,11 @@ struct TheoremsView {
 enum TheoremStatusView {
     #[serde(rename = "Proven")]
     Proven,
-    #[serde(rename = "Proven with assumptions")]
+    #[serde(rename = "Proven\\*")]
     ProvenWithAssumptions,
     #[serde(rename = "Open")]
     Open,
-    #[serde(rename = "Dropped write")]
+    #[serde(rename = "Unprovable")]
     DroppedWrite,
     #[serde(rename = "Refuted")]
     Refuted,
@@ -152,23 +152,21 @@ struct AssumptionView {
     /// The name of the hypothesis on the Lean theorem
     pub name: String,
     pub purpose: AssumptionPurposeView,
-    /// Why the hypothesis was added
-    pub reason: String,
-    /// The fields of the `AssumptionPurpose` as text: the base cases and
-    /// induction steps of a state invariant, the justification of an external
-    /// assumption, the natspec quote, or the callers of a caller precondition.
+    /// The fields of the `AssumptionPurpose` as text: a link to the assumed
+    /// invariant, the justification of an external assumption, the natspec
+    /// quote, or the callers of a caller precondition.
     pub justification: String,
 }
 
 #[derive(Serialize, Clone, Copy)]
 enum AssumptionPurposeView {
-    #[serde(rename = "state invariant")]
+    #[serde(rename = "State invariant")]
     StateInvariant,
-    #[serde(rename = "external")]
+    #[serde(rename = "External")]
     External,
-    #[serde(rename = "natspec")]
+    #[serde(rename = "Natspec")]
     Natspec,
-    #[serde(rename = "caller precondition")]
+    #[serde(rename = "Caller precondition")]
     CallerPrecondition,
 }
 
@@ -204,6 +202,8 @@ struct HelperView {
 #[derive(Serialize)]
 pub(super) struct ReportView<'s> {
     crate_name: String,
+    /// The Charon `--start-from` patterns of the translation
+    entrypoints: &'s [String],
     properties: Vec<PropertyView>,
     /// The invariants that the prove stage added
     additional_invariants: Vec<AddedInvariantView>,
@@ -219,6 +219,7 @@ pub(super) struct ReportView<'s> {
 impl<'s> ReportView<'s> {
     pub(super) fn new(
         crate_name: String,
+        entrypoints: &'s [String],
         properties: &Properties,
         pre_translate: Option<&'s PreTranslateSubmission>,
         translate: Option<&'s TranslateSubmission>,
@@ -253,6 +254,7 @@ impl<'s> ReportView<'s> {
 
         Self {
             crate_name,
+            entrypoints,
             properties: property_views,
             additional_invariants,
             inductions,
@@ -445,11 +447,9 @@ impl From<&AdditionalAssumption> for AssumptionView {
             AssumptionPurpose::StateInvariant(inv) => (
                 AssumptionPurposeView::StateInvariant,
                 match inv {
-                    AssumedInvariant::Property(id) => {
-                        format!("Assumes [P{id}](#property-{id}).")
-                    }
+                    AssumedInvariant::Property(id) => format!("[P{id}](#property-{id})"),
                     AssumedInvariant::Additional(name) => {
-                        format!("Assumes [`{name}`](#invariant-{name}).")
+                        format!("[`{name}`](#invariant-{name})")
                     }
                 },
             ),
@@ -474,7 +474,6 @@ impl From<&AdditionalAssumption> for AssumptionView {
         Self {
             name: assumption.name.clone(),
             purpose,
-            reason: assumption.reason.clone(),
             justification,
         }
     }

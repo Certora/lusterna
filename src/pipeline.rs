@@ -405,6 +405,7 @@ impl Pipeline {
 
         let report = report::render(
             cargo::package_name(&self.config.manifest()?)?,
+            &self.spec.entrypoints,
             &self.spec.properties,
             // The pipeline does not keep the submission of the pre-translate stage
             pre_translate,

@@ -1,25 +1,41 @@
-| # | Property | Kind | Status | Proven theorems |
-|---|----------|------|--------|-----------------|
-{% for p in properties %}
-| {{ p.id }} | [{{ p.title }}](#property-{{ p.id }}) | {% if p.struct_name %}invariant on `{{ p.struct_name }}`{% else %}rule{% endif %} | {{ p.status }} | {{ p.proven_thms }}/{{ p.total_thms }} |
-{% endfor %}
-{% if additional_invariants %}
+This report summarizes the formal verification that Lusterna did for *{{ crate_name }}*.
 
-Additionally, the following invariants were added to prove above properties:
+{% set formalized = properties | selectattr("file") | list %}
+Lusterna tried to verify **{{ properties | length }}** properties, of which **{{ formalized | length }}** were formalized in Lean. The formalized properties have the following verdicts:
 
-| Invariant | Kind | Status | Proven theorems |
-|-----------|------|--------|-----------------|
-{% for i in additional_invariants %}
-| [`{{ i.name }}`](#invariant-{{ i.name }}) | invariant on `{{ i.struct_name }}` | {{ i.status }} | {{ i.proven_thms }}/{{ i.total_thms }} |
-{% endfor %}
-{% endif %}
+| Proven | Open | Unprovable | Refuted |
+|--------|------|------------|---------|
+| {{ formalized | selectattr("status", "in", ["Proven", "Proven\\*"]) | list | length }} | {{ formalized | selectattr("status", "eq", "Open") | list | length }} | {{ formalized | selectattr("status", "eq", "Unprovable") | list | length }} | {{ formalized | selectattr("status", "eq", "Refuted") | list | length }} |
 
-A property has the first of these statuses that one of its theorems has:
+Each property is expressed in one or more Lean theorems. A property has the first of these statuses that one of its theorems has:
 
 - **Refuted**: a theorem is false as stated. Its section explains the counterexample, which usually points to a bug in the code or to a property that the spec states wrongly.
-- **Dropped write**: a proof holds only because the translation drops a write through a `RefMut` that the conclusion depends on. The theorem is not proven for the Rust code.
-- **Open**: a theorem is neither proven nor refuted.
-- **Proven with assumptions**: a theorem is proven only with hypotheses that the prove stage added. Its section lists them.
-- **Proven**: every theorem is proven as stated.
+- **Unprovable**: a theorem cannot be proven due to limitations of the Aeneas framework.
+- **Open**: the LLM was neither able to finish the proof nor to find a counterexample.
+- **Proven**: the property is formally verified, possibly relying on additional assumptions that are either verified themselves or justified with an explanation that an LLM checked individually.
 
-Note that an invariant can name exceptions that do not preserve it by design. The theorems of these operations have the status **Exception** and do not count toward the status of the property. A property that was not formalized has the status **Skipped**. If the prove stage did not run, every formalized property has the status **Not run**.
+### Scope
+
+Lusterna translated the Rust code that is reachable from the items that match these paths:
+
+{% for e in entrypoints %}
+- `{{ e }}`
+{% endfor %}
+{% if (translate and translate.rust_changes) or (pre_translate and pre_translate.changes) %}
+
+#### Code Adjustments
+{% if translate and translate.rust_changes %}
+
+Lusterna edited these files to work around limitations of Charon and Aeneas:
+
+{% for file in translate.rust_changes | map(attribute="file") | unique %}
+- `{{ file }}`
+{% endfor %}
+
+By default, each edit is checked by an equivalence test. [Translate Stage Details](#details-translate) describes each edit and why it was needed.
+{% endif %}
+{% if pre_translate and pre_translate.changes %}
+
+Lusterna also changed the build so that the crate builds on the host. See [Pre-Translate Stage Details](#details-pre-translate).
+{% endif %}
+{% endif %}
