@@ -6,7 +6,7 @@
 
 Properties that have status **Proven\*** have at least one theorem whose proof relies on additional assumptions. Each of those assumptions is of one of the following kinds:
 
-- **State invariant**: an invariant holds for the state before the call. The invariant is an invariant property or one of the [additional invariants](#additional-invs), and its own status shows whether it is verified.
+- **State invariant**: an invariant holds for the state before the call. The invariant is an invariant property or one of the [additional invariants](#additional-invs), and its own status shows whether it is verified. An induction step of an invariant can assume the same invariant for another value of its struct.
 - **External**: a condition on code outside the translation, which Lean cannot check. The assumption gives its justification.
 - **Natspec**: the natspec of the property states the condition, and the theorem lacks it.
 - **Caller precondition**: a condition on the arguments that every caller of the function establishes.
