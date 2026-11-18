@@ -67,7 +67,7 @@ Use `⦄fail` for a property about the result of a call or about the state after
 
 ## Invariants
 
-An invariant property names a struct. Choose the functions of its induction as the skill `lusterna:induction` describes, and state its theorems as the skill `lusterna:invariants` describes. Report the full Lean names of these functions in `induction`, under the struct name exactly as the property gives it: the base cases as `base_cases`, the mutating operations as `steps`, the unmodelled operations as `unmodelled_steps`, and the helpers as `helpers`.
+An invariant property names a struct. Choose the functions of its induction as the skill `lusterna:induction` describes, and state its theorems as the skill `lusterna:invariants` describes. Report the full Lean names of these functions in `induction`, under the struct name exactly as the property gives it, in the lists that the skill `lusterna:induction` gives.
 
 If the natspec names a mutating operation as an exception to the invariant, write its induction step all the same, and report it in `exceptions` of the property. The reason must follow from the natspec alone. Do not except an operation because of what you read in its code.
 
@@ -95,8 +95,8 @@ The harness checks these conditions after you stop. If one fails, you get the er
 1. `lake build Spec` in `{lean_root}` exits with status 0. Warnings about `sorry` are expected.
 2. You changed or created files only under `Spec/`.
 3. Every labelled theorem is a triple whose postcondition follows rules 3 to 5 of "The shape of a theorem".
-4. Your report gives a status for every property.
-5. For each formalized property, the theorems in your report are exactly the theorems with its label, and they are in the file that your report names.
+4. Your submission gives a status for every property.
+5. For each formalized property, the theorems in your submission are exactly the theorems with its label, and they are in the file that your submission names.
 6. For each invariant property, each function in the `base_cases` and the `steps` of `induction` for its struct has a labelled theorem of that property whose triple calls it.
 
 Nobody reads your messages while you work, and nobody answers questions. Do not stop to ask a question or to wait for an answer. If you must choose between options, choose the one that follows this briefing and continue. The harness controls the budget. Do not stop early because you expect the budget to run out.
@@ -109,6 +109,6 @@ Nobody reads your messages while you work, and nobody answers questions. Do not 
 
 ## Your result
 
-When you are done, return `Ok` with your report. Fill each field as its description says. `file` is relative to `{lean_root}`, and `theorems` are full Lean names, for example `Spec.FAdds.f_adds`.
+When you are done, return `Ok` with your submission. Fill each field as its description says. `file` is relative to `{lean_root}`, and `theorems` are full Lean names, for example `Spec.FAdds.f_adds`.
 
 Return `Err` only for a reason that the result schema lists. Then the stage stops, and nobody continues your work. For every other problem, keep working.

@@ -8,14 +8,21 @@
 //!    crate so that it builds on the host, without changing what it computes on
 //!    its target.
 //! 4. `translate`: translates the code reachable from the entrypoints, with the
-//!    default opaque patterns and those of the spec passed to Charon.
+//!    default opaque patterns and those of the spec passed to Charon. The
+//!    pipeline writes the submission of the stage to `lusterna/translate.json`
+//!    in the crate root.
 //! 5. `formalize`: states each property as Lean theorems about the translation,
 //!    without proofs. Runs only if the spec has properties. The pipeline writes
-//!    the output of the stage to `lusterna/formalize.json` in the crate root.
+//!    the submission of the stage to `lusterna/formalize.json` in the crate
+//!    root.
 //! 6. `prove`: proves the theorems of the formalize stage, or shows that a
 //!    theorem is false. Runs only if the spec has properties. It reads
-//!    `lusterna/formalize.json`, and the pipeline writes the output of the
+//!    `lusterna/formalize.json`, and the pipeline writes the submission of the
 //!    stage to `lusterna/prove.json` in the crate root.
+//! 7. The pipeline writes the report of the run to `lusterna/report.md` in the
+//!    crate root, from `lusterna/translate.json`, `lusterna/formalize.json` and
+//!    `lusterna/prove.json`. The report shows a stage whose file is missing as
+//!    skipped.
 //!
 //! A run starts only if the repository has no uncommitted changes other than
 //! the spec file (unless `--allow-dirty`), the tools of `TOOLS` are on `PATH`,
@@ -28,23 +35,30 @@
 //! ## Partial Runs
 //!
 //! The `--start-at` option skips the steps before the named [`Step`], and the
-//! `--stop-after` option ends the pipeline after the named [`Step`].
+//! `--stop-after` option ends the pipeline after the named [`Step`]. The report
+//! is written even with `--stop-after`.
 
-use std::{env, fs, io, path::PathBuf, time::Instant};
+use std::{
+    env, fs, io,
+    path::{Path, PathBuf},
+    time::Instant,
+};
 
 use log::info;
+use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{
     config::{Config, ConfigError, Platform},
     spec::Spec,
     stage::{
-        Stage,
+        Stage, StageName,
         exec::{StageExec, StageExecutionError},
-        formalize::{FormalizeInput, FormalizeOutput, FormalizeStage},
-        pre_translate::{PreTranslateInput, PreTranslateStage},
-        prove::{ProveInput, ProveOutput, ProveStage},
+        formalize::{FormalizeInput, FormalizeStage, FormalizeSubmission},
+        pre_translate::{PreTranslateInput, PreTranslateStage, PreTranslateSubmission},
+        prove::{ProveInput, ProveStage, ProveSubmission, formalized_properties},
+        report,
         translate::{
-            DEFAULT_OPAQUE, TranslateInput, TranslateOutput, TranslateStage, solana_opaque,
+            DEFAULT_OPAQUE, TranslateInput, TranslateStage, TranslateSubmission, solana_opaque,
         },
     },
     utils::{
@@ -95,9 +109,16 @@ pub enum PipelineError {
     /// Writing the spec or the properties to the crate failed.
     #[error("IO error: {0}")]
     Io(#[from] io::Error),
-    /// The file that holds the output of the formalize stage does not parse.
-    #[error("cannot parse the formalize output in `{0}`: {1}")]
-    FormalizeOutput(PathBuf, serde_json::Error),
+    /// The file that holds the submission of the formalize stage does not
+    /// parse.
+    #[error("cannot parse the formalize submission in `{0}`: {1}")]
+    FormalizeSubmission(PathBuf, serde_json::Error),
+    /// A file that holds the submission of a stage does not parse.
+    #[error("cannot parse the stage submission in `{0}`: {1}")]
+    StageSubmission(PathBuf, serde_json::Error),
+    /// The report templates do not render.
+    #[error("cannot render the report: {0}")]
+    Report(#[from] minijinja::Error),
 }
 
 /// The steps of a pipeline run, in the order in which they run. A step
@@ -112,6 +133,9 @@ pub enum PipelineStep {
     Translate,
     Formalize,
     Prove,
+    /// Writes the report of the run to the crate. Runs even with
+    /// `--stop-after`. `--start-at report` writes only the report.
+    Report,
 }
 
 /// A pipeline of stages, configured by a spec. See the module documentation.
@@ -120,16 +144,23 @@ pub struct Pipeline {
     /// The file that `spec` was read from.
     spec_path: PathBuf,
     config: Config,
+    submissions: Submissions,
+    /// The commit of the repository that the run starts from.
+    /// Recorded after `pre_check` passed.
+    commit: Option<String>,
 }
 
 impl Pipeline {
     /// Creates the pipeline for `spec`, which was read from `spec_path`.
-    pub fn new(spec: Spec, spec_path: PathBuf, config: Config) -> Self {
-        Self {
+    pub fn new(spec: Spec, spec_path: PathBuf, config: Config) -> Result<Self, PipelineError> {
+        let lusterna_dir = config.crate_root()?.join("lusterna");
+        Ok(Self {
             spec,
             spec_path,
             config,
-        }
+            submissions: Submissions::new(&lusterna_dir)?,
+            commit: None,
+        })
     }
 
     /// Whether `step` is in the range that `--start-at` and `--stop-after`
@@ -140,8 +171,9 @@ impl Pipeline {
     }
 
     /// Runs the steps of the pipeline in order and stops at the first error.
-    pub fn run(self) -> Result<(), PipelineError> {
+    pub fn run(mut self) -> Result<(), PipelineError> {
         self.pre_check()?;
+        self.commit = Some(git::head_rev(&self.config.repo_root()?)?);
 
         // 1. Infer the entrypoints and properties
         if self.runs(PipelineStep::Infer) && self.spec.infer {
@@ -156,7 +188,9 @@ impl Pipeline {
         // 3. Run the pre-translate stage
         // this is a noop if the project does build.
         if self.runs(PipelineStep::PreTranslate) {
-            self.run_pretranslate()?;
+            let submission = self.run_pretranslate()?;
+            self.submissions.set_pre_translate(submission)?;
+            self.commit(StageName::PreTranslate)?;
         }
 
         // 4. Run the translate stage
@@ -175,22 +209,30 @@ impl Pipeline {
             if self.spec.entrypoints.is_empty() {
                 return Err(PipelineError::NoEntrypoints);
             }
-            self.run_translate(
+            let submission = self.run_translate(
                 self.spec.entrypoints.clone(),
                 opaque_patterns(&self.config, &self.spec.add_opaque)?,
             )?;
+            self.submissions.set_translate(submission)?;
+            self.commit(StageName::Translate)?;
         }
 
         // 5. Run the formalize stage
         if self.runs(PipelineStep::Formalize) && !self.spec.properties.0.is_empty() {
-            self.run_formalize()?;
+            let submission = self.run_formalize()?;
+            self.submissions.set_formalize(submission)?;
+            self.commit(StageName::Formalize)?;
         }
 
         // 6. Run the prove stage
         if self.runs(PipelineStep::Prove) && !self.spec.properties.0.is_empty() {
-            self.run_prove()?;
+            let submission = self.run_prove()?;
+            self.submissions.set_prove(submission)?;
+            self.commit(StageName::Prove)?;
         }
-        Ok(())
+
+        // 7. Write the report (always)
+        self.write_report()
     }
 
     fn write_spec(&self) -> Result<(), PipelineError> {
@@ -210,10 +252,20 @@ impl Pipeline {
         Ok(())
     }
 
-    fn run_pretranslate(&self) -> Result<(), PipelineError> {
+    fn commit(&self, stage: StageName) -> Result<(), PipelineError> {
+        let name = stage.as_str().to_ascii_lowercase();
+        let msg = format!("Lusterna: `{}` stage", name);
+        match git::commit_all(&self.config.repo_root()?, &msg)? {
+            Some(sha) => info!("Committed `{}` work in {}", name, sha),
+            None => info!("No `{}` work to commit", name),
+        }
+        Ok(())
+    }
+
+    fn run_pretranslate(&self) -> Result<PreTranslateSubmission, PipelineError> {
         let manifest = self.config.manifest()?;
         match cargo::build(&manifest) {
-            Ok(_) => Ok(()),
+            Ok(_) => Ok(PreTranslateSubmission::default()),
             Err(CargoError::Build { stderr, .. }) => {
                 info!("Crate does not build, executing pre translation stage");
 
@@ -222,20 +274,11 @@ impl Pipeline {
                     manifest: manifest.to_owned(),
                     build_stderr: stderr,
                 };
-                self.exec_stage::<PreTranslateStage>(input)
+                let submission = self
+                    .exec_stage::<PreTranslateStage>(input)
                     .map_err(PipelineError::PreTranslate)?;
 
-                match git::commit_all(&self.config.repo_root()?, "Lusterna: `pre-translate` stage")?
-                {
-                    Some(sha) => {
-                        info!("Committed `pre-translate` work in {}", sha);
-                        Ok(())
-                    }
-                    None => {
-                        info!("No `pre-translate` work to commit");
-                        Ok(())
-                    }
-                }
+                Ok(submission)
             }
             Err(e) => return Err(PipelineError::Cargo(e)),
         }
@@ -292,7 +335,7 @@ impl Pipeline {
         &self,
         entrypoints: Vec<String>,
         opaque: Vec<String>,
-    ) -> Result<TranslateOutput, PipelineError> {
+    ) -> Result<TranslateSubmission, PipelineError> {
         let input = TranslateInput {
             workspace_root: self.config.workspace_root()?,
             crate_root: self.config.crate_root()?,
@@ -303,18 +346,14 @@ impl Pipeline {
             lean_toolchain: self.config.lean_toolchain()?,
             platform: self.config.get_platform()?,
         };
-        let output = self
+        let submission = self
             .exec_stage::<TranslateStage>(input)
             .map_err(PipelineError::Translate)?;
 
-        match git::commit_all(&self.config.repo_root()?, "Lusterna: `translate` stage")? {
-            Some(sha) => info!("Committed `translate` work in {}", sha),
-            None => info!("No `translate` work to commit"),
-        }
-        Ok(output)
+        Ok(submission)
     }
 
-    fn run_formalize(&self) -> Result<FormalizeOutput, PipelineError> {
+    fn run_formalize(&self) -> Result<FormalizeSubmission, PipelineError> {
         let lusterna_dir = self.config.crate_root()?.join("lusterna");
         let lean_root = lusterna_dir.join("lean");
         let input = FormalizeInput {
@@ -324,61 +363,181 @@ impl Pipeline {
             crate_root: self.config.crate_root()?,
             entrypoints: self.spec.entrypoints.clone(),
         };
-        let output = self
+        let submission = self
             .exec_stage::<FormalizeStage>(input)
             .map_err(PipelineError::Formalize)?;
-        fs::write(
-            lusterna_dir.join("formalize.json"),
-            serde_json::to_string_pretty(&output).expect("the formalize output serializes"),
-        )?;
 
-        match git::commit_all(&self.config.repo_root()?, "Lusterna: `formalize` stage")? {
-            Some(sha) => info!("Committed `formalize` work in {}", sha),
-            None => info!("No `formalize` work to commit"),
-        }
-        Ok(output)
+        Ok(submission)
     }
 
-    fn run_prove(&self) -> Result<ProveOutput, PipelineError> {
+    fn run_prove(&self) -> Result<ProveSubmission, PipelineError> {
         let lusterna_dir = self.config.crate_root()?.join("lusterna");
         let lean_root = lusterna_dir.join("lean");
 
-        // Read the output of the formalize stage, which `run_formalize` wrote
+        // Read the submission of the formalize stage, which `run_formalize`
+        // wrote
         let formalize_path = lusterna_dir.join("formalize.json");
-        let formalized: FormalizeOutput =
+        let formalized: FormalizeSubmission =
             serde_json::from_str(&fs::read_to_string(&formalize_path)?)
-                .map_err(|e| PipelineError::FormalizeOutput(formalize_path, e))?;
+                .map_err(|e| PipelineError::FormalizeSubmission(formalize_path, e))?;
 
         let input = ProveInput {
             extracted: lean_root.join("Extraction"),
             lean_root,
             properties: lusterna_dir.join("properties.json"),
-            property_status: formalized.property_status,
+            crate_root: self.config.crate_root()?,
+            formalized: formalized_properties(&self.spec.properties, formalized.property_status),
             induction: formalized.induction,
         };
-        let output = self
+        let submission = self
             .exec_stage::<ProveStage>(input)
             .map_err(PipelineError::Prove)?;
-        fs::write(
-            lusterna_dir.join("prove.json"),
-            serde_json::to_string_pretty(&output).expect("the prove output serializes"),
-        )?;
 
-        match git::commit_all(&self.config.repo_root()?, "Lusterna: `prove` stage")? {
-            Some(sha) => info!("Committed `prove` work in {}", sha),
-            None => info!("No `prove` work to commit"),
-        }
-        Ok(output)
+        Ok(submission)
     }
 
-    fn exec_stage<S: Stage>(&self, input: S::Input) -> Result<S::Output, StageExecutionError<S>> {
+    /// Writes the report of the run to `lusterna/report.md`, from the
+    /// submissions of the stages in `lusterna/`.
+    fn write_report(&mut self) -> Result<(), PipelineError> {
+        let lusterna_dir = self.config.crate_root()?.join("lusterna");
+        fs::create_dir_all(&lusterna_dir)?;
+
+        // Submissions
+        let pre_translate = self.submissions.get_pre_translate();
+        let translate = self.submissions.get_translate();
+        let formalize = self.submissions.get_formalize();
+        let prove = self.submissions.get_prove();
+
+        let report = report::render(
+            cargo::package_name(&self.config.manifest()?)?,
+            self.commit.as_deref().expect("`run` sets the commit"),
+            &self.config.aeneas_rev()?,
+            &self.spec.entrypoints,
+            &self.spec.properties,
+            // The pipeline does not keep the submission of the pre-translate stage
+            pre_translate,
+            translate,
+            formalize,
+            prove,
+        )?;
+        fs::write(lusterna_dir.join("report.md"), report)?;
+
+        match git::commit_all(&self.config.repo_root()?, "Lusterna: report")? {
+            Some(sha) => info!("Committed the report in {}", sha),
+            None => info!("No report changes to commit"),
+        }
+        Ok(())
+    }
+
+    fn exec_stage<S: Stage>(
+        &self,
+        input: S::Input,
+    ) -> Result<S::Submission, StageExecutionError<S>> {
         let stage = S::setup(input).map_err(StageExecutionError::SetupError)?;
         let t = Instant::now();
         log::info!("Executing `{}`", S::NAME);
         let stage_exec = StageExec::new(stage);
-        let output = stage_exec.run(&self.config, None)?;
+        let submission = stage_exec.run(&self.config, None)?;
         log::info!("Executed `{}` in {}", S::NAME, format_elapsed(t));
-        Ok(output)
+        Ok(submission)
+    }
+}
+
+pub(crate) struct Submissions {
+    pre_translate: Option<PreTranslateSubmission>,
+    translate: Option<TranslateSubmission>,
+    formalize: Option<FormalizeSubmission>,
+    prove: Option<ProveSubmission>,
+
+    /// The directory where submissions are de-/serialized
+    submission_dir: PathBuf,
+}
+
+impl Submissions {
+    pub fn new(dir: &Path) -> io::Result<Self> {
+        Ok(Self {
+            pre_translate: Self::load(&Self::submission_path(dir, StageName::PreTranslate))?,
+            translate: Self::load(&Self::submission_path(dir, StageName::Translate))?,
+            formalize: Self::load(&Self::submission_path(dir, StageName::Formalize))?,
+            prove: Self::load(&Self::submission_path(dir, StageName::Prove))?,
+            submission_dir: dir.to_path_buf(),
+        })
+    }
+
+    pub fn set_pre_translate(&mut self, submission: PreTranslateSubmission) -> io::Result<()> {
+        self.write_submission(
+            &Self::submission_path(&self.submission_dir, StageName::PreTranslate),
+            &submission,
+        )?;
+        self.pre_translate = Some(submission);
+        Ok(())
+    }
+
+    pub fn set_translate(&mut self, submission: TranslateSubmission) -> io::Result<()> {
+        self.write_submission(
+            &Self::submission_path(&self.submission_dir, StageName::Translate),
+            &submission,
+        )?;
+        self.translate = Some(submission);
+        Ok(())
+    }
+
+    pub fn set_formalize(&mut self, submission: FormalizeSubmission) -> io::Result<()> {
+        self.write_submission(
+            &Self::submission_path(&self.submission_dir, StageName::Formalize),
+            &submission,
+        )?;
+        self.formalize = Some(submission);
+        Ok(())
+    }
+
+    pub fn set_prove(&mut self, submission: ProveSubmission) -> io::Result<()> {
+        assert!(self.prove.is_none());
+        self.write_submission(
+            &Self::submission_path(&self.submission_dir, StageName::Prove),
+            &submission,
+        )?;
+        self.prove = Some(submission);
+        Ok(())
+    }
+
+    pub fn get_pre_translate(&self) -> Option<&PreTranslateSubmission> {
+        self.pre_translate.as_ref()
+    }
+
+    pub fn get_translate(&self) -> Option<&TranslateSubmission> {
+        self.translate.as_ref()
+    }
+
+    pub fn get_formalize(&self) -> Option<&FormalizeSubmission> {
+        self.formalize.as_ref()
+    }
+
+    pub fn get_prove(&self) -> Option<&ProveSubmission> {
+        self.prove.as_ref()
+    }
+
+    fn submission_path(submission_dir: &Path, stage: StageName) -> PathBuf {
+        let name = format!("{}.json", stage.to_string().to_lowercase());
+        submission_dir.join(name)
+    }
+
+    fn write_submission<T: Serialize>(&self, path: &Path, submission: T) -> io::Result<()> {
+        fs::write(
+            path,
+            serde_json::to_string_pretty(&submission).expect("the formalize submission serializes"),
+        )
+    }
+
+    fn load<T: DeserializeOwned>(path: &Path) -> io::Result<Option<T>> {
+        let text = match fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        serde_json::from_str(&text)
+            .map(Some)
+            .map_err(io::Error::from)
     }
 }
 

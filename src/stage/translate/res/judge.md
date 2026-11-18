@@ -14,11 +14,11 @@ The agent had these skills. Their rules apply like the rules of the briefing:
 {skills}
 </skills>
 
-This is the agent's report:
+This is the agent's submission:
 
-<report>
-{report}
-</report>
+<submission>
+{submission}
+</submission>
 
 ## Find the changes
 
@@ -26,7 +26,7 @@ Setup committed its files in commit `{setup_commit}`, before the agent started. 
 
 The agent must put every replacement behind `feature = "lusterna"`. The replacements and their tests are in the file under `src/lusterna/` that has the same path as the original file relative to `src/`. The replacements of types from dependencies and their tests are in `src/lusterna/deps/`. In the code without the feature, the agent can only move a failing part, unchanged, into a new function. It can also rename a local variable or a parameter that has the same name as a module, and declare a module `lusterna` behind `#[cfg(any(test, feature = "lusterna"))]`. Under the feature, code that the entrypoints do not reach does not need to work, and it can have the body `unimplemented!()`.
 
-Do not trust the report. Compare it with the changes that you find.
+Do not trust the submission. Compare it with the changes that you find.
 
 ## Check the Lean definitions with the greatest care
 
@@ -65,7 +65,7 @@ Report one defect for each problem. Use one of these kinds:
 - `broad_change`: a replacement replaces more than the part that Charon or Aeneas fails on. A replacement of a whole function where the failing part can move into a new function is also this kind. So is a replacement of a type that implements functions or trait impls that the entrypoints do not reach.
 - `duplicate_replacement`: two replacements fix the same construct, and one of them can serve both places.
 - `wrong_place`: a replacement or its equivalence test is not in the file under `src/lusterna/` where it belongs.
-- `wrong_report`: the report leaves out a change, lists a change that does not exist, or names the wrong equivalence test.
+- `wrong_submission`: the submission leaves out a change, lists a change that does not exist, or names the wrong equivalence test.
 
 Report only problems that you can point to in a specific file and item. Do not report style, naming, performance, or test results.
 

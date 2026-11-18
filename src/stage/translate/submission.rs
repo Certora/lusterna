@@ -1,4 +1,4 @@
-//! The result types of the translate agent: its report, and the reasons for
+//! The result types of the translate agent: its submission, and the reasons for
 //! which it stops the stage.
 
 use std::fmt;
@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// Every change that the agent made since the start of the stage.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct TranslateReport {
+pub struct TranslateSubmission {
     /// Each change to `lusterna/extract-args.sh`.
     pub extract_changes: Vec<ExtractChange>,
     /// Each change to the Rust code, including each replaced logging macro.
@@ -35,10 +35,15 @@ pub struct ExtractChange {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RustChange {
-    /// The file, relative to the crate root.
+    /// The original file that changed, relative to the crate root, not its
+    /// file under `src/lusterna/`. A change to several files has one entry per
+    /// file. For a replacement of a type from a dependency, the file under
+    /// `src/lusterna/deps/`.
     pub file: String,
-    /// The item that changed, for example a function or a macro.
-    pub item: String,
+    /// The Rust items that changed, each one function, method, macro or type,
+    /// by its path, without backticks. `replaced` says which part of an item
+    /// changed, if not all of it.
+    pub items: Vec<String>,
     /// What the agent replaced, and with what.
     pub replaced: String,
     /// Why Charon or Aeneas failed on the original.

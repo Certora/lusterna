@@ -1,9 +1,10 @@
 //! Runs a stage as a state machine with these phases:
 //!
-//! - `Attempt`: the agent works on the stage and returns a report.
-//! - `Gate`: the stage's gate checks the report and builds the stage's output.
-//! - `Judge`: the judge reviews the output. A stage without a judge skips it.
-//! - `Done`: the output passed.
+//! - `Attempt`: the agent works on the stage and returns a submission.
+//! - `Gate`: the stage's gate checks the submission.
+//! - `Judge`: the judge reviews the submission. A stage without a judge skips
+//!   it.
+//! - `Done`: the submission passed.
 //!
 //! If the gate fails or the judge finds defects, the next attempt gets their
 //! feedback as its prompt. All attempts run in the same agent session. The
@@ -37,7 +38,7 @@ use crate::{
     agent::{Agent, AgentError},
     config::Config,
     log::{stage_debug, stage_info},
-    stage::{GateStop, Stage},
+    stage::Stage,
     utils::format_elapsed,
 };
 
@@ -69,17 +70,10 @@ pub struct StageExec<S: Stage> {
 
 #[derive(Serialize, Deserialize)]
 enum Phase<S: Stage> {
-    Attempt {
-        prompt: String,
-    },
-    Gate {
-        report: S::Report,
-    },
-    Judge {
-        report: S::Report,
-        output: S::Output,
-    },
-    Done(S::Output),
+    Attempt { prompt: String },
+    Gate { submission: S::Submission },
+    Judge { submission: S::Submission },
+    Done(S::Submission),
 }
 
 impl<S: Stage> StageExec<S> {
@@ -98,13 +92,13 @@ impl<S: Stage> StageExec<S> {
         }
     }
 
-    /// Runs the stage until it is done and returns its output. Calls
-    /// `on_change` with the new state after every transition.
+    /// Runs the stage until it is done and returns the submission that passed.
+    /// Calls `on_change` with the new state after every transition.
     pub fn run(
         mut self,
         cfg: &Config,
         mut on_change: Option<&mut dyn FnMut(&Self)>,
-    ) -> Result<S::Output, StageExecutionError<S>> {
+    ) -> Result<S::Submission, StageExecutionError<S>> {
         loop {
             let next = match &self.phase {
                 Phase::Attempt { prompt } => {
@@ -113,50 +107,49 @@ impl<S: Stage> StageExec<S> {
                     log_stage_spent::<S>(cfg, usage, self.judge_cost);
 
                     match res {
-                        Ok(report) => {
+                        Ok(submission) => {
                             self.attempts += 1;
 
-                            Phase::Gate { report }
+                            Phase::Gate { submission }
                         }
                         Err(blocker) => {
                             return Err(StageExecutionError::Blocked(blocker));
                         }
                     }
                 }
-                Phase::Gate { report } => {
-                    match self.stage.gate_check(report) {
-                        Ok(o) => {
-                            stage_info!(S::NAME, "gate passed");
-                            Phase::Judge {
-                                report: report.clone(),
-                                output: o.clone(),
-                            }
-                        }
-                        Err(GateStop::Failure(failure)) => {
+                Phase::Gate { submission } => {
+                    match self
+                        .stage
+                        .gate_check(submission)
+                        .map_err(StageExecutionError::GateExecutionError)?
+                    {
+                        Some(failure) => {
                             stage_info!(S::NAME, "Gate failed: {}", failure);
                             // get the feedback prompt
                             self.retry(cfg, AttemptRejected::Gate(failure.clone()))?
                         }
-                        Err(GateStop::Error(e)) => {
-                            return Err(StageExecutionError::GateExecutionError(e));
+                        None => {
+                            stage_info!(S::NAME, "gate passed");
+                            Phase::Judge {
+                                submission: submission.clone(),
+                            }
                         }
                     }
                 }
-                Phase::Judge { report, output } => {
+                Phase::Judge { submission } => {
                     // need to clone these to circumvent borrow errors
-                    let output = output.clone();
-                    let report = report.clone();
+                    let submission = submission.clone();
 
                     if self.worker_cost + self.judge_cost >= cfg.stage_max_budget {
                         return Err(StageExecutionError::BudgetExhausted(None));
                     }
-                    let (defects, cost_usd) = self.run_judge(&output, &report, cfg)?;
+                    let (defects, cost_usd) = self.run_judge(&submission, cfg)?;
                     self.judge_cost = cost_usd;
 
                     if defects.is_empty() {
                         stage_info!(S::NAME, "judge found no defects, continuing");
                         log_stage_spent::<S>(cfg, self.worker_cost, self.judge_cost);
-                        Phase::Done(output)
+                        Phase::Done(submission)
                     } else {
                         stage_info!(S::NAME, "judge found defects");
                         stage_debug!(
@@ -171,7 +164,7 @@ impl<S: Stage> StageExec<S> {
                         self.retry(cfg, AttemptRejected::Judge(defects))?
                     }
                 }
-                Phase::Done(output) => return Ok(output.clone()),
+                Phase::Done(submission) => return Ok(submission.clone()),
             };
             self.phase = next;
             if let Some(on_change) = &mut on_change {
@@ -192,7 +185,8 @@ impl<S: Stage> StageExec<S> {
             agent.set_model(cfg.model.clone());
             agent.set_dir(cfg.workspace_root()?);
             agent.set_json_schema(
-                json_schema::<AgentResult<S::Report, S::Blocker>>().map_err(AgentError::from)?,
+                json_schema::<AgentResult<S::Submission, S::Blocker>>()
+                    .map_err(AgentError::from)?,
             );
             self.worker = Some(agent);
         }
@@ -216,12 +210,13 @@ impl<S: Stage> StageExec<S> {
         Ok(self.judge.as_mut().unwrap())
     }
 
-    /// Returns the agent's report, or the blocker it stopped the stage with.
+    /// Returns the agent's submission, or the blocker it stopped the stage
+    /// with.
     fn run_attempt(
         &mut self,
         cfg: &Config,
         prompt: String,
-    ) -> Result<(Result<S::Report, S::Blocker>, f64), AgentError> {
+    ) -> Result<(Result<S::Submission, S::Blocker>, f64), AgentError> {
         let remaining = cfg.stage_max_budget - self.worker_cost - self.judge_cost;
 
         stage_info!(
@@ -241,12 +236,12 @@ impl<S: Stage> StageExec<S> {
         let output = agent.run_with_hook(prompt, |s| stage_info!(S::NAME, "agent: {}", s))?;
         stage_info!(S::NAME, "agent finished in {}", format_elapsed(t));
 
-        let result: AgentResult<S::Report, S::Blocker> = serde_json::from_str(&output)?;
-        if let Ok(report) = &result.result {
+        let result: AgentResult<S::Submission, S::Blocker> = serde_json::from_str(&output)?;
+        if let Ok(submission) = &result.result {
             stage_debug!(
                 S::NAME,
-                "agent report: {}",
-                serde_json::to_string_pretty(report)?
+                "agent submission: {}",
+                serde_json::to_string_pretty(submission)?
             );
         }
 
@@ -261,13 +256,12 @@ impl<S: Stage> StageExec<S> {
 
     fn run_judge(
         &mut self,
-        output: &S::Output,
-        report: &S::Report,
+        submission: &S::Submission,
         cfg: &Config,
     ) -> Result<(Vec<Defect>, f64), AgentError> {
         let remaining = cfg.stage_max_budget - self.worker_cost - self.judge_cost;
 
-        let Some(base_prompt) = self.stage.judge_prompt(output, report) else {
+        let Some(base_prompt) = self.stage.judge_prompt(submission) else {
             stage_info!(S::NAME, "stage has no judge, continuing");
             return Ok((vec![], 0.0));
         };
@@ -289,8 +283,8 @@ impl<S: Stage> StageExec<S> {
         // passing version.
         let prompt = match judge.session_id() {
             Some(_) => format!(
-                "{RECHECK_PROMPT}\n\nThe agent's report:\n{}",
-                serde_json::to_string_pretty(report)?
+                "{RECHECK_PROMPT}\n\nThe agent's submission:\n{}",
+                serde_json::to_string_pretty(submission)?
             ),
             None => base_prompt,
         };
@@ -320,13 +314,13 @@ impl<S: Stage> StageExec<S> {
             AttemptRejected::Judge(defects) => defects_feedback_prompt(&defects),
         };
         prompt.push_str(
-            "\nIn your report, list every change that you made since the start of the stage.\n",
+            "\nIn your submission, list every change that you made since the start of the stage.\n",
         );
         Ok(Phase::Attempt { prompt })
     }
 }
 
-/// Why the execution of a stage stopped without an output.
+/// Why the execution of a stage stopped without a submission that passed.
 #[derive(thiserror::Error)]
 pub enum StageExecutionError<S: Stage> {
     /// The stage's setup failed.
@@ -390,7 +384,7 @@ impl<S: Stage> fmt::Display for AttemptRejected<S> {
     }
 }
 
-/// A defect the judge found in a stage's output.
+/// A defect the judge found in a stage's submission.
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone, PartialEq, Eq)]
 pub struct Defect {
     /// One of the defect kinds that the stage's judge prompt lists.
@@ -409,7 +403,7 @@ impl fmt::Display for Defect {
     }
 }
 
-// The agent's structured output: its report, or the reason why it stopped
+// The agent's structured output: its submission, or the reason why it stopped
 // the stage. `--json-schema` requires an object at the top level, so the
 // `Result` is in a field.
 #[derive(Deserialize, JsonSchema)]
@@ -465,12 +459,12 @@ mod tests {
     use super::*;
     use crate::stage::{
         Never,
-        pre_translate::PreTranslateReport,
-        translate::{TranslateBlocker, TranslateReport},
+        pre_translate::PreTranslateSubmission,
+        translate::{TranslateBlocker, TranslateSubmission},
     };
 
-    type TranslateResult = AgentResult<TranslateReport, TranslateBlocker>;
-    type PreTranslateResult = AgentResult<PreTranslateReport, Never>;
+    type TranslateResult = AgentResult<TranslateSubmission, TranslateBlocker>;
+    type PreTranslateResult = AgentResult<PreTranslateSubmission, Never>;
 
     #[test]
     fn agent_result_schemas_are_draft_07_objects() {
@@ -485,22 +479,22 @@ mod tests {
     }
 
     #[test]
-    fn agent_result_without_blocker_parses_a_report() {
+    fn agent_result_without_blocker_parses_a_submission() {
         let result: PreTranslateResult =
             serde_json::from_str(r#"{"result": {"Ok": {"changes": []}}}"#).unwrap();
         assert!(result.result.is_ok());
     }
 
     #[test]
-    fn agent_result_parses_a_report_and_a_blocker() {
-        let report: TranslateResult = serde_json::from_str(
+    fn agent_result_parses_a_submission_and_a_blocker() {
+        let submission: TranslateResult = serde_json::from_str(
             r#"{"result": {"Ok": {
                 "extract_changes": [], "rust_changes": [], "lean_definitions": [],
                 "kept_axioms": [], "unmatched_opaque_patterns": [], "notes": []
             }}}"#,
         )
         .unwrap();
-        assert!(report.result.is_ok());
+        assert!(submission.result.is_ok());
 
         let blocker: TranslateResult = serde_json::from_str(
             r#"{"result": {"Err": {"missing_stub_item": {

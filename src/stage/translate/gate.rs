@@ -9,10 +9,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    stage::{
-        self,
-        translate::{TranslateInput, TranslateStage, setup::TranslateSetupOutcome},
-    },
+    stage::translate::{TranslateInput, setup::TranslateSetupOutcome},
     utils::{
         cargo::{self, CargoError},
         git::{self, GitError},
@@ -81,23 +78,6 @@ const EXTERNAL_MODULES: [&str; 2] = ["TypesExternal", "FunsExternal"];
 /// Words that must not appear in the files of `EXTERNAL_MODULES`.
 const HOLE_WORDS: [&str; 2] = ["sorry", "admit"];
 
-type GateStop = stage::GateStop<TranslateStage>;
-
-impl From<TranslateGateFailure> for GateStop {
-    fn from(failure: TranslateGateFailure) -> Self {
-        GateStop::Failure(failure)
-    }
-}
-
-impl<E> From<E> for GateStop
-where
-    TranslateGateError: From<E>,
-{
-    fn from(error: E) -> Self {
-        GateStop::Error(error.into())
-    }
-}
-
 /// Checks the result of the agent:
 ///
 /// - no file that the setup commit tracks is deleted
@@ -113,7 +93,7 @@ where
 pub(super) fn run_gate(
     input: &TranslateInput,
     setup_outcome: &TranslateSetupOutcome,
-) -> Result<(), GateStop> {
+) -> Result<Option<TranslateGateFailure>, TranslateGateError> {
     let extraction_script = &setup_outcome.extraction_script;
     let lean_root = &setup_outcome.lean_root;
     let crate_root = &input.crate_root;
@@ -121,11 +101,10 @@ pub(super) fn run_gate(
     // No tracked file may be deleted
     let files = git::deleted_files(crate_root, &setup_outcome.setup_commit)?;
     if !files.is_empty() {
-        return Err(TranslateGateFailure::DeletedFiles {
+        return Ok(Some(TranslateGateFailure::DeletedFiles {
             files,
             setup_commit: setup_outcome.setup_commit.clone(),
-        }
-        .into());
+        }));
     }
 
     // The extraction script must be unchanged since the setup commit
@@ -135,49 +114,63 @@ pub(super) fn run_gate(
         .iter()
         .any(|f| repo_root.join(f) == *extraction_script)
     {
-        return Err(TranslateGateFailure::ExtractionScriptChanged {
+        return Ok(Some(TranslateGateFailure::ExtractionScriptChanged {
             setup_commit: setup_outcome.setup_commit.clone(),
-        }
-        .into());
+        }));
     }
 
     // Running the extraction script must succeed
-    run_script(extraction_script)?;
+    if let Some(failure) = run_script(extraction_script)? {
+        return Ok(Some(failure));
+    }
 
     // The declarations without a body must have definitions
-    check_externals(&lean_root.join("Extraction"))?;
+    if let Some(failure) = check_externals(&lean_root.join("Extraction"))? {
+        return Ok(Some(failure));
+    }
 
     // Running `lake build` must succeed in the lean root
-    lean::lake_build(lean_root, &[]).map_err(|e| match e {
-        LakeError::Build { output, .. } => TranslateGateFailure::LakeBuildFailed { output }.into(),
-        e => GateStop::from(e),
-    })?;
+    match lean::lake_build(lean_root, &[]) {
+        Ok(_) => (),
+        Err(LakeError::Build { output, .. }) => {
+            return Ok(Some(TranslateGateFailure::LakeBuildFailed { output }));
+        }
+        Err(e) => return Err(TranslateGateError::from(e)),
+    }
 
     // The crate must build without the `lusterna` feature
     let manifest = crate_root.join("Cargo.toml");
-    cargo::build(&manifest).map_err(|e| match e {
-        CargoError::Build { stderr, .. } => {
-            TranslateGateFailure::CargoBuildFailed { stderr }.into()
+    match cargo::build(&manifest) {
+        Ok(_) => (),
+        Err(CargoError::Build { stderr, .. }) => {
+            return Ok(Some(TranslateGateFailure::CargoBuildFailed { stderr }));
         }
-        e => GateStop::from(e),
-    })?;
+        Err(e) => return Err(e.into()),
+    }
 
     // The equivalence tests must pass, and must exist if the crate uses
     // the `lusterna` feature
-    let passed = cargo::test(&manifest, "lusterna::", EQUIV_TEST_TIMEOUT).map_err(|e| match e {
-        CargoError::Test { stdout, stderr, .. } => {
-            TranslateGateFailure::EquivalenceTestsFailed { stdout, stderr }.into()
+    let passed = match cargo::test(&manifest, "lusterna::", EQUIV_TEST_TIMEOUT) {
+        Ok(n) => n,
+        Err(CargoError::Test { stdout, stderr, .. }) => {
+            return Ok(Some(TranslateGateFailure::EquivalenceTestsFailed {
+                stdout,
+                stderr,
+            }));
         }
-        CargoError::TestTimeout { timeout, .. } => {
-            TranslateGateFailure::EquivalenceTestsTimeout { timeout }.into()
+        Err(CargoError::TestTimeout { timeout, .. }) => {
+            return Ok(Some(TranslateGateFailure::EquivalenceTestsTimeout {
+                timeout,
+            }));
         }
-        e => GateStop::from(e),
-    })?;
+        Err(e) => return Err(e.into()),
+    };
+
     if passed == 0 && uses_lusterna_feature(&crate_root.join("src"))? {
-        return Err(TranslateGateFailure::MissingEquivalenceTests.into());
+        return Ok(Some(TranslateGateFailure::MissingEquivalenceTests));
     }
 
-    Ok(())
+    Ok(None)
 }
 
 impl TranslateGateFailure {
@@ -270,7 +263,7 @@ fn uses_lusterna_feature(dir: &Path) -> Result<bool, TranslateGateError> {
 
 /// Checks that for every `<module>_Template.lean` of `EXTERNAL_MODULES` in
 /// `dir`, the file `<module>.lean` exists and contains none of `HOLE_WORDS`.
-fn check_externals(dir: &Path) -> Result<(), GateStop> {
+fn check_externals(dir: &Path) -> Result<Option<TranslateGateFailure>, TranslateGateError> {
     for module in EXTERNAL_MODULES {
         let template = dir.join(format!("{module}_Template.lean"));
         if !template.exists() {
@@ -278,7 +271,7 @@ fn check_externals(dir: &Path) -> Result<(), GateStop> {
         }
         let external = dir.join(format!("{module}.lean"));
         if !external.exists() {
-            return Err(GateStop::Failure(TranslateGateFailure::MissingExternal {
+            return Ok(Some(TranslateGateFailure::MissingExternal {
                 template,
                 external,
             }));
@@ -289,7 +282,7 @@ fn check_externals(dir: &Path) -> Result<(), GateStop> {
                 .split(|c: char| !(c.is_alphanumeric() || c == '_'))
                 .collect::<Vec<_>>();
             if let Some(word) = HOLE_WORDS.into_iter().find(|w| words.contains(w)) {
-                return Err(GateStop::Failure(TranslateGateFailure::ExternalHole {
+                return Ok(Some(TranslateGateFailure::ExternalHole {
                     path: external,
                     word: word.to_owned(),
                     line: i + 1,
@@ -297,7 +290,7 @@ fn check_externals(dir: &Path) -> Result<(), GateStop> {
             }
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 /// Runs the extraction script `script` and fails with the end of its stderr if
@@ -306,7 +299,8 @@ fn check_externals(dir: &Path) -> Result<(), GateStop> {
 /// Charon and Aeneas can print gigabytes of output on a large crate, so stdout
 /// is discarded and only the last `EXTRACTION_STDERR_LIMIT` bytes of stderr
 /// are kept in memory.
-fn run_script(script: &Path) -> Result<(), GateStop> {
+#[must_use]
+fn run_script(script: &Path) -> Result<Option<TranslateGateFailure>, TranslateGateError> {
     let mut child = Command::new(script)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -328,13 +322,11 @@ fn run_script(script: &Path) -> Result<(), GateStop> {
 
     if !status.success() {
         let start = tail.len().saturating_sub(EXTRACTION_STDERR_LIMIT);
-        return Err(GateStop::Failure(
-            TranslateGateFailure::ExtractionScriptFailed {
-                stderr: String::from_utf8_lossy(&tail[start..]).into_owned(),
-            },
-        ));
+        return Ok(Some(TranslateGateFailure::ExtractionScriptFailed {
+            stderr: String::from_utf8_lossy(&tail[start..]).into_owned(),
+        }));
     }
-    Ok(())
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -357,7 +349,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let script = write_script(dir.path(), "#!/bin/sh\nexit 0\n");
 
-        run_script(&script).unwrap();
+        assert!(run_script(&script).unwrap().is_none());
     }
 
     #[test]
@@ -366,7 +358,7 @@ mod tests {
         let script = write_script(dir.path(), "#!/bin/sh\necho oops >&2\nexit 1\n");
 
         match run_script(&script) {
-            Err(GateStop::Failure(TranslateGateFailure::ExtractionScriptFailed { stderr })) => {
+            Ok(Some(TranslateGateFailure::ExtractionScriptFailed { stderr })) => {
                 assert_eq!(stderr, "oops\n")
             }
             other => panic!("expected ExtractionScriptFailed, got {other:?}"),
@@ -377,7 +369,7 @@ mod tests {
     fn check_externals_accepts_no_templates() {
         let dir = tempfile::tempdir().unwrap();
 
-        check_externals(dir.path()).unwrap();
+        assert!(check_externals(dir.path()).unwrap().is_none());
     }
 
     #[test]
@@ -390,7 +382,7 @@ mod tests {
         .unwrap();
 
         match check_externals(dir.path()) {
-            Err(GateStop::Failure(TranslateGateFailure::MissingExternal { external, .. })) => {
+            Ok(Some(TranslateGateFailure::MissingExternal { external, .. })) => {
                 assert_eq!(external, dir.path().join("FunsExternal.lean"))
             }
             other => panic!("expected MissingExternal, got {other:?}"),
@@ -412,7 +404,7 @@ mod tests {
         .unwrap();
 
         match check_externals(dir.path()) {
-            Err(GateStop::Failure(TranslateGateFailure::ExternalHole { word, line, .. })) => {
+            Ok(Some(TranslateGateFailure::ExternalHole { word, line, .. })) => {
                 assert_eq!((word.as_str(), line), ("sorry", 2))
             }
             other => panic!("expected ExternalHole, got {other:?}"),
@@ -433,6 +425,6 @@ mod tests {
         )
         .unwrap();
 
-        check_externals(dir.path()).unwrap();
+        assert!(check_externals(dir.path()).unwrap().is_none());
     }
 }

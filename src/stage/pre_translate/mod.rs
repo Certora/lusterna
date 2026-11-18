@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use toml_edit::DocumentMut;
 
 use crate::{
-    stage::{GateStop, Never, Stage},
+    stage::{Never, Stage},
     utils::{
         cargo::{self, CargoError},
         git::{self, GitError},
@@ -25,9 +25,9 @@ const BASE_PROMPT_TEMPLATE: &str = include_str!("res/prompt.md");
 const SOLANA_HOST_BUILD_SKILL: &str = include_str!("res/solana-host-build.md");
 
 /// The judge prompt of the pre-translate stage, with `{workspace_root}`,
-/// `{base_commit}`, `{briefing}` and `{report}` standing for the workspace
+/// `{base_commit}`, `{briefing}` and `{submission}` standing for the workspace
 /// root, the hash of `HEAD` when setup ran, the agent briefing and the agent's
-/// report.
+/// submission.
 const JUDGE_PROMPT_TEMPLATE: &str = include_str!("res/judge.md");
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -41,8 +41,8 @@ pub struct PreTranslateInput {
 }
 
 /// Every change that the agent made since the start of the stage.
-#[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
-pub struct PreTranslateReport {
+#[derive(Debug, Serialize, Deserialize, JsonSchema, Clone, Default)]
+pub struct PreTranslateSubmission {
     /// Each change, including each patched copy of a dependency.
     pub changes: Vec<PreTranslateChange>,
 }
@@ -103,9 +103,7 @@ pub struct PreTranslateStage {
 impl Stage for PreTranslateStage {
     type Input = PreTranslateInput;
 
-    type Output = ();
-
-    type Report = PreTranslateReport;
+    type Submission = PreTranslateSubmission;
 
     type Blocker = Never;
 
@@ -171,25 +169,24 @@ impl Stage for PreTranslateStage {
         }
     }
 
-    fn gate_check(&self, _report: &PreTranslateReport) -> Result<(), GateStop<Self>> {
+    fn gate_check(
+        &self,
+        _submission: &PreTranslateSubmission,
+    ) -> Result<Option<PreTranslateGateFailure>, PreTranslateGateError> {
         let base_commit = &self.base_commit;
 
         // No tracked file may change, except `.rs` files, `Cargo.lock` and the
         // `patch` table of the workspace `Cargo.toml`
-        let toplevel =
-            git::toplevel(&self.input.workspace_root).map_err(|e| GateStop::Error(e.into()))?;
+        let toplevel = git::toplevel(&self.input.workspace_root)?;
         let workspace_manifest = self.input.workspace_root.join("Cargo.toml");
         let mut files = Vec::new();
-        for f in
-            git::changed_files(&toplevel, base_commit).map_err(|e| GateStop::Error(e.into()))?
-        {
+        for f in git::changed_files(&toplevel, base_commit)? {
             if f.file_name() == Some("Cargo.lock".as_ref()) || f.extension() == Some("rs".as_ref())
             {
                 continue;
             }
             if toplevel.join(&f) == workspace_manifest {
-                let old = git::show_file(&toplevel, base_commit, &f)
-                    .map_err(|e| GateStop::Error(e.into()))?;
+                let old = git::show_file(&toplevel, base_commit, &f)?;
 
                 if let Ok(new) = fs::read_to_string(toplevel.join(&f))
                     && differs_only_in_patch(&old, &new)
@@ -200,22 +197,23 @@ impl Stage for PreTranslateStage {
             files.push(f);
         }
         if !files.is_empty() {
-            return Err(GateStop::Failure(PreTranslateGateFailure::ChangedFiles {
+            return Ok(Some(PreTranslateGateFailure::ChangedFiles {
                 files,
                 base_commit: base_commit.clone(),
             }));
         }
 
         // The crate must build
-        cargo::build(&self.input.manifest).map_err(|e| match e {
-            CargoError::Build { stderr, .. } => {
-                GateStop::Failure(PreTranslateGateFailure::CargoBuildFailed { stderr })
+        match cargo::build(&self.input.manifest) {
+            Ok(_) => Ok(None),
+            Err(CargoError::Build { stderr, .. }) => {
+                Ok(Some(PreTranslateGateFailure::CargoBuildFailed { stderr }))
             }
-            e => GateStop::Error(e.into()),
-        })
+            Err(e) => Err(e.into()),
+        }
     }
 
-    fn judge_prompt(&self, _output: &Self::Output, report: &PreTranslateReport) -> Option<String> {
+    fn judge_prompt(&self, submission: &PreTranslateSubmission) -> Option<String> {
         let base_commit = &self.base_commit;
         Some(
             JUDGE_PROMPT_TEMPLATE
@@ -226,8 +224,8 @@ impl Stage for PreTranslateStage {
                 .replace("{base_commit}", base_commit)
                 .replace("{briefing}", &self.briefing())
                 .replace(
-                    "{report}",
-                    &serde_json::to_string_pretty(report).expect("the report serializes"),
+                    "{submission}",
+                    &serde_json::to_string_pretty(submission).expect("the submission serializes"),
                 ),
         )
     }
@@ -238,7 +236,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn judge_prompt_contains_the_report() {
+    fn judge_prompt_contains_the_submission() {
         let stage = PreTranslateStage {
             input: PreTranslateInput {
                 workspace_root: PathBuf::from("/ws"),
@@ -247,7 +245,7 @@ mod tests {
             },
             base_commit: "abc123".to_owned(),
         };
-        let report = PreTranslateReport {
+        let submission = PreTranslateSubmission {
             changes: vec![PreTranslateChange {
                 file: "src/lib.rs".to_owned(),
                 change: "gated a size check".to_owned(),
@@ -255,9 +253,9 @@ mod tests {
             }],
         };
 
-        let prompt = stage.judge_prompt(&(), &report).unwrap();
+        let prompt = stage.judge_prompt(&submission).unwrap();
 
-        assert!(prompt.contains(&serde_json::to_string_pretty(&report).unwrap()));
-        assert!(!prompt.contains("{report}"));
+        assert!(prompt.contains(&serde_json::to_string_pretty(&submission).unwrap()));
+        assert!(!prompt.contains("{submission}"));
     }
 }

@@ -119,7 +119,7 @@ macro_rules! msg {
 }
 ```
 
-The replacement must evaluate each argument, because an argument can panic. A test cannot see log output, so these replacements need no equivalence test. List each replaced macro in `rust_changes` of your report.
+The replacement must evaluate each argument, because an argument can panic. A test cannot see log output, so these replacements need no equivalence test. List each replaced macro in `rust_changes` of your submission.
 
 ## Types from dependencies
 
@@ -143,7 +143,7 @@ Run the tests with `cargo test lusterna::`, without the `lusterna` feature, so t
 
 ## What you must not do
 
-- Do not change the entrypoints or the opaque patterns. If a pattern matches nothing, list it in `unmatched_opaque_patterns` of your report.
+- Do not change the entrypoints or the opaque patterns. If a pattern matches nothing, list it in `unmatched_opaque_patterns` of your submission.
 - Do not use `--exclude` or a new `--opaque` to hide code that the entrypoints reach.
 - Do not edit `lusterna/lean/lakefile.toml`, `lusterna/lean/lean-toolchain` or the Lean files that Aeneas generates.
 - Do not change code that the crate builds without the `lusterna` feature, except to move a failing part into a new function as described above. You can also rename a local variable or a parameter that has the same name as a module. Lean reads a path that starts with that name as a field of the variable.
@@ -155,6 +155,6 @@ Before the first run of `extract.sh`, read the known problems in the skill `lust
 
 ## Your result
 
-When you are done, return `Ok` with your report. Fill each field as its description says, and list every change that you made.
+When you are done, return `Ok` with your submission. Fill each field as its description says, and list every change that you made.
 
 Return `Err` only for a reason that the result schema lists. Then the stage stops, and nobody continues your work. For every other problem, keep working.

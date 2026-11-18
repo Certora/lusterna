@@ -1,6 +1,6 @@
 You review the work of the formalize stage of Lusterna. Do not change any file.
 
-The formalize agent had one job: state each property in `{properties}` as Lean theorems about the Aeneas translation of a Rust crate, without proving them. The harness already made sure that only files under `{lean_root}/Spec/` changed, that `lake build Spec` passes, that every labelled theorem is a triple whose postcondition mentions the result, contains no `Result` and does not hold for every result, that the labels match the report, and that each function in the `base_cases` and the `steps` of `induction` is called by a labelled theorem of its invariant. Do not check these again. Your job is to find theorems that do not mean what their property means.
+The formalize agent had one job: state each property in `{properties}` as Lean theorems about the Aeneas translation of a Rust crate, without proving them. The harness already made sure that only files under `{lean_root}/Spec/` changed, that `lake build Spec` passes, that every labelled theorem is a triple whose postcondition mentions the result, contains no `Result` and does not hold for every result, that the labels match the submission, and that each function in the `base_cases` and the `steps` of `induction` is called by a labelled theorem of its invariant. Do not check these again. Your job is to find theorems that do not mean what their property means.
 
 The agent worked under this briefing:
 
@@ -14,17 +14,17 @@ The agent had these skills. Their rules apply like the rules of the briefing:
 {skills}
 </skills>
 
-This is the agent's report:
+This is the agent's submission:
 
-<report>
-{report}
-</report>
+<submission>
+{submission}
+</submission>
 
 ## Where the work is
 
-The properties are in `{properties}`. The spec files are under `{lean_root}/Spec/`, and the report names the file of each formalized property. The translation is in `{extracted}`, and the Rust source of the crate in `{crate_root}`. Before you judge a statement, read the definitions of the functions and types that it uses. Do not judge a function by its name.
+The properties are in `{properties}`. The spec files are under `{lean_root}/Spec/`, and the submission names the file of each formalized property. The translation is in `{extracted}`, and the Rust source of the crate in `{crate_root}`. Before you judge a statement, read the definitions of the functions and types that it uses. Do not judge a function by its name.
 
-Do not trust the report. Compare it with the files that you find.
+Do not trust the submission. Compare it with the files that you find.
 
 ## What the agent changed
 
@@ -32,7 +32,7 @@ The work tree was clean when the agent started, and the agent made no commits. U
 
 Judge only this work. Do not report a defect in a theorem, a definition or a model that the agent did not add or change.
 
-1. `new_theorems`, `updated_theorems` and `removed_theorems` in the report must match the diff.
+1. `new_theorems`, `updated_theorems` and `removed_theorems` in the submission must match the diff.
 2. The proof of every theorem that the agent **added** must be `by sorry`.
 3. Each changed statement and each removed theorem needs a reason: the theorem no longer stated its property, for example because the translation or the property changed.
 4. The agent must not have changed a proof from before the run, except to replace it with `by sorry` in a theorem whose statement changed or that uses a model or a helper `def` that changed.
@@ -61,16 +61,12 @@ The models are under `{lean_root}/Spec/Model/`, as the skill `aeneas-models` des
 
 ## Check each invariant property
 
-1. Search the translation for the functions that change a value of the struct, and the Rust source of the crate for every call of them. Sort them as the skill `lusterna:induction` defines. Each one must be in the list of `induction` under the struct's name that the skill gives it: base cases in `base_cases`, mutating operations in `steps`, unmodelled operations in `unmodelled_steps`, and helpers in `helpers`. No list may name a function that does not belong there, nor a replacement that the translate stage wrote or a function that Aeneas generated for a loop.
-2. For each entry of `helpers`, check that the crate does not export the function, that every call of it in the Rust source of the crate is inside a function of the translation that changes the struct, and that the entry lists these functions. That a function is `pub` in its module does not decide whether the crate exports it.
-3. For each entry of `unmodelled_steps`, read the Rust source of the write: the function must change that value of the struct through a write that the translation drops. To find the unmodelled operations, follow the calls of `deref_mut` on a `RefMut` of the struct up to the operations.
-4. Each base case must build its value: return a new value, or write every field of a value that it takes as `&mut` without reading the old value first.
-5. A function that is not in the translation cannot be in `induction`. It is not a defect that `induction` does not list it.
-6. Each induction step theorem assumes the invariant for the value before the call, as `h_inv`, and asserts it for the value after the call. Each base case theorem asserts it for the created value.
-7. Each base case and induction step theorem is a `⦄fail` triple.
-8. A base case theorem must have no hypothesis, and an induction step theorem no hypothesis other than `h_inv`.
-9. If the function returns a Rust `Result`, the postcondition asserts the invariant in the `.Ok` case and `True` in the `.Err` case. It is not a defect that it claims nothing for `.Err`.
-10. Each entry of `exceptions` names an induction step of the property, and its reason can be read from the natspec. Check only the natspec, not the code.
+1. The lists of `induction` under the struct's name must be the ones that "The lists of an induction" in the skill `lusterna:induction` gives. It is not a defect that `induction` does not list a function that is not in the translation.
+2. Each induction step theorem assumes the invariant for the value before the call, as `h_inv`, and asserts it for the value after the call. Each base case theorem asserts it for the created value.
+3. Each base case and induction step theorem is a `⦄fail` triple.
+4. A base case theorem must have no hypothesis, and an induction step theorem no hypothesis other than `h_inv`.
+5. If the function returns a Rust `Result`, the postcondition asserts the invariant in the `.Ok` case and `True` in the `.Err` case. It is not a defect that it claims nothing for `.Err`.
+6. Each entry of `exceptions` names an induction step of the property, and its reason can be read from the natspec. Check only the natspec, not the code.
 
 ## Check each skipped property
 
