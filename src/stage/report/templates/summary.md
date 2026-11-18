@@ -18,6 +18,8 @@ Each property is expressed in one or more Lean theorems. A property has the firs
 - **Open**: the LLM was neither able to finish the proof nor to find a counterexample.
 - **Proven**: the property is formally verified, possibly relying on additional assumptions that are either verified themselves or justified with an explanation that an LLM checked individually.
 
+<a id="scope"></a>
+
 ### Scope
 
 Lusterna translated the Rust code that is reachable from the items that match these paths:
@@ -46,6 +48,8 @@ By default, each edit is checked by an equivalence test. [Translate Stage Detail
 Lusterna also changed the build so that the crate builds on the host. See [Pre-Translate Stage Details](#details-pre-translate).
 {% endif %}
 {% endif %}
+
+<a id="trust-assumptions"></a>
 
 ### Trust Assumptions
 

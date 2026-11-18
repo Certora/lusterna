@@ -1,10 +1,30 @@
 # Lusterna Verification Report
 
+## Contents
+
+- [Summary](#summary)
+  - [Scope](#scope)
+  - [Trust Assumptions](#trust-assumptions)
+- [Properties](#properties)
+  - [Overview](#overview)
+  - [Details](#details)
+- [Induction](#induction)
+- [Stage details](#stage-details)
+  - [Pre-translate](#details-pre-translate)
+  - [Translate](#details-translate)
+  - [Formalize](#details-formalize)
+
+<a id="summary"></a>
+
 ## Summary
 
 {% include "summary.md" %}
 
+<a id="properties"></a>
+
 ## Properties
+
+<a id="overview"></a>
 
 ### Overview
 
@@ -40,6 +60,8 @@ A property that was not formalized has the status **Skipped**. If the prove stag
 Skipped: this run has no output of the formalize stage.
 {% endif %}
 
+<a id="stage-details"></a>
+
 ## Stage details
 
 <a id="details-pre-translate"></a>
@@ -65,6 +87,8 @@ Charon and Aeneas translate the code that the entrypoints reach to Lean. Where t
 {% else %}
 Skipped: this run has no output of the translate stage.
 {% endif %}
+
+<a id="details-formalize"></a>
 
 ### Formalize
 
