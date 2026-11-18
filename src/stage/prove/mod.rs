@@ -150,8 +150,14 @@ pub enum AssumedInvariant {
 /// An invariant that was added by the prove stage to be used as a hypothesis.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AddedInvariant {
+    /// A short title of the invariant, in the style of the titles of the
+    /// properties.
+    pub title: String,
     /// What the invariant states, in plain English.
     pub natspec: String,
+    /// The file of the invariant and its theorems, relative to the Lean
+    /// project root.
+    pub file: PathBuf,
     /// The struct of the invariant, as `induction` or `additional_inductions`
     /// names it.
     pub r#struct: String,

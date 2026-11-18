@@ -586,7 +586,9 @@ mod tests {
         submission.additional_invariants.insert(
             "Spec.InvAux.inv".to_owned(),
             AddedInvariant {
+                title: String::new(),
                 natspec: String::new(),
+                file: "Spec/InvAux.lean".into(),
                 r#struct: "module::Struct".to_owned(),
                 theorems: vec!["Spec.InvAux.lemma".to_owned()],
             },

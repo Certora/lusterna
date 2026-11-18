@@ -57,9 +57,9 @@ For every purpose:
 
 Each entry of `additional_invariants` is an invariant that the agent added, under the full Lean name of its `def`.
 
-1. The `def` must state the `natspec` of the entry: not something else, not less, and not more.
+1. The `def` must state the `natspec` of the entry: not something else, not less, and not more. The `title` must name what the `def` states.
 2. No property in `{properties}` and no other entry may state the invariant or one that implies it, unless that one has a theorem with the status `Open`, `Refuted` or `Exception`.
-3. The invariant and its theorems must be in a file of their own, in the shape that the skill `lusterna:invariants` gives, except for what the briefing allows.
+3. The invariant and its theorems must be in `file`, a file of their own, in the shape that the skill `lusterna:invariants` gives, except for what the briefing allows.
 4. `theorems` must name exactly the base cases and the induction steps of the invariant.
 5. There must be a base case for every function in the `base_cases` and an induction step for every function in the `steps` of the induction of `struct`: its entry in the `induction` of the briefing, or in `additional_inductions`. It is not a defect that the `base_cases` are empty.
 

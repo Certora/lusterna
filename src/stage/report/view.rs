@@ -55,8 +55,11 @@ struct PropertyView {
 struct AddedInvariantView {
     /// Lean FQN of the `def` of the invariant
     pub name: String,
+    pub title: String,
     /// What the invariant states, in plain English
     pub natspec: String,
+    /// The file of the invariant, relative to the Lean project root
+    pub file: PathBuf,
     pub struct_name: String,
     pub status: PropertyStatusView,
     /// Number of theorems of this invariant, leaving out exceptions
@@ -316,7 +319,9 @@ impl AddedInvariantView {
         let theorems = theorem_views(&invariant.theorems, Some(prove));
         Self {
             name: name.to_owned(),
+            title: invariant.title.clone(),
             natspec: invariant.natspec.clone(),
+            file: invariant.file.clone(),
             struct_name: invariant.r#struct.clone(),
             status: property_status(&theorems),
             total_thms: count_without_exceptions(&theorems),

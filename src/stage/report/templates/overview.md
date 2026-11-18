@@ -23,6 +23,6 @@ Some of the proofs of the properties above rely on additional assumptions on the
 | Invariant | Kind | Status | Proven theorems |
 |-----------|------|--------|-----------------|
 {% for i in additional_invariants %}
-| [`{{ i.name }}`](#invariant-{{ i.name }}) | invariant on `{{ i.struct_name }}` | {{ i.status }} | {{ i.proven_thms }}/{{ i.total_thms }} |
+| [{{ i.title }}](#invariant-{{ i.name }}) | invariant on `{{ i.struct_name }}` | {{ i.status }} | {{ i.proven_thms }}/{{ i.total_thms }} |
 {% endfor %}
 {% endif %}
