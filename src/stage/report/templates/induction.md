@@ -1,6 +1,6 @@
 {% for s in inductions %}
 {% if loop.first %}
-An invariant is proven by induction over the functions that create or change its struct. A base case is a function that creates a value of the struct: its theorem shows that the value satisfies the invariant. An induction step is an operation that changes a value: its theorem shows that the operation preserves the invariant. Lusterna tries to find these functions in the Rust source. A function that changes the struct and is not listed here is not covered by the invariant.
+An invariant is proven by induction over the functions that create or change its struct. A base case is a function that creates a value of the struct: its theorem shows that the value satisfies the invariant. An induction step is an operation that changes a value that it takes as `&mut`: its theorem shows that the operation preserves the invariant for that value. Lusterna tries to find these functions in the Rust source. A function that changes the struct and is not listed under Base cases or Induction steps is not covered by the invariant.
 
 {% endif %}
 
@@ -12,7 +12,7 @@ An invariant is proven by induction over the functions that create or change its
 
 - `{{ f }}`
 {% else %}
-None. This means that either the relevant functions were not translated (not reached from given entry point) or they could not be modelled (see below).
+None. No theorem shows that a new value of the struct satisfies the invariants.
 {% endfor %}
 
 #### Induction steps
@@ -21,16 +21,19 @@ None. This means that either the relevant functions were not translated (not rea
 
 - `{{ f }}`
 {% else %}
-None. This means that either the relevant functions were not translated (not reached from given entry point) or they could not be modelled (see below).
+None. No theorem shows that a change to the struct preserves the invariants.
 {% endfor %}
 
 {% if s.unmodelled_steps %}
 
-#### Not modelled
+#### Unmodelled interior mutability
 
-Functions that change a struct's value by writing through a `RefMut` (i.e. use the internal mutability pattern) currently cannot be modelled. All statements about such writes are either unprovable or invalid and Lusterna therefore does not include them in inductions.
+The translation does not model writes through a `RefMut` (interior mutability) and instead drops them.
+No theorem can make a claim about the post-state of a struct value that was mutated through such a write. Therefore, **such induction steps are omitted**.
 
-This applies to the following functions:
+Note that a function can write through both a `RefMut` and a `&mut` borrow to a given struct. In that case, the function is kept as an induction step, but any claims only hold for the writes through the `&mut` value.
+
+The following functions are affected by the interior mutability problem. If they do not have another `&mut` access to the struct, they are excluded from induction:
 
 | Function | Reason |
 |----------|--------|
@@ -42,7 +45,7 @@ This applies to the following functions:
 
 #### Helpers
 
-A helper changes the struct, is not exported by the crate, and is only called inside functions that were already identified as induction steps. The invariants only have to hold between operations, so a helper has no induction step itself: the operations that call it cover its change.
+A helper changes the struct, is not exported by the crate, and is only called inside other functions that change the struct. The invariants only have to hold between operations, so a helper has no induction step itself: the induction steps of its callers cover its change.
 
 {% if s.helpers %}
 

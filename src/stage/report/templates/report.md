@@ -14,7 +14,7 @@
 
 Each section gives the property as the spec states it, the Lean theorems that formalize it, and the result of each theorem.
 
-Invariants are proven by induction over the base cases and induction steps that Lusterna infers (see [Induction](#induction)), so an invariant is incomplete if an induction step is missing. An invariant can name exceptions that break it by design. Their theorems have the status **Exception** and do not count toward the status of the property.
+Invariants are proven by induction over the base cases and induction steps that Lusterna infers (see [Induction](#induction)), so an invariant is incomplete if an induction step is missing or if a function changes its struct through interior mutability. An invariant can name exceptions that break it by design. Their theorems have the status **Exception** and do not count toward the status of the property.
 
 A property that was not formalized has the status **Skipped**. If the prove stage did not finish, every formalized property has the status **Not run**.
 

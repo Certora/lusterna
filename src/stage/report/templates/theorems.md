@@ -67,13 +67,17 @@ None.
 {% if dropped %}
 
 <details>
-<summary>Benign Dropped Writes</summary>
+<summary>Benign interior mutability</summary>
 
-The translation drops writes through a `RefMut`. The functions of these theorems make such writes, and each entry explains why the conclusion of the theorem does not depend on them.
+The translation does not model writes through a `RefMut` (interior mutability).
+
+Each theorem below is about a Rust function that makes such writes, itself or through a function that it calls. A proof of such a theorem holds for the Rust code only if its conclusion does not depend on these writes; otherwise the theorem is **Unprovable**. Each entry explains why the conclusion does not depend on them:
 
 {% for t in dropped %}
 - `{{ t.name }}`: {{ t.dropped_writes }}
 {% endfor %}
+
+Benign here means only that the conclusion of the theorem does not depend on the writes. The values that the writes change can still lack an induction step; see [Induction](#induction).
 
 </details>
 {% endif %}
