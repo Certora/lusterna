@@ -47,7 +47,10 @@ impl Default for AgentOptions {
                 .map(|s| s.to_string())
                 .collect(),
             disallowed_tools: DISALLOWED_TOOLS.iter().map(|s| s.to_string()).collect(),
-            env: Vec::new(),
+            env: vec![(
+                "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS".to_owned(),
+                "1".to_owned(),
+            )],
             sandbox: false,
         }
     }
