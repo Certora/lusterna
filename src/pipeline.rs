@@ -399,6 +399,7 @@ impl Pipeline {
     /// Writes the report of the run to `lusterna/report.md`, from the
     /// submissions of the stages in `lusterna/`.
     fn write_report(&mut self) -> Result<(), PipelineError> {
+        let t = Instant::now();
         let lusterna_dir = self.config.crate_root()?.join("lusterna");
         fs::create_dir_all(&lusterna_dir)?;
 
@@ -421,6 +422,7 @@ impl Pipeline {
             prove,
         )?;
         fs::write(lusterna_dir.join("report.md"), report)?;
+        info!("Wrote the report in {}", format_elapsed(t));
 
         match git::commit_all(&self.config.repo_root()?, "Lusterna: report")? {
             Some(sha) => info!("Committed the report in {}", sha),
