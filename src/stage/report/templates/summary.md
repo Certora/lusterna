@@ -39,7 +39,7 @@ Lusterna edited these files to work around limitations of Charon and Aeneas:
 - `{{ file }}`
 {% endfor %}
 
-By default, each edit is checked by an equivalence test. [Translate Stage Details](#details-translate) describes each edit and why it was needed.
+By default, each edit is checked by an equivalence test. [Translate Stage Details](#details-translate) describes each edit, why it was needed, and its equivalence test, if it has one.
 {% endif %}
 {% if pre_translate and pre_translate.changes %}
 
