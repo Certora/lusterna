@@ -4,6 +4,10 @@
 | {{ p.id }} | [{{ p.title }}](#property-{{ p.id }}) | {% if p.struct_name %}invariant on `{{ p.struct_name }}`{% else %}rule{% endif %} | {{ p.status }} | {{ p.proven_thms }}/{{ p.total_thms }} |
 {% endfor %}
 
+<a id="proven-with-assumptions"></a>
+
+### Proven with Assumptions
+
 Properties that have status **Proven\*** have at least one theorem whose proof relies on additional assumptions. Each of those assumptions is of one of the following kinds:
 
 - **State invariant**: an invariant holds for the state before the call. The invariant is an invariant property or one of the [additional invariants](#additional-invs), and its own status shows whether it is verified. An induction step of an invariant can assume the same invariant for another value of its struct.

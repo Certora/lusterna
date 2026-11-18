@@ -10,6 +10,8 @@
 
 {% include "overview.md" %}
 
+<a id="details"></a>
+
 ### Details
 
 Each section gives the property as the spec states it, the Lean theorems that formalize it, and the result of each theorem.
@@ -27,6 +29,8 @@ A property that was not formalized has the status **Skipped**. If the prove stag
 {% for i in additional_invariants %}
 {% include "invariant.md" %}
 {% endfor %}
+
+<a id="induction"></a>
 
 ## Induction
 

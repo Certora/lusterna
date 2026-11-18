@@ -1,4 +1,6 @@
 {% if translate.rust_changes %}
+<a id="changes-to-the-rust-code"></a>
+
 #### Changes to the Rust code
 
 The Rust code that Charon or Aeneas failed on, what the agent replaced it with, and the test that checks that the replacement computes the same as the original.
@@ -26,6 +28,8 @@ The changes to the options that `lusterna/extract-args.sh` passes to Charon and 
 
 {% endif %}
 {% if translate.lean_definitions %}
+<a id="lean-definitions"></a>
+
 #### Lean definitions
 
 Aeneas translates some Rust items to axioms, Lean declarations without a definition. The agent gave these a Lean definition of what the Rust item computes, so the proofs can use it.
