@@ -3,9 +3,15 @@
 
 The Rust code that Charon or Aeneas failed on, what the agent replaced it with, and the test that checks that the replacement computes the same as the original.
 
-{% for c in translate.rust_changes %}
-- `{{ c.file }}`, `{{ c.item }}`: {{ c.replaced }} Charon or Aeneas failed on the original: {{ c.failure }}{% if c.test %} Equivalence test: `{{ c.test }}`.{% endif %}
+{% for group in translate.rust_changes | groupby("file") %}
+- `{{ group.grouper }}`
+{% for c in group.list %}
+  - `{{ c.items | join("`, `") }}`
+    - Replaced: {{ c.replaced }}
+    - Failure: {{ c.failure }}
+    - Equivalence test: {% if c.test %}`{{ c.test }}`{% else %}None{% endif %}
 
+{% endfor %}
 {% endfor %}
 
 {% endif %}
