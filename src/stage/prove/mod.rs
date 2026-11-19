@@ -406,6 +406,7 @@ mod tests {
             kind: PropertyKind::Rule { fns: Vec::new() },
             title: String::new(),
             natspec: String::new(),
+            locked: true,
         };
         let properties = Properties(vec![property(1), property(2)]);
         let property_status = BTreeMap::from([

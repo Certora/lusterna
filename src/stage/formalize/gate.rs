@@ -459,6 +459,7 @@ mod tests {
                 },
                 title: "Deposit adds".to_owned(),
                 natspec: String::new(),
+                locked: true,
             },
             Property {
                 id: 2,
@@ -467,6 +468,7 @@ mod tests {
                 },
                 title: "Vault is solvent".to_owned(),
                 natspec: String::new(),
+                locked: true,
             },
         ])
     }
