@@ -132,7 +132,7 @@ impl Stage for InferStage {
         &self,
         submission: &Self::Submission,
     ) -> Result<Option<Self::GateFailure>, Self::GateExecutionError> {
-        run_gate(submission, &self.existing_props)
+        run_gate(submission, &self.existing_props, &self.existing_eps)
     }
 
     fn judge_prompt(&self, submission: &Self::Submission) -> Option<String> {

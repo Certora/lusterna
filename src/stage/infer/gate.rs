@@ -21,6 +21,14 @@ pub enum InferGateFailure {
     DuplicateTitle(String, Property, Property),
     #[error("The rule {} names no function", .0.id)]
     EmptyFns(Property),
+    #[error("The given entrypoint `{0}` is missing from the submission")]
+    MissingEntrypoint(String),
+    #[error("The submission has no entrypoints")]
+    NoEntrypoints,
+    #[error("The entrypoint `{0}` does not start with `crate::`")]
+    EntrypointPrefix(String),
+    #[error("The entrypoint `{entrypoint}` is inside the entrypoint `{inside}`")]
+    RedundantEntrypoint { entrypoint: String, inside: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
@@ -29,6 +37,7 @@ pub enum InferGateExecutionError {}
 pub(super) fn run_gate(
     submission: &InferStageSubmission,
     existings: &Properties,
+    existing_eps: &[String],
 ) -> Result<Option<InferGateFailure>, InferGateExecutionError> {
     // No id is used twice
     if let Err(e) = duplicate_ids(&submission.properties) {
@@ -46,8 +55,73 @@ pub(super) fn run_gate(
     if let Err(e) = empty_fns(&submission.properties) {
         return Ok(Some(e));
     }
+    // Every given entrypoint is returned
+    if let Err(e) = missing_entrypoints(existing_eps, &submission.entrypoints) {
+        return Ok(Some(e));
+    }
+    // There is an entrypoint
+    if submission.entrypoints.is_empty() {
+        return Ok(Some(InferGateFailure::NoEntrypoints));
+    }
+    // Every new entrypoint starts with `crate::`
+    if let Err(e) = entrypoint_prefix(existing_eps, &submission.entrypoints) {
+        return Ok(Some(e));
+    }
+    // No new entrypoint is inside another entrypoint
+    if let Err(e) = redundant_entrypoints(existing_eps, &submission.entrypoints) {
+        return Ok(Some(e));
+    }
 
     Ok(None)
+}
+
+/// Fails if an entrypoint of `submitted` that is not in `existing` is another
+/// entrypoint of `submitted` followed by `::` and more path segments.
+fn redundant_entrypoints(
+    existing: &[String],
+    submitted: &[String],
+) -> Result<(), InferGateFailure> {
+    for ep in submitted {
+        if existing.contains(ep) {
+            continue;
+        }
+        for other in submitted {
+            if ep
+                .strip_prefix(other.as_str())
+                .is_some_and(|rest| rest.starts_with("::"))
+            {
+                return Err(InferGateFailure::RedundantEntrypoint {
+                    entrypoint: ep.clone(),
+                    inside: other.clone(),
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Fails if an entrypoint of `existing` is not in `submitted`.
+fn missing_entrypoints(existing: &[String], submitted: &[String]) -> Result<(), InferGateFailure> {
+    for ep in existing {
+        if !submitted.contains(ep) {
+            return Err(InferGateFailure::MissingEntrypoint(ep.clone()));
+        }
+    }
+
+    Ok(())
+}
+
+/// Fails if an entrypoint of `submitted` that is not in `existing` does not
+/// start with `crate::`.
+fn entrypoint_prefix(existing: &[String], submitted: &[String]) -> Result<(), InferGateFailure> {
+    for ep in submitted {
+        if !ep.starts_with("crate::") && !existing.contains(ep) {
+            return Err(InferGateFailure::EntrypointPrefix(ep.clone()));
+        }
+    }
+
+    Ok(())
 }
 
 fn locked_changed(existings: &Properties, submitted: &Properties) -> Result<(), InferGateFailure> {
