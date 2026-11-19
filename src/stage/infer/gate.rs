@@ -39,6 +39,107 @@ pub enum InferGateFailure {
     RedundantEntrypoints(Vec<(String, String)>),
 }
 
+impl InferGateFailure {
+    pub(super) fn to_feedback_prompt(&self) -> String {
+        let list = |items: Vec<String>| {
+            items
+                .iter()
+                .map(|i| format!("- {i}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let name = |p: &Property| format!("{} (\"{}\")", p.id, p.title);
+        let json = |ps: Vec<&Property>| {
+            serde_json::to_string_pretty(&ps).expect("the properties serialize")
+        };
+        match self {
+            InferGateFailure::LockedChanged {
+                missing,
+                changed,
+                added,
+            } => {
+                let mut prompt = "A property whose `locked` is `true` must be in your \
+                                  submission exactly as it was given, and no other property may \
+                                  have `locked` set to `true`."
+                    .to_string();
+                if !missing.is_empty() {
+                    prompt += &format!(
+                        "\n\nThese given properties are missing. Add them \
+                         unchanged:\n\n```json\n{}\n```",
+                        json(missing.iter().collect())
+                    );
+                }
+                if !changed.is_empty() {
+                    prompt += &format!(
+                        "\n\nYou changed these given properties. Return them as they are \
+                         here:\n\n```json\n{}\n```",
+                        json(changed.iter().map(|(given, _)| given).collect())
+                    );
+                }
+                if !added.is_empty() {
+                    prompt += &format!(
+                        "\n\nThese properties are not given locked properties. Set their \
+                         `locked` to `false`:\n\n{}",
+                        list(added.iter().map(name).collect())
+                    );
+                }
+                prompt
+            }
+            InferGateFailure::DuplicateIds(pairs) => format!(
+                "These pairs of properties have the same `id`:\n\n{}\n\n\
+                 Give each new property an `id` that no other property has. Do not change the \
+                 `id` of a given property.",
+                list(
+                    pairs
+                        .iter()
+                        .map(|(a, b)| format!("{} and {}", name(a), name(b)))
+                        .collect()
+                )
+            ),
+            InferGateFailure::DuplicateTitles(pairs) => format!(
+                "These pairs of properties have the same `title`:\n\n{}\n\n\
+                 Change the `title` of the property whose `locked` is `false`. If the two \
+                 properties state the same, remove that property instead.",
+                list(
+                    pairs
+                        .iter()
+                        .map(|(a, b)| format!("{} and {}", name(a), name(b)))
+                        .collect()
+                )
+            ),
+            InferGateFailure::EmptyFns(rules) => format!(
+                "These rules have an empty `fns`:\n\n{}\n\n\
+                 Name the functions that each rule is about.",
+                list(rules.iter().map(name).collect())
+            ),
+            InferGateFailure::MissingEntrypoints(entrypoints) => format!(
+                "These given entrypoints are missing from your submission:\n\n{}\n\n\
+                 Add them unchanged.",
+                list(entrypoints.iter().map(|e| format!("`{e}`")).collect())
+            ),
+            InferGateFailure::NoEntrypoints => "Your submission has no entrypoints. Add the \
+                                                entrypoints that the properties need."
+                .to_string(),
+            InferGateFailure::EntrypointPrefix(entrypoints) => format!(
+                "These entrypoints do not start with `crate::`:\n\n{}\n\n\
+                 Write each as a path from the crate root that starts with `crate::`.",
+                list(entrypoints.iter().map(|e| format!("`{e}`")).collect())
+            ),
+            InferGateFailure::RedundantEntrypoints(pairs) => format!(
+                "These entrypoints are inside another entrypoint:\n\n{}\n\n\
+                 Remove each of them, or replace the outer entrypoint with the entrypoints \
+                 inside it that the properties need.",
+                list(
+                    pairs
+                        .iter()
+                        .map(|(inner, outer)| format!("`{inner}` is inside `{outer}`"))
+                        .collect()
+                )
+            ),
+        }
+    }
+}
+
 pub(super) fn run_gate(
     submission: &InferStageSubmission,
     existing: &Properties,

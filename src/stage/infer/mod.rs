@@ -119,7 +119,7 @@ impl Stage for InferStage {
     }
 
     fn feedback_prompt(gate_failed: &Self::GateFailure) -> String {
-        todo!()
+        gate_failed.to_feedback_prompt()
     }
 
     fn gate_check(
