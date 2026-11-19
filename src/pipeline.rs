@@ -3,7 +3,9 @@
 //! 1. `infer`: runs only if the spec asks for it. An agent finds properties
 //!    and entrypoints in addition to those of the spec. The pipeline writes
 //!    the submission of the stage to `lusterna/infer.json` in the crate root,
-//!    and the later steps use its properties and entrypoints.
+//!    and the later steps use its properties and entrypoints. If the step is
+//!    skipped, they use those of the `lusterna/infer.json` of an earlier run,
+//!    and the run fails if the file does not exist.
 //! 2. The pipeline writes the spec to `lusterna/lusterna.json` and its
 //!    properties to `lusterna/properties.json` in the crate root.
 //! 3. `pre-translate`: runs only if `cargo build` fails. An agent changes the
@@ -111,6 +113,10 @@ pub enum PipelineError {
     /// The spec has no entrypoints and does not ask to infer them.
     #[error("the spec has no entrypoints; add some or set `infer` to true")]
     NoEntrypoints,
+    /// The spec asks to infer, the `infer` step is skipped, and the file that
+    /// holds the submission of an earlier infer stage does not exist.
+    #[error("the spec sets `infer`, but `{0}` does not exist; start at `infer`")]
+    MissingInferSubmission(PathBuf),
     /// Writing the spec or the properties to the crate failed.
     #[error("IO error: {0}")]
     Io(#[from] io::Error),
@@ -181,13 +187,20 @@ impl Pipeline {
         self.commit = Some(git::head_rev(&self.config.repo_root()?)?);
 
         // 1. Infer the entrypoints and properties
-        if self.runs(PipelineStep::Infer) && self.spec.infer {
-            let submission = self.run_infer()?;
-            // The later steps use the inferred properties and entrypoints
-            self.spec.properties = submission.properties.clone();
-            self.spec.entrypoints = submission.entrypoints.clone();
-            self.submissions.set_infer(submission)?;
-            self.commit(StageName::Infer)?;
+        if self.spec.infer {
+            if self.runs(PipelineStep::Infer) {
+                let submission = self.run_infer()?;
+                self.submissions.set_infer(submission)?;
+                self.commit(StageName::Infer)?;
+            }
+            // The later steps use the inferred properties and entrypoints. If
+            // the step is skipped, they are those of an earlier run.
+            let Some(inferred) = self.submissions.get_infer() else {
+                let path = self.config.crate_root()?.join("lusterna/infer.json");
+                return Err(PipelineError::MissingInferSubmission(path));
+            };
+            self.spec.properties = inferred.properties.clone();
+            self.spec.entrypoints = inferred.entrypoints.clone();
         }
 
         // 2. Write the spec and its properties to the crate
@@ -471,6 +484,7 @@ impl Pipeline {
 }
 
 pub(crate) struct Submissions {
+    infer: Option<InferStageSubmission>,
     pre_translate: Option<PreTranslateSubmission>,
     translate: Option<TranslateSubmission>,
     formalize: Option<FormalizeSubmission>,
@@ -483,6 +497,7 @@ pub(crate) struct Submissions {
 impl Submissions {
     pub fn new(dir: &Path) -> io::Result<Self> {
         Ok(Self {
+            infer: Self::load(&Self::submission_path(dir, StageName::Infer))?,
             pre_translate: Self::load(&Self::submission_path(dir, StageName::PreTranslate))?,
             translate: Self::load(&Self::submission_path(dir, StageName::Translate))?,
             formalize: Self::load(&Self::submission_path(dir, StageName::Formalize))?,
@@ -491,13 +506,19 @@ impl Submissions {
         })
     }
 
-    pub fn set_infer(&self, submission: InferStageSubmission) -> io::Result<()> {
+    pub fn set_infer(&mut self, submission: InferStageSubmission) -> io::Result<()> {
         // The infer step runs before the step that creates the directory
         fs::create_dir_all(&self.submission_dir)?;
         self.write_submission(
             &Self::submission_path(&self.submission_dir, StageName::Infer),
             &submission,
-        )
+        )?;
+        self.infer = Some(submission);
+        Ok(())
+    }
+
+    pub fn get_infer(&self) -> Option<&InferStageSubmission> {
+        self.infer.as_ref()
     }
 
     pub fn set_pre_translate(&mut self, submission: PreTranslateSubmission) -> io::Result<()> {
