@@ -77,6 +77,8 @@ Lusterna checks these conditions after you stop. If one fails, you get the error
 
 1. The properties of your submission whose `locked` is `true` are exactly the given properties whose `locked` is `true`, unchanged.
 2. No two properties have the same `id`.
+3. No property whose `locked` is `false` has the `title` of another property.
+4. No rule whose `locked` is `false` has an empty `fns`.
 
 Nobody reads your messages while you work, and nobody answers questions. Do not stop to ask a question or to wait for an answer. If you must choose between options, choose the one that follows this briefing and continue.
 

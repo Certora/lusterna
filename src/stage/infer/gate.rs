@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::stage::{
     infer::InferStageSubmission,
-    properties::{Properties, Property, PropertyId},
+    properties::{Properties, Property, PropertyId, PropertyKind},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
@@ -17,6 +17,10 @@ pub enum InferGateFailure {
     },
     #[error("Two properties have the same id {0}")]
     DuplicateId(usize, Property, Property),
+    #[error("Two properties have the same title `{0}`")]
+    DuplicateTitle(String, Property, Property),
+    #[error("The rule {} names no function", .0.id)]
+    EmptyFns(Property),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
@@ -32,6 +36,14 @@ pub(super) fn run_gate(
     }
     // Locked properties must not be touched.
     if let Err(e) = locked_changed(existings, &submission.properties) {
+        return Ok(Some(e));
+    }
+    // No title is used twice
+    if let Err(e) = duplicate_titles(&submission.properties) {
+        return Ok(Some(e));
+    }
+    // Every rule names a function
+    if let Err(e) = empty_fns(&submission.properties) {
         return Ok(Some(e));
     }
 
@@ -65,6 +77,38 @@ fn duplicate_ids(props: &Properties) -> Result<(), InferGateFailure> {
     for p in props.iter() {
         if let Some(old) = by_id.insert(p.id, p) {
             return Err(InferGateFailure::DuplicateId(p.id, old.clone(), p.clone()));
+        }
+    }
+
+    Ok(())
+}
+
+/// Fails if two properties have the same title, unless both are locked.
+fn duplicate_titles(props: &Properties) -> Result<(), InferGateFailure> {
+    let mut by_title: HashMap<&str, &Property> = HashMap::with_capacity(props.0.len());
+    for p in props.iter() {
+        if let Some(old) = by_title.insert(&p.title, p)
+            && !(old.locked && p.locked)
+        {
+            return Err(InferGateFailure::DuplicateTitle(
+                p.title.clone(),
+                old.clone(),
+                p.clone(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Fails if a rule that is not locked has an empty `fns`.
+fn empty_fns(props: &Properties) -> Result<(), InferGateFailure> {
+    for p in props.iter() {
+        if let PropertyKind::Rule { fns } = &p.kind
+            && fns.is_empty()
+            && !p.locked
+        {
+            return Err(InferGateFailure::EmptyFns(p.clone()));
         }
     }
 
