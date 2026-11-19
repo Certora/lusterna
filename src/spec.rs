@@ -2,6 +2,8 @@
 //! verify. It is read from `lusterna.json` in the workspace root, or from the
 //! file given to `lusterna run`.
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 use crate::stage::properties::Properties;
@@ -23,6 +25,10 @@ pub struct Spec {
     /// Infer entrypoints and properties in addition to the given ones.
     #[serde(default)]
     pub infer: bool,
+    /// The design document of the crate, relative to the workspace root. The
+    /// infer stage uses it.
+    #[serde(default)]
+    pub design_doc: Option<PathBuf>,
 }
 
 #[cfg(test)]

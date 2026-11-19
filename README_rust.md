@@ -64,14 +64,16 @@ Write the spec of the run, `lusterna.json` in the workspace root by default:
   "entrypoints": ["crate::module_a", "crate::module_b"],
   "add_opaque": [],
   "properties": [],
-  "infer": false
+  "infer": false,
+  "design_doc": null
 }
 ```
 
 - `entrypoints` are Charon `--start-from` patterns.
 - `add_opaque` adds Charon `--opaque` patterns to the default patterns.
 - `properties` are the properties to formalize. With none, the run ends after the translation.
-- `infer` infers entrypoints and properties in addition to the given ones. It is not implemented yet.
+- `infer` infers entrypoints and properties in addition to the given ones.
+- `design_doc` can be a single design document that the infer stage uses to find and judge properties. The infer agent will find design relevant docs inside the repository by itself, so only pass this if you want to override it to this one particular document.
 
 Run lusterna:
 
