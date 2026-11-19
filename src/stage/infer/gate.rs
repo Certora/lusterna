@@ -7,9 +7,9 @@ use crate::stage::{
     properties::{Properties, Property, PropertyId, PropertyKind},
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
+#[derive(Debug, Clone, Serialize, Deserialize, derive_more::Display)]
 pub enum InferGateFailure {
-    #[error("The locked properties changed in the submission")]
+    #[display("the locked properties changed in the submission")]
     LockedChanged {
         /// The given locked properties that are not in the submission.
         missing: Vec<Property>,
@@ -21,118 +21,77 @@ pub enum InferGateFailure {
         added: Vec<Property>,
     },
     /// Each pair of properties with the same id.
-    #[error("{} pairs of properties have the same id", .0.len())]
+    #[display("{} pairs of properties have the same id", _0.len())]
     DuplicateIds(Vec<(Property, Property)>),
     /// Each pair of properties with the same title.
-    #[error("{} pairs of properties have the same title", .0.len())]
+    #[display("{} pairs of properties have the same title", _0.len())]
     DuplicateTitles(Vec<(Property, Property)>),
-    #[error("{} rules name no function", .0.len())]
+    #[display("{} rules name no function", _0.len())]
     EmptyFns(Vec<Property>),
-    #[error("{} given entrypoints are missing from the submission", .0.len())]
+    #[display("{} given entrypoints are missing from the submission", _0.len())]
     MissingEntrypoints(Vec<String>),
-    #[error("The submission has no entrypoints")]
+    #[display("the submission has no entrypoints")]
     NoEntrypoints,
-    #[error("{} entrypoints do not start with `crate::`", .0.len())]
+    #[display("{} entrypoints do not start with `crate::`", _0.len())]
     EntrypointPrefix(Vec<String>),
     /// Each entrypoint that is inside another, with that other entrypoint.
-    #[error("{} entrypoints are inside another entrypoint", .0.len())]
+    #[display("{} entrypoints are inside another entrypoint", _0.len())]
     RedundantEntrypoints(Vec<(String, String)>),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
-pub enum InferGateExecutionError {}
-
 pub(super) fn run_gate(
     submission: &InferStageSubmission,
-    existings: &Properties,
+    existing: &Properties,
     existing_eps: &[String],
-) -> Result<Option<InferGateFailure>, InferGateExecutionError> {
+) -> Option<InferGateFailure> {
     // No id is used twice
     if let Some(e) = duplicate_ids(&submission.properties) {
-        return Ok(Some(e));
+        return Some(e);
     }
     // Locked properties must not be touched.
-    if let Some(e) = locked_changed(existings, &submission.properties) {
-        return Ok(Some(e));
+    if let Some(e) = locked_changed(existing, &submission.properties) {
+        return Some(e);
     }
     // No title is used twice
     if let Some(e) = duplicate_titles(&submission.properties) {
-        return Ok(Some(e));
+        return Some(e);
     }
     // Every rule names a function
     if let Some(e) = empty_fns(&submission.properties) {
-        return Ok(Some(e));
+        return Some(e);
     }
     // Every given entrypoint is returned
     if let Some(e) = missing_entrypoints(existing_eps, &submission.entrypoints) {
-        return Ok(Some(e));
+        return Some(e);
     }
     // There is an entrypoint
     if submission.entrypoints.is_empty() {
-        return Ok(Some(InferGateFailure::NoEntrypoints));
+        return Some(InferGateFailure::NoEntrypoints);
     }
     // Every new entrypoint starts with `crate::`
     if let Some(e) = entrypoint_prefix(existing_eps, &submission.entrypoints) {
-        return Ok(Some(e));
+        return Some(e);
     }
     // No new entrypoint is inside another entrypoint
-    if let Some(e) = redundant_entrypoints(existing_eps, &submission.entrypoints) {
-        return Ok(Some(e));
-    }
-
-    Ok(None)
+    redundant_entrypoints(existing_eps, &submission.entrypoints)
 }
 
-/// Fails if an entrypoint of `submitted` that is not in `existing` is another
-/// entrypoint of `submitted` followed by `::` and more path segments.
-fn redundant_entrypoints(existing: &[String], submitted: &[String]) -> Option<InferGateFailure> {
-    let mut redundant = Vec::new();
-    for ep in submitted {
-        if existing.contains(ep) {
-            continue;
-        }
-        for other in submitted {
-            if ep
-                .strip_prefix(other.as_str())
-                .is_some_and(|rest| rest.starts_with("::"))
-            {
-                redundant.push((ep.clone(), other.clone()));
-            }
+fn duplicate_ids(props: &Properties) -> Option<InferGateFailure> {
+    let mut by_id: HashMap<PropertyId, &Property> = HashMap::with_capacity(props.0.len());
+    let mut duplicates = Vec::new();
+    for p in props.iter() {
+        if let Some(old) = by_id.insert(p.id, p) {
+            duplicates.push((old.clone(), p.clone()));
         }
     }
 
-    (!redundant.is_empty()).then(|| InferGateFailure::RedundantEntrypoints(redundant))
+    (!duplicates.is_empty()).then(|| InferGateFailure::DuplicateIds(duplicates))
 }
 
-/// Fails if an entrypoint of `existing` is not in `submitted`.
-fn missing_entrypoints(existing: &[String], submitted: &[String]) -> Option<InferGateFailure> {
-    let mut missing = Vec::new();
-    for ep in existing {
-        if !submitted.contains(ep) {
-            missing.push(ep.clone());
-        }
-    }
-
-    (!missing.is_empty()).then(|| InferGateFailure::MissingEntrypoints(missing))
-}
-
-/// Fails if an entrypoint of `submitted` that is not in `existing` does not
-/// start with `crate::`.
-fn entrypoint_prefix(existing: &[String], submitted: &[String]) -> Option<InferGateFailure> {
-    let mut wrong = Vec::new();
-    for ep in submitted {
-        if !ep.starts_with("crate::") && !existing.contains(ep) {
-            wrong.push(ep.clone());
-        }
-    }
-
-    (!wrong.is_empty()).then(|| InferGateFailure::EntrypointPrefix(wrong))
-}
-
-fn locked_changed(existings: &Properties, submitted: &Properties) -> Option<InferGateFailure> {
+fn locked_changed(existing: &Properties, submitted: &Properties) -> Option<InferGateFailure> {
     let submitted_by_id: HashMap<PropertyId, &Property> =
         submitted.iter().map(|p| (p.id, p)).collect();
-    let locked_ex: HashMap<PropertyId, &Property> = existings.locked().map(|p| (p.id, p)).collect();
+    let locked_ex: HashMap<PropertyId, &Property> = existing.locked().map(|p| (p.id, p)).collect();
 
     // Each given locked property must be in the submission, unchanged
     let mut missing = Vec::new();
@@ -164,18 +123,6 @@ fn locked_changed(existings: &Properties, submitted: &Properties) -> Option<Infe
     }
 }
 
-fn duplicate_ids(props: &Properties) -> Option<InferGateFailure> {
-    let mut by_id: HashMap<PropertyId, &Property> = HashMap::with_capacity(props.0.len());
-    let mut duplicates = Vec::new();
-    for p in props.iter() {
-        if let Some(old) = by_id.insert(p.id, p) {
-            duplicates.push((old.clone(), p.clone()));
-        }
-    }
-
-    (!duplicates.is_empty()).then(|| InferGateFailure::DuplicateIds(duplicates))
-}
-
 /// Fails if two properties have the same title, unless both are locked.
 fn duplicate_titles(props: &Properties) -> Option<InferGateFailure> {
     let mut by_title: HashMap<&str, &Property> = HashMap::with_capacity(props.0.len());
@@ -204,6 +151,52 @@ fn empty_fns(props: &Properties) -> Option<InferGateFailure> {
     }
 
     (!empty.is_empty()).then(|| InferGateFailure::EmptyFns(empty))
+}
+
+/// Fails if an entrypoint of `existing` is not in `submitted`.
+fn missing_entrypoints(existing: &[String], submitted: &[String]) -> Option<InferGateFailure> {
+    let mut missing = Vec::new();
+    for ep in existing {
+        if !submitted.contains(ep) {
+            missing.push(ep.clone());
+        }
+    }
+
+    (!missing.is_empty()).then(|| InferGateFailure::MissingEntrypoints(missing))
+}
+
+/// Fails if an entrypoint of `submitted` that is not in `existing` does not
+/// start with `crate::`.
+fn entrypoint_prefix(existing: &[String], submitted: &[String]) -> Option<InferGateFailure> {
+    let mut wrong = Vec::new();
+    for ep in submitted {
+        if !ep.starts_with("crate::") && !existing.contains(ep) {
+            wrong.push(ep.clone());
+        }
+    }
+
+    (!wrong.is_empty()).then(|| InferGateFailure::EntrypointPrefix(wrong))
+}
+
+/// Fails if an entrypoint of `submitted` that is not in `existing` is another
+/// entrypoint of `submitted` followed by `::` and more path segments.
+fn redundant_entrypoints(existing: &[String], submitted: &[String]) -> Option<InferGateFailure> {
+    let mut redundant = Vec::new();
+    for ep in submitted {
+        if existing.contains(ep) {
+            continue;
+        }
+        for other in submitted {
+            if ep
+                .strip_prefix(other.as_str())
+                .is_some_and(|rest| rest.starts_with("::"))
+            {
+                redundant.push((ep.clone(), other.clone()));
+            }
+        }
+    }
+
+    (!redundant.is_empty()).then(|| InferGateFailure::RedundantEntrypoints(redundant))
 }
 
 #[cfg(test)]
@@ -399,7 +392,7 @@ mod tests {
             properties: Properties(vec![rule(1, "a", false)]),
             entrypoints: Vec::new(),
         };
-        let failure = run_gate(&submission, &Properties::default(), &[]).unwrap();
+        let failure = run_gate(&submission, &Properties::default(), &[]);
         assert!(matches!(failure, Some(InferGateFailure::NoEntrypoints)));
     }
 
@@ -410,7 +403,7 @@ mod tests {
             properties: Properties(vec![rule(1, "a", true), rule(2, "b", false)]),
             entrypoints: eps(&["crate::a", "crate::b"]),
         };
-        let failure = run_gate(&submission, &given, &eps(&["crate::a"])).unwrap();
+        let failure = run_gate(&submission, &given, &eps(&["crate::a"]));
         assert!(failure.is_none());
     }
 }

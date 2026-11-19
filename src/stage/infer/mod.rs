@@ -1,13 +1,13 @@
 mod gate;
 
-use std::path::PathBuf;
+use std::{convert::Infallible, path::PathBuf};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     config::Platform,
-    stage::{Stage, StageName, infer::gate::run_gate, properties::Properties},
+    stage::{Never, Stage, StageName, infer::gate::run_gate, properties::Properties},
 };
 
 const BRIEFING: &str = include_str!("res/briefing.md");
@@ -20,16 +20,16 @@ const SOLANA_PROPERTY_CLASSES_SKILL: &str = include_str!("res/solana-property-cl
 
 #[derive(Serialize, Deserialize)]
 pub struct InferStageInput {
-    existing_properties: Properties,
-    existing_entrypoints: Vec<String>,
-    design_doc: Option<PathBuf>,
-    platform: Platform,
+    pub existing_properties: Properties,
+    pub existing_entrypoints: Vec<String>,
+    pub design_doc: Option<PathBuf>,
+    pub platform: Platform,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
 pub struct InferStageSubmission {
-    properties: Properties,
-    entrypoints: Vec<String>,
+    pub properties: Properties,
+    pub entrypoints: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -40,12 +40,6 @@ pub struct InferStage {
     platform: Platform,
 }
 
-#[derive(Debug, Serialize, Deserialize, JsonSchema, thiserror::Error)]
-pub enum InferStageBlocker {}
-
-#[derive(Debug, Clone, Serialize, Deserialize, derive_more::Display, thiserror::Error)]
-pub struct InferSetupError;
-
 impl Stage for InferStage {
     const NAME: super::StageName = StageName::Infer;
 
@@ -53,13 +47,13 @@ impl Stage for InferStage {
 
     type Submission = InferStageSubmission;
 
-    type Blocker = InferStageBlocker;
+    type Blocker = Never;
 
     type GateFailure = gate::InferGateFailure;
 
-    type GateExecutionError = gate::InferGateExecutionError;
+    type GateExecutionError = Infallible;
 
-    type SetupError = InferSetupError;
+    type SetupError = Infallible;
 
     fn setup(input: Self::Input) -> Result<Self, Self::SetupError> {
         // We do not need a setup
@@ -132,7 +126,11 @@ impl Stage for InferStage {
         &self,
         submission: &Self::Submission,
     ) -> Result<Option<Self::GateFailure>, Self::GateExecutionError> {
-        run_gate(submission, &self.existing_props, &self.existing_eps)
+        Ok(run_gate(
+            submission,
+            &self.existing_props,
+            &self.existing_eps,
+        ))
     }
 
     fn judge_prompt(&self, submission: &Self::Submission) -> Option<String> {
