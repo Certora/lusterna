@@ -1,7 +1,9 @@
 //! Runs the stages on a Rust crate, as its [`Spec`] says:
 //!
-//! 1. `infer`: not implemented. [`Pipeline::run`] panics if the spec asks for
-//!    it.
+//! 1. `infer`: runs only if the spec asks for it. An agent finds properties
+//!    and entrypoints in addition to those of the spec. The pipeline writes
+//!    the submission of the stage to `lusterna/infer.json` in the crate root,
+//!    and the later steps use its properties and entrypoints.
 //! 2. The pipeline writes the spec to `lusterna/lusterna.json` and its
 //!    properties to `lusterna/properties.json` in the crate root.
 //! 3. `pre-translate`: runs only if `cargo build` fails. An agent changes the
@@ -54,6 +56,7 @@ use crate::{
         Stage, StageName,
         exec::{StageExec, StageExecutionError},
         formalize::{FormalizeInput, FormalizeStage, FormalizeSubmission},
+        infer::{InferStage, InferStageInput, InferStageSubmission},
         pre_translate::{PreTranslateInput, PreTranslateStage, PreTranslateSubmission},
         prove::{ProveInput, ProveStage, ProveSubmission, formalized_properties},
         report,
@@ -74,6 +77,8 @@ const TOOLS: [&str; 6] = ["git", "cargo", "charon", "aeneas", "lake", "claude"];
 /// An error that ends a pipeline run.
 #[derive(Debug, thiserror::Error)]
 pub enum PipelineError {
+    #[error("Error in Infer stage: {0}")]
+    Infer(StageExecutionError<InferStage>),
     /// The `pre-translate` stage failed to set up or to finish.
     #[error("Error in PreTranslate stage: {0}")]
     PreTranslate(StageExecutionError<PreTranslateStage>),
@@ -177,7 +182,12 @@ impl Pipeline {
 
         // 1. Infer the entrypoints and properties
         if self.runs(PipelineStep::Infer) && self.spec.infer {
-            todo!()
+            let submission = self.run_infer()?;
+            // The later steps use the inferred properties and entrypoints
+            self.spec.properties = submission.properties.clone();
+            self.spec.entrypoints = submission.entrypoints.clone();
+            self.submissions.set_infer(submission)?;
+            self.commit(StageName::Infer)?;
         }
 
         // 2. Write the spec and its properties to the crate
@@ -353,6 +363,21 @@ impl Pipeline {
         Ok(submission)
     }
 
+    fn run_infer(&self) -> Result<InferStageSubmission, PipelineError> {
+        let input = InferStageInput {
+            crate_root: self.config.crate_root()?,
+            existing_properties: self.spec.properties.clone(),
+            existing_entrypoints: self.spec.entrypoints.clone(),
+            design_doc: self.spec.design_doc.clone(),
+            platform: self.config.get_platform()?,
+        };
+        let submission = self
+            .exec_stage::<InferStage>(input)
+            .map_err(PipelineError::Infer)?;
+
+        Ok(submission)
+    }
+
     fn run_formalize(&self) -> Result<FormalizeSubmission, PipelineError> {
         let lusterna_dir = self.config.crate_root()?.join("lusterna");
         let lean_root = lusterna_dir.join("lean");
@@ -464,6 +489,15 @@ impl Submissions {
             prove: Self::load(&Self::submission_path(dir, StageName::Prove))?,
             submission_dir: dir.to_path_buf(),
         })
+    }
+
+    pub fn set_infer(&self, submission: InferStageSubmission) -> io::Result<()> {
+        // The infer step runs before the step that creates the directory
+        fs::create_dir_all(&self.submission_dir)?;
+        self.write_submission(
+            &Self::submission_path(&self.submission_dir, StageName::Infer),
+            &submission,
+        )
     }
 
     pub fn set_pre_translate(&mut self, submission: PreTranslateSubmission) -> io::Result<()> {
