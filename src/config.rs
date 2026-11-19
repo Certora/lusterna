@@ -167,6 +167,15 @@ impl Config {
         }
         Ok(())
     }
+
+    /// Returns whether `claude` is logged in with a claude.ai subscription.
+    pub fn claude_uses_subscription() -> Result<bool, ConfigError> {
+        let output = process::Command::new("claude")
+            .args(["auth", "status"])
+            .output()?;
+        let status: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+        Ok(status["authMethod"] == "claude.ai" && status["apiProvider"] == "firstParty")
+    }
 }
 
 /// The platform that the crate is written for. It selects the default opaque
@@ -205,6 +214,8 @@ pub enum ConfigError {
     Io(#[from] io::Error),
     #[error(transparent)]
     Git(#[from] GitError),
+    #[error("cannot parse the output of `claude auth status`: {0}")]
+    ClaudeAuthStatus(#[from] serde_json::Error),
     #[error(
         "`aeneas` on `PATH` reports version `{version_bin}`, but `{root}` is at {version_checkout}. Rebuild Aeneas or check out the matching commit"
     )]
