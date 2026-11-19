@@ -48,23 +48,23 @@ pub(super) fn run_gate(
     existing_eps: &[String],
 ) -> Result<Option<InferGateFailure>, InferGateExecutionError> {
     // No id is used twice
-    if let Err(e) = duplicate_ids(&submission.properties) {
+    if let Some(e) =duplicate_ids(&submission.properties) {
         return Ok(Some(e));
     }
     // Locked properties must not be touched.
-    if let Err(e) = locked_changed(existings, &submission.properties) {
+    if let Some(e) =locked_changed(existings, &submission.properties) {
         return Ok(Some(e));
     }
     // No title is used twice
-    if let Err(e) = duplicate_titles(&submission.properties) {
+    if let Some(e) =duplicate_titles(&submission.properties) {
         return Ok(Some(e));
     }
     // Every rule names a function
-    if let Err(e) = empty_fns(&submission.properties) {
+    if let Some(e) =empty_fns(&submission.properties) {
         return Ok(Some(e));
     }
     // Every given entrypoint is returned
-    if let Err(e) = missing_entrypoints(existing_eps, &submission.entrypoints) {
+    if let Some(e) =missing_entrypoints(existing_eps, &submission.entrypoints) {
         return Ok(Some(e));
     }
     // There is an entrypoint
@@ -72,11 +72,11 @@ pub(super) fn run_gate(
         return Ok(Some(InferGateFailure::NoEntrypoints));
     }
     // Every new entrypoint starts with `crate::`
-    if let Err(e) = entrypoint_prefix(existing_eps, &submission.entrypoints) {
+    if let Some(e) =entrypoint_prefix(existing_eps, &submission.entrypoints) {
         return Ok(Some(e));
     }
     // No new entrypoint is inside another entrypoint
-    if let Err(e) = redundant_entrypoints(existing_eps, &submission.entrypoints) {
+    if let Some(e) =redundant_entrypoints(existing_eps, &submission.entrypoints) {
         return Ok(Some(e));
     }
 
@@ -88,7 +88,7 @@ pub(super) fn run_gate(
 fn redundant_entrypoints(
     existing: &[String],
     submitted: &[String],
-) -> Result<(), InferGateFailure> {
+) -> Option<InferGateFailure> {
     let mut redundant = Vec::new();
     for ep in submitted {
         if existing.contains(ep) {
@@ -104,15 +104,11 @@ fn redundant_entrypoints(
         }
     }
 
-    if redundant.is_empty() {
-        Ok(())
-    } else {
-        Err(InferGateFailure::RedundantEntrypoints(redundant))
-    }
+    (!redundant.is_empty()).then(|| InferGateFailure::RedundantEntrypoints(redundant))
 }
 
 /// Fails if an entrypoint of `existing` is not in `submitted`.
-fn missing_entrypoints(existing: &[String], submitted: &[String]) -> Result<(), InferGateFailure> {
+fn missing_entrypoints(existing: &[String], submitted: &[String]) -> Option<InferGateFailure> {
     let mut missing = Vec::new();
     for ep in existing {
         if !submitted.contains(ep) {
@@ -120,16 +116,12 @@ fn missing_entrypoints(existing: &[String], submitted: &[String]) -> Result<(), 
         }
     }
 
-    if missing.is_empty() {
-        Ok(())
-    } else {
-        Err(InferGateFailure::MissingEntrypoints(missing))
-    }
+    (!missing.is_empty()).then(|| InferGateFailure::MissingEntrypoints(missing))
 }
 
 /// Fails if an entrypoint of `submitted` that is not in `existing` does not
 /// start with `crate::`.
-fn entrypoint_prefix(existing: &[String], submitted: &[String]) -> Result<(), InferGateFailure> {
+fn entrypoint_prefix(existing: &[String], submitted: &[String]) -> Option<InferGateFailure> {
     let mut wrong = Vec::new();
     for ep in submitted {
         if !ep.starts_with("crate::") && !existing.contains(ep) {
@@ -137,14 +129,10 @@ fn entrypoint_prefix(existing: &[String], submitted: &[String]) -> Result<(), In
         }
     }
 
-    if wrong.is_empty() {
-        Ok(())
-    } else {
-        Err(InferGateFailure::EntrypointPrefix(wrong))
-    }
+    (!wrong.is_empty()).then(|| InferGateFailure::EntrypointPrefix(wrong))
 }
 
-fn locked_changed(existings: &Properties, submitted: &Properties) -> Result<(), InferGateFailure> {
+fn locked_changed(existings: &Properties, submitted: &Properties) -> Option<InferGateFailure> {
     let submitted_by_id: HashMap<PropertyId, &Property> =
         submitted.iter().map(|p| (p.id, p)).collect();
     let locked_ex: HashMap<PropertyId, &Property> =
@@ -170,9 +158,9 @@ fn locked_changed(existings: &Properties, submitted: &Properties) -> Result<(), 
     }
 
     if missing.is_empty() && changed.is_empty() && added.is_empty() {
-        Ok(())
+        None
     } else {
-        Err(InferGateFailure::LockedChanged {
+        Some(InferGateFailure::LockedChanged {
             missing,
             changed,
             added,
@@ -180,7 +168,7 @@ fn locked_changed(existings: &Properties, submitted: &Properties) -> Result<(), 
     }
 }
 
-fn duplicate_ids(props: &Properties) -> Result<(), InferGateFailure> {
+fn duplicate_ids(props: &Properties) -> Option<InferGateFailure> {
     let mut by_id: HashMap<PropertyId, &Property> = HashMap::with_capacity(props.0.len());
     let mut duplicates = Vec::new();
     for p in props.iter() {
@@ -189,15 +177,11 @@ fn duplicate_ids(props: &Properties) -> Result<(), InferGateFailure> {
         }
     }
 
-    if duplicates.is_empty() {
-        Ok(())
-    } else {
-        Err(InferGateFailure::DuplicateIds(duplicates))
-    }
+    (!duplicates.is_empty()).then(|| InferGateFailure::DuplicateIds(duplicates))
 }
 
 /// Fails if two properties have the same title, unless both are locked.
-fn duplicate_titles(props: &Properties) -> Result<(), InferGateFailure> {
+fn duplicate_titles(props: &Properties) -> Option<InferGateFailure> {
     let mut by_title: HashMap<&str, &Property> = HashMap::with_capacity(props.0.len());
     let mut duplicates = Vec::new();
     for p in props.iter() {
@@ -208,15 +192,11 @@ fn duplicate_titles(props: &Properties) -> Result<(), InferGateFailure> {
         }
     }
 
-    if duplicates.is_empty() {
-        Ok(())
-    } else {
-        Err(InferGateFailure::DuplicateTitles(duplicates))
-    }
+    (!duplicates.is_empty()).then(|| InferGateFailure::DuplicateTitles(duplicates))
 }
 
 /// Fails if a rule that is not locked has an empty `fns`.
-fn empty_fns(props: &Properties) -> Result<(), InferGateFailure> {
+fn empty_fns(props: &Properties) -> Option<InferGateFailure> {
     let mut empty = Vec::new();
     for p in props.iter() {
         if let PropertyKind::Rule { fns } = &p.kind
@@ -227,9 +207,5 @@ fn empty_fns(props: &Properties) -> Result<(), InferGateFailure> {
         }
     }
 
-    if empty.is_empty() {
-        Ok(())
-    } else {
-        Err(InferGateFailure::EmptyFns(empty))
-    }
+    (!empty.is_empty()).then(|| InferGateFailure::EmptyFns(empty))
 }
