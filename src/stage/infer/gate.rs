@@ -492,6 +492,7 @@ mod tests {
         let submission = InferStageSubmission {
             properties: Properties(vec![rule(1, "a", false)]),
             entrypoints: Vec::new(),
+            design_doc: None,
         };
         let failure = run_gate(&submission, &Properties::default(), &[]);
         assert!(matches!(failure, Some(InferGateFailure::NoEntrypoints)));
@@ -503,6 +504,7 @@ mod tests {
         let submission = InferStageSubmission {
             properties: Properties(vec![rule(1, "a", true), rule(2, "b", false)]),
             entrypoints: eps(&["crate::a", "crate::b"]),
+            design_doc: None,
         };
         let failure = run_gate(&submission, &given, &eps(&["crate::a"]));
         assert!(failure.is_none());

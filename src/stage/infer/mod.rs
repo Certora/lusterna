@@ -14,6 +14,8 @@ const BRIEFING: &str = include_str!("res/briefing.md");
 
 const BASE_PROMPT_TEMPLATE: &str = include_str!("res/prompt.md");
 
+const JUDGE_PROMPT_TEMPLATE: &str = include_str!("res/judge.md");
+
 const DEFI_PROPERTY_CLASSES_SKILL: &str = include_str!("res/defi-property-classes.md");
 
 const SOLANA_PROPERTY_CLASSES_SKILL: &str = include_str!("res/solana-property-classes.md");
@@ -30,6 +32,9 @@ pub struct InferStageInput {
 pub struct InferStageSubmission {
     pub properties: Properties,
     pub entrypoints: Vec<String>,
+    /// The design document that you used, relative to the workspace root.
+    /// `null` if you used none.
+    pub design_doc: Option<PathBuf>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -134,6 +139,13 @@ impl Stage for InferStage {
     }
 
     fn judge_prompt(&self, submission: &Self::Submission) -> Option<String> {
-        todo!()
+        Some(
+            JUDGE_PROMPT_TEMPLATE
+                .replace("{briefing}", &self.briefing())
+                .replace(
+                    "{submission}",
+                    &serde_json::to_string_pretty(submission).expect("the submission serializes"),
+                ),
+        )
     }
 }

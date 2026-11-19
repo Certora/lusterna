@@ -88,4 +88,4 @@ Nobody reads your messages while you work, and nobody answers questions. Do not 
 
 ## Your result
 
-When you are done, return `Ok` with your submission: all properties, given and new, and all entrypoints, given and new.
+When you are done, return `Ok` with your submission: all properties, given and new, all entrypoints, given and new, and the design document that you used.
