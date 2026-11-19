@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use itertools::{EitherOrBoth, Itertools};
 use serde::{Deserialize, Serialize};
 
 use crate::stage::{
@@ -12,8 +11,14 @@ use crate::stage::{
 pub enum InferGateFailure {
     #[error("The locked properties changed in the submission")]
     LockedChanged {
-        existing: Properties,
-        submitted: Properties,
+        /// The given locked properties that are not in the submission.
+        missing: Vec<Property>,
+        /// The given locked properties that the submission changed, each
+        /// with its version in the submission.
+        changed: Vec<(Property, Property)>,
+        /// The locked properties of the submission that are not given
+        /// locked properties.
+        added: Vec<Property>,
     },
     #[error("Two properties have the same id {0}")]
     DuplicateId(usize, Property, Property),
@@ -125,24 +130,38 @@ fn entrypoint_prefix(existing: &[String], submitted: &[String]) -> Result<(), In
 }
 
 fn locked_changed(existings: &Properties, submitted: &Properties) -> Result<(), InferGateFailure> {
-    let locked_ex: Properties = existings
-        .locked()
-        .cloned()
-        .sorted_unstable_by_key(|p| p.id)
-        .collect();
-    let locked_sub: Properties = submitted
-        .locked()
-        .cloned()
-        .sorted_unstable_by_key(|p| p.id)
-        .collect();
+    let submitted_by_id: HashMap<PropertyId, &Property> =
+        submitted.iter().map(|p| (p.id, p)).collect();
+    let locked_ex: HashMap<PropertyId, &Property> =
+        existings.locked().map(|p| (p.id, p)).collect();
 
-    if locked_ex != locked_sub {
-        Err(InferGateFailure::LockedChanged {
-            existing: locked_ex,
-            submitted: locked_sub,
-        })
-    } else {
+    // Each given locked property must be in the submission, unchanged
+    let mut missing = Vec::new();
+    let mut changed = Vec::new();
+    for (id, ex) in &locked_ex {
+        match submitted_by_id.get(id) {
+            None => missing.push((*ex).clone()),
+            Some(sub) if sub != ex => changed.push(((*ex).clone(), (*sub).clone())),
+            Some(_) => {}
+        }
+    }
+
+    // No other property of the submission may be locked
+    let mut added = Vec::new();
+    for sub in submitted.locked() {
+        if !locked_ex.contains_key(&sub.id) {
+            added.push(sub.clone());
+        }
+    }
+
+    if missing.is_empty() && changed.is_empty() && added.is_empty() {
         Ok(())
+    } else {
+        Err(InferGateFailure::LockedChanged {
+            missing,
+            changed,
+            added,
+        })
     }
 }
 
