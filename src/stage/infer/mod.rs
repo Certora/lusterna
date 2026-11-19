@@ -22,6 +22,8 @@ const SOLANA_PROPERTY_CLASSES_SKILL: &str = include_str!("res/solana-property-cl
 
 #[derive(Serialize, Deserialize)]
 pub struct InferStageInput {
+    /// Absolute path to the root of the crate.
+    pub crate_root: PathBuf,
     pub existing_properties: Properties,
     pub existing_entrypoints: Vec<String>,
     pub design_doc: Option<PathBuf>,
@@ -39,6 +41,7 @@ pub struct InferStageSubmission {
 
 #[derive(Serialize, Deserialize)]
 pub struct InferStage {
+    crate_root: PathBuf,
     existing_props: Properties,
     existing_eps: Vec<String>,
     design_doc: Option<PathBuf>,
@@ -63,6 +66,7 @@ impl Stage for InferStage {
     fn setup(input: Self::Input) -> Result<Self, Self::SetupError> {
         // We do not need a setup
         Ok(Self {
+            crate_root: input.crate_root,
             existing_props: input.existing_properties,
             existing_eps: input.existing_entrypoints,
             design_doc: input.design_doc,
@@ -95,16 +99,18 @@ impl Stage for InferStage {
     }
 
     fn briefing(&self) -> String {
-        BRIEFING.replace(
-            "{skills}",
-            match &self.platform {
-                Platform::Generic => "",
-                Platform::Solana { .. } => {
-                    " Before you draft, work through the skills `lusterna:defi-property-classes` and \
-                     `lusterna:solana-property-classes`."
-                }
-            },
-        )
+        BRIEFING
+            .replace("{crate_root}", &self.crate_root.display().to_string())
+            .replace(
+                "{skills}",
+                match &self.platform {
+                    Platform::Generic => "",
+                    Platform::Solana { .. } => {
+                        " Before you draft, work through the skills \
+                         `lusterna:defi-property-classes` and `lusterna:solana-property-classes`."
+                    }
+                },
+            )
     }
 
     fn skills(&self) -> Vec<(&'static str, String)> {
@@ -141,6 +147,7 @@ impl Stage for InferStage {
     fn judge_prompt(&self, submission: &Self::Submission) -> Option<String> {
         Some(
             JUDGE_PROMPT_TEMPLATE
+                .replace("{crate_root}", &self.crate_root.display().to_string())
                 .replace("{briefing}", &self.briefing())
                 .replace(
                     "{submission}",

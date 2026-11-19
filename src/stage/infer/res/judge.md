@@ -16,7 +16,7 @@ This is the agent's submission:
 
 ## Where the work is
 
-The workspace of the crate is your working directory. `design_doc` of the submission names the design document that the agent used, relative to the workspace. It is `null` if the agent used none.
+The Rust source of the crate is in `{crate_root}`. Its workspace is your working directory. `design_doc` of the submission names the design document that the agent used, relative to the workspace. It is `null` if the agent used none.
 
 Before you judge a property, read the functions and the struct that it names. Do not judge an item by its name.
 
