@@ -20,20 +20,23 @@ pub enum InferGateFailure {
         /// locked properties.
         added: Vec<Property>,
     },
-    #[error("Two properties have the same id {0}")]
-    DuplicateId(usize, Property, Property),
-    #[error("Two properties have the same title `{0}`")]
-    DuplicateTitle(String, Property, Property),
-    #[error("The rule {} names no function", .0.id)]
-    EmptyFns(Property),
-    #[error("The given entrypoint `{0}` is missing from the submission")]
-    MissingEntrypoint(String),
+    /// Each pair of properties with the same id.
+    #[error("{} pairs of properties have the same id", .0.len())]
+    DuplicateIds(Vec<(Property, Property)>),
+    /// Each pair of properties with the same title.
+    #[error("{} pairs of properties have the same title", .0.len())]
+    DuplicateTitles(Vec<(Property, Property)>),
+    #[error("{} rules name no function", .0.len())]
+    EmptyFns(Vec<Property>),
+    #[error("{} given entrypoints are missing from the submission", .0.len())]
+    MissingEntrypoints(Vec<String>),
     #[error("The submission has no entrypoints")]
     NoEntrypoints,
-    #[error("The entrypoint `{0}` does not start with `crate::`")]
-    EntrypointPrefix(String),
-    #[error("The entrypoint `{entrypoint}` is inside the entrypoint `{inside}`")]
-    RedundantEntrypoint { entrypoint: String, inside: String },
+    #[error("{} entrypoints do not start with `crate::`", .0.len())]
+    EntrypointPrefix(Vec<String>),
+    /// Each entrypoint that is inside another, with that other entrypoint.
+    #[error("{} entrypoints are inside another entrypoint", .0.len())]
+    RedundantEntrypoints(Vec<(String, String)>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
@@ -86,6 +89,7 @@ fn redundant_entrypoints(
     existing: &[String],
     submitted: &[String],
 ) -> Result<(), InferGateFailure> {
+    let mut redundant = Vec::new();
     for ep in submitted {
         if existing.contains(ep) {
             continue;
@@ -95,38 +99,49 @@ fn redundant_entrypoints(
                 .strip_prefix(other.as_str())
                 .is_some_and(|rest| rest.starts_with("::"))
             {
-                return Err(InferGateFailure::RedundantEntrypoint {
-                    entrypoint: ep.clone(),
-                    inside: other.clone(),
-                });
+                redundant.push((ep.clone(), other.clone()));
             }
         }
     }
 
-    Ok(())
+    if redundant.is_empty() {
+        Ok(())
+    } else {
+        Err(InferGateFailure::RedundantEntrypoints(redundant))
+    }
 }
 
 /// Fails if an entrypoint of `existing` is not in `submitted`.
 fn missing_entrypoints(existing: &[String], submitted: &[String]) -> Result<(), InferGateFailure> {
+    let mut missing = Vec::new();
     for ep in existing {
         if !submitted.contains(ep) {
-            return Err(InferGateFailure::MissingEntrypoint(ep.clone()));
+            missing.push(ep.clone());
         }
     }
 
-    Ok(())
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(InferGateFailure::MissingEntrypoints(missing))
+    }
 }
 
 /// Fails if an entrypoint of `submitted` that is not in `existing` does not
 /// start with `crate::`.
 fn entrypoint_prefix(existing: &[String], submitted: &[String]) -> Result<(), InferGateFailure> {
+    let mut wrong = Vec::new();
     for ep in submitted {
         if !ep.starts_with("crate::") && !existing.contains(ep) {
-            return Err(InferGateFailure::EntrypointPrefix(ep.clone()));
+            wrong.push(ep.clone());
         }
     }
 
-    Ok(())
+    if wrong.is_empty() {
+        Ok(())
+    } else {
+        Err(InferGateFailure::EntrypointPrefix(wrong))
+    }
 }
 
 fn locked_changed(existings: &Properties, submitted: &Properties) -> Result<(), InferGateFailure> {
@@ -167,43 +182,54 @@ fn locked_changed(existings: &Properties, submitted: &Properties) -> Result<(), 
 
 fn duplicate_ids(props: &Properties) -> Result<(), InferGateFailure> {
     let mut by_id: HashMap<PropertyId, &Property> = HashMap::with_capacity(props.0.len());
+    let mut duplicates = Vec::new();
     for p in props.iter() {
         if let Some(old) = by_id.insert(p.id, p) {
-            return Err(InferGateFailure::DuplicateId(p.id, old.clone(), p.clone()));
+            duplicates.push((old.clone(), p.clone()));
         }
     }
 
-    Ok(())
+    if duplicates.is_empty() {
+        Ok(())
+    } else {
+        Err(InferGateFailure::DuplicateIds(duplicates))
+    }
 }
 
 /// Fails if two properties have the same title, unless both are locked.
 fn duplicate_titles(props: &Properties) -> Result<(), InferGateFailure> {
     let mut by_title: HashMap<&str, &Property> = HashMap::with_capacity(props.0.len());
+    let mut duplicates = Vec::new();
     for p in props.iter() {
         if let Some(old) = by_title.insert(&p.title, p)
             && !(old.locked && p.locked)
         {
-            return Err(InferGateFailure::DuplicateTitle(
-                p.title.clone(),
-                old.clone(),
-                p.clone(),
-            ));
+            duplicates.push((old.clone(), p.clone()));
         }
     }
 
-    Ok(())
+    if duplicates.is_empty() {
+        Ok(())
+    } else {
+        Err(InferGateFailure::DuplicateTitles(duplicates))
+    }
 }
 
 /// Fails if a rule that is not locked has an empty `fns`.
 fn empty_fns(props: &Properties) -> Result<(), InferGateFailure> {
+    let mut empty = Vec::new();
     for p in props.iter() {
         if let PropertyKind::Rule { fns } = &p.kind
             && fns.is_empty()
             && !p.locked
         {
-            return Err(InferGateFailure::EmptyFns(p.clone()));
+            empty.push(p.clone());
         }
     }
 
-    Ok(())
+    if empty.is_empty() {
+        Ok(())
+    } else {
+        Err(InferGateFailure::EmptyFns(empty))
+    }
 }
