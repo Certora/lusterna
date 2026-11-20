@@ -111,6 +111,33 @@ impl Stage for InferStage {
                     }
                 },
             )
+            .replace(
+                "{entrypoint_rules}",
+                match &self.platform {
+                    Platform::Generic => "",
+                    Platform::Solana { .. } => {
+                        "\n4. Do not name a function that takes the accounts of an instruction, \
+                         or a module that contains one. Such a function has an account type in \
+                         a parameter or as its return type. An account type is `AccountInfo` or \
+                         a type that holds one. A shared reference to an `AccountInfo`, or to a \
+                         slice of them, is not an account type.\n\
+                         5. If a function that 1 or 2 needs is called only from a function that \
+                         takes an account type, name the called function. If the struct is \
+                         created or changed in the body of a function that takes an account \
+                         type, leave that function out."
+                    }
+                },
+            )
+            .replace(
+                "{entrypoint_conditions}",
+                match &self.platform {
+                    Platform::Generic => "",
+                    Platform::Solana { .. } => {
+                        "\n9. No entrypoint that you add names a function that takes an account \
+                         type, or a module that contains one."
+                    }
+                },
+            )
     }
 
     fn skills(&self) -> Vec<(&'static str, String)> {
@@ -148,6 +175,20 @@ impl Stage for InferStage {
         Some(
             JUDGE_PROMPT_TEMPLATE
                 .replace("{crate_root}", &self.crate_root.display().to_string())
+                .replace(
+                    "{platform_kinds}",
+                    match &self.platform {
+                        Platform::Generic => "",
+                        Platform::Solana { .. } => {
+                            "\n- `unsupported_entrypoint`: an entrypoint that the agent added \
+                             names a function that takes an account type, or a module that \
+                             contains one. The briefing says what an account type is. Read the \
+                             signature. In the fix, name the functions that it calls and that \
+                             the properties need. Do not report `not_covered` for a function \
+                             that takes an account type."
+                        }
+                    },
+                )
                 .replace("{briefing}", &self.briefing())
                 .replace(
                     "{submission}",

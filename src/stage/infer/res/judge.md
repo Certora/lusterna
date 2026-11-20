@@ -38,7 +38,7 @@ Report one defect for each problem. Use one of these kinds:
 - `cannot_be_stated`: the next stage cannot state the natspec as a theorem without guessing. The natspec uses a term that is neither an item of the crate nor defined in the natspec, or it does not say what must hold after the call or for the struct. Judge this from the text of the natspec. Do not report a condition that you think the property needs in order to be true.
 - `restates_code`: the natspec says in words what the body of one function does, step by step. Such a property holds for whatever the function does. Do not report a property that states the purpose of a function without following its body.
 - `duplicate`: the property states the same as another property, or follows directly from it. Name the other property.
-- `contradicts_design`: the property contradicts the design document. Quote the passage. Do not report this kind if `design_doc` is `null`.
+- `contradicts_design`: the property contradicts the design document. Quote the passage. Do not report this kind if `design_doc` is `null`.{platform_kinds}
 
 Report only problems that you can point to in a specific property or entrypoint. Do not report style or wording.
 

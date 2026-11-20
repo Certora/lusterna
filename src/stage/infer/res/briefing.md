@@ -61,7 +61,7 @@ An entrypoint is a Charon `--start-from` pattern. It starts with `crate::` and n
 
 1. The translation covers every function that a rule names.
 2. For an invariant, the translation covers every function of the crate that creates or changes the struct.
-3. Use the smallest set of entrypoints that satisfies 1 and 2. Code that no property is about stays out of the translation.
+3. Use the smallest set of entrypoints that satisfies 1 and 2. Code that no property is about stays out of the translation.{entrypoint_rules}
 
 ## The given properties and entrypoints
 
@@ -82,7 +82,7 @@ Lusterna checks these conditions after you stop. If one fails, you get the error
 5. Every given entrypoint is in your submission.
 6. Your submission has at least one entrypoint.
 7. Every entrypoint that you add starts with `crate::`.
-8. No entrypoint that you add is inside another entrypoint, as `crate::a::f` is inside `crate::a`.
+8. No entrypoint that you add is inside another entrypoint, as `crate::a::f` is inside `crate::a`.{entrypoint_conditions}
 
 Nobody reads your messages while you work, and nobody answers questions. Do not stop to ask a question or to wait for an answer. If you must choose between options, choose the one that follows this briefing and continue.
 
