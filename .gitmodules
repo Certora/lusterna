@@ -1,0 +1,3 @@
+[submodule "deps/aeneas"]
+	path = deps/aeneas
+	url = https://github.com/AeneasVerif/aeneas.git
