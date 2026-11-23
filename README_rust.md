@@ -24,40 +24,37 @@ Lusterna commits the result of each stage to a new branch in a separate git work
 
 ## Requirements
 
-- A Rust toolchain with `cargo`
+- `git`, `make` and [just](https://github.com/casey/just)
+- A Rust toolchain installed with [rustup](https://rustup.rs/)
+- [opam](https://opam.ocaml.org/) with an OCaml 5 switch, to build Aeneas
 - `lake` from a Lean 4 installation (install it with [elan](https://github.com/leanprover/elan))
 - The `claude` CLI, logged in
-- A git checkout of Aeneas, with `aeneas` and `charon` built from that checkout
 
 ## Installation
 
 ```sh
-cargo build --release
+# Checkout and build Aeneas and Charon 
+just setup
+# Install `lusterna` using Cargo
+just install
 ```
 
-The binary is `target/release/lusterna`.
+Note: the installed lusterna binary contains absolute paths into this checkout. If you move or delete the checkout, the binary stops working.
+
+### Updating Aeneas or Solanalib
+
+```sh
+just bump-aeneas <rev>
+just bump-solanalib <rev>
+```
+
+Must be run on a working tree without uncommitted changes
 
 ## Usage
 
-Lusterna needs the Aeneas checkout and the Aeneas and Charon binaries:
+### Writing a Spec File
 
-1. Give the path of the Aeneas checkout with `--aeneas-root`, or set the `AENEAS_ROOT` environment variable.
-2. Put `aeneas` and `charon` on your `PATH`.
-
-```sh
-export AENEAS_ROOT=~/src/aeneas
-export PATH="$AENEAS_ROOT/bin:$AENEAS_ROOT/charon/bin:$PATH"
-```
-
-> [!NOTE]
-> The `aeneas` binary on `PATH` must be built from the commit that is checked out in the Aeneas checkout.
-
-Lusterna compares the output of `aeneas -version` with the `HEAD` commit of `AENEAS_ROOT`.
-If the two are different, Lusterna stops. Rebuild Aeneas or check out the matching commit.
-If the binary was built from a checkout with uncommitted changes, Lusterna shows a warning and continues.
-Lusterna also reads the Lean toolchain from `backends/lean/lean-toolchain` in the Aeneas checkout.
-
-Write the spec of the run, `lusterna.json` in the workspace root by default:
+Write the spec of the run to `lusterna.json` in the workspace root:
 
 ```json
 {
@@ -74,6 +71,8 @@ Write the spec of the run, `lusterna.json` in the workspace root by default:
 - `properties` are the properties to formalize. With none, the run ends after the translation.
 - `infer` infers entrypoints and properties in addition to the given ones.
 - `design_doc` can be a single design document that the infer stage uses to find and judge properties. The infer agent will find design relevant docs inside the repository by itself, so only pass this if you want to override it to this one particular document.
+
+### Running Lusterna
 
 Run lusterna:
 
