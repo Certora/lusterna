@@ -50,3 +50,6 @@ build:
   cd lusterna-spec && lake build
   cd lusterna-lean && lake build
   cargo build --release
+
+install: build
+  cargo install --path . --locked
