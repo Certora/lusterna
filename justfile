@@ -2,7 +2,7 @@ default: lint test
 
 setup:
   git submodule update --init
-  # Install the OCaml packages that `deps/aeneas/src/aeneas.opam` lists, without asking
+  # Install the OCaml packages that `deps/aeneas/src/aeneas.opam` lists
   opam install deps/aeneas/src --deps-only --yes
   make -C deps/aeneas setup-charon
   git -C deps/aeneas/charon submodule update --init
