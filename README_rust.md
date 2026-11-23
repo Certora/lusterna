@@ -35,11 +35,14 @@ Lusterna commits the result of each stage to a new branch in a separate git work
 ```sh
 # Checkout and build Aeneas and Charon 
 just setup
-# Install `lusterna` using Cargo
+# Install the `lusterna` using `cargo`
 just install
 ```
 
-Note: the installed lusterna binary contains absolute paths into this checkout. If you move or delete the checkout, the binary stops working.
+Notes:
+
+- The binary is installed into `~/.cargo/bin`, confirm that it is in `PATH`.
+- The installed `lusterna` binary contains absolute paths into this checkout. If you move or delete the checkout, the binary stops working.
 
 ### Updating Aeneas or Solanalib
 
