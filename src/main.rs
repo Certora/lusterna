@@ -1,12 +1,16 @@
 use std::{
-    fs,
+    env, fs,
     io::{self, IsTerminal},
     path::PathBuf,
 };
 
 use anyhow::{Context, bail};
 use clap::{Args, Parser, Subcommand};
-use lusterna::{config::Config, pipeline::Pipeline, spec::Spec};
+use lusterna::{
+    config::{AENEAS_ROOT, Config},
+    pipeline::Pipeline,
+    spec::Spec,
+};
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -34,6 +38,15 @@ struct RunArgs {
 }
 
 fn main() -> anyhow::Result<()> {
+    // Put the `aeneas` and `charon` of `AENEAS_ROOT` first on `PATH`
+    let mut path = vec![
+        PathBuf::from(AENEAS_ROOT).join("bin"),
+        PathBuf::from(AENEAS_ROOT).join("charon/bin"),
+    ];
+    path.extend(env::split_paths(&env::var_os("PATH").unwrap_or_default()));
+    // SAFETY: no other thread runs yet
+    unsafe { env::set_var("PATH", env::join_paths(path)?) };
+
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let cli = Cli::parse();
     let Command::Run(args) = cli.command;
