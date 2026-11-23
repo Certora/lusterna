@@ -29,8 +29,9 @@
 //!    skipped.
 //!
 //! A run starts only if the repository has no uncommitted changes other than
-//! the spec file (unless `--allow-dirty`), the tools of `TOOLS` are on `PATH`,
-//! and the settings that the stages need resolve.
+//! the spec file (unless `--allow-dirty`), the tools of `TOOLS` (and on Linux
+//! `LINUX_SANDBOX_TOOLS`) are on `PATH`, and the settings that the stages need
+//! resolve.
 //!
 //! After each step, the pipeline commits all changes
 //! in the repository.
@@ -75,6 +76,9 @@ use crate::{
 /// The tools that the stages run.
 const TOOLS: [&str; 6] = ["git", "cargo", "charon", "aeneas", "lake", "claude"];
 
+/// The tools that the `claude` sandbox needs on Linux.
+const LINUX_SANDBOX_TOOLS: [&str; 2] = ["bwrap", "socat"];
+
 /// An error that ends a pipeline run.
 #[derive(Debug, thiserror::Error)]
 pub enum PipelineError {
@@ -106,7 +110,7 @@ pub enum PipelineError {
         .0.iter().map(|f| f.display().to_string()).collect::<Vec<_>>().join(", ")
     )]
     DirtyWorktree(Vec<PathBuf>),
-    /// These tools of `TOOLS` are not on `PATH`.
+    /// These tools of `TOOLS` or `LINUX_SANDBOX_TOOLS` are not on `PATH`.
     #[error("these tools are not on `PATH`: {}", .0.join(", "))]
     NotInPath(Vec<&'static str>),
     /// The spec has no entrypoints and does not ask to infer them.
@@ -333,11 +337,16 @@ impl Pipeline {
         Ok(())
     }
 
-    /// Checks that the tools of `TOOLS` are on `PATH`, that `aeneas` matches
-    /// the Aeneas checkout, and that the settings.
+    /// Checks that the tools of `TOOLS` (and on Linux `LINUX_SANDBOX_TOOLS`)
+    /// are on `PATH`, that `aeneas` matches the Aeneas checkout, and that the
+    /// settings.
     fn check_dependencies(&self) -> Result<(), PipelineError> {
         let path = env::var_os("PATH").unwrap_or_default();
-        let missing: Vec<&str> = TOOLS
+        let mut tools = TOOLS.to_vec();
+        if cfg!(target_os = "linux") {
+            tools.extend(LINUX_SANDBOX_TOOLS);
+        }
+        let missing: Vec<&str> = tools
             .into_iter()
             .filter(|tool| !env::split_paths(&path).any(|dir| dir.join(tool).is_file()))
             .collect();

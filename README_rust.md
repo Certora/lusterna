@@ -28,7 +28,7 @@ Lusterna commits the result of each stage to a new branch in a separate git work
 - A Rust toolchain installed with [rustup](https://rustup.rs/)
 - [opam](https://opam.ocaml.org/) with an OCaml 5 switch, to build Aeneas
 - `lake` from a Lean 4 installation (install it with [elan](https://github.com/leanprover/elan))
-- The `claude` CLI, logged in
+- The `claude` CLI, logged in. Additionally, on Linux, claude needs [bubblewrap](https://github.com/containers/bubblewrap) and `socat` installed.
 
 ## Installation
 
