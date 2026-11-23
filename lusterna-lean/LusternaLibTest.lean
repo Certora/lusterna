@@ -1,5 +1,6 @@
 module
 import LusternaLib
+meta import Aeneas.Extract.Extract
 
 /-!
 # LusternaLibTest
@@ -96,3 +97,13 @@ example :
       core.cmp.PartialOrdU64 ⟨1#u64, 5#u64, false⟩ 5#u64 = .ok true := by
   simp [core.ops.range.RangeInclusive.contains, core.cmp.impls.PartialOrdU64.le,
     core.cmp.impls.PartialOrdU64.lt]
+
+-- No Rust pattern is registered twice with the same attribute, in `LusternaLib` or in the
+-- packages it imports. A pattern is the string of a `rust_type`, `rust_const`, `rust_fun`,
+-- `rust_trait` or `rust_trait_impl` attribute.
+-- `Aeneas.Extract.write` throws on the first pattern that it finds twice, and this file then
+-- fails to compile. The lines that `write` prints are discarded.
+open Lean in
+run_cmd
+  let env ← getEnv
+  Aeneas.Extract.write env (fun _line => pure ())
