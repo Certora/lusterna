@@ -1,9 +1,9 @@
 //! Runs the stages on a Rust crate, as its [`Spec`] says:
 //!
-//! 1. `infer`: runs only if the spec asks for it. An agent finds properties
-//!    and entrypoints in addition to those of the spec. The pipeline writes
-//!    the submission of the stage to `lusterna/infer.json` in the crate root,
-//!    and the later steps use its properties and entrypoints. If the step is
+//! 1. `infer`: runs only if the spec asks for it. An agent finds properties and
+//!    entrypoints in addition to those of the spec. The pipeline writes the
+//!    submission of the stage to `lusterna/infer.json` in the crate root, and
+//!    the later steps use its properties and entrypoints. If the step is
 //!    skipped, they use those of the `lusterna/infer.json` of an earlier run,
 //!    and the run fails if the file does not exist.
 //! 2. The pipeline writes the spec to `lusterna/lusterna.json` and its
@@ -30,8 +30,7 @@
 //!
 //! A run starts only if the repository has no uncommitted changes other than
 //! the spec file (unless `--allow-dirty`), the tools of `TOOLS` are on `PATH`,
-//! and the settings that the stages need, such as `--solanalib-root` for a
-//! Solana program, resolve.
+//! and the settings that the stages need resolve.
 //!
 //! After each step, the pipeline commits all changes
 //! in the repository.
@@ -335,8 +334,7 @@ impl Pipeline {
     }
 
     /// Checks that the tools of `TOOLS` are on `PATH`, that `aeneas` matches
-    /// the Aeneas checkout, and that the settings that the stages need
-    /// resolve, such as `--solanalib-root` for a Solana program.
+    /// the Aeneas checkout, and that the settings.
     fn check_dependencies(&self) -> Result<(), PipelineError> {
         let path = env::var_os("PATH").unwrap_or_default();
         let missing: Vec<&str> = TOOLS
@@ -368,6 +366,7 @@ impl Pipeline {
             aeneas_rev: self.config.aeneas_rev()?,
             lean_toolchain: self.config.lean_toolchain()?,
             platform: self.config.get_platform()?,
+            solanlib_root: self.config.solanalib_root()?,
         };
         let submission = self
             .exec_stage::<TranslateStage>(input)

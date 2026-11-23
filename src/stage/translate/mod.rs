@@ -99,6 +99,8 @@ pub struct TranslateInput {
     /// Absolute path to the Aeneas checkout
     pub aeneas_root: PathBuf,
 
+    pub solanlib_root: PathBuf,
+
     /// The Aeneas git revision the Lean project depends on
     pub aeneas_rev: String,
 
