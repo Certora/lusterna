@@ -1,5 +1,6 @@
 [workspace]
 members = ["lusterna-stubs/fixed", "lusterna-stubs/fixed-macro-impl", "lusterna-stubs/uint"]
+exclude = ["deps"]
 
 [package]
 name = "lusterna"

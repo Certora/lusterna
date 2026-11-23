@@ -4,7 +4,7 @@
 # of an extracted crate can import it instead of redefining it.
 #
 # The paths of `solanalib` and `aeneas` below are for a build of this
-# package on its own, with both checkouts next to the lusterna checkout. A
+# package on its own, with both checkouts in the submodules under `deps`. A
 # project that requires this package and also requires `solanalib` and
 # `aeneas` itself uses its own paths for them.
 
@@ -18,11 +18,11 @@ autoImplicit = false
 
 [[require]]
 name = "solanalib"
-path = "../../../leanprover-solanalib"
+path = "../deps/solanalib"
 
 [[require]]
 name = "aeneas"
-path = "../../../aeneas/backends/lean"
+path = "../deps/aeneas/backends/lean"
 
 [[require]]
 name = "lusternaSpec"

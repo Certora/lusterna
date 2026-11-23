@@ -10,6 +10,8 @@ The theorems that `LusternaSpecTest` runs `Lusterna.Spec.check` on.
 
 open Aeneas Aeneas.Std
 
+set_option warn.sorry false
+
 namespace LusternaSpecTest
 
 def f (x : U32) : Result U32 := x + 1#u32

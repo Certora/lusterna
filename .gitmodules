@@ -1,0 +1,6 @@
+[submodule "deps/aeneas"]
+	path = deps/aeneas
+	url = https://github.com/AeneasVerif/aeneas.git
+[submodule "deps/solanalib"]
+	path = deps/solanalib
+	url = https://github.com/kel-certora/leanprover-solanalib/

@@ -6,7 +6,7 @@
 //! - is system dependent (e.g. a path on the machine), or
 //! - is used by multiple stages
 use std::{
-    fs::{self, canonicalize},
+    fs::{self},
     io,
     path::PathBuf,
     process,
@@ -26,6 +26,9 @@ use crate::{
 
 pub const DEFAULT_STAGE_MAX_ATTEMPTS: usize = 5;
 pub const DEFAULT_MAX_BUDGED_USD: f64 = 50.0;
+
+pub const AENEAS_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/deps/aeneas");
+pub const SOLANALIB_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/deps/solanalib");
 
 pub const DEFAULT_MODEL: &str = "opus";
 pub const DEFAULT_EFFORT: Effort = Effort::Medium;
@@ -52,16 +55,7 @@ pub struct Config {
     #[arg(long, global = true, default_value_t = DEFAULT_COMMAND_TIMEOUT_MINUTES)]
     pub(crate) command_timeout: u64,
 
-    /// Aeneas checkout
-    #[arg(long, env = "AENEAS_ROOT")]
-    aeneas_root: PathBuf,
-
     // Paths
-    /// The path to the Solanalib library. Must be given if the tool targets a
-    /// Solana program
-    #[arg(long, global = true)]
-    pub(crate) solanalib_root: Option<PathBuf>,
-
     /// Workspace of the Rust project
     #[arg(long, global = true, default_value = ".")]
     workspace_root: PathBuf,
@@ -105,40 +99,41 @@ impl Config {
     }
 
     pub fn aeneas_root(&self) -> Result<PathBuf, ConfigError> {
-        self.aeneas_root.canonicalize().map_err(ConfigError::Io)
+        PathBuf::from(AENEAS_ROOT)
+            .canonicalize()
+            .map_err(ConfigError::Io)
     }
 
     pub fn repo_root(&self) -> Result<PathBuf, ConfigError> {
         git::toplevel(&self.workspace_root()?).map_err(ConfigError::Git)
     }
 
+    pub fn solanalib_root(&self) -> Result<PathBuf, ConfigError> {
+        PathBuf::from(SOLANALIB_ROOT)
+            .canonicalize()
+            .map_err(ConfigError::Io)
+    }
+
     pub fn lean_toolchain(&self) -> Result<String, ConfigError> {
-        let toolchain_file = self.aeneas_root.join("backends/lean/lean-toolchain");
+        let toolchain_file = self.aeneas_root()?.join("backends/lean/lean-toolchain");
         let toolchain = fs::read_to_string(&toolchain_file)?;
         Ok(toolchain.trim().to_string())
     }
 
     pub fn get_platform(&self) -> Result<Platform, ConfigError> {
         if cargo::lock_has_package(&self.manifest()?, "solana-program")? {
-            let solanalib_root = self
-                .solanalib_root
-                .as_ref()
-                .ok_or(ConfigError::MissingSolanalibRoot)?;
-
-            let lean_root = self.aeneas_root.join("backends/lean");
+            let lean_root = self.aeneas_root()?.join("backends/lean");
             if !lean_root.join(".lake/packages").is_dir() {
                 return Err(ConfigError::MissingLakePackages(lean_root));
             }
-            Ok(Platform::Solana {
-                solanalib_root: canonicalize(solanalib_root)?,
-            })
+            Ok(Platform::Solana)
         } else {
             Ok(Platform::Generic)
         }
     }
 
     pub fn aeneas_rev(&self) -> Result<String, ConfigError> {
-        Ok(git::head_rev(&self.aeneas_root)?)
+        Ok(git::head_rev(&self.aeneas_root()?)?)
     }
 
     pub fn ensure_aeneas_version_match(&self) -> Result<(), ConfigError> {
@@ -158,7 +153,7 @@ impl Config {
         if built_rev.is_empty() || !checkout_rev.starts_with(built_rev) {
             return Err(ConfigError::AeneasVersionMismatch {
                 version_bin: version_bin.to_string(),
-                root: self.aeneas_root.clone(),
+                root: self.aeneas_root()?,
                 version_checkout: checkout_rev,
             });
         }
@@ -190,25 +185,20 @@ pub enum Platform {
     /// ones and the items of the replaced crates, the Lean project requires
     /// `LusternaLib`, and the translate agent gets the skill
     /// `solana-translate`.
-    Solana {
-        /// Absolute path to the Solanalib checkout.
-        solanalib_root: PathBuf,
-    },
+    Solana,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error(transparent)]
     Cargo(#[from] CargoError),
-    #[error("the crate is a Solana program, so `--solanalib-root` is required")]
-    MissingSolanalibRoot,
     #[error(
         "the workspace has {} crates, so `--crate-root` is required: {}",
         .0.len(),
         .0.iter().map(|c| c.display().to_string()).collect::<Vec<_>>().join(", ")
     )]
     NoCrateRoot(Vec<PathBuf>),
-    #[error("`{}/.lake/packages` does not exist. Run `lake update` in `{}` once", .0.display(), .0.display())]
+    #[error("`{}/.lake/packages` does not exist. Run `just setup`", .0.display())]
     MissingLakePackages(PathBuf),
     #[error(transparent)]
     Io(#[from] io::Error),

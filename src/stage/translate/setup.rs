@@ -80,8 +80,8 @@ impl CharonBuild {
 }
 
 /// The `lakefile.toml` of the Lean project, with `{rev}` standing for the
-/// Aeneas git revision and `{lusterna_spec_root}` for `LUSTERNA_SPEC`. `extract.sh` makes Aeneas write the generated modules
-/// to `Extraction/`.
+/// Aeneas git revision and `{lusterna_spec_root}` for `LUSTERNA_SPEC`.
+/// `extract.sh` makes Aeneas write the generated modules to `Extraction/`.
 const LAKEFILE_TEMPLATE: &str = include_str!("res/lakefile.toml.template");
 
 /// The `lakefile.toml` of the Lean project of a Solana crate, with
@@ -192,9 +192,7 @@ pub(super) fn run_setup(
     translate_info!("setup: initializing lake project (may take a minute)");
     let lakefile = match &input.platform {
         Platform::Generic => make_lakefile(&input.aeneas_rev),
-        Platform::Solana { solanalib_root } => {
-            make_solana_lakefile(&input.aeneas_root, solanalib_root)
-        }
+        Platform::Solana => make_solana_lakefile(&input.aeneas_root, &input.solanlib_root),
     };
     let lean_root = init_lake_project(crate_root, &lakefile, &input.lean_toolchain)?;
     if let Platform::Solana { .. } = input.platform {
