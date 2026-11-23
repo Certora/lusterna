@@ -2,9 +2,12 @@ default: lint test
 
 setup:
   git submodule update --init
+  # Install the OCaml packages that `deps/aeneas/src/aeneas.opam` lists, without asking
+  opam install deps/aeneas/src --deps-only --yes
   make -C deps/aeneas setup-charon
   git -C deps/aeneas/charon submodule update --init
-  make -C deps/aeneas
+  # `opam exec` puts `dune` of the opam switch on `PATH` for the Aeneas build
+  opam exec -- make -C deps/aeneas
   cd deps/aeneas/backends/lean && lake exe cache get
 
 bump-aeneas rev:
