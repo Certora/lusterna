@@ -198,7 +198,7 @@ pub enum ConfigError {
         .0.iter().map(|c| c.display().to_string()).collect::<Vec<_>>().join(", ")
     )]
     NoCrateRoot(Vec<PathBuf>),
-    #[error("`{}/.lake/packages` does not exist. Run `lake update` in `{}` once", .0.display(), .0.display())]
+    #[error("`{}/.lake/packages` does not exist. Run `just setup`", .0.display())]
     MissingLakePackages(PathBuf),
     #[error(transparent)]
     Io(#[from] io::Error),
