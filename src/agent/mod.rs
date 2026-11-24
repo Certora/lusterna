@@ -116,7 +116,7 @@ impl From<io::Error> for RunError {
     }
 }
 
-pub trait Agent {
+pub trait Agent: Default {
     fn run(&mut self, req: &Request, hook: &mut dyn FnMut(&str)) -> Result<Response, RunError>;
 
     /// Sets the effort of the agent

@@ -29,13 +29,13 @@
 //! initially found defects were fixed and whether these fixes introduced other
 //! defects.
 
-use std::{fmt, path::Path, time::Instant};
+use std::{fmt, time::Instant};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    agent::{AgentError, Session},
+    agent::{Agent, AgentError, Session, claude::ClaudeCode},
     config::Config,
     log::{stage_debug, stage_info},
     stage::Stage,
@@ -51,12 +51,12 @@ const RECHECK_PROMPT: &str = "The agent changed its work to fix the defects of y
 /// The state of a stage's execution. Serializing it keeps the phase and the
 /// costs, not the number of attempts.
 #[derive(Serialize, Deserialize)]
-#[serde(bound(deserialize = ""))]
-pub struct StageExec<S: Stage> {
+#[serde(bound(deserialize = "A: Deserialize<'de>"))]
+pub struct StageExec<S: Stage, A: Agent = ClaudeCode> {
     stage: S,
 
-    worker: Option<Session>,
-    judge: Option<Session>,
+    worker_session: Session<A>,
+    judge_session: Session<A>,
 
     phase: Phase<S>,
 
@@ -79,12 +79,49 @@ enum Phase<S: Stage> {
 impl<S: Stage> StageExec<S> {
     /// Returns the execution of `stage`. The first attempt gets the stage's
     /// base prompt.
-    pub fn new(stage: S) -> Self {
+    pub fn new(stage: S, cfg: &Config) -> Result<Self, StageExecutionError<S>> {
+        let worker = Self::get_worker_session(&stage, cfg)?;
+        let judge = Self::get_judge_session(cfg)?;
+        Ok(Self::with_sessions(stage, worker, judge))
+    }
+}
+
+impl<S: Stage, A: Agent> StageExec<S, A> {
+    fn get_worker_session(stage: &S, cfg: &Config) -> Result<Session<A>, AgentError> {
+        let mut sessions = Session::<A>::default();
+        sessions.set_briefing(format!("{}\n\n{WAIT_FOR_SUBAGENTS}", stage.briefing()));
+        sessions.set_options(stage.agent_options(cfg));
+        for (name, content) in stage.skills() {
+            sessions.add_skill(name, content);
+        }
+        sessions.set_effort(cfg.effort);
+        sessions.set_model(cfg.model.clone());
+        sessions.set_dir(cfg.workspace_root()?);
+
+        Ok(sessions)
+    }
+
+    fn get_judge_session(cfg: &Config) -> Result<Session<A>, AgentError> {
+        let mut sessions = Session::<A>::default();
+
+        sessions.set_briefing(WAIT_FOR_SUBAGENTS.to_owned());
+        sessions.set_effort(cfg.effort);
+        sessions.set_model(cfg.model.clone());
+        sessions.set_dir(cfg.workspace_root()?);
+
+        Ok(sessions)
+    }
+
+    pub fn with_sessions(
+        stage: S,
+        worker_sessions: Session<A>,
+        judge_sessions: Session<A>,
+    ) -> Self {
         let prompt = stage.base_prompt();
         Self {
             stage,
-            worker: None,
-            judge: None,
+            worker_session: worker_sessions,
+            judge_session: judge_sessions,
             attempts: 0,
             phase: Phase::Attempt { prompt },
             worker_cost: 0f64,
@@ -173,39 +210,6 @@ impl<S: Stage> StageExec<S> {
         }
     }
 
-    fn get_session(&mut self, cfg: &Config) -> Result<&mut Session, AgentError> {
-        if self.worker.is_none() {
-            let mut agent = Session::default();
-            agent.set_briefing(format!("{}\n\n{WAIT_FOR_SUBAGENTS}", self.stage.briefing()));
-            agent.set_options(self.stage.agent_options(cfg));
-            for (name, content) in self.stage.skills() {
-                agent.add_skill(name, content);
-            }
-            agent.set_effort(cfg.effort);
-            agent.set_model(cfg.model.clone());
-            agent.set_dir(cfg.workspace_root()?);
-
-            self.worker = Some(agent);
-        }
-
-        Ok(self.worker.as_mut().unwrap())
-    }
-
-    fn get_judge_session(&mut self, cfg: &Config, dir: &Path) -> Result<&mut Session, AgentError> {
-        if self.judge.is_none() {
-            let mut judge = Session::default();
-
-            judge.set_briefing(WAIT_FOR_SUBAGENTS.to_owned());
-            judge.set_effort(cfg.effort);
-            judge.set_model(cfg.model.clone());
-            judge.set_dir(dir.to_owned());
-
-            self.judge = Some(judge);
-        }
-
-        Ok(self.judge.as_mut().unwrap())
-    }
-
     /// Returns the agent's submission, or the blocker it stopped the stage
     /// with.
     fn run_attempt(
@@ -226,7 +230,7 @@ impl<S: Stage> StageExec<S> {
             self.judge_cost
         );
 
-        let session = self.get_session(cfg)?;
+        let session = &mut self.worker_session;
         session.set_max_budget(remaining);
 
         let schema =
@@ -277,7 +281,7 @@ impl<S: Stage> StageExec<S> {
             self.judge_cost
         );
 
-        let judge_session = self.get_judge_session(cfg, &cfg.workspace_root()?)?;
+        let judge_session = &mut self.judge_session;
 
         // Check if we are running a second judge attempt.
         // In that case, shift focus to the defects flagged in previous round.

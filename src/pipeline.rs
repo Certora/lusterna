@@ -484,7 +484,7 @@ impl Pipeline {
         let stage = S::setup(input).map_err(StageExecutionError::SetupError)?;
         let t = Instant::now();
         log::info!("Executing `{}`", S::NAME);
-        let stage_exec = StageExec::new(stage);
+        let stage_exec = StageExec::new(stage, &self.config)?;
         let submission = stage_exec.run(&self.config, None)?;
         log::info!("Executed `{}` in {}", S::NAME, format_elapsed(t));
         Ok(submission)
