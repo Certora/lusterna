@@ -2,7 +2,7 @@ default: lint test
 
 make :=if os() == "macos" { "gmake" } else { "make" }
 
-setup:
+setup: && setup-lean
   git submodule update --init
   # Install the OCaml packages that `deps/aeneas/src/aeneas.opam` lists
   opam install deps/aeneas/src --deps-only --yes
@@ -10,6 +10,10 @@ setup:
   git -C deps/aeneas/charon submodule update --init
   # `opam exec` puts `dune` of the opam switch on `PATH` for the Aeneas build
   opam exec -- {{make}} -C deps/aeneas
+
+# The part of `setup` that `lint`, `test` and `build` need
+[private]
+setup-lean:
   cd deps/aeneas/backends/lean && lake exe cache get
 
 bump-aeneas rev:
@@ -67,7 +71,7 @@ integration-test: setup install
   git -C "$run_dir" init -q
   git -C "$run_dir" add --all
   git -C "$run_dir" -c user.name=lusterna -c user.email=lusterna@test commit -q -m init
-  RUST_LOG=debug lusterna --workspace-root "$run_dir" --yes run
+  RUST_LOG=debug lusterna --workspace-root "$run_dir" --stage-max-budget 4 --yes run
   just integration-check "$run_dir"
   rm -rf "$run_dir"
 

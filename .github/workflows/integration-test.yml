@@ -1,0 +1,62 @@
+name: integration-test
+
+# Each run bills `ANTHROPIC_API_KEY`. The environment `integration` makes a run
+# wait until a maintainer approves it. To skip it, cancel the run.
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  integration-test:
+    runs-on: ubuntu-latest
+    environment: integration-test
+    timeout-minutes: 120
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - name: Install just
+        run: command -v just || cargo install just --locked
+      - uses: actions/cache@v4
+        id: opam-cache
+        with:
+          path: ~/.opam
+          key: opam-${{ runner.os }}-5.3.0
+      - uses: actions/cache@v4
+        id: elan-cache
+        with:
+          path: ~/.elan
+          key: elan-${{ runner.os }}-${{ hashFiles('**/lean-toolchain') }}
+      - name: Install opam and OCaml
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y opam
+          if [ "${{ steps.opam-cache.outputs.cache-hit }}" != "true" ]; then
+            opam init --bare --disable-sandboxing --yes
+            opam switch create 5.3.0 --yes
+          fi
+          echo "OPAMSWITCH=5.3.0" >> "$GITHUB_ENV"
+      - name: Install elan
+        run: |
+          if [ "${{ steps.elan-cache.outputs.cache-hit }}" != "true" ]; then
+            curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
+          fi
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Install claude and its sandbox tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap socat
+          # Ubuntu 24.04 blocks the unprivileged user namespaces that `bwrap` needs
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          npm install -g @anthropic-ai/claude-code
+      - run: just integration-test
