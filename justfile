@@ -55,3 +55,21 @@ build:
 
 install: build
   cargo install --path . --locked
+
+# Runs the installed `lusterna` on a copy of `tests/fixtures/demo` and checks its output
+integration-test: setup install
+  #!/usr/bin/env bash
+  set -euo pipefail
+  run_dir="$(mktemp -d)"
+  trap 'echo "kept run dir: $run_dir" >&2' ERR
+  cp -R tests/fixtures/demo/. "$run_dir"
+  git -C "$run_dir" init -q
+  git -C "$run_dir" add --all
+  git -C "$run_dir" -c user.name=lusterna -c user.email=lusterna@test commit -q -m init
+  lusterna --workspace-root "$run_dir" --yes run
+  just integration-check "$run_dir"
+  rm -rf "$run_dir"
+
+# Runs the integration tests on the output of an earlier `integration-test`
+integration-check run_dir:
+  LUSTERNA_IT_RUN_DIR="{{run_dir}}" cargo test --test integration -- --ignored
