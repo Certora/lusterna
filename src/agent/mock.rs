@@ -1,6 +1,8 @@
 use std::{
+    cell::{Ref, RefCell},
     collections::VecDeque,
     path::{Path, PathBuf},
+    rc::Rc,
 };
 
 use crate::agent::{Agent, Effort, Request, Response, RunError, SessionId};
@@ -17,16 +19,28 @@ pub struct Recorded {
     pub workdir: Option<PathBuf>,
 }
 
-/// Records each request and returns the next of `responses`
-#[derive(Default)]
+/// Records each request and returns the next queued response. Clones share
+/// the queue and the recorded requests.
+#[derive(Clone, Default)]
 pub struct MockAgent {
-    pub responses: VecDeque<Result<Response, RunError>>,
-    pub requests: Vec<Recorded>,
+    responses: Rc<RefCell<VecDeque<Result<Response, RunError>>>>,
+    requests: Rc<RefCell<Vec<Recorded>>>,
+}
+
+impl MockAgent {
+    /// Queues `response` after the responses queued before
+    pub fn push(&self, response: Result<Response, RunError>) {
+        self.responses.borrow_mut().push_back(response);
+    }
+
+    pub fn requests(&self) -> Ref<'_, Vec<Recorded>> {
+        self.requests.borrow()
+    }
 }
 
 impl Agent for MockAgent {
     fn run(&mut self, req: &Request, _hook: &mut dyn FnMut(&str)) -> Result<Response, RunError> {
-        self.requests.push(Recorded {
+        self.requests.borrow_mut().push(Recorded {
             prompt: req.prompt.to_owned(),
             session_id: req.session_id.cloned(),
             json_schema: req.json_schema.map(str::to_owned),
@@ -35,7 +49,10 @@ impl Agent for MockAgent {
             skills: req.skills.to_vec(),
             workdir: req.workdir.map(Path::to_path_buf),
         });
-        self.responses.pop_front().expect("a response for each run")
+        self.responses
+            .borrow_mut()
+            .pop_front()
+            .expect("a response for each run")
     }
 
     fn set_effort(&mut self, _effort: Effort) {}

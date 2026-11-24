@@ -1,6 +1,6 @@
 pub(crate) mod claude;
 #[cfg(test)]
-mod mock;
+pub(crate) mod mock;
 
 use std::{
     fmt::Display,
@@ -157,6 +157,11 @@ impl<A: Agent> Session<A> {
 
     pub fn get_usage(&self) -> &ModelUsage {
         &self.usage
+    }
+
+    #[cfg(test)]
+    pub(crate) fn agent(&self) -> &A {
+        &self.agent
     }
 
     pub fn set_briefing(&mut self, briefing: String) {
@@ -340,11 +345,12 @@ mod tests {
     }
 
     fn session(responses: Vec<Result<Response, RunError>>) -> Session<MockAgent> {
+        let agent = MockAgent::default();
+        for response in responses {
+            agent.push(response);
+        }
         Session {
-            agent: MockAgent {
-                responses: responses.into(),
-                requests: Vec::new(),
-            },
+            agent,
             ..Session::default()
         }
     }
@@ -353,9 +359,9 @@ mod tests {
         session.run(prompt.to_owned(), Some("{}".to_owned()), |_| {})
     }
 
-    fn session_ids(session: &Session<MockAgent>) -> Vec<Option<&str>> {
-        let requests = &session.agent.requests;
-        requests.iter().map(|r| r.session_id.as_deref()).collect()
+    fn session_ids(session: &Session<MockAgent>) -> Vec<Option<SessionId>> {
+        let requests = session.agent.requests();
+        requests.iter().map(|r| r.session_id.clone()).collect()
     }
 
     #[test]
@@ -364,7 +370,7 @@ mod tests {
         run(&mut session, "first").unwrap();
         run(&mut session, "second").unwrap();
 
-        assert_eq!(session_ids(&session), [None, Some("s1")]);
+        assert_eq!(session_ids(&session), [None, Some("s1".to_owned())]);
         assert_eq!(session.get_session_id().map(String::as_str), Some("s1"));
     }
 
@@ -415,7 +421,7 @@ mod tests {
             let mut session = session(vec![err(Some("s1"), None, error), ok("s1", 1.0)]);
             let result = run(&mut session, "work");
 
-            let requests = &session.agent.requests;
+            let requests = session.agent.requests();
             match retry_prompt {
                 Some(prompt) => {
                     assert!(result.is_ok(), "{name}");
@@ -450,7 +456,7 @@ mod tests {
         ));
 
         run(&mut session, "second").unwrap();
-        assert_eq!(session_ids(&session), [None, Some("s1")]);
+        assert_eq!(session_ids(&session), [None, Some("s1".to_owned())]);
     }
 
     #[test]
@@ -509,7 +515,7 @@ mod tests {
             Err(AgentError::MaxRetries)
         ));
         assert_eq!(
-            session.agent.requests.len(),
+            session.agent.requests().len(),
             usize::from(Session::<MockAgent>::MAX_RETRIES)
         );
     }
@@ -524,7 +530,7 @@ mod tests {
         run(&mut session, "work").unwrap();
 
         assert_eq!(
-            session.agent.requests,
+            *session.agent.requests(),
             [Recorded {
                 prompt: "work".to_owned(),
                 session_id: None,
