@@ -256,3 +256,81 @@ impl Stage for TranslateStage {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::stage::assert_no_placeholders;
+
+    /// Aeneas text in the skill `aeneas-recipes`
+    const PROMOTED_CONST: &str = "{promoted_const}";
+
+    fn stage(platform: Platform) -> TranslateStage {
+        TranslateStage {
+            setup_outcome: TranslateSetupOutcome {
+                extraction_script: PathBuf::from("/c/lusterna/extract.sh"),
+                lean_root: PathBuf::from("/c/lusterna/lean"),
+                setup_commit: "abc123".to_owned(),
+            },
+            input: TranslateInput {
+                workspace_root: PathBuf::from("/c"),
+                crate_root: PathBuf::from("/c"),
+                entrypoints: vec!["crate::vault".to_owned()],
+                opaque: vec!["core::fmt".to_owned()],
+                aeneas_root: PathBuf::from("/aeneas"),
+                solanlib_root: PathBuf::from("/solanalib"),
+                aeneas_rev: "def456".to_owned(),
+                lean_toolchain: "leanprover/lean4:v4.0.0".to_owned(),
+                platform,
+            },
+        }
+    }
+
+    #[test]
+    fn base_prompt_fills_every_placeholder() {
+        let prompt = stage(Platform::Generic).base_prompt();
+
+        assert_no_placeholders(&prompt, &[]);
+        assert!(prompt.contains("/c"));
+    }
+
+    #[test]
+    fn briefing_fills_every_placeholder() {
+        for platform in [Platform::Generic, Platform::Solana] {
+            let briefing = stage(platform).briefing();
+
+            assert_no_placeholders(&briefing, &[]);
+            assert!(briefing.contains("- `crate::vault`"));
+            assert!(briefing.contains("- `core::fmt`"));
+        }
+    }
+
+    #[test]
+    fn skills_fill_every_placeholder() {
+        let skills = stage(Platform::Solana).skills();
+
+        let (_, recipes) = &skills[0];
+        assert_no_placeholders(recipes, &[PROMOTED_CONST]);
+        assert!(recipes.contains("/aeneas"));
+        let (_, solana) = &skills[1];
+        assert_no_placeholders(solana, &[]);
+    }
+
+    #[test]
+    fn judge_prompt_fills_every_placeholder() {
+        let submission = TranslateSubmission {
+            extract_changes: Vec::new(),
+            rust_changes: Vec::new(),
+            lean_definitions: Vec::new(),
+            kept_axioms: Vec::new(),
+            unmatched_opaque_patterns: Vec::new(),
+            notes: Vec::new(),
+        };
+        for platform in [Platform::Generic, Platform::Solana] {
+            let prompt = stage(platform).judge_prompt(&submission).unwrap();
+
+            assert_no_placeholders(&prompt, &[PROMOTED_CONST]);
+            assert!(prompt.contains("abc123"));
+        }
+    }
+}

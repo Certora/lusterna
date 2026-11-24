@@ -250,6 +250,7 @@ impl Stage for FormalizeStage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stage::assert_no_placeholders;
 
     fn stage() -> FormalizeStage {
         FormalizeStage {
@@ -264,48 +265,41 @@ mod tests {
         }
     }
 
-    #[test]
-    fn briefing_fills_every_placeholder() {
-        let briefing = stage().briefing();
-
-        for placeholder in [
-            "{lean_root}",
-            "{extracted}",
-            "{properties}",
-            "{crate_root}",
-            "{entrypoints}",
-        ] {
-            assert!(!briefing.contains(placeholder), "{placeholder} is left");
-        }
-        assert!(briefing.contains("`/c/lusterna/properties.json`"));
-    }
-
-    #[test]
-    fn judge_prompt_fills_every_placeholder() {
-        let submission = FormalizeSubmission {
+    /// A submission that skips property 1 with the reason `reason`
+    fn submission(reason: &str) -> FormalizeSubmission {
+        FormalizeSubmission {
             property_status: BTreeMap::from([(
                 1,
-                PropertyFormalizationStatus::Skipped(SkipReason::Other("{lean_root}".to_owned())),
+                PropertyFormalizationStatus::Skipped(SkipReason::Other(reason.to_owned())),
             )]),
             induction: BTreeMap::new(),
             new_theorems: Vec::new(),
             updated_theorems: Vec::new(),
             removed_theorems: Vec::new(),
-        };
-        let prompt = stage().judge_prompt(&submission).unwrap();
-
-        for placeholder in [
-            "{extracted}",
-            "{properties}",
-            "{crate_root}",
-            "{briefing}",
-            "{skills}",
-            "{submission}",
-        ] {
-            assert!(!prompt.contains(placeholder), "{placeholder} is left");
         }
-        assert!(prompt.contains("\"Other\": \"{lean_root}\""));
+    }
+
+    #[test]
+    fn briefing_fills_every_placeholder() {
+        let briefing = stage().briefing();
+
+        assert_no_placeholders(&briefing, &[]);
+        assert!(briefing.contains("`/c/lusterna/properties.json`"));
+    }
+
+    #[test]
+    fn judge_prompt_fills_every_placeholder() {
+        let prompt = stage().judge_prompt(&submission("no model")).unwrap();
+
+        assert_no_placeholders(&prompt, &[]);
         assert!(prompt.contains("name: aeneas-specs"));
+    }
+
+    #[test]
+    fn judge_prompt_keeps_placeholders_in_the_submission() {
+        let prompt = stage().judge_prompt(&submission("{lean_root}")).unwrap();
+
+        assert!(prompt.contains("\"Other\": \"{lean_root}\""));
     }
 
     #[test]

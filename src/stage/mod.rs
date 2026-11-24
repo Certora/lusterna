@@ -173,3 +173,26 @@ fn lean_agent_options(cfg: &Config) -> AgentOptions {
     options.sandbox = true;
     options
 }
+
+/// Asserts that `rendered` contains no placeholder other than those in
+/// `allowed`. A placeholder is a word of lowercase letters and underscores in
+/// braces, such as `{crate_root}`.
+#[cfg(test)]
+fn assert_no_placeholders(rendered: &str, allowed: &[&str]) {
+    let mut rest = rendered;
+    while let Some(start) = rest.find('{') {
+        rest = &rest[start..];
+        let Some(end) = rest.find('}') else {
+            break;
+        };
+        let word = &rest[1..end];
+        let placeholder = &rest[..=end];
+        let is_placeholder =
+            !word.is_empty() && word.chars().all(|c| c.is_ascii_lowercase() || c == '_');
+        assert!(
+            !is_placeholder || allowed.contains(&placeholder),
+            "{placeholder} is left"
+        );
+        rest = &rest[1..];
+    }
+}

@@ -197,3 +197,53 @@ impl Stage for InferStage {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::stage::assert_no_placeholders;
+
+    fn stage(platform: Platform) -> InferStage {
+        InferStage {
+            crate_root: PathBuf::from("/c"),
+            existing_props: Properties::default(),
+            existing_eps: vec!["crate::vault".to_owned()],
+            design_doc: Some(PathBuf::from("docs/design.md")),
+            platform,
+        }
+    }
+
+    #[test]
+    fn base_prompt_fills_every_placeholder() {
+        let prompt = stage(Platform::Generic).base_prompt();
+
+        assert_no_placeholders(&prompt, &[]);
+        assert!(prompt.contains("`crate::vault`"));
+        assert!(prompt.contains("`docs/design.md`"));
+    }
+
+    #[test]
+    fn briefing_fills_every_placeholder() {
+        for platform in [Platform::Generic, Platform::Solana] {
+            let briefing = stage(platform).briefing();
+
+            assert_no_placeholders(&briefing, &[]);
+            assert!(briefing.contains("/c"));
+        }
+    }
+
+    #[test]
+    fn judge_prompt_fills_every_placeholder() {
+        let submission = InferStageSubmission {
+            properties: Properties::default(),
+            entrypoints: vec!["crate::vault".to_owned()],
+            design_doc: None,
+        };
+        for platform in [Platform::Generic, Platform::Solana] {
+            let prompt = stage(platform).judge_prompt(&submission).unwrap();
+
+            assert_no_placeholders(&prompt, &[]);
+            assert!(prompt.contains(&serde_json::to_string_pretty(&submission).unwrap()));
+        }
+    }
+}
