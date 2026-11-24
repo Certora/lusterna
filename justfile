@@ -56,8 +56,7 @@ build:
 install: build
   cargo install --path . --locked
 
-# With `ANTHROPIC_API_KEY` set, `claude` bills the API key instead of the Claude subscription:
-# run `env -u ANTHROPIC_API_KEY just integration-test` to use the subscription.
+# To bill the subscription instead of an approved API key: `env -u ANTHROPIC_API_KEY just integration-test`
 # Installs and runs `lusterna` on a copy of `tests/fixtures/demo` and checks its output
 integration-test: setup install
   #!/usr/bin/env bash
