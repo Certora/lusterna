@@ -35,7 +35,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    agent::{Agent, AgentError},
+    agent::{AgentError, Session},
     config::Config,
     log::{stage_debug, stage_info},
     stage::Stage,
@@ -55,8 +55,8 @@ const RECHECK_PROMPT: &str = "The agent changed its work to fix the defects of y
 pub struct StageExec<S: Stage> {
     stage: S,
 
-    worker: Option<Agent>,
-    judge: Option<Agent>,
+    worker: Option<Session>,
+    judge: Option<Session>,
 
     phase: Phase<S>,
 
@@ -173,9 +173,9 @@ impl<S: Stage> StageExec<S> {
         }
     }
 
-    fn get_agent(&mut self, cfg: &Config) -> Result<&mut Agent, AgentError> {
+    fn get_session(&mut self, cfg: &Config) -> Result<&mut Session, AgentError> {
         if self.worker.is_none() {
-            let mut agent = Agent::default();
+            let mut agent = Session::default();
             agent.set_briefing(format!("{}\n\n{WAIT_FOR_SUBAGENTS}", self.stage.briefing()));
             agent.set_options(self.stage.agent_options(cfg));
             for (name, content) in self.stage.skills() {
@@ -184,25 +184,21 @@ impl<S: Stage> StageExec<S> {
             agent.set_effort(cfg.effort);
             agent.set_model(cfg.model.clone());
             agent.set_dir(cfg.workspace_root()?);
-            agent.set_json_schema(
-                json_schema::<AgentResult<S::Submission, S::Blocker>>()
-                    .map_err(AgentError::from)?,
-            );
+
             self.worker = Some(agent);
         }
 
         Ok(self.worker.as_mut().unwrap())
     }
 
-    fn get_judge(&mut self, cfg: &Config, dir: &Path) -> Result<&mut Agent, AgentError> {
+    fn get_judge_session(&mut self, cfg: &Config, dir: &Path) -> Result<&mut Session, AgentError> {
         if self.judge.is_none() {
-            let mut judge = Agent::default();
+            let mut judge = Session::default();
 
             judge.set_briefing(WAIT_FOR_SUBAGENTS.to_owned());
             judge.set_effort(cfg.effort);
             judge.set_model(cfg.model.clone());
             judge.set_dir(dir.to_owned());
-            judge.set_json_schema(json_schema::<Verdict>()?);
 
             self.judge = Some(judge);
         }
@@ -230,13 +226,19 @@ impl<S: Stage> StageExec<S> {
             self.judge_cost
         );
 
-        let agent = self.get_agent(cfg)?;
-        agent.set_max_budget(remaining);
+        let session = self.get_session(cfg)?;
+        session.set_max_budget(remaining);
+
+        let schema =
+            json_schema::<AgentResult<S::Submission, S::Blocker>>().map_err(AgentError::from)?;
         let t = Instant::now();
-        let output = agent.run_with_hook(prompt, |s| stage_info!(S::NAME, "agent: {}", s))?;
+        let response = session.run(prompt, Some(schema), |s| {
+            stage_info!(S::NAME, "agent: {}", s)
+        })?;
         stage_info!(S::NAME, "agent finished in {}", format_elapsed(t));
 
-        let result: AgentResult<S::Submission, S::Blocker> = serde_json::from_str(&output)?;
+        let result: AgentResult<S::Submission, S::Blocker> =
+            serde_json::from_str(&response.output)?;
         if let Ok(submission) = &result.result {
             stage_debug!(
                 S::NAME,
@@ -249,7 +251,7 @@ impl<S: Stage> StageExec<S> {
         // and claude code accumulated the usage over all
         // calls. So here we
         // override instead of adding.
-        let usage_cost = agent.get_usage().cost_usd;
+        let usage_cost = session.get_usage().cost_usd;
 
         Ok((result.result, usage_cost))
     }
@@ -275,13 +277,13 @@ impl<S: Stage> StageExec<S> {
             self.judge_cost
         );
 
-        let judge = self.get_judge(cfg, &cfg.workspace_root()?)?;
+        let judge_session = self.get_judge_session(cfg, &cfg.workspace_root()?)?;
 
         // Check if we are running a second judge attempt.
         // In that case, shift focus to the defects flagged in previous round.
         // If we don't do that, chances are the two agents never converge to a
         // passing version.
-        let prompt = match judge.session_id() {
+        let prompt = match judge_session.get_session_id() {
             Some(_) => format!(
                 "{RECHECK_PROMPT}\n\nThe agent's submission:\n{}",
                 serde_json::to_string_pretty(submission)?
@@ -289,13 +291,17 @@ impl<S: Stage> StageExec<S> {
             None => base_prompt,
         };
 
-        judge.set_max_budget(remaining);
+        judge_session.set_max_budget(remaining);
+
+        let schema = json_schema::<Verdict>()?;
 
         let t = Instant::now();
-        let judge_output = judge.run_with_hook(prompt, |s| stage_info!(S::NAME, "judge: {}", s))?;
+        let judge_response = judge_session.run(prompt, Some(schema), |s| {
+            stage_info!(S::NAME, "judge: {}", s)
+        })?;
         stage_info!(S::NAME, "judge finished in {}", format_elapsed(t));
-        let verdict: Verdict = serde_json::from_str(&judge_output)?;
-        Ok((verdict.defects, judge.get_usage().cost_usd))
+        let verdict: Verdict = serde_json::from_str(&judge_response.output)?;
+        Ok((verdict.defects, judge_session.get_usage().cost_usd))
     }
 
     fn retry(
