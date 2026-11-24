@@ -1,4 +1,6 @@
 pub(crate) mod claude;
+#[cfg(test)]
+mod mock;
 
 use std::{
     fmt::Display,
@@ -300,5 +302,249 @@ impl Display for Effort {
             Effort::XHigh => write!(f, "xhigh"),
             Effort::Max => write!(f, "max"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        mock::{MockAgent, Recorded},
+        *,
+    };
+
+    fn usage(cost_usd: f64) -> ModelUsage {
+        ModelUsage {
+            cost_usd,
+            ..ModelUsage::default()
+        }
+    }
+
+    fn ok(session_id: &str, cost_usd: f64) -> Result<Response, RunError> {
+        Ok(Response {
+            session_id: session_id.to_owned(),
+            output: "output".to_owned(),
+            usage: usage(cost_usd),
+        })
+    }
+
+    fn err(
+        session_id: Option<&str>,
+        cost_usd: Option<f64>,
+        kind: AgentError,
+    ) -> Result<Response, RunError> {
+        Err(RunError {
+            session_id: session_id.map(str::to_owned),
+            usage: cost_usd.map(usage),
+            kind,
+        })
+    }
+
+    fn session(responses: Vec<Result<Response, RunError>>) -> Session<MockAgent> {
+        Session {
+            agent: MockAgent {
+                responses: responses.into(),
+                requests: Vec::new(),
+            },
+            ..Session::default()
+        }
+    }
+
+    fn run(session: &mut Session<MockAgent>, prompt: &str) -> Result<Response, AgentError> {
+        session.run(prompt.to_owned(), Some("{}".to_owned()), |_| {})
+    }
+
+    fn session_ids(session: &Session<MockAgent>) -> Vec<Option<&str>> {
+        let requests = &session.agent.requests;
+        requests.iter().map(|r| r.session_id.as_deref()).collect()
+    }
+
+    #[test]
+    fn first_run_starts_a_session_and_later_runs_resume_it() {
+        let mut session = session(vec![ok("s1", 1.0), ok("s1", 2.0)]);
+        run(&mut session, "first").unwrap();
+        run(&mut session, "second").unwrap();
+
+        assert_eq!(session_ids(&session), [None, Some("s1")]);
+        assert_eq!(session.get_session_id().map(String::as_str), Some("s1"));
+    }
+
+    /// One error of each `AgentError` variant. The match stops compiling when
+    /// a variant is added.
+    fn each_error() -> Vec<AgentError> {
+        let errors = vec![
+            AgentError::Io(io::Error::other("io")),
+            AgentError::Failed {
+                status: ExitStatus::default(),
+                stderr: String::new(),
+            },
+            AgentError::BudgetExhausted,
+            AgentError::NoResult {
+                stderr: String::new(),
+            },
+            AgentError::ResultError {
+                result: String::new(),
+            },
+            AgentError::NoStructuredOutput,
+            AgentError::Json(serde_json::from_str::<()>("").unwrap_err()),
+            AgentError::Config(ConfigError::NoCrateRoot(Vec::new())),
+            AgentError::MaxRetries,
+        ];
+        // stops compiling when a new variant is added but not covered here.
+        // ensures this is exhaustive.
+        for error in &errors {
+            match error {
+                AgentError::Io(_)
+                | AgentError::Failed { .. }
+                | AgentError::BudgetExhausted
+                | AgentError::NoResult { .. }
+                | AgentError::ResultError { .. }
+                | AgentError::NoStructuredOutput
+                | AgentError::Json(_)
+                | AgentError::Config(_)
+                | AgentError::MaxRetries => {}
+            }
+        }
+        errors
+    }
+
+    #[test]
+    fn error_is_retried_in_its_session_only_with_a_retry_prompt() {
+        for error in each_error() {
+            let name = format!("{error:?}");
+            let retry_prompt = error.retry_prompt();
+            let mut session = session(vec![err(Some("s1"), None, error), ok("s1", 1.0)]);
+            let result = run(&mut session, "work");
+
+            let requests = &session.agent.requests;
+            match retry_prompt {
+                Some(prompt) => {
+                    assert!(result.is_ok(), "{name}");
+                    assert_eq!(requests.len(), 2, "{name}");
+                    assert_eq!(requests[1].prompt, prompt, "{name}");
+                    assert_eq!(requests[1].session_id.as_deref(), Some("s1"), "{name}");
+                    assert_eq!(requests[1].json_schema.as_deref(), Some("{}"), "{name}");
+                }
+                None => {
+                    assert!(result.is_err(), "{name}");
+                    assert_eq!(requests.len(), 1, "{name}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn failed_first_run_keeps_its_session() {
+        let mut session = session(vec![
+            err(
+                Some("s1"),
+                None,
+                AgentError::ResultError {
+                    result: "oops".to_owned(),
+                },
+            ),
+            ok("s1", 1.0),
+        ]);
+        assert!(matches!(
+            run(&mut session, "first"),
+            Err(AgentError::ResultError { .. })
+        ));
+
+        run(&mut session, "second").unwrap();
+        assert_eq!(session_ids(&session), [None, Some("s1")]);
+    }
+
+    #[test]
+    fn run_that_failed_to_start_keeps_no_session() {
+        let mut session = session(vec![
+            err(None, None, io::Error::other("spawn").into()),
+            ok("s1", 1.0),
+        ]);
+        assert!(matches!(run(&mut session, "first"), Err(AgentError::Io(_))));
+
+        run(&mut session, "second").unwrap();
+        assert_eq!(session_ids(&session), [None, None]);
+    }
+
+    #[test]
+    fn each_run_replaces_the_usage() {
+        let mut session = session(vec![
+            ok("s1", 1.0),
+            ok("s1", 3.0),
+            err(Some("s1"), Some(4.0), AgentError::BudgetExhausted),
+        ]);
+        run(&mut session, "first").unwrap();
+        assert_eq!(session.get_usage().cost_usd, 1.0);
+        run(&mut session, "second").unwrap();
+        assert_eq!(session.get_usage().cost_usd, 3.0);
+        assert!(run(&mut session, "third").is_err());
+        assert_eq!(session.get_usage().cost_usd, 4.0);
+    }
+
+    #[test]
+    fn failed_run_without_usage_keeps_the_usage() {
+        let mut session = session(vec![
+            ok("s1", 1.0),
+            err(
+                Some("s1"),
+                None,
+                AgentError::NoResult {
+                    stderr: String::new(),
+                },
+            ),
+        ]);
+        run(&mut session, "first").unwrap();
+        assert!(run(&mut session, "second").is_err());
+        assert_eq!(session.get_usage().cost_usd, 1.0);
+    }
+
+    #[test]
+    fn retry_gives_up_after_max_retries() {
+        let responses = (0..Session::<MockAgent>::MAX_RETRIES)
+            .map(|_| err(Some("s1"), None, AgentError::NoStructuredOutput))
+            .collect();
+        let mut session = session(responses);
+
+        assert!(matches!(
+            run(&mut session, "work"),
+            Err(AgentError::MaxRetries)
+        ));
+        assert_eq!(
+            session.agent.requests.len(),
+            usize::from(Session::<MockAgent>::MAX_RETRIES)
+        );
+    }
+
+    #[test]
+    fn request_carries_the_settings_of_the_session() {
+        let mut session = session(vec![ok("s1", 1.0)]);
+        session.set_briefing("briefing".to_owned());
+        session.set_max_budget(2.5);
+        session.set_dir(PathBuf::from("/work"));
+        session.add_skill("skill", "content".to_owned());
+        run(&mut session, "work").unwrap();
+
+        assert_eq!(
+            session.agent.requests,
+            [Recorded {
+                prompt: "work".to_owned(),
+                session_id: None,
+                json_schema: Some("{}".to_owned()),
+                briefing: Some("briefing".to_owned()),
+                budget_limit_usd: Some(2.5),
+                skills: vec![("skill".to_owned(), "content".to_owned())],
+                workdir: Some(PathBuf::from("/work")),
+            }]
+        );
+    }
+
+    #[test]
+    fn add_skill_allows_the_skill_tool_once() {
+        let mut session = session(Vec::new());
+        session.add_skill("a", String::new());
+        session.add_skill("b", String::new());
+
+        let allowed = &session.options.allowed_tools;
+        assert_eq!(allowed.iter().filter(|t| *t == "Skill").count(), 1);
+        assert_eq!(session.skills.len(), 2);
     }
 }
