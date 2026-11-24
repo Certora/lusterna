@@ -299,7 +299,6 @@ fn check_externals(dir: &Path) -> Result<Option<TranslateGateFailure>, Translate
 /// Charon and Aeneas can print gigabytes of output on a large crate, so stdout
 /// is discarded and only the last `EXTRACTION_STDERR_LIMIT` bytes of stderr
 /// are kept in memory.
-#[must_use]
 fn run_script(script: &Path) -> Result<Option<TranslateGateFailure>, TranslateGateError> {
     let mut child = Command::new(script)
         .stdout(Stdio::null())

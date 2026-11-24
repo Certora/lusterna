@@ -212,6 +212,7 @@ impl<S: Stage, A: Agent> StageExec<S, A> {
 
     /// Returns the agent's submission, or the blocker it stopped the stage
     /// with.
+    #[allow(clippy::type_complexity)]
     fn run_attempt(
         &mut self,
         cfg: &Config,

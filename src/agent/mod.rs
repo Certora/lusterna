@@ -48,9 +48,15 @@ pub enum AgentError {
     #[error("JSON: {0}")]
     Json(#[from] serde_json::Error),
     #[error(transparent)]
-    Config(#[from] ConfigError),
+    Config(Box<ConfigError>),
     #[error("the agent failed to often, giving up")]
     MaxRetries,
+}
+
+impl From<ConfigError> for AgentError {
+    fn from(e: ConfigError) -> Self {
+        AgentError::Config(Box::new(e))
+    }
 }
 
 impl AgentError {
@@ -218,13 +224,13 @@ impl<A: Agent> Session<A> {
         }
         let request = Request {
             prompt: &prompt,
-            briefing: self.briefing.as_ref().map(|b| b.as_str()),
+            briefing: self.briefing.as_deref(),
             session_id: self.session_id.as_ref(),
             budget_limit_usd: self.max_budged,
             skills: &self.skills,
             options: &self.options,
-            workdir: self.workdir.as_ref().map(|p| p.as_path()),
-            json_schema: json_schema.as_ref().map(|s| s.as_str()),
+            workdir: self.workdir.as_deref(),
+            json_schema: json_schema.as_deref(),
         };
         match self.agent.run(&request, &mut hook) {
             Ok(resp) => {
@@ -392,7 +398,7 @@ mod tests {
             },
             AgentError::NoStructuredOutput,
             AgentError::Json(serde_json::from_str::<()>("").unwrap_err()),
-            AgentError::Config(ConfigError::NoCrateRoot(Vec::new())),
+            AgentError::Config(Box::new(ConfigError::NoCrateRoot(Vec::new()))),
             AgentError::MaxRetries,
         ];
         // stops compiling when a new variant is added but not covered here.

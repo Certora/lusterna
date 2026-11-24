@@ -306,7 +306,7 @@ impl Pipeline {
 
                 Ok(submission)
             }
-            Err(e) => return Err(PipelineError::Cargo(e)),
+            Err(e) => Err(PipelineError::Cargo(e)),
         }
     }
 
@@ -598,7 +598,7 @@ impl Submissions {
         let text = match fs::read_to_string(path) {
             Ok(text) => text,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e.into()),
+            Err(e) => return Err(e),
         };
         serde_json::from_str(&text)
             .map(Some)
@@ -610,7 +610,7 @@ impl Submissions {
 /// patterns if the crate is a Solana program, and `add_opaque`.
 fn opaque_patterns(config: &Config, add_opaque: &[String]) -> Result<Vec<String>, ConfigError> {
     let mut opaque: Vec<String> = DEFAULT_OPAQUE.lines().map(str::to_owned).collect();
-    if let Platform::Solana { .. } = config.get_platform()? {
+    if let Platform::Solana = config.get_platform()? {
         opaque.extend(solana_opaque());
     }
     opaque.extend(add_opaque.iter().cloned());

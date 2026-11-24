@@ -153,7 +153,7 @@ fn make_briefing(
             "{solana_skill}",
             match platform {
                 Platform::Generic => "",
-                Platform::Solana { .. } => " Also read the skill `lusterna:solana-translate`.",
+                Platform::Solana => " Also read the skill `lusterna:solana-translate`.",
             },
         )
 }
@@ -216,7 +216,7 @@ impl Stage for TranslateStage {
                 &self.input.aeneas_root.display().to_string(),
             ),
         )];
-        if let Platform::Solana { .. } = &self.input.platform {
+        if let Platform::Solana = &self.input.platform {
             let replaced = stubs::all()
                 .iter()
                 .map(|r| format!("`{}`", r.krate))

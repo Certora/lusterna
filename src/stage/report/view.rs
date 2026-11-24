@@ -226,6 +226,7 @@ pub(super) struct ReportView<'s> {
 }
 
 impl<'s> ReportView<'s> {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         crate_name: String,
         commit: &'s str,
