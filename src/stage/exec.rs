@@ -468,13 +468,13 @@ fn log_stage_spent<S: Stage>(cfg: &Config, agent_cost: f64, judge_cost: f64) {
 mod tests {
     use std::io;
 
-    use clap::Parser;
     use serde_json::json;
     use tempfile::TempDir;
 
     use super::*;
     use crate::{
         agent::{ModelUsage, Response, RunError, mock::MockAgent},
+        utils::parse_config,
         stage::{
             Never, StageName,
             formalize::FormalizeStage,
@@ -602,12 +602,6 @@ mod tests {
         }
     }
 
-    #[derive(Parser)]
-    struct Cli {
-        #[command(flatten)]
-        cfg: Config,
-    }
-
     struct Fixture {
         exec: StageExec<MockStage, MockAgent>,
         worker: MockAgent,
@@ -618,16 +612,14 @@ mod tests {
 
     fn fixture(judge: bool, max_attempts: usize, max_budget: f64) -> Fixture {
         let workspace = tempfile::tempdir().unwrap();
-        let cfg = Cli::parse_from([
-            "lusterna".to_owned(),
+        let cfg = parse_config([
             "--workspace-root".to_owned(),
             workspace.path().display().to_string(),
             "--stage-max-attempts".to_owned(),
             max_attempts.to_string(),
             "--stage-max-budget".to_owned(),
             max_budget.to_string(),
-        ])
-        .cfg;
+        ]);
         let stage = MockStage { judge };
         let worker_session =
             StageExec::<MockStage, MockAgent>::get_worker_session(&stage, &cfg).unwrap();
