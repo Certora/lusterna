@@ -56,7 +56,9 @@ build:
 install: build
   cargo install --path . --locked
 
-# Runs the installed `lusterna` on a copy of `tests/fixtures/demo` and checks its output
+# With `ANTHROPIC_API_KEY` set, `claude` bills the API key instead of the Claude subscription:
+# run `env -u ANTHROPIC_API_KEY just integration-test` to use the subscription.
+# Installs and runs `lusterna` on a copy of `tests/fixtures/demo` and checks its output
 integration-test: setup install
   #!/usr/bin/env bash
   set -euo pipefail
@@ -66,10 +68,11 @@ integration-test: setup install
   git -C "$run_dir" init -q
   git -C "$run_dir" add --all
   git -C "$run_dir" -c user.name=lusterna -c user.email=lusterna@test commit -q -m init
-  lusterna --workspace-root "$run_dir" --yes run
+  RUST_LOG=debug lusterna --workspace-root "$run_dir" --yes run
   just integration-check "$run_dir"
   rm -rf "$run_dir"
 
 # Runs the integration tests on the output of an earlier `integration-test`
+[private]
 integration-check run_dir:
-  LUSTERNA_IT_RUN_DIR="{{run_dir}}" cargo test --test integration -- --ignored
+  LUSTERNA_IT_RUN_DIR="{{run_dir}}" cargo test --features integration --test integration

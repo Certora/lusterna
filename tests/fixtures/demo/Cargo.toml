@@ -1,6 +1,10 @@
 [package]
 name = "demo"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+
+[dependencies]
+solana-program = "=1.18.26"
+uint = "=0.9.5"
 
 [workspace]
