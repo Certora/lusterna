@@ -130,6 +130,16 @@ pub enum PipelineError {
     /// The report templates do not render.
     #[error("cannot render the report: {0}")]
     Report(#[from] minijinja::Error),
+    /// `lusterna/run.json` does not exist in the crate root.
+    #[error("the crate has no unfinished run to continue")]
+    NoUnfinishedRun,
+    /// The file that holds the state of the unfinished run does not parse.
+    #[error("cannot parse the run state in `{0}`: {1}")]
+    RunState(PathBuf, serde_json::Error),
+    /// `HEAD` of the repository is not the commit that the state of the
+    /// unfinished run holds.
+    #[error("`HEAD` is at {head}, but the unfinished run stopped at {saved}")]
+    HeadMoved { saved: String, head: String },
 }
 
 /// The steps of a pipeline run, in the order in which they run. A step
@@ -249,6 +259,41 @@ impl Pipeline {
         self.save_state()?;
 
         self.run_steps()
+    }
+
+    /// Continues the unfinished run of the crate from the state in
+    /// `lusterna/run.json`. The repository may have uncommitted changes.
+    pub fn resume(config: Config) -> Result<(), PipelineError> {
+        let lusterna_dir = config.crate_root()?.join("lusterna");
+        let state_path = lusterna_dir.join("run.json");
+        let state_text = match fs::read_to_string(&state_path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Err(PipelineError::NoUnfinishedRun);
+            }
+            Err(e) => return Err(e.into()),
+        };
+        let state: RunState = serde_json::from_str(&state_text)
+            .map_err(|e| PipelineError::RunState(state_path, e))?;
+
+        let head = git::head_rev(&config.repo_root()?)?;
+        if head != state.head {
+            return Err(PipelineError::HeadMoved {
+                saved: state.head,
+                head,
+            });
+        }
+
+        let pipeline = Self {
+            spec: state.spec,
+            spec_path: state.spec_path,
+            submissions: Submissions::new(&lusterna_dir)?,
+            config,
+            commit: Some(state.commit),
+            next: state.next,
+        };
+        pipeline.check_dependencies()?;
+        pipeline.run_steps()
     }
 
     /// Runs the steps of the pipeline from `next` on, in order, and stops at
@@ -901,7 +946,11 @@ mod tests {
 
     #[test]
     fn close_state_deletes_the_state_of_a_finished_run() {
-        for args in [&[][..], &["--stop-after", "prove"], &["--stop-after", "report"]] {
+        for args in [
+            &[][..],
+            &["--stop-after", "prove"],
+            &["--stop-after", "report"],
+        ] {
             let mut f = fixture("{}", args);
             f.pipeline.commit = Some("start".to_owned());
             f.pipeline.save_state().unwrap();
@@ -994,6 +1043,43 @@ mod tests {
         assert_eq!(submission.changes.len(), 1);
         assert!(state_path.exists());
         assert!(f.root.join("lusterna/run.json").exists());
+    }
+
+    #[test]
+    fn resume_without_run_state_fails() {
+        let f = fixture("{}", &[]);
+        let error = Pipeline::resume(f.pipeline.config).unwrap_err();
+        assert!(matches!(error, PipelineError::NoUnfinishedRun));
+    }
+
+    #[test]
+    fn resume_with_a_malformed_run_state_fails() {
+        let f = fixture("{}", &[]);
+        let state_path = f.root.join("lusterna/run.json");
+        fs::create_dir(f.root.join("lusterna")).unwrap();
+        fs::write(&state_path, "not json").unwrap();
+
+        let error = Pipeline::resume(f.pipeline.config).unwrap_err();
+        assert!(matches!(error, PipelineError::RunState(path, _) if path == state_path));
+    }
+
+    #[test]
+    fn resume_after_head_moved_fails_with_both_commits() {
+        let mut f = fixture("{}", &[]);
+        f.pipeline.commit = Some("start".to_owned());
+        f.pipeline.save_state().unwrap();
+        let saved_head = git::head_rev(&f.root).unwrap();
+        fs::write(f.root.join("new.rs"), "").unwrap();
+        git::commit_all(&f.root, "moved").unwrap();
+        let new_head = git::head_rev(&f.root).unwrap();
+
+        let error = Pipeline::resume(f.pipeline.config).unwrap_err();
+        assert!(matches!(
+            &error,
+            PipelineError::HeadMoved { saved, head } if *saved == saved_head && *head == new_head
+        ));
+        let message = error.to_string();
+        assert!(message.contains(&saved_head) && message.contains(&new_head));
     }
 
     #[test]
