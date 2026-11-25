@@ -29,10 +29,14 @@
 //! initially found defects were fixed and whether these fixes introduced other
 //! defects.
 
-use std::{fmt, time::Instant};
+use std::{
+    fmt, fs, io,
+    path::{Path, PathBuf},
+    time::Instant,
+};
 
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{
     agent::{Agent, AgentError, Session, claude::ClaudeCode},
@@ -83,6 +87,32 @@ impl<S: Stage> StageExec<S> {
         let worker = Self::get_worker_session(&stage, cfg)?;
         let judge = Self::get_judge_session(cfg)?;
         Ok(Self::with_sessions(stage, worker, judge))
+    }
+}
+
+impl<S: Stage, A: Agent + DeserializeOwned> StageExec<S, A> {
+    /// Returns the execution that was serialized to `path`, ready to continue
+    /// after a run that stopped in the middle of a phase.
+    pub fn load(path: &Path, cfg: &Config) -> Result<Self, StageExecutionError<S>> {
+        let state_error = |e: io::Error| StageExecutionError::StateFile(path.to_path_buf(), e);
+        let text = fs::read_to_string(path).map_err(state_error)?;
+        let mut exec: Self = serde_json::from_str(&text).map_err(|e| state_error(e.into()))?;
+
+        match &exec.phase {
+            // The attempt resumes the session of the worker and gets the same
+            // prompt again.
+            Phase::Attempt { .. } if exec.worker_session.get_session_id().is_some() => {
+                exec.worker_session.set_started()
+            }
+            // The id of a judge session that is not started may be in use by
+            // a judge run that did not return, so the judge gets a new
+            // session.
+            Phase::Judge { .. } if !exec.judge_session.started() => {
+                exec.judge_session = Self::get_judge_session(cfg)?
+            }
+            _ => {}
+        }
+        Ok(exec)
     }
 }
 
@@ -288,12 +318,13 @@ impl<S: Stage, A: Agent> StageExec<S, A> {
         // In that case, shift focus to the defects flagged in previous round.
         // If we don't do that, chances are the two agents never converge to a
         // passing version.
-        let prompt = match judge_session.get_session_id() {
-            Some(_) => format!(
+        let prompt = if judge_session.started() {
+            format!(
                 "{RECHECK_PROMPT}\n\nThe agent's submission:\n{}",
                 serde_json::to_string_pretty(submission)?
-            ),
-            None => base_prompt,
+            )
+        } else {
+            base_prompt
         };
 
         judge_session.set_max_budget(remaining);
@@ -354,6 +385,10 @@ pub enum StageExecutionError<S: Stage> {
     /// Running the agent or the judge failed.
     #[error(transparent)]
     AgentError(AgentError),
+    /// The file that holds the state of the execution cannot be read or
+    /// parsed.
+    #[error("cannot load the stage state from `{0}`: {1}")]
+    StateFile(PathBuf, io::Error),
 }
 
 impl<S: Stage> From<AgentError> for StageExecutionError<S> {
@@ -862,6 +897,161 @@ mod tests {
         assert!(matches!(
             error,
             StageExecutionError::AgentError(AgentError::Json(_))
+        ));
+    }
+
+    #[test]
+    fn started_judge_session_gets_the_recheck_prompt() {
+        let mut f = fixture(true, 3, 10.0);
+        f.exec.judge_session.set_started();
+        f.worker.push(submission(Gate::Pass, 1.0));
+        f.judge.push(verdict(&[], 0.5));
+        f.exec.run(&f.cfg, None).unwrap();
+
+        assert!(f.judge.requests()[0].prompt.starts_with(RECHECK_PROMPT));
+    }
+
+    /// An execution of `MockStage` with `ClaudeCode` sessions in `phase`,
+    /// which serializes, unlike one with `MockAgent`
+    fn claude_exec(cfg: &Config, phase: Phase<MockStage>) -> StageExec<MockStage> {
+        let mut exec = StageExec::new(MockStage { judge: true }, cfg).unwrap();
+        exec.phase = phase;
+        exec
+    }
+
+    /// Writes the state `state` to a file in `dir` and loads it
+    fn load(
+        state: &impl Serialize,
+        dir: &Path,
+        cfg: &Config,
+    ) -> Result<StageExec<MockStage>, StageExecutionError<MockStage>> {
+        let path = dir.join("state.json");
+        fs::write(&path, serde_json::to_string(state).unwrap()).unwrap();
+        StageExec::load(&path, cfg)
+    }
+
+    fn session_ids(exec: &StageExec<MockStage>) -> [Option<String>; 2] {
+        [
+            exec.worker_session.get_session_id().cloned(),
+            exec.judge_session.get_session_id().cloned(),
+        ]
+    }
+
+    fn test_submission() -> TestSubmission {
+        TestSubmission { gate: Gate::Pass }
+    }
+
+    #[test]
+    fn load_keeps_the_state() {
+        let f = fixture(true, 3, 10.0);
+        let mut exec = claude_exec(
+            &f.cfg,
+            Phase::Gate {
+                submission: test_submission(),
+            },
+        );
+        exec.worker_cost = 1.5;
+        exec.judge_cost = 0.5;
+
+        let loaded = load(&exec, f._workspace.path(), &f.cfg).unwrap();
+        assert!(matches!(
+            &loaded.phase,
+            Phase::Gate { submission } if *submission == test_submission()
+        ));
+        assert_eq!(session_ids(&loaded), session_ids(&exec));
+        assert!(!loaded.worker_session.started());
+        assert!(!loaded.judge_session.started());
+        assert_eq!(loaded.worker_cost, 1.5);
+        assert_eq!(loaded.judge_cost, 0.5);
+        assert!(loaded.stage.judge);
+    }
+
+    #[test]
+    fn load_in_the_attempt_phase_resumes_the_worker_session() {
+        let f = fixture(true, 3, 10.0);
+        let exec = claude_exec(
+            &f.cfg,
+            Phase::Attempt {
+                prompt: "feedback".to_owned(),
+            },
+        );
+
+        let loaded = load(&exec, f._workspace.path(), &f.cfg).unwrap();
+        assert!(matches!(&loaded.phase, Phase::Attempt { prompt } if prompt == "feedback"));
+        assert_eq!(session_ids(&loaded), session_ids(&exec));
+        assert!(loaded.worker_session.started());
+        assert!(!loaded.judge_session.started());
+    }
+
+    #[test]
+    fn load_in_the_attempt_phase_does_not_resume_a_worker_session_without_id() {
+        let f = fixture(true, 3, 10.0);
+        let exec = claude_exec(
+            &f.cfg,
+            Phase::Attempt {
+                prompt: "base prompt".to_owned(),
+            },
+        );
+        let mut state = serde_json::to_value(&exec).unwrap();
+        state["worker_session"]["session_id"] = serde_json::Value::Null;
+
+        let loaded = load(&state, f._workspace.path(), &f.cfg).unwrap();
+        assert!(loaded.worker_session.get_session_id().is_none());
+        assert!(!loaded.worker_session.started());
+    }
+
+    #[test]
+    fn load_in_the_judge_phase_replaces_a_judge_session_that_is_not_started() {
+        let f = fixture(true, 3, 10.0);
+        let exec = claude_exec(
+            &f.cfg,
+            Phase::Judge {
+                submission: test_submission(),
+            },
+        );
+
+        let loaded = load(&exec, f._workspace.path(), &f.cfg).unwrap();
+        let [worker, judge] = session_ids(&exec);
+        let [loaded_worker, loaded_judge] = session_ids(&loaded);
+        assert_eq!(loaded_worker, worker);
+        assert!(loaded_judge.is_some());
+        assert_ne!(loaded_judge, judge);
+        assert!(!loaded.judge_session.started());
+        assert!(!loaded.worker_session.started());
+    }
+
+    #[test]
+    fn load_in_the_judge_phase_keeps_a_started_judge_session() {
+        let f = fixture(true, 3, 10.0);
+        let mut exec = claude_exec(
+            &f.cfg,
+            Phase::Judge {
+                submission: test_submission(),
+            },
+        );
+        exec.judge_session.set_started();
+
+        let loaded = load(&exec, f._workspace.path(), &f.cfg).unwrap();
+        assert_eq!(session_ids(&loaded), session_ids(&exec));
+        assert!(loaded.judge_session.started());
+    }
+
+    #[test]
+    fn load_of_a_missing_or_malformed_state_file_fails() {
+        let f = fixture(true, 3, 10.0);
+        let dir = f._workspace.path();
+
+        let missing = StageExec::<MockStage>::load(&dir.join("missing.json"), &f.cfg);
+        assert!(matches!(
+            missing,
+            Err(StageExecutionError::StateFile(path, e))
+                if path == dir.join("missing.json") && e.kind() == io::ErrorKind::NotFound
+        ));
+
+        let malformed = load(&"not a state", dir, &f.cfg);
+        assert!(matches!(
+            malformed,
+            Err(StageExecutionError::StateFile(_, e)) if e.kind() == io::ErrorKind::InvalidData
         ));
     }
 
