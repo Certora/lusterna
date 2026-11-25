@@ -88,6 +88,8 @@ h2 { font-size: 2rem; font-weight: 600; letter-spacing: -0.035em; }
 .stages p { font-size: 0.93rem; line-height: 1.55; color: var(--text-muted); }
 
 .start { padding: 96px 0 104px; }
+.start .sub { max-width: none; }
+.panel + .sub { margin-top: 48px; }
 .panel { margin-top: 36px; background: var(--panel); border: 1px solid var(--panel-line); border-radius: 6px; overflow: hidden; }
 .panel-head {
   display: flex; align-items: center; padding: 0.55rem 1rem; background: #0c141c;
