@@ -33,6 +33,20 @@ pub fn relative_path(dir: &Path, path: &Path) -> Result<PathBuf, io::Error> {
     Ok(relative)
 }
 
+/// Parses `args`, the command-line arguments without the program name, into a
+/// `Config`.
+#[cfg(test)]
+pub(crate) fn parse_config(args: impl IntoIterator<Item = String>) -> crate::config::Config {
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(flatten)]
+        config: crate::config::Config,
+    }
+    Cli::parse_from(std::iter::once("lusterna".to_owned()).chain(args)).config
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

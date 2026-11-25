@@ -1,0 +1,35 @@
+{
+  "entrypoints": ["crate::math", "crate::pairs", "crate::vault", "crate::wide::mul_div"],
+  "properties": [
+    {
+      "id": 1,
+      "kind": {"Rule": {"fns": ["math::checked_total"]}},
+      "title": "checked_total adds without overflow",
+      "natspec": "checked_total returns the sum of a and b if it fits in a u64, and None otherwise."
+    },
+    {
+      "id": 2,
+      "kind": {"Rule": {"fns": ["math::log_bucket"]}},
+      "title": "log_bucket is never zero",
+      "natspec": "log_bucket never returns 0."
+    },
+    {
+      "id": 3,
+      "kind": {"Invariant": {"struct": "vault::Vault"}},
+      "title": "Shares never exceed the total",
+      "natspec": "A vault never has more shares than its total. reset is an exception: it leaves one share and a total of 0 to mark an emptied vault."
+    },
+    {
+      "id": 4,
+      "kind": {"Rule": {"fns": ["unused::double"]}},
+      "title": "double doubles",
+      "natspec": "double returns twice x, wrapping on overflow."
+    },
+    {
+      "id": 5,
+      "kind": {"Rule": {"fns": ["wide::mul_div"]}},
+      "title": "mul_div divides the product",
+      "natspec": "If c is not 0 and a * b / c fits in a u64, mul_div returns a * b / c rounded down."
+    }
+  ]
+}

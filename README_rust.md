@@ -24,7 +24,7 @@ Lusterna commits the result of each stage to a new branch in a separate git work
 
 ## Requirements
 
-- `git`, `make` and [just](https://github.com/casey/just)
+- `git`, GNU Make 4 or newer (on macOS, `brew install make`, which installs it as `gmake`) and [just](https://github.com/casey/just)
 - A Rust toolchain installed with [rustup](https://rustup.rs/)
 - [opam](https://opam.ocaml.org/) with an OCaml 5 switch, to build Aeneas
 - `lake` from a Lean 4 installation (install it with [elan](https://github.com/leanprover/elan))

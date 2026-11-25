@@ -32,6 +32,7 @@ const TEMPLATES: [(&str, &str); 10] = [
 /// Returns the report of the crate `crate_name` at `commit`, translated from
 /// `entrypoints` with Aeneas at `aeneas_rev`. A stage submission is `None` if
 /// the stage did not run.
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     crate_name: String,
     commit: &str,

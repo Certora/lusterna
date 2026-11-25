@@ -105,7 +105,7 @@ impl Stage for InferStage {
                 "{skills}",
                 match &self.platform {
                     Platform::Generic => "",
-                    Platform::Solana { .. } => {
+                    Platform::Solana => {
                         " Before you draft, work through the skills \
                          `lusterna:defi-property-classes` and `lusterna:solana-property-classes`."
                     }
@@ -115,7 +115,7 @@ impl Stage for InferStage {
                 "{entrypoint_rules}",
                 match &self.platform {
                     Platform::Generic => "",
-                    Platform::Solana { .. } => {
+                    Platform::Solana => {
                         "\n4. Do not name a function that takes the accounts of an instruction, \
                          or a module that contains one. Such a function has an account type in \
                          a parameter or as its return type. An account type is `AccountInfo` or \
@@ -132,7 +132,7 @@ impl Stage for InferStage {
                 "{entrypoint_conditions}",
                 match &self.platform {
                     Platform::Generic => "",
-                    Platform::Solana { .. } => {
+                    Platform::Solana => {
                         "\n9. No entrypoint that you add names a function that takes an account \
                          type, or a module that contains one."
                     }
@@ -143,7 +143,7 @@ impl Stage for InferStage {
     fn skills(&self) -> Vec<(&'static str, String)> {
         match &self.platform {
             Platform::Generic => Vec::new(),
-            Platform::Solana { .. } => vec![
+            Platform::Solana => vec![
                 (
                     "defi-property-classes",
                     DEFI_PROPERTY_CLASSES_SKILL.to_owned(),
@@ -179,7 +179,7 @@ impl Stage for InferStage {
                     "{platform_kinds}",
                     match &self.platform {
                         Platform::Generic => "",
-                        Platform::Solana { .. } => {
+                        Platform::Solana => {
                             "\n- `unsupported_entrypoint`: an entrypoint that the agent added \
                              names a function that takes an account type, or a module that \
                              contains one. The briefing says what an account type is. Read the \
@@ -195,5 +195,55 @@ impl Stage for InferStage {
                     &serde_json::to_string_pretty(submission).expect("the submission serializes"),
                 ),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::stage::assert_no_placeholders;
+
+    fn stage(platform: Platform) -> InferStage {
+        InferStage {
+            crate_root: PathBuf::from("/c"),
+            existing_props: Properties::default(),
+            existing_eps: vec!["crate::vault".to_owned()],
+            design_doc: Some(PathBuf::from("docs/design.md")),
+            platform,
+        }
+    }
+
+    #[test]
+    fn base_prompt_fills_every_placeholder() {
+        let prompt = stage(Platform::Generic).base_prompt();
+
+        assert_no_placeholders(&prompt, &[]);
+        assert!(prompt.contains("`crate::vault`"));
+        assert!(prompt.contains("`docs/design.md`"));
+    }
+
+    #[test]
+    fn briefing_fills_every_placeholder() {
+        for platform in [Platform::Generic, Platform::Solana] {
+            let briefing = stage(platform).briefing();
+
+            assert_no_placeholders(&briefing, &[]);
+            assert!(briefing.contains("/c"));
+        }
+    }
+
+    #[test]
+    fn judge_prompt_fills_every_placeholder() {
+        let submission = InferStageSubmission {
+            properties: Properties::default(),
+            entrypoints: vec!["crate::vault".to_owned()],
+            design_doc: None,
+        };
+        for platform in [Platform::Generic, Platform::Solana] {
+            let prompt = stage(platform).judge_prompt(&submission).unwrap();
+
+            assert_no_placeholders(&prompt, &[]);
+            assert!(prompt.contains(&serde_json::to_string_pretty(&submission).unwrap()));
+        }
     }
 }

@@ -186,7 +186,7 @@ fn duplicate_ids(props: &Properties) -> Option<InferGateFailure> {
         }
     }
 
-    (!duplicates.is_empty()).then(|| InferGateFailure::DuplicateIds(duplicates))
+    (!duplicates.is_empty()).then_some(InferGateFailure::DuplicateIds(duplicates))
 }
 
 fn locked_changed(existing: &Properties, submitted: &Properties) -> Option<InferGateFailure> {
@@ -236,7 +236,7 @@ fn duplicate_titles(props: &Properties) -> Option<InferGateFailure> {
         }
     }
 
-    (!duplicates.is_empty()).then(|| InferGateFailure::DuplicateTitles(duplicates))
+    (!duplicates.is_empty()).then_some(InferGateFailure::DuplicateTitles(duplicates))
 }
 
 /// Fails if a rule that is not locked has an empty `fns`.
@@ -251,7 +251,7 @@ fn empty_fns(props: &Properties) -> Option<InferGateFailure> {
         }
     }
 
-    (!empty.is_empty()).then(|| InferGateFailure::EmptyFns(empty))
+    (!empty.is_empty()).then_some(InferGateFailure::EmptyFns(empty))
 }
 
 /// Fails if an entrypoint of `existing` is not in `submitted`.
@@ -263,7 +263,7 @@ fn missing_entrypoints(existing: &[String], submitted: &[String]) -> Option<Infe
         }
     }
 
-    (!missing.is_empty()).then(|| InferGateFailure::MissingEntrypoints(missing))
+    (!missing.is_empty()).then_some(InferGateFailure::MissingEntrypoints(missing))
 }
 
 /// Fails if an entrypoint of `submitted` that is not in `existing` does not
@@ -276,7 +276,7 @@ fn entrypoint_prefix(existing: &[String], submitted: &[String]) -> Option<InferG
         }
     }
 
-    (!wrong.is_empty()).then(|| InferGateFailure::EntrypointPrefix(wrong))
+    (!wrong.is_empty()).then_some(InferGateFailure::EntrypointPrefix(wrong))
 }
 
 /// Fails if an entrypoint of `submitted` that is not in `existing` is another
@@ -297,7 +297,7 @@ fn redundant_entrypoints(existing: &[String], submitted: &[String]) -> Option<In
         }
     }
 
-    (!redundant.is_empty()).then(|| InferGateFailure::RedundantEntrypoints(redundant))
+    (!redundant.is_empty()).then_some(InferGateFailure::RedundantEntrypoints(redundant))
 }
 
 #[cfg(test)]

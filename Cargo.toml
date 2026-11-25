@@ -26,13 +26,13 @@ uuid = { version = "1.28.0", features = ["v4", "serde"] }
 [features]
 # Skips the tests that need `lake` on `PATH`
 no-lake = []
-# Builds the integration tests, which need `charon`, `aeneas` and `lake` on
-# `PATH`, `AENEAS_ROOT` set, and network access
-integration-test = []
+# Builds the tests that check the output of `just integration-test`
+integration = []
 
 [[test]]
-name = "translate_setup"
-required-features = ["integration-test"]
+name = "integration"
+path = "tests/integration/main.rs"
+required-features = ["integration"]
 
 [dev-dependencies]
 tempfile = "3.27.0"

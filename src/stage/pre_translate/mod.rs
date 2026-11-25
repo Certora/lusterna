@@ -234,17 +234,48 @@ impl Stage for PreTranslateStage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stage::assert_no_placeholders;
 
-    #[test]
-    fn judge_prompt_contains_the_submission() {
-        let stage = PreTranslateStage {
+    fn stage() -> PreTranslateStage {
+        PreTranslateStage {
             input: PreTranslateInput {
                 workspace_root: PathBuf::from("/ws"),
                 manifest: PathBuf::from("/ws/Cargo.toml"),
-                build_stderr: String::new(),
+                build_stderr: "error[E0425]".to_owned(),
             },
             base_commit: "abc123".to_owned(),
-        };
+        }
+    }
+
+    #[test]
+    fn base_prompt_fills_every_placeholder() {
+        let prompt = stage().base_prompt();
+
+        assert_no_placeholders(&prompt, &[]);
+        assert!(prompt.contains("/ws/Cargo.toml"));
+        assert!(prompt.contains("error[E0425]"));
+    }
+
+    #[test]
+    fn briefing_fills_every_placeholder() {
+        let briefing = stage().briefing();
+
+        assert_no_placeholders(&briefing, &[]);
+        assert!(briefing.contains("/ws/Cargo.toml"));
+    }
+
+    #[test]
+    fn judge_prompt_fills_every_placeholder() {
+        let submission = PreTranslateSubmission::default();
+        let prompt = stage().judge_prompt(&submission).unwrap();
+
+        assert_no_placeholders(&prompt, &[]);
+        assert!(prompt.contains("abc123"));
+    }
+
+    #[test]
+    fn judge_prompt_contains_the_submission() {
+        let stage = stage();
         let submission = PreTranslateSubmission {
             changes: vec![PreTranslateChange {
                 file: "src/lib.rs".to_owned(),

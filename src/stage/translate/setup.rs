@@ -71,7 +71,7 @@ impl CharonBuild {
             ],
             lock: relative_path(crate_root, &ws_manifest.with_file_name("Cargo.lock"))?,
         };
-        if let Platform::Solana { .. } = platform {
+        if let Platform::Solana = platform {
             build.charon_args = vec!["--sysroot".to_owned(), "default".to_owned()];
             build.cargo_args.extend(stubs::patch_args());
         }
@@ -195,7 +195,7 @@ pub(super) fn run_setup(
         Platform::Solana => make_solana_lakefile(&input.aeneas_root, &input.solanlib_root),
     };
     let lean_root = init_lake_project(crate_root, &lakefile, &input.lean_toolchain)?;
-    if let Platform::Solana { .. } = input.platform {
+    if let Platform::Solana = input.platform {
         let extraction = lean_root.join("Extraction");
         fs::create_dir_all(&extraction)?;
         fs::write(

@@ -29,13 +29,13 @@
 //! initially found defects were fixed and whether these fixes introduced other
 //! defects.
 
-use std::{fmt, path::Path, time::Instant};
+use std::{fmt, time::Instant};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    agent::{Agent, AgentError},
+    agent::{Agent, AgentError, Session, claude::ClaudeCode},
     config::Config,
     log::{stage_debug, stage_info},
     stage::Stage,
@@ -51,12 +51,12 @@ const RECHECK_PROMPT: &str = "The agent changed its work to fix the defects of y
 /// The state of a stage's execution. Serializing it keeps the phase and the
 /// costs, not the number of attempts.
 #[derive(Serialize, Deserialize)]
-#[serde(bound(deserialize = ""))]
-pub struct StageExec<S: Stage> {
+#[serde(bound(deserialize = "A: Deserialize<'de>"))]
+pub struct StageExec<S: Stage, A: Agent = ClaudeCode> {
     stage: S,
 
-    worker: Option<Agent>,
-    judge: Option<Agent>,
+    worker_session: Session<A>,
+    judge_session: Session<A>,
 
     phase: Phase<S>,
 
@@ -79,12 +79,49 @@ enum Phase<S: Stage> {
 impl<S: Stage> StageExec<S> {
     /// Returns the execution of `stage`. The first attempt gets the stage's
     /// base prompt.
-    pub fn new(stage: S) -> Self {
+    pub fn new(stage: S, cfg: &Config) -> Result<Self, StageExecutionError<S>> {
+        let worker = Self::get_worker_session(&stage, cfg)?;
+        let judge = Self::get_judge_session(cfg)?;
+        Ok(Self::with_sessions(stage, worker, judge))
+    }
+}
+
+impl<S: Stage, A: Agent> StageExec<S, A> {
+    fn get_worker_session(stage: &S, cfg: &Config) -> Result<Session<A>, AgentError> {
+        let mut sessions = Session::<A>::default();
+        sessions.set_briefing(format!("{}\n\n{WAIT_FOR_SUBAGENTS}", stage.briefing()));
+        sessions.set_options(stage.agent_options(cfg));
+        for (name, content) in stage.skills() {
+            sessions.add_skill(name, content);
+        }
+        sessions.set_effort(cfg.effort);
+        sessions.set_model(cfg.model.clone());
+        sessions.set_dir(cfg.workspace_root()?);
+
+        Ok(sessions)
+    }
+
+    fn get_judge_session(cfg: &Config) -> Result<Session<A>, AgentError> {
+        let mut sessions = Session::<A>::default();
+
+        sessions.set_briefing(WAIT_FOR_SUBAGENTS.to_owned());
+        sessions.set_effort(cfg.effort);
+        sessions.set_model(cfg.model.clone());
+        sessions.set_dir(cfg.workspace_root()?);
+
+        Ok(sessions)
+    }
+
+    pub fn with_sessions(
+        stage: S,
+        worker_sessions: Session<A>,
+        judge_sessions: Session<A>,
+    ) -> Self {
         let prompt = stage.base_prompt();
         Self {
             stage,
-            worker: None,
-            judge: None,
+            worker_session: worker_sessions,
+            judge_session: judge_sessions,
             attempts: 0,
             phase: Phase::Attempt { prompt },
             worker_cost: 0f64,
@@ -173,45 +210,9 @@ impl<S: Stage> StageExec<S> {
         }
     }
 
-    fn get_agent(&mut self, cfg: &Config) -> Result<&mut Agent, AgentError> {
-        if self.worker.is_none() {
-            let mut agent = Agent::default();
-            agent.set_briefing(format!("{}\n\n{WAIT_FOR_SUBAGENTS}", self.stage.briefing()));
-            agent.set_options(self.stage.agent_options(cfg));
-            for (name, content) in self.stage.skills() {
-                agent.add_skill(name, content);
-            }
-            agent.set_effort(cfg.effort);
-            agent.set_model(cfg.model.clone());
-            agent.set_dir(cfg.workspace_root()?);
-            agent.set_json_schema(
-                json_schema::<AgentResult<S::Submission, S::Blocker>>()
-                    .map_err(AgentError::from)?,
-            );
-            self.worker = Some(agent);
-        }
-
-        Ok(self.worker.as_mut().unwrap())
-    }
-
-    fn get_judge(&mut self, cfg: &Config, dir: &Path) -> Result<&mut Agent, AgentError> {
-        if self.judge.is_none() {
-            let mut judge = Agent::default();
-
-            judge.set_briefing(WAIT_FOR_SUBAGENTS.to_owned());
-            judge.set_effort(cfg.effort);
-            judge.set_model(cfg.model.clone());
-            judge.set_dir(dir.to_owned());
-            judge.set_json_schema(json_schema::<Verdict>()?);
-
-            self.judge = Some(judge);
-        }
-
-        Ok(self.judge.as_mut().unwrap())
-    }
-
     /// Returns the agent's submission, or the blocker it stopped the stage
     /// with.
+    #[allow(clippy::type_complexity)]
     fn run_attempt(
         &mut self,
         cfg: &Config,
@@ -230,13 +231,19 @@ impl<S: Stage> StageExec<S> {
             self.judge_cost
         );
 
-        let agent = self.get_agent(cfg)?;
-        agent.set_max_budget(remaining);
+        let session = &mut self.worker_session;
+        session.set_max_budget(remaining);
+
+        let schema =
+            json_schema::<AgentResult<S::Submission, S::Blocker>>().map_err(AgentError::from)?;
         let t = Instant::now();
-        let output = agent.run_with_hook(prompt, |s| stage_info!(S::NAME, "agent: {}", s))?;
+        let response = session.run(prompt, Some(schema), |s| {
+            stage_info!(S::NAME, "agent: {}", s)
+        })?;
         stage_info!(S::NAME, "agent finished in {}", format_elapsed(t));
 
-        let result: AgentResult<S::Submission, S::Blocker> = serde_json::from_str(&output)?;
+        let result: AgentResult<S::Submission, S::Blocker> =
+            serde_json::from_str(&response.output)?;
         if let Ok(submission) = &result.result {
             stage_debug!(
                 S::NAME,
@@ -249,7 +256,7 @@ impl<S: Stage> StageExec<S> {
         // and claude code accumulated the usage over all
         // calls. So here we
         // override instead of adding.
-        let usage_cost = agent.get_usage().cost_usd;
+        let usage_cost = session.get_usage().cost_usd;
 
         Ok((result.result, usage_cost))
     }
@@ -275,13 +282,13 @@ impl<S: Stage> StageExec<S> {
             self.judge_cost
         );
 
-        let judge = self.get_judge(cfg, &cfg.workspace_root()?)?;
+        let judge_session = &mut self.judge_session;
 
         // Check if we are running a second judge attempt.
         // In that case, shift focus to the defects flagged in previous round.
         // If we don't do that, chances are the two agents never converge to a
         // passing version.
-        let prompt = match judge.session_id() {
+        let prompt = match judge_session.get_session_id() {
             Some(_) => format!(
                 "{RECHECK_PROMPT}\n\nThe agent's submission:\n{}",
                 serde_json::to_string_pretty(submission)?
@@ -289,13 +296,17 @@ impl<S: Stage> StageExec<S> {
             None => base_prompt,
         };
 
-        judge.set_max_budget(remaining);
+        judge_session.set_max_budget(remaining);
+
+        let schema = json_schema::<Verdict>()?;
 
         let t = Instant::now();
-        let judge_output = judge.run_with_hook(prompt, |s| stage_info!(S::NAME, "judge: {}", s))?;
+        let judge_response = judge_session.run(prompt, Some(schema), |s| {
+            stage_info!(S::NAME, "judge: {}", s)
+        })?;
         stage_info!(S::NAME, "judge finished in {}", format_elapsed(t));
-        let verdict: Verdict = serde_json::from_str(&judge_output)?;
-        Ok((verdict.defects, judge.get_usage().cost_usd))
+        let verdict: Verdict = serde_json::from_str(&judge_response.output)?;
+        Ok((verdict.defects, judge_session.get_usage().cost_usd))
     }
 
     fn retry(
@@ -456,26 +467,44 @@ fn log_stage_spent<S: Stage>(cfg: &Config, agent_cost: f64, judge_cost: f64) {
 
 #[cfg(test)]
 mod tests {
+    use std::io;
+
+    use serde_json::json;
+    use tempfile::TempDir;
+
     use super::*;
-    use crate::stage::{
-        Never,
-        pre_translate::PreTranslateSubmission,
-        translate::{TranslateBlocker, TranslateSubmission},
+    use crate::{
+        agent::{ModelUsage, Response, RunError, mock::MockAgent},
+        utils::parse_config,
+        stage::{
+            Never, StageName,
+            formalize::FormalizeStage,
+            infer::InferStage,
+            pre_translate::{PreTranslateStage, PreTranslateSubmission},
+            prove::ProveStage,
+            translate::{TranslateBlocker, TranslateStage, TranslateSubmission},
+        },
     };
 
     type TranslateResult = AgentResult<TranslateSubmission, TranslateBlocker>;
     type PreTranslateResult = AgentResult<PreTranslateSubmission, Never>;
 
     #[test]
-    fn agent_result_schemas_are_draft_07_objects() {
-        for schema in [
-            json_schema::<TranslateResult>().unwrap(),
-            json_schema::<PreTranslateResult>().unwrap(),
-        ] {
-            let schema: serde_json::Value = serde_json::from_str(&schema).unwrap();
-            assert_eq!(schema["$schema"], "http://json-schema.org/draft-07/schema#");
-            assert_eq!(schema["type"], "object");
-        }
+    fn structured_output_schemas_are_draft_07_objects() {
+        assert_draft_07_object::<StageResult<InferStage>>();
+        assert_draft_07_object::<StageResult<PreTranslateStage>>();
+        assert_draft_07_object::<StageResult<TranslateStage>>();
+        assert_draft_07_object::<StageResult<FormalizeStage>>();
+        assert_draft_07_object::<StageResult<ProveStage>>();
+        assert_draft_07_object::<Verdict>();
+    }
+
+    type StageResult<S> = AgentResult<<S as Stage>::Submission, <S as Stage>::Blocker>;
+
+    fn assert_draft_07_object<T: JsonSchema>() {
+        let schema: serde_json::Value = serde_json::from_str(&json_schema::<T>().unwrap()).unwrap();
+        assert_eq!(schema["$schema"], "http://json-schema.org/draft-07/schema#");
+        assert_eq!(schema["type"], "object");
     }
 
     #[test]
@@ -506,5 +535,353 @@ mod tests {
             blocker.result,
             Err(TranslateBlocker::MissingStubItem { .. })
         ));
+    }
+
+    /// The line that `StageExec::retry` appends to each feedback prompt
+    const LIST_CHANGES: &str =
+        "\nIn your submission, list every change that you made since the start of the stage.\n";
+
+    /// The result of the gate check that a `TestSubmission` asks for
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+    enum Gate {
+        Pass,
+        Fail,
+        Error,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+    struct TestSubmission {
+        gate: Gate,
+    }
+
+    /// A stage whose gate returns what the submission asks for, and that has
+    /// a judge if `judge` is set
+    #[derive(Serialize, Deserialize)]
+    struct MockStage {
+        judge: bool,
+    }
+
+    impl Stage for MockStage {
+        const NAME: StageName = StageName::Translate;
+        type Input = ();
+        type Submission = TestSubmission;
+        type Blocker = String;
+        type GateFailure = String;
+        type GateExecutionError = io::Error;
+        type SetupError = io::Error;
+
+        fn setup(_input: ()) -> Result<Self, io::Error> {
+            Ok(MockStage { judge: true })
+        }
+
+        fn base_prompt(&self) -> String {
+            "base prompt".to_owned()
+        }
+
+        fn briefing(&self) -> String {
+            "briefing".to_owned()
+        }
+
+        fn skills(&self) -> Vec<(&'static str, String)> {
+            vec![("skill", "content".to_owned())]
+        }
+
+        fn feedback_prompt(failure: &String) -> String {
+            format!("fix: {failure}")
+        }
+
+        fn gate_check(&self, submission: &TestSubmission) -> Result<Option<String>, io::Error> {
+            match submission.gate {
+                Gate::Pass => Ok(None),
+                Gate::Fail => Ok(Some("gate failed".to_owned())),
+                Gate::Error => Err(io::Error::other("gate error")),
+            }
+        }
+
+        fn judge_prompt(&self, _submission: &TestSubmission) -> Option<String> {
+            self.judge.then(|| "judge prompt".to_owned())
+        }
+    }
+
+    struct Fixture {
+        exec: StageExec<MockStage, MockAgent>,
+        worker: MockAgent,
+        judge: MockAgent,
+        cfg: Config,
+        _workspace: TempDir,
+    }
+
+    fn fixture(judge: bool, max_attempts: usize, max_budget: f64) -> Fixture {
+        let workspace = tempfile::tempdir().unwrap();
+        let cfg = parse_config([
+            "--workspace-root".to_owned(),
+            workspace.path().display().to_string(),
+            "--stage-max-attempts".to_owned(),
+            max_attempts.to_string(),
+            "--stage-max-budget".to_owned(),
+            max_budget.to_string(),
+        ]);
+        let stage = MockStage { judge };
+        let worker_session =
+            StageExec::<MockStage, MockAgent>::get_worker_session(&stage, &cfg).unwrap();
+        let judge_session = StageExec::<MockStage, MockAgent>::get_judge_session(&cfg).unwrap();
+        Fixture {
+            worker: worker_session.agent().clone(),
+            judge: judge_session.agent().clone(),
+            exec: StageExec::with_sessions(stage, worker_session, judge_session),
+            cfg,
+            _workspace: workspace,
+        }
+    }
+
+    fn response(
+        session_id: &str,
+        output: serde_json::Value,
+        cost_usd: f64,
+    ) -> Result<Response, RunError> {
+        Ok(Response {
+            session_id: session_id.to_owned(),
+            output: output.to_string(),
+            usage: ModelUsage {
+                cost_usd,
+                ..ModelUsage::default()
+            },
+        })
+    }
+
+    fn submission(gate: Gate, cost_usd: f64) -> Result<Response, RunError> {
+        response(
+            "worker",
+            json!({"result": {"Ok": {"gate": gate}}}),
+            cost_usd,
+        )
+    }
+
+    fn verdict(defects: &[Defect], cost_usd: f64) -> Result<Response, RunError> {
+        response("judge", json!({ "defects": defects }), cost_usd)
+    }
+
+    fn defect() -> Defect {
+        Defect {
+            kind: "kind".to_owned(),
+            detail: "detail".to_owned(),
+            fix: "fix".to_owned(),
+            theorem: None,
+        }
+    }
+
+    fn prompts(agent: &MockAgent) -> Vec<String> {
+        agent.requests().iter().map(|r| r.prompt.clone()).collect()
+    }
+
+    fn budgets(agent: &MockAgent) -> Vec<Option<f64>> {
+        agent
+            .requests()
+            .iter()
+            .map(|r| r.budget_limit_usd)
+            .collect()
+    }
+
+    #[test]
+    fn passing_gate_and_verdict_finish_the_stage() {
+        let f = fixture(true, 3, 10.0);
+        f.worker.push(submission(Gate::Pass, 1.0));
+        f.judge.push(verdict(&[], 0.5));
+
+        let result = f.exec.run(&f.cfg, None).unwrap();
+        assert_eq!(result, TestSubmission { gate: Gate::Pass });
+        assert_eq!(prompts(&f.worker), ["base prompt"]);
+        assert_eq!(prompts(&f.judge), ["judge prompt"]);
+    }
+
+    #[test]
+    fn sessions_get_the_settings_of_the_stage() {
+        let f = fixture(true, 3, 10.0);
+        f.worker.push(submission(Gate::Pass, 1.0));
+        f.judge.push(verdict(&[], 0.5));
+        f.exec.run(&f.cfg, None).unwrap();
+
+        let root = f.cfg.workspace_root().unwrap();
+        let worker = f.worker.requests();
+        let briefing = format!("briefing\n\n{WAIT_FOR_SUBAGENTS}");
+        assert_eq!(worker[0].briefing.as_deref(), Some(briefing.as_str()));
+        assert_eq!(
+            worker[0].skills,
+            [("skill".to_owned(), "content".to_owned())]
+        );
+        assert_eq!(worker[0].workdir.as_deref(), Some(root.as_path()));
+
+        let judge = f.judge.requests();
+        assert_eq!(judge[0].briefing.as_deref(), Some(WAIT_FOR_SUBAGENTS));
+        assert!(judge[0].skills.is_empty());
+        assert_eq!(judge[0].workdir.as_deref(), Some(root.as_path()));
+    }
+
+    #[test]
+    fn stage_without_judge_skips_the_judge() {
+        let f = fixture(false, 3, 10.0);
+        f.worker.push(submission(Gate::Pass, 1.0));
+
+        f.exec.run(&f.cfg, None).unwrap();
+        assert!(f.judge.requests().is_empty());
+    }
+
+    #[test]
+    fn failed_gate_retries_in_the_same_session_with_its_feedback() {
+        let f = fixture(false, 3, 10.0);
+        f.worker.push(submission(Gate::Fail, 1.0));
+        f.worker.push(submission(Gate::Pass, 2.0));
+        f.exec.run(&f.cfg, None).unwrap();
+
+        let worker = f.worker.requests();
+        assert_eq!(worker[1].prompt, format!("fix: gate failed{LIST_CHANGES}"));
+        assert_eq!(worker[1].session_id.as_deref(), Some("worker"));
+    }
+
+    #[test]
+    fn judge_defects_go_to_the_worker_and_the_judge_rechecks_them() {
+        let f = fixture(true, 3, 10.0);
+        f.worker.push(submission(Gate::Pass, 1.0));
+        f.judge.push(verdict(&[defect()], 1.0));
+        f.worker.push(submission(Gate::Pass, 2.0));
+        f.judge.push(verdict(&[], 2.0));
+        f.exec.run(&f.cfg, None).unwrap();
+
+        let worker = f.worker.requests();
+        let feedback = defects_feedback_prompt(&[defect()]);
+        assert_eq!(worker[1].prompt, format!("{feedback}{LIST_CHANGES}"));
+        assert_eq!(worker[1].session_id.as_deref(), Some("worker"));
+
+        let judge = f.judge.requests();
+        assert!(judge[1].prompt.starts_with(RECHECK_PROMPT));
+        assert_eq!(judge[1].session_id.as_deref(), Some("judge"));
+    }
+
+    #[test]
+    fn last_attempt_stops_the_stage_with_its_rejection() {
+        let f = fixture(false, 2, 10.0);
+        f.worker.push(submission(Gate::Fail, 1.0));
+        f.worker.push(submission(Gate::Fail, 2.0));
+
+        let error = f.exec.run(&f.cfg, None).unwrap_err();
+        assert!(matches!(
+            error,
+            StageExecutionError::MaxRetries(Some(AttemptRejected::Gate(failure)))
+                if failure == "gate failed"
+        ));
+        assert_eq!(f.worker.requests().len(), 2);
+    }
+
+    #[test]
+    fn budget_spent_by_a_rejected_attempt_stops_the_stage_with_its_rejection() {
+        let f = fixture(false, 3, 1.0);
+        f.worker.push(submission(Gate::Fail, 1.0));
+
+        let error = f.exec.run(&f.cfg, None).unwrap_err();
+        assert!(matches!(
+            error,
+            StageExecutionError::BudgetExhausted(Some(AttemptRejected::Gate(_)))
+        ));
+    }
+
+    #[test]
+    fn budget_spent_before_the_judge_stops_the_stage() {
+        let f = fixture(true, 3, 1.0);
+        f.worker.push(submission(Gate::Pass, 1.0));
+
+        let error = f.exec.run(&f.cfg, None).unwrap_err();
+        assert!(matches!(error, StageExecutionError::BudgetExhausted(None)));
+        assert!(f.judge.requests().is_empty());
+    }
+
+    #[test]
+    fn agent_that_exhausts_its_budget_stops_the_stage() {
+        let f = fixture(false, 3, 10.0);
+        f.worker.push(Err(RunError {
+            session_id: Some("worker".to_owned()),
+            usage: None,
+            kind: AgentError::BudgetExhausted,
+        }));
+
+        let error = f.exec.run(&f.cfg, None).unwrap_err();
+        assert!(matches!(error, StageExecutionError::BudgetExhausted(None)));
+    }
+
+    #[test]
+    fn each_run_gets_the_remaining_budget() {
+        let f = fixture(true, 3, 10.0);
+        f.worker.push(submission(Gate::Pass, 2.0));
+        f.judge.push(verdict(&[defect()], 1.0));
+        // A resumed session reports the cost of all its runs.
+        f.worker.push(submission(Gate::Pass, 5.0));
+        f.judge.push(verdict(&[], 1.5));
+        f.exec.run(&f.cfg, None).unwrap();
+
+        assert_eq!(budgets(&f.worker), [Some(10.0), Some(7.0)]);
+        assert_eq!(budgets(&f.judge), [Some(8.0), Some(4.0)]);
+    }
+
+    #[test]
+    fn blocker_stops_the_stage() {
+        let f = fixture(false, 3, 10.0);
+        f.worker
+            .push(response("worker", json!({"result": {"Err": "stuck"}}), 1.0));
+
+        let error = f.exec.run(&f.cfg, None).unwrap_err();
+        assert!(matches!(error, StageExecutionError::Blocked(blocker) if blocker == "stuck"));
+    }
+
+    #[test]
+    fn gate_that_cannot_run_stops_the_stage() {
+        let f = fixture(false, 3, 10.0);
+        f.worker.push(submission(Gate::Error, 1.0));
+
+        let error = f.exec.run(&f.cfg, None).unwrap_err();
+        assert!(matches!(error, StageExecutionError::GateExecutionError(_)));
+    }
+
+    #[test]
+    fn submission_that_does_not_match_the_schema_stops_the_stage() {
+        let f = fixture(false, 3, 10.0);
+        f.worker.push(response("worker", json!({"result": 1}), 1.0));
+
+        let error = f.exec.run(&f.cfg, None).unwrap_err();
+        assert!(matches!(
+            error,
+            StageExecutionError::AgentError(AgentError::Json(_))
+        ));
+    }
+
+    #[test]
+    fn verdict_that_does_not_match_the_schema_stops_the_stage() {
+        let f = fixture(true, 3, 10.0);
+        f.worker.push(submission(Gate::Pass, 1.0));
+        f.judge.push(response("judge", json!({"defects": 1}), 1.0));
+
+        let error = f.exec.run(&f.cfg, None).unwrap_err();
+        assert!(matches!(
+            error,
+            StageExecutionError::AgentError(AgentError::Json(_))
+        ));
+    }
+
+    #[test]
+    fn on_change_gets_each_new_phase() {
+        let f = fixture(true, 3, 10.0);
+        f.worker.push(submission(Gate::Fail, 1.0));
+        f.worker.push(submission(Gate::Pass, 2.0));
+        f.judge.push(verdict(&[], 1.0));
+
+        let mut phases = Vec::new();
+        let mut on_change = |exec: &StageExec<MockStage, MockAgent>| {
+            phases.push(match exec.phase {
+                Phase::Attempt { .. } => "Attempt",
+                Phase::Gate { .. } => "Gate",
+                Phase::Judge { .. } => "Judge",
+                Phase::Done(_) => "Done",
+            })
+        };
+        f.exec.run(&f.cfg, Some(&mut on_change)).unwrap();
+        assert_eq!(phases, ["Gate", "Attempt", "Gate", "Judge", "Done"]);
     }
 }

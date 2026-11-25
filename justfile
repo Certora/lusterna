@@ -1,13 +1,19 @@
 default: lint test
 
-setup:
+make :=if os() == "macos" { "gmake" } else { "make" }
+
+setup: && setup-lean
   git submodule update --init
   # Install the OCaml packages that `deps/aeneas/src/aeneas.opam` lists
   opam install deps/aeneas/src --deps-only --yes
-  make -C deps/aeneas setup-charon
+  {{make}} -C deps/aeneas setup-charon
   git -C deps/aeneas/charon submodule update --init
   # `opam exec` puts `dune` of the opam switch on `PATH` for the Aeneas build
-  opam exec -- make -C deps/aeneas
+  opam exec -- {{make}} -C deps/aeneas
+
+# The part of `setup` that `lint`, `test` and `build` need
+[private]
+setup-lean:
   cd deps/aeneas/backends/lean && lake exe cache get
 
 bump-aeneas rev:
@@ -53,3 +59,23 @@ build:
 
 install: build
   cargo install --path . --locked
+
+# To bill the subscription instead of an approved API key: `env -u ANTHROPIC_API_KEY just integration-test`
+# Installs and runs `lusterna` on a copy of `tests/fixtures/demo` and checks its output
+integration-test: setup install
+  #!/usr/bin/env bash
+  set -euo pipefail
+  run_dir="$(mktemp -d)"
+  trap 'echo "kept run dir: $run_dir" >&2' ERR
+  cp -R tests/fixtures/demo/. "$run_dir"
+  git -C "$run_dir" init -q
+  git -C "$run_dir" add --all
+  git -C "$run_dir" -c user.name=lusterna -c user.email=lusterna@test commit -q -m init
+  RUST_LOG=debug lusterna --workspace-root "$run_dir" --stage-max-budget 4 --yes run
+  just integration-check "$run_dir"
+  rm -rf "$run_dir"
+
+# Runs the integration tests on the output of an earlier `integration-test`
+[private]
+integration-check run_dir:
+  LUSTERNA_IT_RUN_DIR="{{run_dir}}" cargo test --features integration --test integration

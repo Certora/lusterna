@@ -328,7 +328,9 @@ pub(crate) fn formalized_properties(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stage::{formalize::SkipReason, properties::PropertyKind};
+    use crate::stage::{
+        assert_no_placeholders, formalize::SkipReason, properties::PropertyKind,
+    };
 
     fn stage() -> ProveStage {
         ProveStage {
@@ -343,47 +345,40 @@ mod tests {
         }
     }
 
-    #[test]
-    fn briefing_fills_every_placeholder() {
-        let briefing = stage().briefing();
-
-        for placeholder in [
-            "{lean_root}",
-            "{extracted}",
-            "{properties}",
-            "{crate_root}",
-            "{induction}",
-            "{exceptions}",
-        ] {
-            assert!(!briefing.contains(placeholder), "{placeholder} is left");
-        }
-        assert!(briefing.contains("`/c/lusterna/properties.json`"));
-    }
-
-    #[test]
-    fn judge_prompt_fills_every_placeholder() {
-        let submission = ProveSubmission {
+    /// A submission that leaves one theorem open with the reason `reason`
+    fn submission(reason: &str) -> ProveSubmission {
+        ProveSubmission {
             theorems: BTreeMap::from([(
                 "Spec.FAdds.f_adds".to_owned(),
                 TheoremStatus::Open {
-                    reason: "{lean_root}".to_owned(),
+                    reason: reason.to_owned(),
                 },
             )]),
             dropped_writes: BTreeMap::new(),
             additional_invariants: BTreeMap::new(),
             additional_inductions: BTreeMap::new(),
-        };
-        let prompt = stage().judge_prompt(&submission).unwrap();
-
-        for placeholder in [
-            "{extracted}",
-            "{properties}",
-            "{invariants}",
-            "{briefing}",
-            "{submission}",
-        ] {
-            assert!(!prompt.contains(placeholder), "{placeholder} is left");
         }
+    }
+
+    #[test]
+    fn briefing_fills_every_placeholder() {
+        let briefing = stage().briefing();
+
+        assert_no_placeholders(&briefing, &[]);
+        assert!(briefing.contains("`/c/lusterna/properties.json`"));
+    }
+
+    #[test]
+    fn judge_prompt_fills_every_placeholder() {
+        let prompt = stage().judge_prompt(&submission("no lemma")).unwrap();
+
+        assert_no_placeholders(&prompt, &[]);
+    }
+
+    #[test]
+    fn judge_prompt_keeps_placeholders_in_the_submission() {
+        let prompt = stage().judge_prompt(&submission("{lean_root}")).unwrap();
+
         assert!(prompt.contains("\"reason\": \"{lean_root}\""));
     }
 

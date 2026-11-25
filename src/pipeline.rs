@@ -306,7 +306,7 @@ impl Pipeline {
 
                 Ok(submission)
             }
-            Err(e) => return Err(PipelineError::Cargo(e)),
+            Err(e) => Err(PipelineError::Cargo(e)),
         }
     }
 
@@ -484,7 +484,7 @@ impl Pipeline {
         let stage = S::setup(input).map_err(StageExecutionError::SetupError)?;
         let t = Instant::now();
         log::info!("Executing `{}`", S::NAME);
-        let stage_exec = StageExec::new(stage);
+        let stage_exec = StageExec::new(stage, &self.config)?;
         let submission = stage_exec.run(&self.config, None)?;
         log::info!("Executed `{}` in {}", S::NAME, format_elapsed(t));
         Ok(submission)
@@ -598,7 +598,7 @@ impl Submissions {
         let text = match fs::read_to_string(path) {
             Ok(text) => text,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e.into()),
+            Err(e) => return Err(e),
         };
         serde_json::from_str(&text)
             .map(Some)
@@ -610,9 +610,285 @@ impl Submissions {
 /// patterns if the crate is a Solana program, and `add_opaque`.
 fn opaque_patterns(config: &Config, add_opaque: &[String]) -> Result<Vec<String>, ConfigError> {
     let mut opaque: Vec<String> = DEFAULT_OPAQUE.lines().map(str::to_owned).collect();
-    if let Platform::Solana { .. } = config.get_platform()? {
+    if let Platform::Solana = config.get_platform()? {
         opaque.extend(solana_opaque());
     }
     opaque.extend(add_opaque.iter().cloned());
     Ok(opaque)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::Command;
+
+    use clap::ValueEnum;
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::utils::parse_config;
+
+    struct Fixture {
+        pipeline: Pipeline,
+        /// The root of the repository, which holds the crate
+        root: PathBuf,
+        _dir: TempDir,
+    }
+
+    /// A pipeline for a crate at the root of a new repository with one commit,
+    /// with the spec `spec` and the command-line arguments `args`
+    fn fixture(spec: &str, args: &[&str]) -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        fs::create_dir(root.join("src")).unwrap();
+        fs::write(root.join("src/lib.rs"), "").unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        fs::write(root.join("Cargo.lock"), "").unwrap();
+        fs::write(root.join("lusterna.json"), spec).unwrap();
+        let init = Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        assert!(init.success());
+        git::commit_all(&root, "init").unwrap();
+
+        let root_arg = root.display().to_string();
+        let mut config_args = vec![
+            "--workspace-root".to_owned(),
+            root_arg.clone(),
+            "--crate-root".to_owned(),
+            root_arg,
+        ];
+        config_args.extend(args.iter().map(|a| a.to_string()));
+        let config = parse_config(config_args);
+
+        Fixture {
+            // Directly construct the Pipeline without calling "new",
+            // this skip the pre-checks, which can fail in the test environment.
+            pipeline: Pipeline {
+                spec: serde_json::from_str(spec).unwrap(),
+                spec_path: root.join("lusterna.json"),
+                submissions: Submissions::new(&root.join("lusterna")).unwrap(),
+                config,
+                commit: None,
+            },
+            root,
+            _dir: dir,
+        }
+    }
+
+    fn last_commit_message(repo: &Path) -> String {
+        let output = Command::new("git")
+            .args(["log", "-1", "--format=%s"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    }
+
+    #[test]
+    fn runs_selects_the_steps_from_start_at_to_stop_after() {
+        let cases: [(&[&str], &[&str]); 4] = [
+            (
+                &[],
+                &[
+                    "infer",
+                    "write-spec",
+                    "pre-translate",
+                    "translate",
+                    "formalize",
+                    "prove",
+                    "report",
+                ],
+            ),
+            (
+                &["--start-at", "translate"],
+                &["translate", "formalize", "prove", "report"],
+            ),
+            (
+                &["--stop-after", "formalize"],
+                &[
+                    "infer",
+                    "write-spec",
+                    "pre-translate",
+                    "translate",
+                    "formalize",
+                ],
+            ),
+            (
+                &["--start-at", "pre-translate", "--stop-after", "translate"],
+                &["pre-translate", "translate"],
+            ),
+        ];
+        for (args, expected) in cases {
+            let f = fixture("{}", args);
+            let running: Vec<String> = PipelineStep::value_variants()
+                .iter()
+                .filter(|step| f.pipeline.runs(**step))
+                .map(|step| step.to_possible_value().unwrap().get_name().to_owned())
+                .collect();
+            assert_eq!(running, expected, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn submission_files_are_named_after_their_stage() {
+        let dir = Path::new("/lusterna");
+        let cases = [
+            (StageName::Infer, "infer.json"),
+            (StageName::PreTranslate, "pretranslate.json"),
+            (StageName::Translate, "translate.json"),
+            (StageName::Formalize, "formalize.json"),
+            (StageName::Prove, "prove.json"),
+        ];
+        for (stage, file) in cases {
+            assert_eq!(Submissions::submission_path(dir, stage), dir.join(file));
+        }
+    }
+
+    #[test]
+    fn stored_submissions_load_in_new_submissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let lusterna_dir = dir.path().join("lusterna");
+        let infer = InferStageSubmission {
+            properties: Default::default(),
+            entrypoints: vec!["demo::f".to_owned()],
+            design_doc: None,
+        };
+
+        let mut submissions = Submissions::new(&lusterna_dir).unwrap();
+        submissions.set_infer(infer.clone()).unwrap();
+        submissions
+            .set_pre_translate(PreTranslateSubmission::default())
+            .unwrap();
+
+        let loaded = Submissions::new(&lusterna_dir).unwrap();
+        assert_eq!(
+            serde_json::to_value(loaded.get_infer()).unwrap(),
+            serde_json::to_value(Some(&infer)).unwrap()
+        );
+        assert!(loaded.get_pre_translate().is_some());
+        assert!(loaded.get_translate().is_none());
+        assert!(loaded.get_formalize().is_none());
+        assert!(loaded.get_prove().is_none());
+    }
+
+    #[test]
+    fn malformed_submission_file_fails_to_load() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("translate.json"), "not json").unwrap();
+
+        let error = Submissions::new(dir.path()).err().unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn opaque_patterns_of_a_generic_crate_are_the_defaults_and_the_added_ones() {
+        let f = fixture("{}", &[]);
+        let added = ["demo::hidden".to_owned()];
+
+        let mut expected: Vec<String> = DEFAULT_OPAQUE.lines().map(str::to_owned).collect();
+        expected.push("demo::hidden".to_owned());
+        assert_eq!(
+            opaque_patterns(&f.pipeline.config, &added).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn clean_worktree_passes() {
+        let f = fixture("{}", &[]);
+        f.pipeline.check_clean_worktree().unwrap();
+    }
+
+    #[test]
+    fn changed_spec_file_passes() {
+        let f = fixture("{}", &[]);
+        fs::write(f.root.join("lusterna.json"), r#"{"infer": true}"#).unwrap();
+        f.pipeline.check_clean_worktree().unwrap();
+    }
+
+    #[test]
+    fn other_changes_fail_with_the_changed_files() {
+        let f = fixture("{}", &[]);
+        fs::write(f.root.join("src/lib.rs"), "pub fn f() {}").unwrap();
+        fs::write(f.root.join("new.rs"), "").unwrap();
+
+        let error = f.pipeline.check_clean_worktree().unwrap_err();
+        let PipelineError::DirtyWorktree(mut files) = error else {
+            panic!("expected `DirtyWorktree`, got {error}");
+        };
+        files.sort();
+        assert_eq!(
+            files,
+            [PathBuf::from("new.rs"), PathBuf::from("src/lib.rs")]
+        );
+    }
+
+    #[test]
+    fn allow_dirty_commits_the_changes() {
+        let f = fixture("{}", &["--allow-dirty"]);
+        fs::write(f.root.join("src/lib.rs"), "pub fn f() {}").unwrap();
+
+        f.pipeline.check_clean_worktree().unwrap();
+        assert!(git::is_clean(&f.root).unwrap());
+        assert_eq!(
+            last_commit_message(&f.root),
+            "Lusterna: uncommitted changes"
+        );
+    }
+
+    #[test]
+    fn write_spec_writes_and_commits_the_spec_and_its_properties() {
+        let f = fixture(r#"{"entrypoints": ["demo::f"]}"#, &[]);
+        f.pipeline.write_spec().unwrap();
+
+        let lusterna_dir = f.root.join("lusterna");
+        let spec: Spec =
+            serde_json::from_str(&fs::read_to_string(lusterna_dir.join("lusterna.json")).unwrap())
+                .unwrap();
+        assert_eq!(spec.entrypoints, ["demo::f"]);
+        let properties: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(lusterna_dir.join("properties.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(properties, serde_json::json!([]));
+        assert_eq!(last_commit_message(&f.root), "Lusterna: spec");
+
+        let head = git::head_rev(&f.root).unwrap();
+        f.pipeline.write_spec().unwrap();
+        assert_eq!(git::head_rev(&f.root).unwrap(), head);
+    }
+
+    #[test]
+    fn commit_names_the_stage() {
+        let f = fixture("{}", &[]);
+        let cases = [
+            (StageName::Infer, "infer"),
+            (StageName::PreTranslate, "pre-translate"),
+            (StageName::Translate, "translate"),
+            (StageName::Formalize, "formalize"),
+            (StageName::Prove, "prove"),
+        ];
+        for (stage, name) in cases {
+            fs::write(f.root.join(format!("{name}.txt")), "").unwrap();
+            f.pipeline.commit(stage).unwrap();
+            assert_eq!(
+                last_commit_message(&f.root),
+                format!("Lusterna: `{name}` stage")
+            );
+        }
+    }
+
+    #[test]
+    fn commit_without_changes_makes_no_commit() {
+        let f = fixture("{}", &[]);
+        let head = git::head_rev(&f.root).unwrap();
+        f.pipeline.commit(StageName::Translate).unwrap();
+        assert_eq!(git::head_rev(&f.root).unwrap(), head);
+    }
 }
