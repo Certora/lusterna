@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::stage::properties::Properties;
 
 /// The input of a run: what to translate and which properties to verify.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Spec {
     /// Charon `--start-from` patterns.

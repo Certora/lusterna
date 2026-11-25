@@ -46,7 +46,7 @@ use std::{
 };
 
 use log::info;
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{
     config::{Config, ConfigError, Platform},
@@ -75,6 +75,9 @@ const TOOLS: [&str; 6] = ["git", "cargo", "charon", "aeneas", "lake", "claude"];
 
 /// The tools that the `claude` sandbox needs on Linux.
 const LINUX_SANDBOX_TOOLS: [&str; 2] = ["bwrap", "socat"];
+
+/// The content of `lusterna/.gitignore` in the crate root.
+const GITIGNORE: &str = "/lean/.lake/\n/extraction.llbc\n/charon/\n/run.json\n/*.state.json\n";
 
 /// An error that ends a pipeline run.
 #[derive(Debug, thiserror::Error)]
@@ -131,7 +134,7 @@ pub enum PipelineError {
 /// The steps of a pipeline run, in the order in which they run. A step
 /// executes a stage or does other work on the crate, and ends with a commit
 /// of its changes.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum, Serialize, Deserialize)]
 pub enum PipelineStep {
     Infer,
     /// Writes the spec and its properties to the crate.
@@ -145,6 +148,20 @@ pub enum PipelineStep {
     Report,
 }
 
+/// The state of an unfinished run.
+#[derive(Serialize, Deserialize)]
+struct RunState {
+    spec: Spec,
+    /// The file that `spec` was read from.
+    spec_path: PathBuf,
+    /// The commit of the repository that the run started from.
+    commit: String,
+    /// The step that runs next.
+    next: PipelineStep,
+    /// `HEAD` of the repository when the state was written.
+    head: String,
+}
+
 /// A pipeline of stages, configured by a spec. See the module documentation.
 pub struct Pipeline {
     spec: Spec,
@@ -155,6 +172,8 @@ pub struct Pipeline {
     /// The commit of the repository that the run starts from.
     /// Recorded after `pre_check` passed.
     commit: Option<String>,
+    /// The step that runs next.
+    next: PipelineStep,
 }
 
 impl Pipeline {
@@ -167,29 +186,86 @@ impl Pipeline {
             config,
             submissions: Submissions::new(&lusterna_dir)?,
             commit: None,
+            next: PipelineStep::Infer,
         })
     }
 
-    /// Whether `step` runs with `--stop-after`.
+    /// Whether `step` is `next` or a later step, and runs with
+    /// `--stop-after`.
     fn runs(&self, step: PipelineStep) -> bool {
-        self.config.stop_after.is_none_or(|s| step <= s)
+        self.next <= step && self.config.stop_after.is_none_or(|s| step <= s)
     }
 
-    /// Runs the steps of the pipeline in order and stops at the first error.
+    /// Writes the state of the run to `lusterna/run.json` in the crate root.
+    fn save_state(&self) -> Result<(), PipelineError> {
+        let lusterna_dir = self.config.crate_root()?.join("lusterna");
+        fs::create_dir_all(&lusterna_dir)?;
+        let state = RunState {
+            spec: self.spec.clone(),
+            spec_path: self.spec_path.clone(),
+            commit: self.commit.clone().expect("`run` sets the commit"),
+            next: self.next,
+            head: git::head_rev(&self.config.repo_root()?)?,
+        };
+        fs::write(
+            lusterna_dir.join("run.json"),
+            serde_json::to_string_pretty(&state).expect("the run state serializes"),
+        )?;
+        Ok(())
+    }
+
+    /// Sets `next` to the step that runs next and saves the state of the run.
+    fn step_done(&mut self, next: PipelineStep) -> Result<(), PipelineError> {
+        self.next = next;
+        self.save_state()
+    }
+
+    /// Saves the state of the run if `--stop-after` ended it before the
+    /// `prove` step, and deletes `lusterna/run.json` otherwise.
+    fn close_state(&self) -> Result<(), PipelineError> {
+        if self
+            .config
+            .stop_after
+            .is_some_and(|s| s < PipelineStep::Prove)
+        {
+            return self.save_state();
+        }
+        fs::remove_file(self.config.crate_root()?.join("lusterna/run.json"))?;
+        Ok(())
+    }
+
+    /// Starts a new run: deletes the submissions and the stage states of an
+    /// earlier run, then runs the steps of the pipeline.
     pub fn run(mut self) -> Result<(), PipelineError> {
         self.pre_check()?;
         self.commit = Some(git::head_rev(&self.config.repo_root()?)?);
 
+        let lusterna_dir = self.config.crate_root()?.join("lusterna");
+        fs::create_dir_all(&lusterna_dir)?;
+        self.submissions.clear()?;
+        remove_stage_states(&lusterna_dir)?;
+        fs::write(lusterna_dir.join(".gitignore"), GITIGNORE)?;
+        self.save_state()?;
+
+        self.run_steps()
+    }
+
+    /// Runs the steps of the pipeline from `next` on, in order, and stops at
+    /// the first error.
+    fn run_steps(mut self) -> Result<(), PipelineError> {
         // 1. Infer the entrypoints and properties
         if self.spec.infer {
-            let submission = self.run_infer()?;
-            self.submissions.set_infer(submission)?;
-            self.commit(StageName::Infer)?;
+            if self.runs(PipelineStep::Infer) {
+                let submission = self.run_infer()?;
+                self.submissions.set_infer(submission)?;
+                self.commit(StageName::Infer)?;
+                self.step_done(PipelineStep::WriteSpec)?;
+            }
             // The later steps use the inferred properties and entrypoints.
             let inferred = self
                 .submissions
                 .get_infer()
-                .expect("`set_infer` stored the submission");
+                .expect("the infer step stored the submission");
             self.spec.properties = inferred.properties.clone();
             self.spec.entrypoints = inferred.entrypoints.clone();
         }
@@ -197,6 +273,7 @@ impl Pipeline {
         // 2. Write the spec and its properties to the crate
         if self.runs(PipelineStep::WriteSpec) {
             self.write_spec()?;
+            self.step_done(PipelineStep::PreTranslate)?;
         }
 
         // 3. Run the pre-translate stage
@@ -205,6 +282,7 @@ impl Pipeline {
             let submission = self.run_pretranslate()?;
             self.submissions.set_pre_translate(submission)?;
             self.commit(StageName::PreTranslate)?;
+            self.step_done(PipelineStep::Translate)?;
         }
 
         // 4. Run the translate stage
@@ -218,6 +296,7 @@ impl Pipeline {
             )?;
             self.submissions.set_translate(submission)?;
             self.commit(StageName::Translate)?;
+            self.step_done(PipelineStep::Formalize)?;
         }
 
         // 5. Run the formalize stage
@@ -225,6 +304,7 @@ impl Pipeline {
             let submission = self.run_formalize()?;
             self.submissions.set_formalize(submission)?;
             self.commit(StageName::Formalize)?;
+            self.step_done(PipelineStep::Prove)?;
         }
 
         // 6. Run the prove stage
@@ -232,10 +312,12 @@ impl Pipeline {
             let submission = self.run_prove()?;
             self.submissions.set_prove(submission)?;
             self.commit(StageName::Prove)?;
+            self.step_done(PipelineStep::Report)?;
         }
 
         // 7. Write the report (always)
-        self.write_report()
+        self.write_report()?;
+        self.close_state()
     }
 
     fn write_spec(&self) -> Result<(), PipelineError> {
@@ -491,6 +573,29 @@ impl Submissions {
         })
     }
 
+    /// Deletes the submission files and the loaded submissions.
+    pub fn clear(&mut self) -> io::Result<()> {
+        let stages = [
+            StageName::Infer,
+            StageName::PreTranslate,
+            StageName::Translate,
+            StageName::Formalize,
+            StageName::Prove,
+        ];
+        for stage in stages {
+            match fs::remove_file(Self::submission_path(&self.submission_dir, stage)) {
+                Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+                _ => {}
+            }
+        }
+        self.infer = None;
+        self.pre_translate = None;
+        self.translate = None;
+        self.formalize = None;
+        self.prove = None;
+        Ok(())
+    }
+
     pub fn set_infer(&mut self, submission: InferStageSubmission) -> io::Result<()> {
         // The infer step runs before the step that creates the directory
         fs::create_dir_all(&self.submission_dir)?;
@@ -583,6 +688,18 @@ impl Submissions {
     }
 }
 
+/// Deletes every `*.state.json` file in `dir`.
+fn remove_stage_states(dir: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        if name.ends_with(".state.json") {
+            fs::remove_file(&path)?;
+        }
+    }
+    Ok(())
+}
+
 /// Returns the Charon `--opaque` patterns: the default patterns, the Solana
 /// patterns if the crate is a Solana program, and `add_opaque`.
 fn opaque_patterns(config: &Config, add_opaque: &[String]) -> Result<Vec<String>, ConfigError> {
@@ -652,6 +769,7 @@ mod tests {
                 submissions: Submissions::new(&root.join("lusterna")).unwrap(),
                 config,
                 commit: None,
+                next: PipelineStep::Infer,
             },
             root,
             _dir: dir,
@@ -706,6 +824,106 @@ mod tests {
                 .collect();
             assert_eq!(running, expected, "{args:?}");
         }
+    }
+
+    #[test]
+    fn runs_skips_the_steps_before_next() {
+        let mut f = fixture("{}", &["--stop-after", "formalize"]);
+        f.pipeline.next = PipelineStep::Translate;
+
+        let running: Vec<String> = PipelineStep::value_variants()
+            .iter()
+            .filter(|step| f.pipeline.runs(**step))
+            .map(|step| step.to_possible_value().unwrap().get_name().to_owned())
+            .collect();
+        assert_eq!(running, ["translate", "formalize"]);
+    }
+
+    #[test]
+    fn save_state_writes_the_run_state() {
+        let mut f = fixture(r#"{"entrypoints": ["demo::f"]}"#, &[]);
+        f.pipeline.commit = Some("start".to_owned());
+        f.pipeline.next = PipelineStep::Translate;
+        f.pipeline.save_state().unwrap();
+
+        let text = fs::read_to_string(f.root.join("lusterna/run.json")).unwrap();
+        let state: RunState = serde_json::from_str(&text).unwrap();
+        assert_eq!(state.spec.entrypoints, ["demo::f"]);
+        assert_eq!(state.spec_path, f.root.join("lusterna.json"));
+        assert_eq!(state.commit, "start");
+        assert!(state.next == PipelineStep::Translate);
+        assert_eq!(state.head, git::head_rev(&f.root).unwrap());
+    }
+
+    #[test]
+    fn step_done_sets_next_and_saves_the_state() {
+        let mut f = fixture("{}", &[]);
+        f.pipeline.commit = Some("start".to_owned());
+        f.pipeline.step_done(PipelineStep::Formalize).unwrap();
+
+        assert!(f.pipeline.next == PipelineStep::Formalize);
+        let text = fs::read_to_string(f.root.join("lusterna/run.json")).unwrap();
+        let state: RunState = serde_json::from_str(&text).unwrap();
+        assert!(state.next == PipelineStep::Formalize);
+    }
+
+    #[test]
+    fn close_state_deletes_the_state_of_a_finished_run() {
+        for args in [&[][..], &["--stop-after", "prove"], &["--stop-after", "report"]] {
+            let mut f = fixture("{}", args);
+            f.pipeline.commit = Some("start".to_owned());
+            f.pipeline.save_state().unwrap();
+
+            f.pipeline.close_state().unwrap();
+            assert!(!f.root.join("lusterna/run.json").exists(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn close_state_saves_the_state_of_a_run_that_stopped_before_prove() {
+        let mut f = fixture("{}", &["--stop-after", "formalize"]);
+        f.pipeline.commit = Some("start".to_owned());
+        f.pipeline.next = PipelineStep::Prove;
+        f.pipeline.save_state().unwrap();
+        fs::write(f.root.join("report.md"), "").unwrap();
+        git::commit_all(&f.root, "Lusterna: report").unwrap();
+
+        f.pipeline.close_state().unwrap();
+        let text = fs::read_to_string(f.root.join("lusterna/run.json")).unwrap();
+        let state: RunState = serde_json::from_str(&text).unwrap();
+        assert!(state.next == PipelineStep::Prove);
+        assert_eq!(state.head, git::head_rev(&f.root).unwrap());
+    }
+
+    #[test]
+    fn clear_deletes_the_submission_files_and_the_loaded_submissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut submissions = Submissions::new(dir.path()).unwrap();
+        submissions
+            .set_pre_translate(PreTranslateSubmission::default())
+            .unwrap();
+        fs::write(dir.path().join("prove.json"), "stale").unwrap();
+        fs::write(dir.path().join("report.md"), "report").unwrap();
+
+        submissions.clear().unwrap();
+        assert!(submissions.get_pre_translate().is_none());
+        assert!(!dir.path().join("pretranslate.json").exists());
+        assert!(!dir.path().join("prove.json").exists());
+        assert!(dir.path().join("report.md").exists());
+        assert!(Submissions::new(dir.path()).unwrap().get_prove().is_none());
+    }
+
+    #[test]
+    fn remove_stage_states_deletes_only_the_state_files() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["translate.state.json", "prove.state.json", "translate.json"] {
+            fs::write(dir.path().join(name), "").unwrap();
+        }
+
+        remove_stage_states(dir.path()).unwrap();
+        assert!(!dir.path().join("translate.state.json").exists());
+        assert!(!dir.path().join("prove.state.json").exists());
+        assert!(dir.path().join("translate.json").exists());
     }
 
     #[test]
