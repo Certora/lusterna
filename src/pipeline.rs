@@ -3,9 +3,7 @@
 //! 1. `infer`: runs only if the spec asks for it. An agent finds properties and
 //!    entrypoints in addition to those of the spec. The pipeline writes the
 //!    submission of the stage to `lusterna/infer.json` in the crate root, and
-//!    the later steps use its properties and entrypoints. If the step is
-//!    skipped, they use those of the `lusterna/infer.json` of an earlier run,
-//!    and the run fails if the file does not exist.
+//!    the later steps use its properties and entrypoints.
 //! 2. The pipeline writes the spec to `lusterna/lusterna.json` and its
 //!    properties to `lusterna/properties.json` in the crate root.
 //! 3. `pre-translate`: runs only if `cargo build` fails. An agent changes the
@@ -38,9 +36,8 @@
 //!
 //! ## Partial Runs
 //!
-//! The `--start-at` option skips the steps before the named [`Step`], and the
-//! `--stop-after` option ends the pipeline after the named [`Step`]. The report
-//! is written even with `--stop-after`.
+//! The `--stop-after` option ends the pipeline after the named [`Step`]. The
+//! report is written even with `--stop-after`.
 
 use std::{
     env, fs, io,
@@ -116,10 +113,6 @@ pub enum PipelineError {
     /// The spec has no entrypoints and does not ask to infer them.
     #[error("the spec has no entrypoints; add some or set `infer` to true")]
     NoEntrypoints,
-    /// The spec asks to infer, the `infer` step is skipped, and the file that
-    /// holds the submission of an earlier infer stage does not exist.
-    #[error("the spec sets `infer`, but `{0}` does not exist; start at `infer`")]
-    MissingInferSubmission(PathBuf),
     /// Writing the spec or the properties to the crate failed.
     #[error("IO error: {0}")]
     Io(#[from] io::Error),
@@ -148,7 +141,7 @@ pub enum PipelineStep {
     Formalize,
     Prove,
     /// Writes the report of the run to the crate. Runs even with
-    /// `--stop-after`. `--start-at report` writes only the report.
+    /// `--stop-after`.
     Report,
 }
 
@@ -177,11 +170,9 @@ impl Pipeline {
         })
     }
 
-    /// Whether `step` is in the range that `--start-at` and `--stop-after`
-    /// select.
+    /// Whether `step` runs with `--stop-after`.
     fn runs(&self, step: PipelineStep) -> bool {
-        self.config.start_at.is_none_or(|s| s <= step)
-            && self.config.stop_after.is_none_or(|s| step <= s)
+        self.config.stop_after.is_none_or(|s| step <= s)
     }
 
     /// Runs the steps of the pipeline in order and stops at the first error.
@@ -191,17 +182,14 @@ impl Pipeline {
 
         // 1. Infer the entrypoints and properties
         if self.spec.infer {
-            if self.runs(PipelineStep::Infer) {
-                let submission = self.run_infer()?;
-                self.submissions.set_infer(submission)?;
-                self.commit(StageName::Infer)?;
-            }
-            // The later steps use the inferred properties and entrypoints. If
-            // the step is skipped, they are those of an earlier run.
-            let Some(inferred) = self.submissions.get_infer() else {
-                let path = self.config.crate_root()?.join("lusterna/infer.json");
-                return Err(PipelineError::MissingInferSubmission(path));
-            };
+            let submission = self.run_infer()?;
+            self.submissions.set_infer(submission)?;
+            self.commit(StageName::Infer)?;
+            // The later steps use the inferred properties and entrypoints.
+            let inferred = self
+                .submissions
+                .get_infer()
+                .expect("`set_infer` stored the submission");
             self.spec.properties = inferred.properties.clone();
             self.spec.entrypoints = inferred.entrypoints.clone();
         }
@@ -221,17 +209,6 @@ impl Pipeline {
 
         // 4. Run the translate stage
         if self.runs(PipelineStep::Translate) {
-            if !self.runs(PipelineStep::PreTranslate) {
-                // If pre translate was skipped, the crate might not build.
-                // The translate stage fails in that so we stop early.
-                let build = cargo::build(&self.config.manifest()?);
-                if let Err(CargoError::Build { .. }) = &build {
-                    log::error!(
-                        "The crate does not build, cannot start at `translate`. Start at `pre-translate` or earlier."
-                    );
-                }
-                build?;
-            }
             if self.spec.entrypoints.is_empty() {
                 return Err(PipelineError::NoEntrypoints);
             }
@@ -691,8 +668,8 @@ mod tests {
     }
 
     #[test]
-    fn runs_selects_the_steps_from_start_at_to_stop_after() {
-        let cases: [(&[&str], &[&str]); 4] = [
+    fn runs_selects_the_steps_to_stop_after() {
+        let cases: [(&[&str], &[&str]); 3] = [
             (
                 &[],
                 &[
@@ -706,10 +683,6 @@ mod tests {
                 ],
             ),
             (
-                &["--start-at", "translate"],
-                &["translate", "formalize", "prove", "report"],
-            ),
-            (
                 &["--stop-after", "formalize"],
                 &[
                     "infer",
@@ -720,8 +693,8 @@ mod tests {
                 ],
             ),
             (
-                &["--start-at", "pre-translate", "--stop-after", "translate"],
-                &["pre-translate", "translate"],
+                &["--stop-after", "translate"],
+                &["infer", "write-spec", "pre-translate", "translate"],
             ),
         ];
         for (args, expected) in cases {

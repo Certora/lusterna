@@ -70,9 +70,6 @@ pub struct Config {
     pub(crate) allow_dirty: bool,
 
     #[arg(long, value_enum, help_heading = "Dev Options")]
-    pub(crate) start_at: Option<PipelineStep>,
-
-    #[arg(long, value_enum, help_heading = "Dev Options")]
     pub(crate) stop_after: Option<PipelineStep>,
 }
 
