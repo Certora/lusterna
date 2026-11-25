@@ -36,8 +36,8 @@
 //!
 //! ## Partial Runs
 //!
-//! The `--stop-after` option ends the pipeline after the named [`Step`]. The
-//! report is written even with `--stop-after`.
+//! The `--stop-after` option ends the pipeline after the named
+//! [`PipelineStep`]. The report is written even with `--stop-after`.
 //!
 //! `lusterna continue` goes on with the unfinished run of the crate: a run
 //! that was interrupted, that failed, or that `--stop-after` ended before the
