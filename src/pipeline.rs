@@ -350,24 +350,35 @@ impl Pipeline {
 
     fn run_pretranslate(&self) -> Result<PreTranslateSubmission, PipelineError> {
         let manifest = self.config.manifest()?;
-        match cargo::build(&manifest) {
-            Ok(_) => Ok(PreTranslateSubmission::default()),
+        // A stage that a run stopped in the middle of continues even if the
+        // crate builds: the gate and the judge did not check its changes.
+        let unfinished = self.stage_state_path(StageName::PreTranslate)?.exists();
+        let build_stderr = match cargo::build(&manifest) {
+            Ok(_) if !unfinished => return Ok(PreTranslateSubmission::default()),
+            Ok(_) => String::new(),
             Err(CargoError::Build { stderr, .. }) => {
                 info!("Crate does not build, executing pre translation stage");
-
-                let input = PreTranslateInput {
-                    workspace_root: self.config.workspace_root()?,
-                    manifest: manifest.to_owned(),
-                    build_stderr: stderr,
-                };
-                let submission = self
-                    .exec_stage::<PreTranslateStage>(input)
-                    .map_err(PipelineError::PreTranslate)?;
-
-                Ok(submission)
+                stderr
             }
-            Err(e) => Err(PipelineError::Cargo(e)),
-        }
+            Err(e) => return Err(PipelineError::Cargo(e)),
+        };
+
+        let input = PreTranslateInput {
+            workspace_root: self.config.workspace_root()?,
+            manifest: manifest.to_owned(),
+            build_stderr,
+        };
+        let submission = self
+            .exec_stage::<PreTranslateStage>(input)
+            .map_err(PipelineError::PreTranslate)?;
+
+        Ok(submission)
+    }
+
+    /// Returns the file that holds the state of the execution of `stage`.
+    fn stage_state_path(&self, stage: StageName) -> Result<PathBuf, ConfigError> {
+        let name = format!("{}.state.json", stage.as_str());
+        Ok(self.config.crate_root()?.join("lusterna").join(name))
     }
 
     /// Checks everything a run needs before it does any work.
@@ -541,10 +552,7 @@ impl Pipeline {
         &self,
         input: S::Input,
     ) -> Result<S::Submission, StageExecutionError<S>> {
-        let crate_root = self.config.crate_root().map_err(AgentError::from)?;
-        let state_path = crate_root
-            .join("lusterna")
-            .join(format!("{}.state.json", S::NAME.as_str()));
+        let state_path = self.stage_state_path(S::NAME).map_err(AgentError::from)?;
 
         // Continue the stage if a run stopped in the middle of it
         let stage_exec = if state_path.exists() {
@@ -950,18 +958,18 @@ mod tests {
         assert!(dir.path().join("translate.json").exists());
     }
 
-    #[test]
-    fn exec_stage_returns_the_submission_of_a_done_state_file() {
-        let mut f = fixture("{}", &[]);
-        f.pipeline.commit = Some("start".to_owned());
-        let input = PreTranslateInput {
+    fn pre_translate_input(f: &Fixture) -> PreTranslateInput {
+        PreTranslateInput {
             workspace_root: f.root.clone(),
             manifest: f.root.join("Cargo.toml"),
             build_stderr: String::new(),
-        };
+        }
+    }
 
-        // The state of a pre-translate stage that is done
-        let stage = PreTranslateStage::setup(input.clone()).unwrap();
+    /// Writes the state file of a pre-translate stage that is done, with a
+    /// submission of one change, and returns its path
+    fn write_done_pre_translate_state(f: &Fixture) -> PathBuf {
+        let stage = PreTranslateStage::setup(pre_translate_input(f)).unwrap();
         let exec = StageExec::new(stage, &f.pipeline.config).unwrap();
         let mut state = serde_json::to_value(&exec).unwrap();
         let change = serde_json::json!({
@@ -972,11 +980,56 @@ mod tests {
         let state_path = lusterna_dir.join("pre-translate.state.json");
         fs::create_dir(&lusterna_dir).unwrap();
         fs::write(&state_path, state.to_string()).unwrap();
+        state_path
+    }
 
+    #[test]
+    fn exec_stage_returns_the_submission_of_a_done_state_file() {
+        let mut f = fixture("{}", &[]);
+        f.pipeline.commit = Some("start".to_owned());
+        let state_path = write_done_pre_translate_state(&f);
+
+        let input = pre_translate_input(&f);
         let submission = f.pipeline.exec_stage::<PreTranslateStage>(input).unwrap();
         assert_eq!(submission.changes.len(), 1);
         assert!(state_path.exists());
-        assert!(lusterna_dir.join("run.json").exists());
+        assert!(f.root.join("lusterna/run.json").exists());
+    }
+
+    #[test]
+    fn stage_state_files_are_named_after_their_stage() {
+        let f = fixture("{}", &[]);
+        let cases = [
+            (StageName::Infer, "infer.state.json"),
+            (StageName::PreTranslate, "pre-translate.state.json"),
+            (StageName::Translate, "translate.state.json"),
+            (StageName::Formalize, "formalize.state.json"),
+            (StageName::Prove, "prove.state.json"),
+        ];
+        for (stage, file) in cases {
+            assert_eq!(
+                f.pipeline.stage_state_path(stage).unwrap(),
+                f.root.join("lusterna").join(file)
+            );
+        }
+    }
+
+    #[test]
+    fn run_pretranslate_skips_the_stage_if_the_crate_builds() {
+        let f = fixture("{}", &[]);
+        let submission = f.pipeline.run_pretranslate().unwrap();
+        assert!(submission.changes.is_empty());
+        assert!(!f.root.join("lusterna").exists());
+    }
+
+    #[test]
+    fn run_pretranslate_continues_an_unfinished_stage_even_if_the_crate_builds() {
+        let mut f = fixture("{}", &[]);
+        f.pipeline.commit = Some("start".to_owned());
+        write_done_pre_translate_state(&f);
+
+        let submission = f.pipeline.run_pretranslate().unwrap();
+        assert_eq!(submission.changes.len(), 1);
     }
 
     #[test]
