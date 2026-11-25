@@ -98,18 +98,45 @@
     <section class="start" id="get-started">
       <div class="wrap">
         <h2>Get started</h2>
-        <p class="sub">You need macOS or Linux with a Rust toolchain, opam, Lean 4, just, and the <code>claude</code>
-          CLI. Write a spec to <code>lusterna.json</code> in a Rust workspace in a git repository, and Lusterna commits
-          the results on the checked out branch.</p>
+        <p class="sub">Install Lusterna from source. It runs on macOS and Linux, and the build needs a Rust
+          toolchain, opam, Lean 4 and just.</p>
         <div class="panel">
           <div class="panel-head">shell<button class="copy" type="button">Copy</button></div>
           <pre><code>git clone https://github.com/Certora/lusterna && cd lusterna
 just setup                                <span class="c"># builds Aeneas and Charon</span>
-just install
-
-claude auth login
-cd /path/to/workspace                     <span class="c"># holds lusterna.json</span>
-lusterna run</code></pre>
+just install</code></pre>
+        </div>
+        <p class="sub">Write the specification to <code>lusterna.json</code> in the root of your Rust workspace. The
+          entrypoints set the verification scope. Each property is a rule about one or more functions or an invariant
+          of a struct, stated in natural language. With <code>"infer": true</code>, Lusterna infers further
+          entrypoints and properties from the code and its design document.</p>
+        <div class="panel">
+          <div class="panel-head">lusterna.json<button class="copy" type="button">Copy</button></div>
+          <pre><code>{
+  "entrypoints": ["crate::vault"],
+  "properties": [
+    {
+      "id": 1,
+      "kind": {"Invariant": {"struct": "vault::Vault"}},
+      "title": "Shares never exceed the total",
+      "natspec": "A vault never has more shares than its total."
+    },
+    {
+      "id": 2,
+      "kind": {"Rule": {"fns": ["vault::Vault::withdraw"]}},
+      "title": "withdraw burns the requested shares",
+      "natspec": "If withdraw returns true, the shares and the total both decrease by the requested amount."
+    }
+  ],
+  "infer": false
+}</code></pre>
+        </div>
+        <p class="sub">Run Lusterna in the workspace. It needs the <code>claude</code> CLI, logged in. Lusterna commits
+          the Lean project and the report to the directory <code>lusterna/</code> of the crate, on the checked out
+          branch.</p>
+        <div class="panel">
+          <div class="panel-head">shell<button class="copy" type="button">Copy</button></div>
+          <pre><code>lusterna run</code></pre>
         </div>
         <p class="links">
           <a href="https://github.com/Certora/lusterna#installation">Installation</a>
