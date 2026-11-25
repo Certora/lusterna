@@ -49,6 +49,7 @@ use log::info;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{
+    agent::AgentError,
     config::{Config, ConfigError, Platform},
     spec::Spec,
     stage::{
@@ -540,11 +541,34 @@ impl Pipeline {
         &self,
         input: S::Input,
     ) -> Result<S::Submission, StageExecutionError<S>> {
-        let stage = S::setup(input).map_err(StageExecutionError::SetupError)?;
+        let crate_root = self.config.crate_root().map_err(AgentError::from)?;
+        let state_path = crate_root
+            .join("lusterna")
+            .join(format!("{}.state.json", S::NAME.as_str()));
+
+        // Continue the stage if a run stopped in the middle of it
+        let stage_exec = if state_path.exists() {
+            log::info!("Continuing `{}`", S::NAME);
+            StageExec::load(&state_path, &self.config)?
+        } else {
+            let stage = S::setup(input).map_err(StageExecutionError::SetupError)?;
+            StageExec::new(stage, &self.config)?
+        };
         let t = Instant::now();
         log::info!("Executing `{}`", S::NAME);
-        let stage_exec = StageExec::new(stage, &self.config)?;
-        let submission = stage_exec.run(&self.config, None)?;
+
+        // Saves the state of the stage and of the run
+        let mut save = |exec: &StageExec<S>| {
+            let state = serde_json::to_string(exec).expect("the stage state serializes");
+            let saved = fs::write(&state_path, state)
+                .map_err(PipelineError::from)
+                .and_then(|()| self.save_state());
+            if let Err(e) = saved {
+                log::warn!("Cannot save the state of `{}`: {}", S::NAME, e);
+            }
+        };
+        save(&stage_exec);
+        let submission = stage_exec.run(&self.config, Some(&mut save))?;
         log::info!("Executed `{}` in {}", S::NAME, format_elapsed(t));
         Ok(submission)
     }
@@ -924,6 +948,35 @@ mod tests {
         assert!(!dir.path().join("translate.state.json").exists());
         assert!(!dir.path().join("prove.state.json").exists());
         assert!(dir.path().join("translate.json").exists());
+    }
+
+    #[test]
+    fn exec_stage_returns_the_submission_of_a_done_state_file() {
+        let mut f = fixture("{}", &[]);
+        f.pipeline.commit = Some("start".to_owned());
+        let input = PreTranslateInput {
+            workspace_root: f.root.clone(),
+            manifest: f.root.join("Cargo.toml"),
+            build_stderr: String::new(),
+        };
+
+        // The state of a pre-translate stage that is done
+        let stage = PreTranslateStage::setup(input.clone()).unwrap();
+        let exec = StageExec::new(stage, &f.pipeline.config).unwrap();
+        let mut state = serde_json::to_value(&exec).unwrap();
+        let change = serde_json::json!({
+            "file": "src/lib.rs", "change": "change", "reason": "reason"
+        });
+        state["phase"] = serde_json::json!({"Done": {"changes": [change]}});
+        let lusterna_dir = f.root.join("lusterna");
+        let state_path = lusterna_dir.join("pre-translate.state.json");
+        fs::create_dir(&lusterna_dir).unwrap();
+        fs::write(&state_path, state.to_string()).unwrap();
+
+        let submission = f.pipeline.exec_stage::<PreTranslateStage>(input).unwrap();
+        assert_eq!(submission.changes.len(), 1);
+        assert!(state_path.exists());
+        assert!(lusterna_dir.join("run.json").exists());
     }
 
     #[test]
