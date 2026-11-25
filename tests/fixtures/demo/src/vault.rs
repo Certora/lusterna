@@ -33,9 +33,11 @@ impl Vault {
         true
     }
 
-    pub fn reset(&mut self) {
+    pub fn reset(&mut self) -> u64 {
+        let total = self.total;
         self.total = 0;
         self.shares = 1;
+        total
     }
 
     fn set(&mut self, total: u64, shares: u64) {
