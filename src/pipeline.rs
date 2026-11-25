@@ -38,6 +38,27 @@
 //!
 //! The `--stop-after` option ends the pipeline after the named [`Step`]. The
 //! report is written even with `--stop-after`.
+//!
+//! `lusterna continue` goes on with the unfinished run of the crate: a run
+//! that was interrupted, that failed, or that `--stop-after` ended before the
+//! `prove` step. It starts at the first step that did not finish. A stage that
+//! was interrupted goes on from its saved state. `continue` takes its options
+//! from its own command line, not from the run it continues. It fails if the
+//! crate has no unfinished run or if `HEAD` moved since the run stopped. It
+//! does not check for uncommitted changes.
+//!
+//! The state of a run is in two kinds of files in `lusterna/` in the crate
+//! root, which `lusterna/.gitignore` excludes from the commits:
+//!
+//! - `run.json`: the spec, the path of the spec file, the commit the run
+//!   started from, the step that runs next and `HEAD`. The pipeline writes it
+//!   at the start of a run and after each step, and deletes it at the end of a
+//!   run that `--stop-after` did not end before the `prove` step.
+//! - `<stage>.state.json`: the state of the execution of a stage, written
+//!   before the stage runs and after each of its phases.
+//!
+//! A new run deletes the submission files and the state files of the earlier
+//! run.
 
 use std::{
     env, fs, io,

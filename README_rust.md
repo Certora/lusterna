@@ -94,6 +94,28 @@ RUST_LOG=info lusterna run
 
 Run `lusterna run --help` for all options.
 
+### Continuing a Run
+
+If a run was interrupted or failed, continue it:
+
+```sh
+cd /path/to/workspace
+RUST_LOG=info lusterna continue
+```
+
+- `continue` goes on at the step where the run stopped. A stage that was interrupted goes on from where it stopped, it does not start again.
+- `continue` does not remember the options of `run`. Pass `--model`, `--stage-max-budget` and the other options again.
+- A crate has one run at a time. `lusterna run` deletes the results of the earlier run and starts a new one.
+- `continue` fails if the checked out commit changed since the run stopped.
+
+Continuing a run resets the attempts done by any stage on purpose, you do no need to pass a higher `--stage-max-attempts`, if if the job failed for "max attempts reached".
+Contrary, spent budget of an interrupted stage carries over. To continue a run that stopped because a stage reached `--stage-max-budget`, pass a higher `--stage-max-budget`
+
+#### Known Limitations
+
+- A run that stops right after the commit of a step, before Lusterna saved the new commit to `lusterna/run.json`, cannot be continued. `continue` fails because the checked out commit changed and you need to do a new run (`lusterna run`).
+- A run that stops right after a stage started, before the `claude` session of its agent exists, fails on `continue` when it tries to resume that session. In that case, delete `lusterna/<stage>.state.json` of the stage and run `continue` again.
+
 ## Repository layout
 
 ```sh
