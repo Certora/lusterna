@@ -37,6 +37,13 @@ jobs:
         with:
           path: ~/.elan
           key: elan-${{ runner.os }}-${{ hashFiles('**/lean-toolchain') }}
+      - name: Read the Aeneas revision
+        id: aeneas
+        run: echo "rev=$(git rev-parse HEAD:deps/aeneas)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: deps/aeneas/backends/lean/.lake
+          key: aeneas-lean-${{ runner.os }}-${{ steps.aeneas.outputs.rev }}
       - name: Install opam and OCaml
         run: |
           sudo apt-get update
