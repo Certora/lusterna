@@ -11,6 +11,7 @@
 name = "lusternaLib"
 defaultTargets = ["LusternaLib"]
 testDriver = "LusternaLibTest"
+packagesDir = "../deps/aeneas/backends/lean/.lake/packages"
 
 [leanOptions]
 pp.unicode.fun = true
