@@ -12,6 +12,7 @@ use crate::agent::{Agent, Effort, Request, Response, RunError, SessionId};
 pub struct Recorded {
     pub prompt: String,
     pub session_id: Option<SessionId>,
+    pub resume: bool,
     pub json_schema: Option<String>,
     pub briefing: Option<String>,
     pub budget_limit_usd: Option<f64>,
@@ -43,6 +44,7 @@ impl Agent for MockAgent {
         self.requests.borrow_mut().push(Recorded {
             prompt: req.prompt.to_owned(),
             session_id: req.session_id.cloned(),
+            resume: req.resume,
             json_schema: req.json_schema.map(str::to_owned),
             briefing: req.briefing.map(str::to_owned),
             budget_limit_usd: req.budget_limit_usd,
@@ -53,6 +55,10 @@ impl Agent for MockAgent {
             .borrow_mut()
             .pop_front()
             .expect("a response for each run")
+    }
+
+    fn new_session_id(&self) -> Option<SessionId> {
+        None
     }
 
     fn set_effort(&mut self, _effort: Effort) {}

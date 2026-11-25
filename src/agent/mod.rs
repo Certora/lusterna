@@ -81,8 +81,12 @@ pub struct Request<'a> {
     /// The json schema to be used for structured output
     pub json_schema: Option<&'a str>,
 
-    /// The session to use or `None` if a new session should be spawned
+    /// The id of the session or `None` if the agent picks the id of the new
+    /// session
     pub session_id: Option<&'a SessionId>,
+
+    /// Whether to resume the session `session_id` instead of starting it
+    pub resume: bool,
 
     /// Maximum budget to use
     pub budget_limit_usd: Option<f64>,
@@ -125,6 +129,10 @@ impl From<io::Error> for RunError {
 pub trait Agent: Default {
     fn run(&mut self, req: &Request, hook: &mut dyn FnMut(&str)) -> Result<Response, RunError>;
 
+    /// Returns the id for a new session, or `None` if the agent picks the id
+    /// when it starts the session.
+    fn new_session_id(&self) -> Option<SessionId>;
+
     /// Sets the effort of the agent
     fn set_effort(&mut self, effort: Effort);
 
@@ -132,13 +140,17 @@ pub trait Agent: Default {
     fn set_model(&mut self, model: String);
 }
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Session<A: Agent = ClaudeCode> {
     agent: A,
     briefing: Option<String>,
 
-    /// The id of the session or `None` if no prompt was issued yet.
+    /// The id of the session, or `None` if the agent picks the id and no
+    /// prompt was issued yet.
     session_id: Option<SessionId>,
+
+    /// Whether the agent was already run in this session
+    started: bool,
 
     /// The name and the `SKILL.md` content of each skill
     skills: Vec<(String, String)>,
@@ -154,11 +166,36 @@ pub struct Session<A: Agent = ClaudeCode> {
     usage: ModelUsage,
 }
 
+impl<A: Agent> Default for Session<A> {
+    fn default() -> Self {
+        let agent = A::default();
+        Self {
+            session_id: agent.new_session_id(),
+            agent,
+            briefing: None,
+            started: false,
+            skills: Vec::new(),
+            options: AgentOptions::default(),
+            workdir: None,
+            max_budged: None,
+            usage: ModelUsage::default(),
+        }
+    }
+}
+
 impl<A: Agent> Session<A> {
     const MAX_RETRIES: u8 = 5;
 
     pub fn get_session_id(&self) -> Option<&SessionId> {
         self.session_id.as_ref()
+    }
+
+    pub fn started(&self) -> bool {
+        self.started
+    }
+
+    pub fn set_started(&mut self) {
+        self.started = true
     }
 
     pub fn get_usage(&self) -> &ModelUsage {
@@ -226,6 +263,7 @@ impl<A: Agent> Session<A> {
             prompt: &prompt,
             briefing: self.briefing.as_deref(),
             session_id: self.session_id.as_ref(),
+            resume: self.started,
             budget_limit_usd: self.max_budged,
             skills: &self.skills,
             options: &self.options,
@@ -238,6 +276,7 @@ impl<A: Agent> Session<A> {
                     self.session_id = Some(resp.session_id.clone());
                 }
                 debug_assert!(self.session_id.as_ref() == Some(&resp.session_id));
+                self.started = true;
 
                 self.usage = resp.usage.clone();
                 Ok(resp)
@@ -245,6 +284,7 @@ impl<A: Agent> Session<A> {
             Err(err) => {
                 if let Some(session_id) = err.session_id {
                     self.session_id = Some(session_id);
+                    self.started = true;
                 }
                 if let Some(usage) = err.usage {
                     self.usage = usage;
@@ -370,14 +410,70 @@ mod tests {
         requests.iter().map(|r| r.session_id.clone()).collect()
     }
 
+    /// `Request::resume` of each run of `session`
+    fn resumes(session: &Session<MockAgent>) -> Vec<bool> {
+        session.agent.requests().iter().map(|r| r.resume).collect()
+    }
+
     #[test]
     fn first_run_starts_a_session_and_later_runs_resume_it() {
         let mut session = session(vec![ok("s1", 1.0), ok("s1", 2.0)]);
+        assert!(!session.started());
         run(&mut session, "first").unwrap();
+        assert!(session.started());
         run(&mut session, "second").unwrap();
 
         assert_eq!(session_ids(&session), [None, Some("s1".to_owned())]);
+        assert_eq!(resumes(&session), [false, true]);
         assert_eq!(session.get_session_id().map(String::as_str), Some("s1"));
+    }
+
+    #[test]
+    fn default_claude_session_gets_its_id_from_the_agent() {
+        let claude = Session::<ClaudeCode>::default();
+        assert!(claude.get_session_id().is_some());
+        assert!(!claude.started());
+
+        let mock = Session::<MockAgent>::default();
+        assert!(mock.get_session_id().is_none());
+        assert!(!mock.started());
+    }
+
+    #[test]
+    fn session_with_an_id_starts_with_that_id_and_later_runs_resume_it() {
+        let mut session = session(vec![ok("s1", 1.0), ok("s1", 2.0)]);
+        session.session_id = Some("s1".to_owned());
+        run(&mut session, "first").unwrap();
+        run(&mut session, "second").unwrap();
+
+        let s1 = Some("s1".to_owned());
+        assert_eq!(session_ids(&session), [s1.clone(), s1]);
+        assert_eq!(resumes(&session), [false, true]);
+    }
+
+    #[test]
+    fn session_with_an_id_that_failed_to_start_is_not_resumed() {
+        let mut session = session(vec![
+            err(None, None, io::Error::other("spawn").into()),
+            ok("s1", 1.0),
+        ]);
+        session.session_id = Some("s1".to_owned());
+        assert!(run(&mut session, "first").is_err());
+        assert!(!session.started());
+
+        run(&mut session, "second").unwrap();
+        assert_eq!(resumes(&session), [false, false]);
+    }
+
+    #[test]
+    fn set_started_resumes_the_session_in_the_first_run() {
+        let mut session = session(vec![ok("s1", 1.0)]);
+        session.session_id = Some("s1".to_owned());
+        session.set_started();
+        run(&mut session, "first").unwrap();
+
+        assert_eq!(session_ids(&session), [Some("s1".to_owned())]);
+        assert_eq!(resumes(&session), [true]);
     }
 
     /// One error of each `AgentError` variant. The match stops compiling when
@@ -434,6 +530,7 @@ mod tests {
                     assert_eq!(requests.len(), 2, "{name}");
                     assert_eq!(requests[1].prompt, prompt, "{name}");
                     assert_eq!(requests[1].session_id.as_deref(), Some("s1"), "{name}");
+                    assert!(requests[1].resume, "{name}");
                     assert_eq!(requests[1].json_schema.as_deref(), Some("{}"), "{name}");
                 }
                 None => {
@@ -463,6 +560,7 @@ mod tests {
 
         run(&mut session, "second").unwrap();
         assert_eq!(session_ids(&session), [None, Some("s1".to_owned())]);
+        assert_eq!(resumes(&session), [false, true]);
     }
 
     #[test]
@@ -472,9 +570,11 @@ mod tests {
             ok("s1", 1.0),
         ]);
         assert!(matches!(run(&mut session, "first"), Err(AgentError::Io(_))));
+        assert!(!session.started());
 
         run(&mut session, "second").unwrap();
         assert_eq!(session_ids(&session), [None, None]);
+        assert_eq!(resumes(&session), [false, false]);
     }
 
     #[test]
@@ -540,6 +640,7 @@ mod tests {
             [Recorded {
                 prompt: "work".to_owned(),
                 session_id: None,
+                resume: false,
                 json_schema: Some("{}".to_owned()),
                 briefing: Some("briefing".to_owned()),
                 budget_limit_usd: Some(2.5),
