@@ -119,6 +119,7 @@ Optional arguments:
 - `--crate-root` selects the crate. If the workspace has more than one crate, you must give it.
 - `--allow-dirty`, given before `run`, Lusterna commits the uncommitted changes first, in a commit of their own.
 - `--model` and `--effort` set the agent model and the effort level.
+- `--judge-effort` sets the effort level of the judge, a second agent that reviews the work of a stage.
 - `--stage-max-attempts` and `--stage-max-budget` set the attempts per stage and the budget per stage in USD.
 - `--command-timeout` sets the minutes after which a command of the formalize and prove agents is stopped.
 - `--yes` runs without asking for confirmation when `claude` is not logged in with a subscription.

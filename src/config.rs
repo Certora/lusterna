@@ -32,6 +32,7 @@ pub const SOLANALIB_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/deps/sola
 
 pub const DEFAULT_MODEL: &str = "opus";
 pub const DEFAULT_EFFORT: Effort = Effort::Medium;
+pub const DEFAULT_JUDGE_EFFORT: Effort = Effort::High;
 pub const DEFAULT_COMMAND_TIMEOUT_MINUTES: u64 = 20;
 
 #[derive(clap::Args)]
@@ -47,9 +48,12 @@ pub struct Config {
     /// Claude model
     #[arg(long, global = true, default_value_t = DEFAULT_MODEL.to_string())]
     pub(crate) model: String,
-    /// Claude effort level
+    /// Claude effort level of the stage agents
     #[arg(long, global = true, value_enum, default_value_t = DEFAULT_EFFORT)]
     pub(crate) effort: Effort,
+    /// Claude effort level of the judges
+    #[arg(long, global = true, value_enum, default_value_t = DEFAULT_JUDGE_EFFORT)]
+    pub(crate) judge_effort: Effort,
     /// Minutes after which the Bash tool stops a command of the formalize and
     /// prove agents
     #[arg(long, global = true, default_value_t = DEFAULT_COMMAND_TIMEOUT_MINUTES)]

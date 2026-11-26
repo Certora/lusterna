@@ -135,7 +135,7 @@ impl<S: Stage, A: Agent> StageExec<S, A> {
         let mut sessions = Session::<A>::default();
 
         sessions.set_briefing(WAIT_FOR_SUBAGENTS.to_owned());
-        sessions.set_effort(cfg.effort);
+        sessions.set_effort(cfg.judge_effort);
         sessions.set_model(cfg.model.clone());
         sessions.set_dir(cfg.workspace_root()?);
 
@@ -840,6 +840,35 @@ mod tests {
 
         let error = f.exec.run(&f.cfg, None).unwrap_err();
         assert!(matches!(error, StageExecutionError::BudgetExhausted(None)));
+    }
+
+    #[test]
+    fn judge_session_gets_the_judge_effort() {
+        let workspace = tempfile::tempdir().unwrap();
+        let cfg = parse_config(
+            [
+                "--workspace-root",
+                &workspace.path().display().to_string(),
+                "--effort",
+                "low",
+                "--judge-effort",
+                "max",
+            ]
+            .map(str::to_owned),
+        );
+        let stage = MockStage { judge: true };
+
+        let worker = StageExec::<MockStage, ClaudeCode>::get_worker_session(&stage, &cfg).unwrap();
+        let judge = StageExec::<MockStage, ClaudeCode>::get_judge_session(&cfg).unwrap();
+
+        assert_eq!(
+            serde_json::to_value(worker.agent()).unwrap()["effort"],
+            "Low"
+        );
+        assert_eq!(
+            serde_json::to_value(judge.agent()).unwrap()["effort"],
+            "Max"
+        );
     }
 
     #[test]
