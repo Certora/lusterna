@@ -510,7 +510,6 @@ mod tests {
     use super::*;
     use crate::{
         agent::{ModelUsage, Response, RunError, mock::MockAgent},
-        utils::parse_config,
         stage::{
             Never, StageName,
             formalize::FormalizeStage,
@@ -519,6 +518,7 @@ mod tests {
             prove::ProveStage,
             translate::{TranslateBlocker, TranslateStage, TranslateSubmission},
         },
+        utils::parse_config,
     };
 
     type TranslateResult = AgentResult<TranslateSubmission, TranslateBlocker>;

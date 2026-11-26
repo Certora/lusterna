@@ -33,7 +33,10 @@ fn exception_theorems(formalize: &FormalizeSubmission, id: PropertyId) -> Vec<St
     let mut names = Vec::new();
     for name in theorems {
         let block = theorem_block(&text, file, name);
-        if exceptions.keys().any(|f| statement(&block).contains(f.as_str())) {
+        if exceptions
+            .keys()
+            .any(|f| statement(&block).contains(f.as_str()))
+        {
             names.push(name.clone());
         }
     }
@@ -103,7 +106,11 @@ fn true_properties_are_proven() {
         let (_, theorems) = formalized(&formalize, id);
         let exceptions = exception_theorems(&formalize, id);
         for name in theorems.iter().filter(|t| !exceptions.contains(*t)) {
-            assert!(proven(&prove.theorems[name]), "{name}: {:?}", prove.theorems[name]);
+            assert!(
+                proven(&prove.theorems[name]),
+                "{name}: {:?}",
+                prove.theorems[name]
+            );
         }
     }
 }
@@ -115,7 +122,10 @@ fn prove_keeps_every_statement() {
     let commit = commit_with_subject("Lusterna: `formalize` stage");
     for id in [CHECKED_TOTAL, LOG_BUCKET_NOT_ZERO, VAULT_SHARES, MUL_DIV] {
         let (file, theorems) = formalized(&formalize, id);
-        let before = git(&["show", &format!("{commit}:lusterna/lean/{}", file.display())]);
+        let before = git(&[
+            "show",
+            &format!("{commit}:lusterna/lean/{}", file.display()),
+        ]);
         let after = fs::read_to_string(lean_root().join(&file)).unwrap();
         for name in theorems {
             assert_eq!(

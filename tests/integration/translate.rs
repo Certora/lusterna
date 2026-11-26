@@ -142,7 +142,12 @@ fn external_modules_use_the_stub_models() {
 #[test]
 fn nested_loop_is_replaced_under_src_lusterna() {
     let translate: TranslateSubmission = submission("translate");
-    assert!(translate.rust_changes.iter().any(|c| c.file == "src/pairs.rs"));
+    assert!(
+        translate
+            .rust_changes
+            .iter()
+            .any(|c| c.file == "src/pairs.rs")
+    );
     assert!(!rust_files(&run_dir().join("src/lusterna")).is_empty());
 }
 
