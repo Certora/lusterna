@@ -432,22 +432,67 @@ impl Pipeline {
 
     /// Resets the run to the commit before `step`, so that
     /// `lusterna continue` runs `step` next. Deletes the commits, the
-    /// uncommitted changes and the stage states of `step` and of the later
-    /// steps. Fails if the run did not start `step`.
-    pub fn reset(mut self, step: PipelineStep) -> Result<(), PipelineError> {
-        let Some(commits) = self.steps.get(&step) else {
+    /// uncommitted changes and the stage states of the later steps. Fails if
+    /// the run did not start `step`.
+    ///
+    /// With `full`, deletes those of `step` too. Without `full`, keeps the
+    /// work of `step` as uncommitted changes, deletes the submission of its
+    /// stage, and starts its stage again as `StageExec::restart` says.
+    pub fn reset(mut self, step: PipelineStep, full: bool) -> Result<(), PipelineError> {
+        let Some(commits) = self.steps.get(&step).cloned() else {
             return Err(PipelineError::StepNotStarted(step));
         };
-        git::reset(&self.config.repo_root()?, &commits.before, true)?;
-        // The commit before the first step of a run does not have the file
-        let lusterna_dir = self.config.lusterna_dir()?;
-        fs::create_dir_all(&lusterna_dir)?;
-        fs::write(lusterna_dir.join(".gitignore"), GITIGNORE)?;
+        let repo = self.config.repo_root()?;
 
-        // Forget `step` and the later steps that started
+        if full {
+            git::reset(&repo, &commits.before, true)?;
+            // The commit before the first step of a run does not have the file
+            let lusterna_dir = self.config.lusterna_dir()?;
+            fs::create_dir_all(&lusterna_dir)?;
+            fs::write(lusterna_dir.join(".gitignore"), GITIGNORE)?;
+        } else {
+            // Start the stage again first: if its state file does not load,
+            // the repository stays as it is
+            match step {
+                PipelineStep::Infer => self
+                    .restart_stage::<InferStage>()
+                    .map_err(PipelineError::Infer)?,
+                PipelineStep::PreTranslate => self
+                    .restart_stage::<PreTranslateStage>()
+                    .map_err(PipelineError::PreTranslate)?,
+                PipelineStep::Translate => self
+                    .restart_stage::<TranslateStage>()
+                    .map_err(PipelineError::Translate)?,
+                PipelineStep::Formalize => self
+                    .restart_stage::<FormalizeStage>()
+                    .map_err(PipelineError::Formalize)?,
+                PipelineStep::Prove => self
+                    .restart_stage::<ProveStage>()
+                    .map_err(PipelineError::Prove)?,
+                PipelineStep::WriteSpec | PipelineStep::Report => {}
+            }
+
+            // Delete the work of the later steps
+            if let Some(after) = &commits.after {
+                git::reset(&repo, after, true)?;
+            }
+            // Keep the work of the step as uncommitted changes
+            git::reset(&repo, &commits.before, false)?;
+            if let Some(stage) = step.stage() {
+                let dir = self.config.submissions_dir()?;
+                remove_if_exists(&Submissions::submission_path(&dir, stage))?;
+            }
+            let unfinished = StepCommits {
+                before: commits.before,
+                after: None,
+            };
+            self.steps.insert(step, unfinished);
+        }
+
+        // Forget the later steps that started, and `step` too with `full`
         let started: Vec<PipelineStep> = self.steps.keys().copied().collect();
         for later in started {
-            if later < step {
+            if later < step || (later == step && !full) {
                 continue;
             }
             self.steps.remove(&later);
@@ -461,6 +506,15 @@ impl Pipeline {
         self.save_state()?;
         info!("Reset the run to `{:?}`", step);
         Ok(())
+    }
+
+    /// Replaces the execution in the state file of the stage `S` with the
+    /// one that `StageExec::restart` returns for it.
+    fn restart_stage<S: Stage>(&self) -> Result<(), StageExecutionError<S>> {
+        let path = self.stage_state_path(S::NAME).map_err(AgentError::from)?;
+        let exec = StageExec::<S>::load(&path, &self.config)?.restart(&self.config)?;
+        let state = serde_json::to_string(&exec).expect("the stage state serializes");
+        fs::write(&path, state).map_err(|e| StageExecutionError::StateFile(path, e))
     }
 
     /// Runs the steps of the pipeline from `next` on, in order, and stops at
@@ -1492,9 +1546,60 @@ mod tests {
     }
 
     #[test]
-    fn reset_deletes_the_work_of_the_step_and_of_the_later_steps() {
+    fn reset_keeps_the_work_of_the_step_as_uncommitted_changes() {
         let (f, before, _) = finished_run();
-        f.pipeline.reset(PipelineStep::PreTranslate).unwrap();
+        f.pipeline.reset(PipelineStep::PreTranslate, false).unwrap();
+
+        // The work of the step is uncommitted, its submission and the work
+        // of the later step are deleted
+        assert_eq!(git::head_rev(&f.root).unwrap(), before);
+        assert_eq!(
+            git::uncommitted_files(&f.root).unwrap(),
+            [PathBuf::from("src/lib.rs")]
+        );
+        assert!(!state_file(&f.root, "translate.state.json").exists());
+
+        // The stage of the step starts again
+        let state_path = state_file(&f.root, "pre-translate.state.json");
+        let stage_state: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(state_path).unwrap()).unwrap();
+        assert!(stage_state["phase"]["Attempt"].is_object());
+
+        let state = read_run_state(&f.root);
+        assert!(state.next == PipelineStep::PreTranslate);
+        assert!(!state.finished);
+        let unfinished = StepCommits {
+            before,
+            after: None,
+        };
+        assert_eq!(
+            state.steps,
+            BTreeMap::from([(PipelineStep::PreTranslate, unfinished)])
+        );
+    }
+
+    #[test]
+    fn reset_without_a_stage_state_that_loads_fails_and_keeps_the_repository() {
+        let (f, _, _) = finished_run();
+        let head = git::head_rev(&f.root).unwrap();
+
+        let error = f
+            .pipeline
+            .reset(PipelineStep::Translate, false)
+            .unwrap_err();
+        let state_path = state_file(&f.root, "translate.state.json");
+        assert!(matches!(
+            error,
+            PipelineError::Translate(StageExecutionError::StateFile(path, _)) if path == state_path
+        ));
+        assert_eq!(git::head_rev(&f.root).unwrap(), head);
+        assert!(read_run_state(&f.root).finished);
+    }
+
+    #[test]
+    fn full_reset_deletes_the_work_of_the_step_and_of_the_later_steps() {
+        let (f, before, _) = finished_run();
+        f.pipeline.reset(PipelineStep::PreTranslate, true).unwrap();
 
         assert_eq!(git::head_rev(&f.root).unwrap(), before);
         assert!(git::is_clean(&f.root).unwrap());
@@ -1511,7 +1616,7 @@ mod tests {
     #[test]
     fn reset_keeps_the_earlier_steps() {
         let (f, before, after) = finished_run();
-        f.pipeline.reset(PipelineStep::Translate).unwrap();
+        f.pipeline.reset(PipelineStep::Translate, true).unwrap();
 
         assert_eq!(git::head_rev(&f.root).unwrap(), after);
         assert!(state_file(&f.root, "pre-translate.state.json").exists());
@@ -1528,7 +1633,7 @@ mod tests {
     #[test]
     fn reset_fails_for_a_step_that_did_not_start() {
         let (f, _, _) = finished_run();
-        let error = f.pipeline.reset(PipelineStep::Prove).unwrap_err();
+        let error = f.pipeline.reset(PipelineStep::Prove, true).unwrap_err();
         assert!(matches!(
             error,
             PipelineError::StepNotStarted(PipelineStep::Prove)
@@ -1548,7 +1653,7 @@ mod tests {
             .unwrap();
         f.pipeline.close_state().unwrap();
 
-        f.pipeline.reset(PipelineStep::WriteSpec).unwrap();
+        f.pipeline.reset(PipelineStep::WriteSpec, true).unwrap();
         assert_eq!(git::head_rev(&f.root).unwrap(), before);
         let gitignore = fs::read_to_string(f.root.join("lusterna/.gitignore")).unwrap();
         assert_eq!(gitignore, GITIGNORE);
