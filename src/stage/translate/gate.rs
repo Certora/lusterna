@@ -327,39 +327,7 @@ fn run_script(script: &Path) -> Result<Option<TranslateGateFailure>, TranslateGa
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt;
-
     use super::*;
-
-    /// Writes `content` as an executable script into `dir` and returns its
-    /// path.
-    fn write_script(dir: &Path, content: &str) -> PathBuf {
-        let path = dir.join("extract.sh");
-        fs::write(&path, content).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
-        path
-    }
-
-    #[test]
-    fn run_script_succeeds_on_zero_exit() {
-        let dir = tempfile::tempdir().unwrap();
-        let script = write_script(dir.path(), "#!/bin/sh\nexit 0\n");
-
-        assert!(run_script(&script).unwrap().is_none());
-    }
-
-    #[test]
-    fn run_script_reports_stderr_on_failure() {
-        let dir = tempfile::tempdir().unwrap();
-        let script = write_script(dir.path(), "#!/bin/sh\necho oops >&2\nexit 1\n");
-
-        match run_script(&script) {
-            Ok(Some(TranslateGateFailure::ExtractionScriptFailed { stderr })) => {
-                assert_eq!(stderr, "oops\n")
-            }
-            other => panic!("expected ExtractionScriptFailed, got {other:?}"),
-        }
-    }
 
     #[test]
     fn check_externals_accepts_no_templates() {

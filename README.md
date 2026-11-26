@@ -156,6 +156,22 @@ Contrary, spent budget of an interrupted stage carries over. To continue a run t
 - A run that stops right after the commit of a step, before Lusterna saved the new commit to `lusterna/.internal/run.json`, cannot be continued. `continue` fails because the checked out commit changed and you need to do a new run (`lusterna run`).
 - A run that stops right after a stage started, before the `claude` session of its agent exists, fails on `continue` when it tries to resume that session. In that case, delete `lusterna/.internal/<stage>.state.json` of the stage and run `continue` again.
 
+### Running a Stage Again
+
+To run a stage of the last run again, reset the run to that stage and continue it. This also works after the run finished:
+
+```sh
+lusterna reset formalize
+lusterna continue
+```
+
+The `reset` command takes the stage to run again: `pre-translate`, `translate`, `formalize` or `prove`. It deletes the commits of the later stages and keeps the work of the stage itself as uncommitted changes, which a new agent continues from. It fails if it would delete commits or uncommitted changes that Lusterna did not make.
+
+Optional arguments:
+
+- `--full` deletes the work of the stage too, so that the stage starts from the result of the stage before it.
+- `--force` deletes the commits and uncommitted changes that Lusterna did not make, after asking for confirmation.
+
 ## Repository layout
 
 ```sh

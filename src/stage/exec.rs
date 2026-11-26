@@ -52,6 +52,10 @@ const WAIT_FOR_SUBAGENTS: &str = "Before you submit your structured output, wait
 /// The judge's prompt after its first verdict.
 const RECHECK_PROMPT: &str = "The agent changed its work to fix the defects of your last verdict. Do not review the whole work again. For each defect, check whether the agent fixed it, and review the code that the agent changed to fix it. Also review each part of the submission below that differs from the submission that you reviewed before. Report a defect again only if it is not fixed. Do not report a defect again if it turns out to be wrong. Report a new defect only in the code that the agent changed to fix these defects, or in a part of the submission that differs.";
 
+/// Added to the base prompt of a stage that `StageExec::restart` starts
+/// again.
+const EARLIER_ATTEMPT: &str = "The work tree contains the uncommitted work of an earlier attempt at this stage. Review it first, keep what is correct and continue from it. Your submission must cover the whole work of the stage, including what you keep.";
+
 /// The state of a stage's execution. Serializing it keeps the phase and the
 /// costs, not the number of attempts.
 #[derive(Serialize, Deserialize)]
@@ -157,6 +161,26 @@ impl<S: Stage, A: Agent> StageExec<S, A> {
             worker_cost: 0f64,
             judge_cost: 0f64,
         }
+    }
+
+    /// Returns the execution that runs the stage of `self` again: with new
+    /// sessions, without costs, and with the stage's base prompt and
+    /// `EARLIER_ATTEMPT` as the prompt of the first attempt. The worker
+    /// session has no id, so that `load` does not resume it.
+    pub fn restart(self, cfg: &Config) -> Result<Self, StageExecutionError<S>> {
+        let mut worker = Self::get_worker_session(&self.stage, cfg)?;
+        worker.clear_session_id();
+        let judge = Self::get_judge_session(cfg)?;
+        let prompt = format!("{}\n\n{EARLIER_ATTEMPT}", self.stage.base_prompt());
+        Ok(Self {
+            stage: self.stage,
+            worker_session: worker,
+            judge_session: judge,
+            attempts: 0,
+            phase: Phase::Attempt { prompt },
+            worker_cost: 0f64,
+            judge_cost: 0f64,
+        })
     }
 
     /// Runs the stage until it is done and returns the submission that passed.
@@ -993,6 +1017,33 @@ mod tests {
         assert_eq!(loaded.worker_cost, 1.5);
         assert_eq!(loaded.judge_cost, 0.5);
         assert!(loaded.stage.judge);
+    }
+
+    #[test]
+    fn restart_starts_the_stage_again_with_new_sessions() {
+        let f = fixture(true, 3, 10.0);
+        let mut exec = claude_exec(&f.cfg, Phase::Done(test_submission()));
+        exec.worker_session.set_started();
+        exec.judge_session.set_started();
+        exec.worker_cost = 1.5;
+        exec.judge_cost = 0.5;
+        let [_, old_judge] = session_ids(&exec);
+
+        let restarted = exec.restart(&f.cfg).unwrap();
+        let expected = format!("base prompt\n\n{EARLIER_ATTEMPT}");
+        assert!(matches!(&restarted.phase, Phase::Attempt { prompt } if *prompt == expected));
+        let [worker, judge] = session_ids(&restarted);
+        assert_eq!(worker, None);
+        assert_ne!(judge, old_judge);
+        assert!(!restarted.worker_session.started());
+        assert!(!restarted.judge_session.started());
+        assert_eq!(restarted.worker_cost, 0.0);
+        assert_eq!(restarted.judge_cost, 0.0);
+        assert!(restarted.stage.judge);
+
+        // `load` does not resume the worker session
+        let loaded = load(&restarted, f._workspace.path(), &f.cfg).unwrap();
+        assert!(!loaded.worker_session.started());
     }
 
     #[test]

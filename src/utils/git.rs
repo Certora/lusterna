@@ -5,6 +5,9 @@ use std::{
     process::Command,
 };
 
+/// The author email of the commits of `commit_all`.
+const EMAIL: &str = "lusterna@agent";
+
 #[derive(Debug, thiserror::Error)]
 pub enum GitError {
     #[error("failed to run `git`: {0}")]
@@ -56,6 +59,47 @@ pub fn head_rev(repo: &Path) -> Result<String, GitError> {
 /// Returns the head commit hash of `branch` in `repo`.
 pub fn rev_of(repo: &Path, branch: &str) -> Result<String, GitError> {
     run(repo, &["rev-parse".as_ref(), branch.as_ref()])
+}
+
+/// Returns the hashes of the commits of `base..HEAD` in `repo` whose author
+/// is not Lusterna (author of the commits of `commit_all`).
+pub fn commits_by_others(repo: &Path, base: &str) -> Result<Vec<String>, GitError> {
+    let out = run(
+        repo,
+        &[
+            "log".as_ref(),
+            "--format=%H %ae".as_ref(),
+            format!("{base}..HEAD").as_ref(),
+        ],
+    )?;
+    let mut commits = Vec::new();
+    for line in out.lines() {
+        if let Some((hash, email)) = line.split_once(' ')
+            && email != EMAIL
+        {
+            commits.push(hash.to_owned());
+        }
+    }
+    Ok(commits)
+}
+
+/// Sets `HEAD` and the index of `repo` to `commit`. With `hard`, also sets
+/// the work tree to `commit` and deletes the untracked files that are not
+/// ignored. Without it, keeps the files of the work tree.
+pub fn reset(repo: &Path, commit: &str, hard: bool) -> Result<(), GitError> {
+    if !hard {
+        return run(repo, &["reset".as_ref(), "-q".as_ref(), commit.as_ref()]).map(|_| ());
+    }
+    run(
+        repo,
+        &[
+            "reset".as_ref(),
+            "-q".as_ref(),
+            "--hard".as_ref(),
+            commit.as_ref(),
+        ],
+    )?;
+    run(repo, &["clean".as_ref(), "-q".as_ref(), "-fd".as_ref()]).map(|_| ())
 }
 
 /// Creates the branch `branch` from `start` and checks it out in a new
@@ -166,7 +210,7 @@ pub fn commit_all(repo: &Path, message: &str) -> Result<Option<String>, GitError
             "-c".as_ref(),
             "user.name=Lusterna".as_ref(),
             "-c".as_ref(),
-            "user.email=lusterna@agent".as_ref(),
+            format!("user.email={EMAIL}").as_ref(),
             "commit".as_ref(),
             "-m".as_ref(),
             message.as_ref(),
