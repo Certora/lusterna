@@ -164,7 +164,7 @@ lusterna reset formalize
 lusterna continue
 ```
 
-The `reset` command takes the stage to run again. It deletes the commits of the later stages and keeps the work of the stage itself as uncommitted changes, which a new agent continues from. It fails if it would delete commits or uncommitted changes that Lusterna did not make.
+The `reset` command takes the stage to run again: `pre-translate`, `translate`, `formalize` or `prove`. It deletes the commits of the later stages and keeps the work of the stage itself as uncommitted changes, which a new agent continues from. It fails if it would delete commits or uncommitted changes that Lusterna did not make.
 
 Optional arguments:
 

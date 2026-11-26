@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, bail};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use lusterna::{
     config::{AENEAS_ROOT, Config},
     pipeline::{Pipeline, PipelineStep},
@@ -39,8 +39,9 @@ enum Command {
 
 #[derive(Args)]
 struct ResetArgs {
-    /// The stage to run again. Its work stays in the work tree as uncommitted
-    /// changes, and the work of the later stages is deleted.
+    /// The stage to run again: `pre-translate`, `translate`, `formalize` or
+    /// `prove`. Its work stays in the work tree as uncommitted changes, and
+    /// the work of the later stages is deleted.
     #[arg(value_enum)]
     stage: PipelineStep,
     /// Delete the work of `STAGE` too
@@ -102,6 +103,16 @@ fn main() -> anyhow::Result<()> {
             Pipeline::load(config)?.resume()?
         }
         Command::Reset(args) => {
+            if matches!(
+                args.stage,
+                PipelineStep::Infer | PipelineStep::WriteSpec | PipelineStep::Report
+            ) {
+                let step = args.stage.to_possible_value().expect("no step is skipped");
+                bail!(
+                    "cannot reset to `{}`; start a new run with `lusterna run`",
+                    step.get_name()
+                );
+            }
             let repo_root = config.repo_root()?;
             let pipeline = Pipeline::load(config)?;
             let lost = precheck::lost_by_reset(&repo_root, pipeline.steps(), args.stage)?;
