@@ -9,6 +9,7 @@ use clap::{Args, Parser, Subcommand};
 use lusterna::{
     config::{AENEAS_ROOT, Config},
     pipeline::Pipeline,
+    precheck,
     spec::Spec,
 };
 
@@ -73,9 +74,14 @@ fn main() -> anyhow::Result<()> {
                 .with_context(|| format!("cannot find the spec `{}`", spec_path.display()))?;
             let spec: Spec = serde_json::from_str(&fs::read_to_string(&spec_path)?)
                 .with_context(|| format!("cannot parse the spec `{}`", spec_path.display()))?;
+            precheck::check_dependencies(&config)?;
+            precheck::check_clean_worktree(&config, &spec_path)?;
             Pipeline::new(spec, spec_path, config)?.run()?
         }
-        Command::Continue => Pipeline::load(config)?.run()?,
+        Command::Continue => {
+            precheck::check_dependencies(&config)?;
+            Pipeline::load(config)?.run()?
+        }
     }
     Ok(())
 }

@@ -27,11 +27,6 @@
 //!    `lusterna/submissions/`. The report shows a stage whose file is missing
 //!    as skipped.
 //!
-//! A new run starts only if the repository has no uncommitted changes other
-//! than the spec file (unless `--allow-dirty`), the tools of `TOOLS` (and on
-//! Linux `LINUX_SANDBOX_TOOLS`) are on `PATH`, and the settings that the stages
-//! need resolve.
-//!
 //! After each step, the pipeline commits all changes
 //! in the repository.
 //!
@@ -64,7 +59,7 @@
 //! run.
 
 use std::{
-    env, fs, io,
+    fs, io,
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -95,12 +90,6 @@ use crate::{
     },
 };
 
-/// The tools that the stages run.
-const TOOLS: [&str; 6] = ["git", "cargo", "charon", "aeneas", "lake", "claude"];
-
-/// The tools that the `claude` sandbox needs on Linux.
-const LINUX_SANDBOX_TOOLS: [&str; 2] = ["bwrap", "socat"];
-
 /// The content of `lusterna/.gitignore` in the crate root.
 const GITIGNORE: &str = "/lean/.lake/\n/extraction.llbc\n/charon/\n/.internal/\n";
 
@@ -128,16 +117,6 @@ pub enum PipelineError {
     /// The initial `cargo build` could not run.
     #[error(transparent)]
     Cargo(#[from] CargoError),
-    /// The repository has uncommitted changes to these files, relative to its
-    /// root, other than the spec file.
-    #[error(
-        "commit or stash the changes to these files before running lusterna: {}",
-        .0.iter().map(|f| f.display().to_string()).collect::<Vec<_>>().join(", ")
-    )]
-    DirtyWorktree(Vec<PathBuf>),
-    /// These tools of `TOOLS` or `LINUX_SANDBOX_TOOLS` are not on `PATH`.
-    #[error("these tools are not on `PATH`: {}", .0.join(", "))]
-    NotInPath(Vec<&'static str>),
     /// The spec has no entrypoints and does not ask to infer them.
     #[error("the spec has no entrypoints; add some or set `infer` to true")]
     NoEntrypoints,
@@ -201,8 +180,7 @@ pub struct Pipeline {
     config: Config,
     submissions: Submissions,
     /// The commit of the repository that the run starts from.
-    /// Recorded after `pre_check` passed.
-    commit: Option<String>,
+    commit: String,
     /// The step that runs next.
     next: PipelineStep,
 }
@@ -212,21 +190,18 @@ impl Pipeline {
     /// `spec_path`. Deletes the submissions and the stage states of an
     /// earlier run.
     pub fn new(spec: Spec, spec_path: PathBuf, config: Config) -> Result<Self, PipelineError> {
-        let mut pipeline = Self {
+        let pipeline = Self {
             spec,
             spec_path,
             submissions: Submissions::new(&config.submissions_dir()?)?,
+            commit: git::head_rev(&config.repo_root()?)?,
             config,
-            commit: None,
             next: PipelineStep::Infer,
         };
-        pipeline.pre_check()?;
-        pipeline.commit = Some(git::head_rev(&pipeline.config.repo_root()?)?);
 
         let lusterna_dir = pipeline.config.lusterna_dir()?;
         let internal_dir = pipeline.config.internal_dir()?;
         fs::create_dir_all(&internal_dir)?;
-        pipeline.submissions.clear()?;
         remove_stage_states(&internal_dir)?;
         fs::write(lusterna_dir.join(".gitignore"), GITIGNORE)?;
         pipeline.save_state()?;
@@ -257,16 +232,14 @@ impl Pipeline {
             });
         }
 
-        let pipeline = Self {
+        Ok(Self {
             spec: state.spec,
             spec_path: state.spec_path,
-            submissions: Submissions::new(&config.submissions_dir()?)?,
+            submissions: Submissions::load(&config.submissions_dir()?)?,
             config,
-            commit: Some(state.commit),
+            commit: state.commit,
             next: state.next,
-        };
-        pipeline.check_dependencies()?;
-        Ok(pipeline)
+        })
     }
 
     /// Whether `step` is `next` or a later step, and runs with
@@ -283,10 +256,7 @@ impl Pipeline {
         let state = RunState {
             spec: self.spec.clone(),
             spec_path: self.spec_path.clone(),
-            commit: self
-                .commit
-                .clone()
-                .expect("`new` and `load` set the commit"),
+            commit: self.commit.clone(),
             next: self.next,
             head: git::head_rev(&self.config.repo_root()?)?,
         };
@@ -447,57 +417,6 @@ impl Pipeline {
         Ok(self.config.internal_dir()?.join(name))
     }
 
-    /// Checks everything a run needs before it does any work.
-    fn pre_check(&self) -> Result<(), PipelineError> {
-        self.check_dependencies()?;
-        self.check_clean_worktree()
-    }
-
-    /// Checks that the repository has no uncommitted changes but the spec,
-    /// which the spec commit includes. With `--allow-dirty`, commits the
-    /// changes instead.
-    fn check_clean_worktree(&self) -> Result<(), PipelineError> {
-        let repo_root = self.config.repo_root()?;
-        let files: Vec<PathBuf> = git::uncommitted_files(&repo_root)?
-            .into_iter()
-            .filter(|f| repo_root.join(f) != self.spec_path)
-            .collect();
-        if files.is_empty() {
-            return Ok(());
-        }
-        if !self.config.allow_dirty {
-            return Err(PipelineError::DirtyWorktree(files));
-        }
-        if let Some(sha) = git::commit_all(&repo_root, "Lusterna: uncommitted changes")? {
-            info!("Committed the uncommitted changes in {}", sha);
-        }
-        Ok(())
-    }
-
-    /// Checks that the tools of `TOOLS` (and on Linux `LINUX_SANDBOX_TOOLS`)
-    /// are on `PATH`, that `aeneas` matches the Aeneas checkout, and that the
-    /// settings.
-    fn check_dependencies(&self) -> Result<(), PipelineError> {
-        let path = env::var_os("PATH").unwrap_or_default();
-        let mut tools = TOOLS.to_vec();
-        if cfg!(target_os = "linux") {
-            tools.extend(LINUX_SANDBOX_TOOLS);
-        }
-        let missing: Vec<&str> = tools
-            .into_iter()
-            .filter(|tool| !env::split_paths(&path).any(|dir| dir.join(tool).is_file()))
-            .collect();
-        if !missing.is_empty() {
-            return Err(PipelineError::NotInPath(missing));
-        }
-        self.config.ensure_aeneas_version_match()?;
-        self.config.crate_root()?;
-        self.config.aeneas_rev()?;
-        self.config.lean_toolchain()?;
-        self.config.get_platform()?;
-        Ok(())
-    }
-
     fn run_translate(
         &self,
         entrypoints: Vec<String>,
@@ -595,9 +514,7 @@ impl Pipeline {
 
         let report = report::render(
             cargo::package_name(&self.config.manifest()?)?,
-            self.commit
-                .as_deref()
-                .expect("`new` and `load` set the commit"),
+            &self.commit,
             &self.config.aeneas_rev()?,
             &self.spec.entrypoints,
             &self.spec.properties,
@@ -663,43 +580,40 @@ pub(crate) struct Submissions {
 }
 
 impl Submissions {
+    /// Creates the submissions of `dir`. Deletes `dir` with its content and
+    /// creates it again.
     pub fn new(dir: &Path) -> io::Result<Self> {
+        match fs::remove_dir_all(dir) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
+        fs::create_dir_all(dir)?;
         Ok(Self {
-            infer: Self::load(&Self::submission_path(dir, StageName::Infer))?,
-            pre_translate: Self::load(&Self::submission_path(dir, StageName::PreTranslate))?,
-            translate: Self::load(&Self::submission_path(dir, StageName::Translate))?,
-            formalize: Self::load(&Self::submission_path(dir, StageName::Formalize))?,
-            prove: Self::load(&Self::submission_path(dir, StageName::Prove))?,
+            infer: None,
+            pre_translate: None,
+            translate: None,
+            formalize: None,
+            prove: None,
             submission_dir: dir.to_path_buf(),
         })
     }
 
-    /// Deletes the submission files and the loaded submissions.
-    pub fn clear(&mut self) -> io::Result<()> {
-        let stages = [
-            StageName::Infer,
-            StageName::PreTranslate,
-            StageName::Translate,
-            StageName::Formalize,
-            StageName::Prove,
-        ];
-        for stage in stages {
-            match fs::remove_file(Self::submission_path(&self.submission_dir, stage)) {
-                Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
-                _ => {}
-            }
-        }
-        self.infer = None;
-        self.pre_translate = None;
-        self.translate = None;
-        self.formalize = None;
-        self.prove = None;
-        Ok(())
+    /// Reads the submissions from the submission files in `dir`.
+    pub fn load(dir: &Path) -> io::Result<Self> {
+        Ok(Self {
+            infer: Self::read_submission(&Self::submission_path(dir, StageName::Infer))?,
+            pre_translate: Self::read_submission(&Self::submission_path(
+                dir,
+                StageName::PreTranslate,
+            ))?,
+            translate: Self::read_submission(&Self::submission_path(dir, StageName::Translate))?,
+            formalize: Self::read_submission(&Self::submission_path(dir, StageName::Formalize))?,
+            prove: Self::read_submission(&Self::submission_path(dir, StageName::Prove))?,
+            submission_dir: dir.to_path_buf(),
+        })
     }
 
     pub fn set_infer(&mut self, submission: InferStageSubmission) -> io::Result<()> {
-        // The infer step runs before the step that creates the directory
-        fs::create_dir_all(&self.submission_dir)?;
         self.write_submission(
             &Self::submission_path(&self.submission_dir, StageName::Infer),
             &submission,
@@ -777,7 +691,7 @@ impl Submissions {
         )
     }
 
-    fn load<T: DeserializeOwned>(path: &Path) -> io::Result<Option<T>> {
+    fn read_submission<T: DeserializeOwned>(path: &Path) -> io::Result<Option<T>> {
         let text = match fs::read_to_string(path) {
             Ok(text) => text,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -820,7 +734,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::utils::parse_config;
+    use crate::utils::crate_repo;
 
     struct Fixture {
         pipeline: Pipeline,
@@ -832,44 +746,24 @@ mod tests {
     /// A pipeline for a crate at the root of a new repository with one commit,
     /// with the spec `spec` and the command-line arguments `args`
     fn fixture(spec: &str, args: &[&str]) -> Fixture {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
-        fs::create_dir(root.join("src")).unwrap();
-        fs::write(root.join("src/lib.rs"), "").unwrap();
-        fs::write(
-            root.join("Cargo.toml"),
-            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
-        )
-        .unwrap();
-        fs::write(root.join("Cargo.lock"), "").unwrap();
-        fs::write(root.join("lusterna.json"), spec).unwrap();
-        let init = Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(&root)
-            .status()
-            .unwrap();
-        assert!(init.success());
-        git::commit_all(&root, "init").unwrap();
-
-        let root_arg = root.display().to_string();
-        let mut config_args = vec![
-            "--workspace-root".to_owned(),
-            root_arg.clone(),
-            "--crate-root".to_owned(),
-            root_arg,
-        ];
-        config_args.extend(args.iter().map(|a| a.to_string()));
-        let config = parse_config(config_args);
+        let (dir, root, config) = crate_repo(spec, args);
 
         Fixture {
             // Directly construct the Pipeline without calling "new",
-            // this skip the pre-checks, which can fail in the test environment.
+            // which writes to `lusterna/` in the crate root.
             pipeline: Pipeline {
                 spec: serde_json::from_str(spec).unwrap(),
                 spec_path: root.join("lusterna.json"),
-                submissions: Submissions::new(&config.submissions_dir().unwrap()).unwrap(),
+                submissions: Submissions {
+                    infer: None,
+                    pre_translate: None,
+                    translate: None,
+                    formalize: None,
+                    prove: None,
+                    submission_dir: config.submissions_dir().unwrap(),
+                },
                 config,
-                commit: None,
+                commit: "start".to_owned(),
                 next: PipelineStep::Infer,
             },
             root,
@@ -943,7 +837,6 @@ mod tests {
     #[test]
     fn save_state_writes_the_run_state() {
         let mut f = fixture(r#"{"entrypoints": ["demo::f"]}"#, &[]);
-        f.pipeline.commit = Some("start".to_owned());
         f.pipeline.next = PipelineStep::Translate;
         f.pipeline.save_state().unwrap();
 
@@ -960,7 +853,6 @@ mod tests {
     #[test]
     fn step_done_sets_next_and_saves_the_state() {
         let mut f = fixture("{}", &[]);
-        f.pipeline.commit = Some("start".to_owned());
         f.pipeline.step_done(PipelineStep::Formalize).unwrap();
 
         assert!(f.pipeline.next == PipelineStep::Formalize);
@@ -977,8 +869,7 @@ mod tests {
             &["--stop-after", "prove"],
             &["--stop-after", "report"],
         ] {
-            let mut f = fixture("{}", args);
-            f.pipeline.commit = Some("start".to_owned());
+            let f = fixture("{}", args);
             f.pipeline.save_state().unwrap();
 
             f.pipeline.close_state().unwrap();
@@ -990,7 +881,6 @@ mod tests {
     #[test]
     fn close_state_saves_the_state_of_a_run_that_stopped_before_prove() {
         let mut f = fixture("{}", &["--stop-after", "formalize"]);
-        f.pipeline.commit = Some("start".to_owned());
         f.pipeline.next = PipelineStep::Prove;
         f.pipeline.save_state().unwrap();
         fs::write(f.root.join("report.md"), "").unwrap();
@@ -1005,21 +895,18 @@ mod tests {
     }
 
     #[test]
-    fn clear_deletes_the_submission_files_and_the_loaded_submissions() {
+    fn new_deletes_the_content_of_the_submission_dir() {
         let dir = tempfile::tempdir().unwrap();
-        let mut submissions = Submissions::new(dir.path()).unwrap();
+        let submission_dir = dir.path().join("submissions");
+        let mut submissions = Submissions::new(&submission_dir).unwrap();
         submissions
             .set_pre_translate(PreTranslateSubmission::default())
             .unwrap();
-        fs::write(dir.path().join("prove.json"), "stale").unwrap();
-        fs::write(dir.path().join("report.md"), "report").unwrap();
+        fs::write(submission_dir.join("prove.json"), "stale").unwrap();
 
-        submissions.clear().unwrap();
+        let submissions = Submissions::new(&submission_dir).unwrap();
         assert!(submissions.get_pre_translate().is_none());
-        assert!(!dir.path().join("pretranslate.json").exists());
-        assert!(!dir.path().join("prove.json").exists());
-        assert!(dir.path().join("report.md").exists());
-        assert!(Submissions::new(dir.path()).unwrap().get_prove().is_none());
+        assert!(submission_dir.read_dir().unwrap().next().is_none());
     }
 
     #[test]
@@ -1062,8 +949,7 @@ mod tests {
 
     #[test]
     fn exec_stage_returns_the_submission_of_a_done_state_file() {
-        let mut f = fixture("{}", &[]);
-        f.pipeline.commit = Some("start".to_owned());
+        let f = fixture("{}", &[]);
         let state_path = write_done_pre_translate_state(&f);
 
         let input = pre_translate_input(&f);
@@ -1101,8 +987,7 @@ mod tests {
 
     #[test]
     fn load_after_head_moved_fails_with_both_commits() {
-        let mut f = fixture("{}", &[]);
-        f.pipeline.commit = Some("start".to_owned());
+        let f = fixture("{}", &[]);
         f.pipeline.save_state().unwrap();
         let saved_head = git::head_rev(&f.root).unwrap();
         fs::write(f.root.join("new.rs"), "").unwrap();
@@ -1146,8 +1031,7 @@ mod tests {
 
     #[test]
     fn run_pretranslate_continues_an_unfinished_stage_even_if_the_crate_builds() {
-        let mut f = fixture("{}", &[]);
-        f.pipeline.commit = Some("start".to_owned());
+        let f = fixture("{}", &[]);
         write_done_pre_translate_state(&f);
 
         let submission = f.pipeline.run_pretranslate().unwrap();
@@ -1170,7 +1054,7 @@ mod tests {
     }
 
     #[test]
-    fn stored_submissions_load_in_new_submissions() {
+    fn load_reads_the_stored_submissions() {
         let dir = tempfile::tempdir().unwrap();
         let lusterna_dir = dir.path().join("lusterna");
         let infer = InferStageSubmission {
@@ -1185,7 +1069,7 @@ mod tests {
             .set_pre_translate(PreTranslateSubmission::default())
             .unwrap();
 
-        let loaded = Submissions::new(&lusterna_dir).unwrap();
+        let loaded = Submissions::load(&lusterna_dir).unwrap();
         assert_eq!(
             serde_json::to_value(loaded.get_infer()).unwrap(),
             serde_json::to_value(Some(&infer)).unwrap()
@@ -1201,7 +1085,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("translate.json"), "not json").unwrap();
 
-        let error = Submissions::new(dir.path()).err().unwrap();
+        let error = Submissions::load(dir.path()).err().unwrap();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 
@@ -1215,49 +1099,6 @@ mod tests {
         assert_eq!(
             opaque_patterns(&f.pipeline.config, &added).unwrap(),
             expected
-        );
-    }
-
-    #[test]
-    fn clean_worktree_passes() {
-        let f = fixture("{}", &[]);
-        f.pipeline.check_clean_worktree().unwrap();
-    }
-
-    #[test]
-    fn changed_spec_file_passes() {
-        let f = fixture("{}", &[]);
-        fs::write(f.root.join("lusterna.json"), r#"{"infer": true}"#).unwrap();
-        f.pipeline.check_clean_worktree().unwrap();
-    }
-
-    #[test]
-    fn other_changes_fail_with_the_changed_files() {
-        let f = fixture("{}", &[]);
-        fs::write(f.root.join("src/lib.rs"), "pub fn f() {}").unwrap();
-        fs::write(f.root.join("new.rs"), "").unwrap();
-
-        let error = f.pipeline.check_clean_worktree().unwrap_err();
-        let PipelineError::DirtyWorktree(mut files) = error else {
-            panic!("expected `DirtyWorktree`, got {error}");
-        };
-        files.sort();
-        assert_eq!(
-            files,
-            [PathBuf::from("new.rs"), PathBuf::from("src/lib.rs")]
-        );
-    }
-
-    #[test]
-    fn allow_dirty_commits_the_changes() {
-        let f = fixture("{}", &["--allow-dirty"]);
-        fs::write(f.root.join("src/lib.rs"), "pub fn f() {}").unwrap();
-
-        f.pipeline.check_clean_worktree().unwrap();
-        assert!(git::is_clean(&f.root).unwrap());
-        assert_eq!(
-            last_commit_message(&f.root),
-            "Lusterna: uncommitted changes"
         );
     }
 
