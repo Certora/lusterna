@@ -930,6 +930,7 @@ impl Submissions {
     }
 
     fn write_submission<T: Serialize>(&self, path: &Path, submission: T) -> io::Result<()> {
+        fs::create_dir_all(&self.submission_dir)?;
         fs::write(
             path,
             serde_json::to_string_pretty(&submission).expect("the formalize submission serializes"),
@@ -1429,6 +1430,19 @@ mod tests {
         assert!(loaded.get_translate().is_none());
         assert!(loaded.get_formalize().is_none());
         assert!(loaded.get_prove().is_none());
+    }
+
+    #[test]
+    fn set_creates_the_submission_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let submission_dir = dir.path().join("submissions");
+
+        let mut submissions = Submissions::load(&submission_dir).unwrap();
+        submissions
+            .set_pre_translate(PreTranslateSubmission::default())
+            .unwrap();
+        let loaded = Submissions::load(&submission_dir).unwrap();
+        assert!(loaded.get_pre_translate().is_some());
     }
 
     #[test]
