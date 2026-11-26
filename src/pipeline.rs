@@ -2,7 +2,8 @@
 //!
 //! 1. `infer`: runs only if the spec asks for it. An agent finds properties and
 //!    entrypoints in addition to those of the spec. The pipeline writes the
-//!    submission of the stage to `lusterna/infer.json` in the crate root, and
+//!    submission of the stage to `lusterna/submissions/infer.json` in the crate
+//!    root, and
 //!    the later steps use its properties and entrypoints.
 //! 2. The pipeline writes the spec to `lusterna/lusterna.json` and its
 //!    properties to `lusterna/properties.json` in the crate root.
@@ -11,20 +12,21 @@
 //!    its target.
 //! 4. `translate`: translates the code reachable from the entrypoints, with the
 //!    default opaque patterns and those of the spec passed to Charon. The
-//!    pipeline writes the submission of the stage to `lusterna/translate.json`
-//!    in the crate root.
+//!    pipeline writes the submission of the stage to
+//!    `lusterna/submissions/translate.json` in the crate root.
 //! 5. `formalize`: states each property as Lean theorems about the translation,
 //!    without proofs. Runs only if the spec has properties. The pipeline writes
-//!    the submission of the stage to `lusterna/formalize.json` in the crate
-//!    root.
+//!    the submission of the stage to `lusterna/submissions/formalize.json` in
+//!    the crate root.
 //! 6. `prove`: proves the theorems of the formalize stage, or shows that a
 //!    theorem is false. Runs only if the spec has properties. It reads
-//!    `lusterna/formalize.json`, and the pipeline writes the submission of the
-//!    stage to `lusterna/prove.json` in the crate root.
+//!    `lusterna/submissions/formalize.json`, and the pipeline writes the
+//!    submission of the stage to `lusterna/submissions/prove.json` in the crate
+//!    root.
 //! 7. The pipeline writes the report of the run to `lusterna/report.md` in the
-//!    crate root, from `lusterna/translate.json`, `lusterna/formalize.json` and
-//!    `lusterna/prove.json`. The report shows a stage whose file is missing as
-//!    skipped.
+//!    crate root, from `translate.json`, `formalize.json` and `prove.json` in
+//!    `lusterna/submissions/`. The report shows a stage whose file is missing
+//!    as skipped.
 //!
 //! A run starts only if the repository has no uncommitted changes other than
 //! the spec file (unless `--allow-dirty`), the tools of `TOOLS` (and on Linux
@@ -211,12 +213,11 @@ pub struct Pipeline {
 impl Pipeline {
     /// Creates the pipeline for `spec`, which was read from `spec_path`.
     pub fn new(spec: Spec, spec_path: PathBuf, config: Config) -> Result<Self, PipelineError> {
-        let lusterna_dir = config.crate_root()?.join("lusterna");
         Ok(Self {
             spec,
             spec_path,
+            submissions: Submissions::new(&config.submissions_dir()?)?,
             config,
-            submissions: Submissions::new(&lusterna_dir)?,
             commit: None,
             next: PipelineStep::Infer,
         })
@@ -288,7 +289,6 @@ impl Pipeline {
     /// `lusterna/.internal/run.json`. The repository may have uncommitted
     /// changes.
     pub fn resume(config: Config) -> Result<(), PipelineError> {
-        let lusterna_dir = config.crate_root()?.join("lusterna");
         let state_path = config.internal_dir()?.join("run.json");
         let state_text = match fs::read_to_string(&state_path) {
             Ok(text) => text,
@@ -311,7 +311,7 @@ impl Pipeline {
         let pipeline = Self {
             spec: state.spec,
             spec_path: state.spec_path,
-            submissions: Submissions::new(&lusterna_dir)?,
+            submissions: Submissions::new(&config.submissions_dir()?)?,
             config,
             commit: Some(state.commit),
             next: state.next,
@@ -562,7 +562,7 @@ impl Pipeline {
 
         // Read the submission of the formalize stage, which `run_formalize`
         // wrote
-        let formalize_path = lusterna_dir.join("formalize.json");
+        let formalize_path = self.config.submissions_dir()?.join("formalize.json");
         let formalized: FormalizeSubmission =
             serde_json::from_str(&fs::read_to_string(&formalize_path)?)
                 .map_err(|e| PipelineError::FormalizeSubmission(formalize_path, e))?;
@@ -867,7 +867,7 @@ mod tests {
             pipeline: Pipeline {
                 spec: serde_json::from_str(spec).unwrap(),
                 spec_path: root.join("lusterna.json"),
-                submissions: Submissions::new(&root.join("lusterna")).unwrap(),
+                submissions: Submissions::new(&config.submissions_dir().unwrap()).unwrap(),
                 config,
                 commit: None,
                 next: PipelineStep::Infer,

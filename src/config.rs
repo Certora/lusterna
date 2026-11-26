@@ -106,6 +106,11 @@ impl Config {
         Ok(self.crate_root()?.join("lusterna/.internal"))
     }
 
+    /// Returns `lusterna/submissions` in the crate root.
+    pub fn submissions_dir(&self) -> Result<PathBuf, ConfigError> {
+        Ok(self.crate_root()?.join("lusterna/submissions"))
+    }
+
     pub fn repo_root(&self) -> Result<PathBuf, ConfigError> {
         git::toplevel(&self.workspace_root()?).map_err(ConfigError::Git)
     }

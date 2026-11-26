@@ -130,7 +130,7 @@ Run `lusterna run --help` for all options.
 Lusterna writes its output to the directory `lusterna/` in the crate:
 
 - `lusterna.json` and `properties.json`: the spec and its properties.
-- `infer.json`, `pretranslate.json`, `translate.json`, `formalize.json` and `prove.json`: the submission of each stage that ran.
+- `submissions/`: the submission of each stage that ran, in `infer.json`, `pretranslate.json`, `translate.json`, `formalize.json` and `prove.json`.
 - `lean/`: the Lean project with the translation, the theorems and the proofs.
 - `report.md`: the report of the run.
 
