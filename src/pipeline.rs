@@ -49,10 +49,10 @@
 //! the crate root, which `lusterna/.gitignore` excludes from the commits:
 //!
 //! - `run.json`: the spec, the path of the spec file, the commit the run
-//!   started from, the step that runs next, `HEAD`, and `HEAD` before and
-//!   after each step. The pipeline writes it at the start of a run and before
-//!   and after each step, and deletes it at the end of a run that
-//!   `--stop-after` did not end before the `prove` step.
+//!   started from, the step that runs next, `HEAD`, `HEAD` before and after
+//!   each step, and whether the run finished. The pipeline writes it at the
+//!   start of a run and before and after each step. A run that `--stop-after`
+//!   did not end before the `prove` step is finished.
 //! - `<stage>.state.json`: the state of the execution of a stage, written
 //!   before the stage runs and after each of its phases.
 //!
@@ -131,7 +131,8 @@ pub enum PipelineError {
     /// The report templates do not render.
     #[error("cannot render the report: {0}")]
     Report(#[from] minijinja::Error),
-    /// `lusterna/.internal/run.json` does not exist in the crate root.
+    /// `lusterna/.internal/run.json` does not exist in the crate root, or it
+    /// holds a finished run.
     #[error("the crate has no unfinished run to continue")]
     NoUnfinishedRun,
     /// The file that holds the state of the unfinished run does not parse.
@@ -174,7 +175,7 @@ struct StepCommits {
     after: Option<String>,
 }
 
-/// The state of an unfinished run.
+/// The state of a run.
 #[derive(Serialize, Deserialize)]
 struct RunState {
     spec: Spec,
@@ -189,6 +190,9 @@ struct RunState {
     /// The commits of each step that started.
     #[serde(default)]
     steps: BTreeMap<PipelineStep, StepCommits>,
+    /// Whether the run finished.
+    #[serde(default)]
+    finished: bool,
 }
 
 /// A pipeline of stages, configured by a spec. See the module documentation.
@@ -204,6 +208,8 @@ pub struct Pipeline {
     next: PipelineStep,
     /// The commits of each step that started.
     steps: BTreeMap<PipelineStep, StepCommits>,
+    /// Whether the run finished.
+    finished: bool,
 }
 
 impl Pipeline {
@@ -223,6 +229,7 @@ impl Pipeline {
             config,
             next: PipelineStep::Infer,
             steps: BTreeMap::new(),
+            finished: false,
         };
 
         let lusterna_dir = pipeline.config.lusterna_dir()?;
@@ -249,6 +256,9 @@ impl Pipeline {
         };
         let state: RunState = serde_json::from_str(&state_text)
             .map_err(|e| PipelineError::RunState(state_path, e))?;
+        if state.finished {
+            return Err(PipelineError::NoUnfinishedRun);
+        }
 
         let head = git::head_rev(&config.repo_root()?)?;
         if head != state.head {
@@ -266,6 +276,7 @@ impl Pipeline {
             commit: state.commit,
             next: state.next,
             steps: state.steps,
+            finished: false,
         };
         pipeline.check_state_consistent()?;
         info!("Continuing the run at `{:?}`", pipeline.next);
@@ -332,6 +343,7 @@ impl Pipeline {
             next: self.next,
             head: git::head_rev(&self.config.repo_root()?)?,
             steps: self.steps.clone(),
+            finished: self.finished,
         };
         fs::write(
             internal_dir.join("run.json"),
@@ -364,17 +376,16 @@ impl Pipeline {
         self.save_state()
     }
 
-    /// Saves the state of the run if `--stop-after` ended it before the
-    /// `prove` step, and deletes `lusterna/.internal/run.json` otherwise.
-    fn close_state(&self) -> Result<(), PipelineError> {
-        if let Some(step) = self.config.stop_after
-            && step < PipelineStep::Prove
-        {
-            info!("Stopped the run after `{:?}`", step);
-            return self.save_state();
+    /// Saves the state of the run, as finished unless `--stop-after` ended
+    /// the run before the `prove` step.
+    fn close_state(&mut self) -> Result<(), PipelineError> {
+        match self.config.stop_after {
+            Some(step) if step < PipelineStep::Prove => {
+                info!("Stopped the run after `{:?}`", step)
+            }
+            _ => self.finished = true,
         }
-        fs::remove_file(self.config.internal_dir()?.join("run.json"))?;
-        Ok(())
+        self.save_state()
     }
 
     /// Runs the steps of the pipeline from `next` on, in order, and stops at
@@ -862,6 +873,7 @@ mod tests {
                 commit: "start".to_owned(),
                 next: PipelineStep::Infer,
                 steps: BTreeMap::new(),
+                finished: false,
             },
             root,
             _dir: dir,
@@ -991,19 +1003,29 @@ mod tests {
     }
 
     #[test]
-    fn close_state_deletes_the_state_of_a_finished_run() {
+    fn close_state_saves_the_state_of_a_finished_run_as_finished() {
         for args in [
             &[][..],
             &["--stop-after", "prove"],
             &["--stop-after", "report"],
         ] {
-            let f = fixture("{}", args);
-            f.pipeline.save_state().unwrap();
+            let mut f = fixture("{}", args);
 
             f.pipeline.close_state().unwrap();
             let run_state = f.pipeline.config.internal_dir().unwrap().join("run.json");
-            assert!(!run_state.exists(), "{args:?}");
+            let text = fs::read_to_string(run_state).unwrap();
+            let state: RunState = serde_json::from_str(&text).unwrap();
+            assert!(state.finished, "{args:?}");
         }
+    }
+
+    #[test]
+    fn load_of_a_finished_run_fails() {
+        let mut f = fixture("{}", &[]);
+        f.pipeline.close_state().unwrap();
+
+        let error = Pipeline::load(f.pipeline.config).err().unwrap();
+        assert!(matches!(error, PipelineError::NoUnfinishedRun));
     }
 
     #[test]
@@ -1019,6 +1041,7 @@ mod tests {
         let text = fs::read_to_string(run_state).unwrap();
         let state: RunState = serde_json::from_str(&text).unwrap();
         assert!(state.next == PipelineStep::Prove);
+        assert!(!state.finished);
         assert_eq!(state.head, git::head_rev(&f.root).unwrap());
     }
 
