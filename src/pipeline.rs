@@ -144,10 +144,6 @@ pub enum PipelineError {
     /// Writing the spec or the properties to the crate failed.
     #[error("IO error: {0}")]
     Io(#[from] io::Error),
-    /// The file that holds the submission of the formalize stage does not
-    /// parse.
-    #[error("cannot parse the formalize submission in `{0}`: {1}")]
-    FormalizeSubmission(PathBuf, serde_json::Error),
     /// A file that holds the submission of a stage does not parse.
     #[error("cannot parse the stage submission in `{0}`: {1}")]
     StageSubmission(PathBuf, serde_json::Error),
@@ -561,20 +557,21 @@ impl Pipeline {
         let lusterna_dir = self.config.lusterna_dir()?;
         let lean_root = lusterna_dir.join("lean");
 
-        // Read the submission of the formalize stage, which `run_formalize`
-        // wrote
-        let formalize_path = self.config.submissions_dir()?.join("formalize.json");
-        let formalized: FormalizeSubmission =
-            serde_json::from_str(&fs::read_to_string(&formalize_path)?)
-                .map_err(|e| PipelineError::FormalizeSubmission(formalize_path, e))?;
+        let formalized = self
+            .submissions
+            .get_formalize()
+            .expect("the formalize step stored the submission");
 
         let input = ProveInput {
             extracted: lean_root.join("Extraction"),
             lean_root,
             properties: lusterna_dir.join("properties.json"),
             crate_root: self.config.crate_root()?,
-            formalized: formalized_properties(&self.spec.properties, formalized.property_status),
-            induction: formalized.induction,
+            formalized: formalized_properties(
+                &self.spec.properties,
+                formalized.property_status.clone(),
+            ),
+            induction: formalized.induction.clone(),
         };
         let submission = self
             .exec_stage::<ProveStage>(input)
