@@ -19,8 +19,7 @@ struct Cli {
     #[command(flatten)]
     config: Config,
     /// Run without asking for confirmation when `claude` is not logged in
-    /// with a subscription, or when `reset --force` deletes commits or
-    /// uncommitted changes
+    /// with a subscription, or when `reset` deletes work
     #[arg(long, short, global = true)]
     yes: bool,
     #[command(subcommand)]
@@ -121,6 +120,9 @@ fn main() -> anyhow::Result<()> {
                 if !confirm(&text, cli.yes)? {
                     return Ok(());
                 }
+            }
+            if !confirm("This deletes work and cannot be undone.", cli.yes)? {
+                return Ok(());
             }
             pipeline.reset(args.stage, args.full)?
         }
