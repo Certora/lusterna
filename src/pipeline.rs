@@ -148,7 +148,9 @@ pub enum PipelineError {
 /// The steps of a pipeline run, in the order in which they run. A step
 /// executes a stage or does other work on the crate, and ends with a commit
 /// of its changes.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum, Serialize, Deserialize,
+)]
 pub enum PipelineStep {
     Infer,
     /// Writes the spec and its properties to the crate.
@@ -249,6 +251,7 @@ impl Pipeline {
             next: state.next,
         };
         pipeline.check_state_consistent()?;
+        info!("Continuing the run at `{:?}`", pipeline.next);
         Ok(pipeline)
     }
 
@@ -328,11 +331,10 @@ impl Pipeline {
     /// Saves the state of the run if `--stop-after` ended it before the
     /// `prove` step, and deletes `lusterna/.internal/run.json` otherwise.
     fn close_state(&self) -> Result<(), PipelineError> {
-        if self
-            .config
-            .stop_after
-            .is_some_and(|s| s < PipelineStep::Prove)
+        if let Some(step) = self.config.stop_after
+            && step < PipelineStep::Prove
         {
+            info!("Stopped the run after `{:?}`", step);
             return self.save_state();
         }
         fs::remove_file(self.config.internal_dir()?.join("run.json"))?;
