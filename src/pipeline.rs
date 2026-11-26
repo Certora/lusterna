@@ -135,6 +135,10 @@ pub enum PipelineError {
     /// The file that holds the state of the unfinished run does not parse.
     #[error("cannot parse the run state in `{0}`: {1}")]
     RunState(PathBuf, serde_json::Error),
+    /// The unfinished run is past the step of a stage, but the file that
+    /// holds the submission of the stage does not exist.
+    #[error("the unfinished run has no stage submission in `{0}`; start a new run")]
+    MissingSubmission(PathBuf),
     /// `HEAD` of the repository is not the commit that the state of the
     /// unfinished run holds.
     #[error("`HEAD` is at {head}, but the unfinished run stopped at {saved}")]
@@ -190,6 +194,10 @@ impl Pipeline {
     /// `spec_path`. Deletes the submissions and the stage states of an
     /// earlier run.
     pub fn new(spec: Spec, spec_path: PathBuf, config: Config) -> Result<Self, PipelineError> {
+        // Delete the state of the earlier run before its submissions, which
+        // `load` expects to be stored
+        let _ = fs::remove_file(config.internal_dir()?.join("run.json"));
+
         let pipeline = Self {
             spec,
             spec_path,
@@ -232,14 +240,58 @@ impl Pipeline {
             });
         }
 
-        Ok(Self {
+        let pipeline = Self {
             spec: state.spec,
             spec_path: state.spec_path,
             submissions: Submissions::load(&config.submissions_dir()?)?,
             config,
             commit: state.commit,
             next: state.next,
-        })
+        };
+        pipeline.check_state_consistent()?;
+        Ok(pipeline)
+    }
+
+    /// Checks that the submission of each stage whose step is before `next`
+    /// is stored.
+    fn check_state_consistent(&self) -> Result<(), PipelineError> {
+        let stored = [
+            (
+                PipelineStep::Infer,
+                StageName::Infer,
+                // The infer step runs only if the spec asks for it
+                !self.spec.infer || self.submissions.get_infer().is_some(),
+            ),
+            (
+                PipelineStep::PreTranslate,
+                StageName::PreTranslate,
+                self.submissions.get_pre_translate().is_some(),
+            ),
+            (
+                PipelineStep::Translate,
+                StageName::Translate,
+                self.submissions.get_translate().is_some(),
+            ),
+            (
+                PipelineStep::Formalize,
+                StageName::Formalize,
+                self.submissions.get_formalize().is_some(),
+            ),
+            (
+                PipelineStep::Prove,
+                StageName::Prove,
+                self.submissions.get_prove().is_some(),
+            ),
+        ];
+        for (step, stage, stored) in stored {
+            if step < self.next && !stored {
+                let dir = self.config.submissions_dir()?;
+                return Err(PipelineError::MissingSubmission(
+                    Submissions::submission_path(&dir, stage),
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Whether `step` is `next` or a later step, and runs with
@@ -1001,6 +1053,54 @@ mod tests {
         ));
         let message = error.to_string();
         assert!(message.contains(&saved_head) && message.contains(&new_head));
+    }
+
+    #[test]
+    fn load_without_the_submission_of_a_step_before_next_fails() {
+        let mut f = fixture("{}", &[]);
+        f.pipeline.next = PipelineStep::Translate;
+        f.pipeline.save_state().unwrap();
+
+        let error = Pipeline::load(f.pipeline.config).err().unwrap();
+        let missing = f.root.join("lusterna/submissions/pretranslate.json");
+        assert!(matches!(error, PipelineError::MissingSubmission(path) if path == missing));
+    }
+
+    #[test]
+    fn load_restores_the_run_state_and_the_submissions() {
+        let mut f = fixture(r#"{"entrypoints": ["demo::f"]}"#, &[]);
+        fs::create_dir_all(f.root.join("lusterna/submissions")).unwrap();
+        f.pipeline
+            .submissions
+            .set_pre_translate(PreTranslateSubmission::default())
+            .unwrap();
+        f.pipeline.next = PipelineStep::Translate;
+        f.pipeline.save_state().unwrap();
+
+        let loaded = Pipeline::load(f.pipeline.config).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(loaded.spec.entrypoints, ["demo::f"]);
+        assert_eq!(loaded.spec_path, f.root.join("lusterna.json"));
+        assert_eq!(loaded.commit, "start");
+        assert!(loaded.next == PipelineStep::Translate);
+        assert!(loaded.submissions.get_pre_translate().is_some());
+    }
+
+    #[test]
+    fn check_state_consistent_fails_for_a_missing_submission_of_a_step_before_next() {
+        let mut f = fixture("{}", &[]);
+        f.pipeline.check_state_consistent().unwrap();
+
+        f.pipeline.next = PipelineStep::Translate;
+        let error = f.pipeline.check_state_consistent().unwrap_err();
+        let missing = f.root.join("lusterna/submissions/pretranslate.json");
+        assert!(matches!(error, PipelineError::MissingSubmission(path) if path == missing));
+
+        fs::create_dir_all(f.root.join("lusterna/submissions")).unwrap();
+        f.pipeline
+            .submissions
+            .set_pre_translate(PreTranslateSubmission::default())
+            .unwrap();
+        f.pipeline.check_state_consistent().unwrap();
     }
 
     #[test]
