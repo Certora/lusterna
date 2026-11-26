@@ -26,11 +26,13 @@ The properties are in `{properties}`. The theorems are under `{lean_root}/Spec/`
 
 The theorem names and the statuses of the submission passed the checks of the harness. Every other statement of the submission is a claim of the agent: check it against the files and the Rust source before you rely on it.
 
+Each section below that checks entries of the submission starts with the list of these entries. Check every entry of a list, from the first to the last, whether the agent changed its file or not. A section is done only when you checked each entry of its list.
+
 ## What the agent changed
 
-The work tree was clean when the agent started, and the agent made no commits. Use `git` to see what the agent changed. A file that `git status` shows as untracked is new.
+The work tree was clean when the agent started, and the agent made no commits. So `git diff HEAD` shows the text from before the run, and `git status` shows a new file as untracked. Use `git` for the rules of this section only.
 
-Judge only this work. Do not report a defect in a theorem, a definition or a model that the agent did not add or change. In particular, do not judge whether a statement from before the run matches its natspec.
+Do not report a defect in the text of a statement, a definition or a model from before the run.
 
 1. The statement of a labelled theorem must differ from its statement before the run only by hypotheses added under the comment line `-- Additional assumptions`. Its conclusion, its other hypotheses and its label must be unchanged.
 2. No model, no helper `def` and no statement of a bridge from before the run may be changed.
@@ -38,6 +40,10 @@ Judge only this work. Do not report a defect in a theorem, a definition or a mod
 4. Each Lean file that the agent created must have a module doc comment `/-! ... -/` after its imports.
 
 ## Check each added hypothesis
+
+The theorems with the status `ProvenWithAssumptions`:
+
+{theorems_with_assumptions}
 
 The submission gives a purpose for each hypothesis. The briefing defines the purposes.
 
@@ -55,6 +61,10 @@ For every purpose:
 
 ## Check each added invariant
 
+The entries of `additional_invariants`:
+
+{added_invariants}
+
 Each entry of `additional_invariants` is an invariant that the agent added, under the full Lean name of its `def`.
 
 1. The `def` must state the `natspec` of the entry: not something else, not less, and not more. The `title` must name what the `def` states.
@@ -65,9 +75,17 @@ Each entry of `additional_invariants` is an invariant that the agent added, unde
 
 ## Check each added induction
 
+The entries of `additional_inductions`:
+
+{added_inductions}
+
 Each entry of `additional_inductions` is the induction of a struct that the `induction` of the briefing does not have. Its lists must be the ones that "The lists of an induction" in the skill `lusterna:induction` gives.
 
 ## Check each `Refuted` theorem
+
+The theorems with the status `Refuted`:
+
+{refuted_theorems}
 
 `Refuted` ends the work on a theorem without a proof, so an agent that does not want to do a hard proof can use it as a way out. Be skeptical of a `reason` that is vague or that avoids the hard part of the function.
 
@@ -79,9 +97,17 @@ Each entry of `additional_inductions` is the induction of a struct that the `ind
 
 ## Check each `Exception` theorem
 
+The theorems with the status `Exception`:
+
+{exception_theorems}
+
 An `Exception` that the formalize stage gave in the briefing needs no check. For any other, the natspec must name the function of the theorem as an exception to the invariant, and the reason must be readable from the natspec, not from the code.
 
 ## Check each `Open` theorem
+
+The theorems with the status `Open`:
+
+{open_theorems}
 
 The agent may leave a theorem `Open` only after it tried to prove it and failed for a reason that it could not remove.
 
@@ -93,6 +119,14 @@ The agent may leave a theorem `Open` only after it tried to prove it and failed 
 Report `unjustified_open` for a theorem that fails one of these rules. Do not ask for a proof of a theorem that passes them.
 
 ## Check each dropped write
+
+The entries of `dropped_writes`:
+
+{dropped_writes}
+
+The theorems with the status `DroppedWrite`:
+
+{dropped_write_theorems}
 
 1. For each entry of `dropped_writes`, find the calls of `deref_mut` in the functions that the proof of the theorem goes through, and read the Rust source of each write. The entry must name every such write. The conclusion of the theorem must read no value that one of these writes changes in the Rust code.
 2. For each theorem with the status `DroppedWrite`, `function` must write through a `RefMut`, and the proof of the theorem, or of a base case or induction step that the agent wrote for it, must go through `function`. In the Rust code, the write must change a value that the conclusion reads, as `reason` says.
