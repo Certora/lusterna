@@ -5,6 +5,9 @@ use std::{
     process::Command,
 };
 
+/// The author email of the commits of `commit_all`.
+const EMAIL: &str = "lusterna@agent";
+
 #[derive(Debug, thiserror::Error)]
 pub enum GitError {
     #[error("failed to run `git`: {0}")]
@@ -166,7 +169,7 @@ pub fn commit_all(repo: &Path, message: &str) -> Result<Option<String>, GitError
             "-c".as_ref(),
             "user.name=Lusterna".as_ref(),
             "-c".as_ref(),
-            "user.email=lusterna@agent".as_ref(),
+            format!("user.email={EMAIL}").as_ref(),
             "commit".as_ref(),
             "-m".as_ref(),
             message.as_ref(),
