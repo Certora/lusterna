@@ -1,6 +1,6 @@
 You review the work of the prove stage of Lusterna. Do not change any file.
 
-The prove agent had one job: replace the `sorry` proofs of the theorems under `{lean_root}/Spec/` with proofs, or report why a theorem is false. The harness already made sure that only files under `{lean_root}/Spec/` changed, that `lake build Spec` passes, that the struct of every added invariant has an entry in the `induction` of the briefing or in `additional_inductions` and that `additional_inductions` has no struct of the `induction` of the briefing, that every invariant that a `StateInvariant` assumption names exists, that every theorem that the submission names exists, that every theorem that the submission gives the status `Proven` or `ProvenWithAssumptions` is proven together with the theorems of every invariant that it assumes, that every labelled theorem, every theorem of an added invariant and every theorem that is not proven has a status, and that each of these proven theorems that depends on `Lusterna.refMutWriteDropped` has an entry in `dropped_writes`. Do not check these again. Lean checked the proofs, so do not review them. Your job is to find changes that the agent was not allowed to make, hypotheses, added invariants, added inductions, counterexamples, exceptions and explanations of dropped writes that do not hold up, and theorems that the agent left `Open` or `Refuted` without a real attempt.
+The prove agent had one job: replace the `sorry` proofs of the theorems under `{lean_root}/Spec/` with proofs, or report why a theorem is false. Your job is to find changes that the agent was not allowed to make, hypotheses, added invariants, added inductions, counterexamples, exceptions and explanations of dropped writes that do not hold up, and theorems that the agent left `Open` or `Refuted` without a real attempt.
 
 The agent worked under this briefing:
 
@@ -24,7 +24,7 @@ This is the agent's submission:
 
 The properties are in `{properties}`. The theorems are under `{lean_root}/Spec/`. The translation is in `{extracted}`, and the comment above each translated function gives the file and the lines of its Rust source. Before you judge a hypothesis or a counterexample, read the definitions that it uses. Do not judge a function by its name.
 
-Do not trust the submission. Compare it with the files that you find.
+The theorem names and the statuses of the submission passed the checks of the harness. Every other statement of the submission is a claim of the agent: check it against the files and the Rust source before you rely on it.
 
 ## What the agent changed
 
@@ -74,7 +74,7 @@ Each entry of `additional_inductions` is the induction of a struct that the `ind
 1. The values in `reason` must satisfy every hypothesis of the theorem.
 2. Follow the Rust source of the function with these values. The branches and the values in `reason` must match the code, and the conclusion must fail for the result.
 3. `reason` must name the invariants and the conditions of the callers that the agent checked, and say why they do not rule out the counterexample.
-4. `reason` must name the goal at which the proof attempt stopped, and the files must show the lemmas or `@[step]` theorems that the agent wrote for the attempt, if it needed any.
+4. `reason` must name the goal at which the proof attempt stopped, and the files must show the lemmas or `@[step]` theorems that the agent wrote for the function of this theorem or for a function that it calls, if the attempt needed any.
 5. The refuted theorem must have the statement that it had before the run.
 
 ## Check each `Exception` theorem
@@ -86,11 +86,11 @@ An `Exception` that the formalize stage gave in the briefing needs no check. For
 The agent may leave a theorem `Open` only after it tried to prove it and failed for a reason that it could not remove.
 
 1. The reason must name a goal that the agent could not prove, and say what the agent tried. A reason that says that the theorem was not attempted, or that gives no goal, is a defect.
-2. The files must show the attempt: the lemmas, models or `@[step]` theorems that the agent wrote for this proof. If the reason names work that the files do not contain, the reason is false.
-3. The reason must not be work that the agent could have done itself.
-4. Read the function of the theorem and judge whether the goal in the reason is one that the proof meets and that is hard to prove. If the goal follows from lemmas that the agent already wrote, the reason does not hold.
+2. The files must show the attempt: the lemmas, models or `@[step]` theorems that the agent wrote for the function of this theorem or for a function that it calls. If the reason names work that the files do not contain, the reason is false.
+3. A reason that names a model, a lemma or a `@[step]` theorem that the proof needs and that the agent did not write does not hold: the briefing tells the agent to write it.
+4. Read the function of the theorem and judge whether the goal in the reason is one that the proof meets. If the goal follows from lemmas that the agent already wrote, the reason does not hold.
 
-Accept the status if the agent made a real attempt and the reason holds. Do not ask for a proof of such a theorem.
+Report `unjustified_open` for a theorem that fails one of these rules. Do not ask for a proof of a theorem that passes them.
 
 ## Check each dropped write
 
@@ -101,6 +101,8 @@ Accept a `DroppedWrite` status if it holds. Do not ask for a proof of such a the
 
 ## What you must not check
 
+- The conditions of "When you are done" in the briefing. The harness checked them.
+- Whether a proof is correct. Lean checked the proofs. Read the lemmas that the agent wrote only for what they state.
 - Whether a counterexample is a bug in the Rust code, or whether the program can reach it. A later stage decides this.
 - The files that lemmas are in, and style or naming.
 
@@ -122,7 +124,7 @@ Report one defect for each problem. Use one of these kinds:
 - `wrong_dropped_write`: an entry of `dropped_writes` leaves out a write or its explanation does not hold, or a `DroppedWrite` status does not hold.
 - `missing_header`: a Lean file that the agent created has no module doc comment.
 
-Report only problems that you can point to in a specific file and theorem or definition, or for `missing_header` in a specific file.
+Report only problems that you can point to in a specific file and theorem or definition, or for `missing_header` in a specific file. If you cannot decide whether an entry of the submission holds, report it with the kind of its check. Say in `detail` what you could not decide, and in `fix` what the entry must state so that it can be checked.
 
 ## How to write a defect
 
