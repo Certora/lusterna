@@ -152,8 +152,8 @@ Contrary, spent budget of an interrupted stage carries over. To continue a run t
 
 #### Known Limitations
 
-- A run that stops right after the commit of a step, before Lusterna saved the new commit to `lusterna/run.json`, cannot be continued. `continue` fails because the checked out commit changed and you need to do a new run (`lusterna run`).
-- A run that stops right after a stage started, before the `claude` session of its agent exists, fails on `continue` when it tries to resume that session. In that case, delete `lusterna/<stage>.state.json` of the stage and run `continue` again.
+- A run that stops right after the commit of a step, before Lusterna saved the new commit to `lusterna/.internal/run.json`, cannot be continued. `continue` fails because the checked out commit changed and you need to do a new run (`lusterna run`).
+- A run that stops right after a stage started, before the `claude` session of its agent exists, fails on `continue` when it tries to resume that session. In that case, delete `lusterna/.internal/<stage>.state.json` of the stage and run `continue` again.
 
 ## Repository layout
 

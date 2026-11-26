@@ -47,8 +47,8 @@
 //! crate has no unfinished run or if `HEAD` moved since the run stopped. It
 //! does not check for uncommitted changes.
 //!
-//! The state of a run is in two kinds of files in `lusterna/` in the crate
-//! root, which `lusterna/.gitignore` excludes from the commits:
+//! The state of a run is in two kinds of files in `lusterna/.internal/` in
+//! the crate root, which `lusterna/.gitignore` excludes from the commits:
 //!
 //! - `run.json`: the spec, the path of the spec file, the commit the run
 //!   started from, the step that runs next and `HEAD`. The pipeline writes it
@@ -99,7 +99,7 @@ const TOOLS: [&str; 6] = ["git", "cargo", "charon", "aeneas", "lake", "claude"];
 const LINUX_SANDBOX_TOOLS: [&str; 2] = ["bwrap", "socat"];
 
 /// The content of `lusterna/.gitignore` in the crate root.
-const GITIGNORE: &str = "/lean/.lake/\n/extraction.llbc\n/charon/\n/run.json\n/*.state.json\n";
+const GITIGNORE: &str = "/lean/.lake/\n/extraction.llbc\n/charon/\n/.internal/\n";
 
 /// An error that ends a pipeline run.
 #[derive(Debug, thiserror::Error)]
@@ -151,7 +151,7 @@ pub enum PipelineError {
     /// The report templates do not render.
     #[error("cannot render the report: {0}")]
     Report(#[from] minijinja::Error),
-    /// `lusterna/run.json` does not exist in the crate root.
+    /// `lusterna/.internal/run.json` does not exist in the crate root.
     #[error("the crate has no unfinished run to continue")]
     NoUnfinishedRun,
     /// The file that holds the state of the unfinished run does not parse.
@@ -228,10 +228,11 @@ impl Pipeline {
         self.next <= step && self.config.stop_after.is_none_or(|s| step <= s)
     }
 
-    /// Writes the state of the run to `lusterna/run.json` in the crate root.
+    /// Writes the state of the run to `lusterna/.internal/run.json` in the
+    /// crate root.
     fn save_state(&self) -> Result<(), PipelineError> {
-        let lusterna_dir = self.config.crate_root()?.join("lusterna");
-        fs::create_dir_all(&lusterna_dir)?;
+        let internal_dir = self.config.internal_dir()?;
+        fs::create_dir_all(&internal_dir)?;
         let state = RunState {
             spec: self.spec.clone(),
             spec_path: self.spec_path.clone(),
@@ -240,7 +241,7 @@ impl Pipeline {
             head: git::head_rev(&self.config.repo_root()?)?,
         };
         fs::write(
-            lusterna_dir.join("run.json"),
+            internal_dir.join("run.json"),
             serde_json::to_string_pretty(&state).expect("the run state serializes"),
         )?;
         Ok(())
@@ -253,7 +254,7 @@ impl Pipeline {
     }
 
     /// Saves the state of the run if `--stop-after` ended it before the
-    /// `prove` step, and deletes `lusterna/run.json` otherwise.
+    /// `prove` step, and deletes `lusterna/.internal/run.json` otherwise.
     fn close_state(&self) -> Result<(), PipelineError> {
         if self
             .config
@@ -262,7 +263,7 @@ impl Pipeline {
         {
             return self.save_state();
         }
-        fs::remove_file(self.config.crate_root()?.join("lusterna/run.json"))?;
+        fs::remove_file(self.config.internal_dir()?.join("run.json"))?;
         Ok(())
     }
 
@@ -273,9 +274,10 @@ impl Pipeline {
         self.commit = Some(git::head_rev(&self.config.repo_root()?)?);
 
         let lusterna_dir = self.config.crate_root()?.join("lusterna");
-        fs::create_dir_all(&lusterna_dir)?;
+        let internal_dir = self.config.internal_dir()?;
+        fs::create_dir_all(&internal_dir)?;
         self.submissions.clear()?;
-        remove_stage_states(&lusterna_dir)?;
+        remove_stage_states(&internal_dir)?;
         fs::write(lusterna_dir.join(".gitignore"), GITIGNORE)?;
         self.save_state()?;
 
@@ -283,10 +285,11 @@ impl Pipeline {
     }
 
     /// Continues the unfinished run of the crate from the state in
-    /// `lusterna/run.json`. The repository may have uncommitted changes.
+    /// `lusterna/.internal/run.json`. The repository may have uncommitted
+    /// changes.
     pub fn resume(config: Config) -> Result<(), PipelineError> {
         let lusterna_dir = config.crate_root()?.join("lusterna");
-        let state_path = lusterna_dir.join("run.json");
+        let state_path = config.internal_dir()?.join("run.json");
         let state_text = match fs::read_to_string(&state_path) {
             Ok(text) => text,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -444,7 +447,7 @@ impl Pipeline {
     /// Returns the file that holds the state of the execution of `stage`.
     fn stage_state_path(&self, stage: StageName) -> Result<PathBuf, ConfigError> {
         let name = format!("{}.state.json", stage.as_str());
-        Ok(self.config.crate_root()?.join("lusterna").join(name))
+        Ok(self.config.internal_dir()?.join(name))
     }
 
     /// Checks everything a run needs before it does any work.
@@ -944,7 +947,8 @@ mod tests {
         f.pipeline.next = PipelineStep::Translate;
         f.pipeline.save_state().unwrap();
 
-        let text = fs::read_to_string(f.root.join("lusterna/run.json")).unwrap();
+        let run_state = f.pipeline.config.internal_dir().unwrap().join("run.json");
+        let text = fs::read_to_string(run_state).unwrap();
         let state: RunState = serde_json::from_str(&text).unwrap();
         assert_eq!(state.spec.entrypoints, ["demo::f"]);
         assert_eq!(state.spec_path, f.root.join("lusterna.json"));
@@ -960,7 +964,8 @@ mod tests {
         f.pipeline.step_done(PipelineStep::Formalize).unwrap();
 
         assert!(f.pipeline.next == PipelineStep::Formalize);
-        let text = fs::read_to_string(f.root.join("lusterna/run.json")).unwrap();
+        let run_state = f.pipeline.config.internal_dir().unwrap().join("run.json");
+        let text = fs::read_to_string(run_state).unwrap();
         let state: RunState = serde_json::from_str(&text).unwrap();
         assert!(state.next == PipelineStep::Formalize);
     }
@@ -977,7 +982,8 @@ mod tests {
             f.pipeline.save_state().unwrap();
 
             f.pipeline.close_state().unwrap();
-            assert!(!f.root.join("lusterna/run.json").exists(), "{args:?}");
+            let run_state = f.pipeline.config.internal_dir().unwrap().join("run.json");
+            assert!(!run_state.exists(), "{args:?}");
         }
     }
 
@@ -991,7 +997,8 @@ mod tests {
         git::commit_all(&f.root, "Lusterna: report").unwrap();
 
         f.pipeline.close_state().unwrap();
-        let text = fs::read_to_string(f.root.join("lusterna/run.json")).unwrap();
+        let run_state = f.pipeline.config.internal_dir().unwrap().join("run.json");
+        let text = fs::read_to_string(run_state).unwrap();
         let state: RunState = serde_json::from_str(&text).unwrap();
         assert!(state.next == PipelineStep::Prove);
         assert_eq!(state.head, git::head_rev(&f.root).unwrap());
@@ -1046,9 +1053,9 @@ mod tests {
             "file": "src/lib.rs", "change": "change", "reason": "reason"
         });
         state["phase"] = serde_json::json!({"Done": {"changes": [change]}});
-        let lusterna_dir = f.root.join("lusterna");
-        let state_path = lusterna_dir.join("pre-translate.state.json");
-        fs::create_dir(&lusterna_dir).unwrap();
+        let internal_dir = f.pipeline.config.internal_dir().unwrap();
+        let state_path = internal_dir.join("pre-translate.state.json");
+        fs::create_dir_all(&internal_dir).unwrap();
         fs::write(&state_path, state.to_string()).unwrap();
         state_path
     }
@@ -1063,7 +1070,14 @@ mod tests {
         let submission = f.pipeline.exec_stage::<PreTranslateStage>(input).unwrap();
         assert_eq!(submission.changes.len(), 1);
         assert!(state_path.exists());
-        assert!(f.root.join("lusterna/run.json").exists());
+        assert!(
+            f.pipeline
+                .config
+                .internal_dir()
+                .unwrap()
+                .join("run.json")
+                .exists()
+        );
     }
 
     #[test]
@@ -1076,8 +1090,9 @@ mod tests {
     #[test]
     fn resume_with_a_malformed_run_state_fails() {
         let f = fixture("{}", &[]);
-        let state_path = f.root.join("lusterna/run.json");
-        fs::create_dir(f.root.join("lusterna")).unwrap();
+        let internal_dir = f.pipeline.config.internal_dir().unwrap();
+        let state_path = internal_dir.join("run.json");
+        fs::create_dir_all(&internal_dir).unwrap();
         fs::write(&state_path, "not json").unwrap();
 
         let error = Pipeline::resume(f.pipeline.config).unwrap_err();
@@ -1116,7 +1131,7 @@ mod tests {
         for (stage, file) in cases {
             assert_eq!(
                 f.pipeline.stage_state_path(stage).unwrap(),
-                f.root.join("lusterna").join(file)
+                f.root.join("lusterna/.internal").join(file)
             );
         }
     }

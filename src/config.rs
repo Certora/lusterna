@@ -101,6 +101,11 @@ impl Config {
             .map_err(ConfigError::Io)
     }
 
+    /// Returns `lusterna/.internal` in the crate root.
+    pub fn internal_dir(&self) -> Result<PathBuf, ConfigError> {
+        Ok(self.crate_root()?.join("lusterna/.internal"))
+    }
+
     pub fn repo_root(&self) -> Result<PathBuf, ConfigError> {
         git::toplevel(&self.workspace_root()?).map_err(ConfigError::Git)
     }
