@@ -195,6 +195,33 @@ struct RunState {
     finished: bool,
 }
 
+impl RunState {
+    /// Reads the state from `lusterna/.internal/run.json` in the crate root.
+    /// Returns `None` if the file does not exist.
+    fn read(config: &Config) -> Result<Option<Self>, PipelineError> {
+        let path = config.internal_dir()?.join("run.json");
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        serde_json::from_str(&text)
+            .map(Some)
+            .map_err(|e| PipelineError::RunState(path, e))
+    }
+
+    /// Writes the state to `lusterna/.internal/run.json` in the crate root.
+    fn write(&self, config: &Config) -> Result<(), PipelineError> {
+        let internal_dir = config.internal_dir()?;
+        fs::create_dir_all(&internal_dir)?;
+        fs::write(
+            internal_dir.join("run.json"),
+            serde_json::to_string_pretty(self).expect("the run state serializes"),
+        )?;
+        Ok(())
+    }
+}
+
 /// A pipeline of stages, configured by a spec. See the module documentation.
 pub struct Pipeline {
     spec: Spec,
@@ -246,16 +273,9 @@ impl Pipeline {
     /// state in `lusterna/.internal/run.json`. The repository may have
     /// uncommitted changes.
     pub fn load(config: Config) -> Result<Self, PipelineError> {
-        let state_path = config.internal_dir()?.join("run.json");
-        let state_text = match fs::read_to_string(&state_path) {
-            Ok(text) => text,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                return Err(PipelineError::NoUnfinishedRun);
-            }
-            Err(e) => return Err(e.into()),
+        let Some(state) = RunState::read(&config)? else {
+            return Err(PipelineError::NoUnfinishedRun);
         };
-        let state: RunState = serde_json::from_str(&state_text)
-            .map_err(|e| PipelineError::RunState(state_path, e))?;
         if state.finished {
             return Err(PipelineError::NoUnfinishedRun);
         }
@@ -334,8 +354,6 @@ impl Pipeline {
     /// Writes the state of the run to `lusterna/.internal/run.json` in the
     /// crate root.
     fn save_state(&self) -> Result<(), PipelineError> {
-        let internal_dir = self.config.internal_dir()?;
-        fs::create_dir_all(&internal_dir)?;
         let state = RunState {
             spec: self.spec.clone(),
             spec_path: self.spec_path.clone(),
@@ -345,11 +363,7 @@ impl Pipeline {
             steps: self.steps.clone(),
             finished: self.finished,
         };
-        fs::write(
-            internal_dir.join("run.json"),
-            serde_json::to_string_pretty(&state).expect("the run state serializes"),
-        )?;
-        Ok(())
+        state.write(&self.config)
     }
 
     /// Records `HEAD` as the commit before `step`, unless the step started
