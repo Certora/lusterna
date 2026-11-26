@@ -7,6 +7,7 @@ use std::{
 pub mod cargo;
 pub mod git;
 pub(crate) mod lean;
+pub(crate) mod md;
 pub mod spec_check;
 
 /// Formats the time elapsed since `t`, rounded down to whole seconds.

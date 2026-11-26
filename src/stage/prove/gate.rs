@@ -43,6 +43,7 @@ use crate::{
     utils::{
         git::{self, GitError},
         lean::{self, LakeError},
+        md::{bullet_list, code, code_list},
         spec_check::{self, SpecCheckError, TheoremCheck},
     },
 };
@@ -427,33 +428,6 @@ fn check_dropped_writes_explained(
         });
     }
     Ok(())
-}
-
-/// Returns `text` as inline code in Markdown.
-fn code(text: &str) -> String {
-    format!("`{text}`")
-}
-
-/// Returns `items` as a Markdown list.
-fn bullet_list(items: &[String]) -> String {
-    let mut list = String::new();
-    for item in items {
-        if !list.is_empty() {
-            list.push('\n');
-        }
-        list.push_str("- ");
-        list.push_str(item);
-    }
-    list
-}
-
-/// Returns `names` as a Markdown list of inline code.
-fn code_list(names: &[String]) -> String {
-    let mut items = Vec::new();
-    for name in names {
-        items.push(code(name));
-    }
-    bullet_list(&items)
 }
 
 impl ProveGateFailure {

@@ -16,7 +16,10 @@ use crate::{
         lean_agent_options,
         properties::{Properties, Property, PropertyId},
     },
-    utils::git::{self, GitError},
+    utils::{
+        git::{self, GitError},
+        md,
+    },
 };
 
 pub use gate::{ProveGateError, ProveGateFailure};
@@ -278,6 +281,14 @@ impl Stage for ProveStage {
     }
 
     fn judge_prompt(&self, submission: &Self::Submission) -> Option<String> {
+        // `names` as a numbered list, under a line that gives their number
+        let numbered_list = |names: Vec<&String>| {
+            format!(
+                "Number of entries: {}\n\n{}",
+                names.len(),
+                md::numbered_list(names.iter().map(md::code))
+            )
+        };
         // The theorems of the submission whose status `has_status` accepts
         let theorems_with = |has_status: fn(&TheoremStatus) -> bool| {
             let mut names = Vec::new();
@@ -296,9 +307,9 @@ impl Stage for ProveStage {
         let exceptions = theorems_with(|s| matches!(s, TheoremStatus::Exception { .. }));
         let open = theorems_with(|s| matches!(s, TheoremStatus::Open { .. }));
         let dropped_write = theorems_with(|s| matches!(s, TheoremStatus::DroppedWrite { .. }));
-        let dropped_writes = numbered_list(submission.dropped_writes.keys());
-        let added_invariants = numbered_list(submission.additional_invariants.keys());
-        let added_inductions = numbered_list(submission.additional_inductions.keys());
+        let dropped_writes = numbered_list(submission.dropped_writes.keys().collect());
+        let added_invariants = numbered_list(submission.additional_invariants.keys().collect());
+        let added_inductions = numbered_list(submission.additional_inductions.keys().collect());
 
         let submission =
             serde_json::to_string_pretty(submission).expect("the submission serializes");
@@ -323,17 +334,6 @@ impl Stage for ProveStage {
                 .replace("{submission}", &submission),
         )
     }
-}
-
-/// Returns `names` as a numbered list, under a line that gives their number.
-fn numbered_list<'a>(names: impl IntoIterator<Item = &'a String>) -> String {
-    let mut list = String::new();
-    let mut count = 0;
-    for name in names {
-        count += 1;
-        list.push_str(&format!("\n{count}. `{name}`"));
-    }
-    format!("Number of entries: {count}\n{list}")
 }
 
 /// Returns each property of `properties` that has the status `Formalized` in

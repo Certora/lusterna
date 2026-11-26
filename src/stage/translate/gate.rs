@@ -14,6 +14,7 @@ use crate::{
         cargo::{self, CargoError},
         git::{self, GitError},
         lean::{self, LakeError},
+        md,
     },
 };
 
@@ -218,11 +219,7 @@ impl TranslateGateFailure {
                 "These files were deleted, but you must not delete files that you did not \
                  create:\n\n{}\n\n\
                  Restore each one with `git restore --source={setup_commit} -- ':/<file>'`.",
-                files
-                    .iter()
-                    .map(|f| format!("- `{}`", f.display()))
-                    .collect::<Vec<_>>()
-                    .join("\n")
+                md::code_list(files.iter().map(|f| f.display()))
             ),
             TranslateGateFailure::MissingExternal { template, external } => format!(
                 "Aeneas wrote `{}`, but `{}` does not exist.\n\n\
