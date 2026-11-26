@@ -153,8 +153,10 @@ pub enum PipelineError {
     /// The report templates do not render.
     #[error("cannot render the report: {0}")]
     Report(#[from] minijinja::Error),
-    /// `lusterna/.internal/run.json` does not exist in the crate root, or it
-    /// holds a finished run.
+    /// `lusterna/.internal/run.json` does not exist in the crate root.
+    #[error("the crate has no run")]
+    NoRun,
+    /// The run of the crate finished.
     #[error("the crate has no unfinished run to continue")]
     NoUnfinishedRun,
     /// The file that holds the state of the unfinished run does not parse.
@@ -310,7 +312,7 @@ impl Pipeline {
     /// submissions.
     pub fn load(config: Config) -> Result<Self, PipelineError> {
         let Some(state) = RunState::read(&config)? else {
-            return Err(PipelineError::NoUnfinishedRun);
+            return Err(PipelineError::NoRun);
         };
         Ok(Self {
             state,
@@ -1272,7 +1274,7 @@ mod tests {
     fn load_without_run_state_fails() {
         let f = fixture("{}", &[]);
         let error = Pipeline::load(f.pipeline.config).err().unwrap();
-        assert!(matches!(error, PipelineError::NoUnfinishedRun));
+        assert!(matches!(error, PipelineError::NoRun));
     }
 
     #[test]
