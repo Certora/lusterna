@@ -215,7 +215,7 @@ pub struct StepCommits {
 }
 
 /// The state of a run.
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct RunState {
     spec: Spec,
     /// The file that `spec` was read from.
@@ -263,22 +263,12 @@ impl RunState {
 
 /// A pipeline of stages, configured by a spec. See the module documentation.
 pub struct Pipeline {
-    spec: Spec,
-    /// The file that `spec` was read from.
-    spec_path: PathBuf,
+    /// The state of the run. Its `head` is `HEAD` of the repository when the
+    /// run started, or when the state that the run was loaded from was
+    /// written.
+    state: RunState,
     config: Config,
     submissions: Submissions,
-    /// The commit of the repository that the run starts from.
-    commit: String,
-    /// The step that runs next.
-    next: PipelineStep,
-    /// `HEAD` of the repository when the run started, or when the state
-    /// that the run was loaded from was written.
-    head: String,
-    /// The commits of each step that started.
-    steps: BTreeMap<PipelineStep, StepCommits>,
-    /// Whether the run finished.
-    finished: bool,
 }
 
 impl Pipeline {
@@ -292,15 +282,17 @@ impl Pipeline {
 
         let head = git::head_rev(&config.repo_root()?)?;
         let pipeline = Self {
-            spec,
-            spec_path,
+            state: RunState {
+                spec,
+                spec_path,
+                commit: head.clone(),
+                next: PipelineStep::Infer,
+                head,
+                steps: BTreeMap::new(),
+                finished: false,
+            },
             submissions: Submissions::new(&config.submissions_dir()?)?,
-            commit: head.clone(),
             config,
-            next: PipelineStep::Infer,
-            head,
-            steps: BTreeMap::new(),
-            finished: false,
         };
 
         let lusterna_dir = pipeline.config.lusterna_dir()?;
@@ -321,15 +313,9 @@ impl Pipeline {
             return Err(PipelineError::NoUnfinishedRun);
         };
         Ok(Self {
-            spec: state.spec,
-            spec_path: state.spec_path,
+            state,
             submissions: Submissions::load(&config.submissions_dir()?)?,
             config,
-            commit: state.commit,
-            next: state.next,
-            head: state.head,
-            steps: state.steps,
-            finished: state.finished,
         })
     }
 
@@ -338,18 +324,18 @@ impl Pipeline {
     /// an earlier stage is missing. The repository may have uncommitted
     /// changes.
     pub fn resume(self) -> Result<(), PipelineError> {
-        if self.finished {
+        if self.state.finished {
             return Err(PipelineError::NoUnfinishedRun);
         }
         let head = git::head_rev(&self.config.repo_root()?)?;
-        if head != self.head {
+        if head != self.state.head {
             return Err(PipelineError::HeadMoved {
-                saved: self.head,
+                saved: self.state.head,
                 head,
             });
         }
         self.check_state_consistent()?;
-        info!("Continuing the run at `{:?}`", self.next);
+        info!("Continuing the run at `{:?}`", self.state.next);
         self.run()
     }
 
@@ -361,7 +347,7 @@ impl Pipeline {
                 PipelineStep::Infer,
                 StageName::Infer,
                 // The infer step runs only if the spec asks for it
-                !self.spec.infer || self.submissions.get_infer().is_some(),
+                !self.state.spec.infer || self.submissions.get_infer().is_some(),
             ),
             (
                 PipelineStep::PreTranslate,
@@ -385,7 +371,7 @@ impl Pipeline {
             ),
         ];
         for (step, stage, stored) in stored {
-            if step < self.next && !stored {
+            if step < self.state.next && !stored {
                 let dir = self.config.submissions_dir()?;
                 return Err(PipelineError::MissingSubmission(
                     Submissions::submission_path(&dir, stage),
@@ -398,20 +384,15 @@ impl Pipeline {
     /// Whether `step` is `next` or a later step, and runs with
     /// `--stop-after`.
     fn runs(&self, step: PipelineStep) -> bool {
-        self.next <= step && self.config.stop_after.is_none_or(|s| step <= s)
+        self.state.next <= step && self.config.stop_after.is_none_or(|s| step <= s)
     }
 
     /// Writes the state of the run to `lusterna/.internal/run.json` in the
     /// crate root.
     fn save_state(&self) -> Result<(), PipelineError> {
         let state = RunState {
-            spec: self.spec.clone(),
-            spec_path: self.spec_path.clone(),
-            commit: self.commit.clone(),
-            next: self.next,
             head: git::head_rev(&self.config.repo_root()?)?,
-            steps: self.steps.clone(),
-            finished: self.finished,
+            ..self.state.clone()
         };
         state.write(&self.config)
     }
@@ -419,12 +400,12 @@ impl Pipeline {
     /// Records `HEAD` as the commit before `step`, unless the step started
     /// before, and saves the state of the run.
     fn step_started(&mut self, step: PipelineStep) -> Result<(), PipelineError> {
-        if !self.steps.contains_key(&step) {
+        if !self.state.steps.contains_key(&step) {
             let commits = StepCommits {
                 before: git::head_rev(&self.config.repo_root()?)?,
                 after: None,
             };
-            self.steps.insert(step, commits);
+            self.state.steps.insert(step, commits);
         }
         self.save_state()
     }
@@ -433,10 +414,10 @@ impl Pipeline {
     /// that runs next and saves the state of the run.
     fn step_done(&mut self, step: PipelineStep, next: PipelineStep) -> Result<(), PipelineError> {
         let head = git::head_rev(&self.config.repo_root()?)?;
-        if let Some(commits) = self.steps.get_mut(&step) {
+        if let Some(commits) = self.state.steps.get_mut(&step) {
             commits.after = Some(head);
         }
-        self.next = next;
+        self.state.next = next;
         self.save_state()
     }
 
@@ -447,14 +428,14 @@ impl Pipeline {
             Some(step) if step < PipelineStep::Prove => {
                 info!("Stopped the run after `{:?}`", step)
             }
-            _ => self.finished = true,
+            _ => self.state.finished = true,
         }
         self.save_state()
     }
 
     /// Returns the commits of each step that started.
     pub fn steps(&self) -> &BTreeMap<PipelineStep, StepCommits> {
-        &self.steps
+        &self.state.steps
     }
 
     /// Resets the run to the commit before `step`, so that
@@ -466,7 +447,7 @@ impl Pipeline {
     /// work of `step` as uncommitted changes, deletes the submission of its
     /// stage, and starts its stage again as `StageExec::restart` says.
     pub fn reset(mut self, step: PipelineStep, full: bool) -> Result<(), PipelineError> {
-        let Some(commits) = self.steps.get(&step).cloned() else {
+        let Some(commits) = self.state.steps.get(&step).cloned() else {
             return Err(PipelineError::StepNotStarted(step));
         };
         let repo = self.config.repo_root()?;
@@ -513,23 +494,23 @@ impl Pipeline {
                 before: commits.before,
                 after: None,
             };
-            self.steps.insert(step, unfinished);
+            self.state.steps.insert(step, unfinished);
         }
 
         // Forget the later steps that started, and `step` too with `full`
-        let started: Vec<PipelineStep> = self.steps.keys().copied().collect();
+        let started: Vec<PipelineStep> = self.state.steps.keys().copied().collect();
         for later in started {
             if later < step || (later == step && !full) {
                 continue;
             }
-            self.steps.remove(&later);
+            self.state.steps.remove(&later);
             if let Some(stage) = later.stage() {
                 remove_if_exists(&self.stage_state_path(stage)?)?;
             }
         }
 
-        self.next = step;
-        self.finished = false;
+        self.state.next = step;
+        self.state.finished = false;
         self.save_state()?;
         info!("Reset the run to `{:?}`", step);
         Ok(())
@@ -548,7 +529,7 @@ impl Pipeline {
     /// the first error.
     pub fn run(mut self) -> Result<(), PipelineError> {
         // 1. Infer the entrypoints and properties
-        if self.spec.infer {
+        if self.state.spec.infer {
             if self.runs(PipelineStep::Infer) {
                 self.step_started(PipelineStep::Infer)?;
                 let submission = self.run_infer()?;
@@ -561,8 +542,8 @@ impl Pipeline {
                 .submissions
                 .get_infer()
                 .expect("the infer step stored the submission");
-            self.spec.properties = inferred.properties.clone();
-            self.spec.entrypoints = inferred.entrypoints.clone();
+            self.state.spec.properties = inferred.properties.clone();
+            self.state.spec.entrypoints = inferred.entrypoints.clone();
         }
 
         // 2. Write the spec and its properties to the crate
@@ -585,12 +566,12 @@ impl Pipeline {
         // 4. Run the translate stage
         if self.runs(PipelineStep::Translate) {
             self.step_started(PipelineStep::Translate)?;
-            if self.spec.entrypoints.is_empty() {
+            if self.state.spec.entrypoints.is_empty() {
                 return Err(PipelineError::NoEntrypoints);
             }
             let submission = self.run_translate(
-                self.spec.entrypoints.clone(),
-                opaque_patterns(&self.config, &self.spec.add_opaque)?,
+                self.state.spec.entrypoints.clone(),
+                opaque_patterns(&self.config, &self.state.spec.add_opaque)?,
             )?;
             self.submissions.set_translate(submission)?;
             self.commit(StageName::Translate)?;
@@ -598,7 +579,7 @@ impl Pipeline {
         }
 
         // 5. Run the formalize stage
-        if self.runs(PipelineStep::Formalize) && !self.spec.properties.0.is_empty() {
+        if self.runs(PipelineStep::Formalize) && !self.state.spec.properties.0.is_empty() {
             self.step_started(PipelineStep::Formalize)?;
             let submission = self.run_formalize()?;
             self.submissions.set_formalize(submission)?;
@@ -607,7 +588,7 @@ impl Pipeline {
         }
 
         // 6. Run the prove stage
-        if self.runs(PipelineStep::Prove) && !self.spec.properties.0.is_empty() {
+        if self.runs(PipelineStep::Prove) && !self.state.spec.properties.0.is_empty() {
             self.step_started(PipelineStep::Prove)?;
             let submission = self.run_prove()?;
             self.submissions.set_prove(submission)?;
@@ -625,11 +606,12 @@ impl Pipeline {
         fs::create_dir_all(&lusterna_dir)?;
         fs::write(
             lusterna_dir.join("lusterna.json"),
-            serde_json::to_string_pretty(&self.spec).expect("the spec serializes"),
+            serde_json::to_string_pretty(&self.state.spec).expect("the spec serializes"),
         )?;
         fs::write(
             lusterna_dir.join("properties.json"),
-            serde_json::to_string_pretty(&self.spec.properties).expect("the properties serialize"),
+            serde_json::to_string_pretty(&self.state.spec.properties)
+                .expect("the properties serialize"),
         )?;
         if let Some(sha) = git::commit_all(&self.config.repo_root()?, "Lusterna: spec")? {
             info!("Committed the spec in {}", sha);
@@ -706,9 +688,9 @@ impl Pipeline {
     fn run_infer(&self) -> Result<InferStageSubmission, PipelineError> {
         let input = InferStageInput {
             crate_root: self.config.crate_root()?,
-            existing_properties: self.spec.properties.clone(),
-            existing_entrypoints: self.spec.entrypoints.clone(),
-            design_doc: self.spec.design_doc.clone(),
+            existing_properties: self.state.spec.properties.clone(),
+            existing_entrypoints: self.state.spec.entrypoints.clone(),
+            design_doc: self.state.spec.design_doc.clone(),
             platform: self.config.get_platform()?,
         };
         let submission = self
@@ -726,7 +708,7 @@ impl Pipeline {
             lean_root,
             properties: lusterna_dir.join("properties.json"),
             crate_root: self.config.crate_root()?,
-            entrypoints: self.spec.entrypoints.clone(),
+            entrypoints: self.state.spec.entrypoints.clone(),
         };
         let submission = self
             .exec_stage::<FormalizeStage>(input)
@@ -750,7 +732,7 @@ impl Pipeline {
             properties: lusterna_dir.join("properties.json"),
             crate_root: self.config.crate_root()?,
             formalized: formalized_properties(
-                &self.spec.properties,
+                &self.state.spec.properties,
                 formalized.property_status.clone(),
             ),
             induction: formalized.induction.clone(),
@@ -777,10 +759,10 @@ impl Pipeline {
 
         let report = report::render(
             cargo::package_name(&self.config.manifest()?)?,
-            &self.commit,
+            &self.state.commit,
             &self.config.aeneas_rev()?,
-            &self.spec.entrypoints,
-            &self.spec.properties,
+            &self.state.spec.entrypoints,
+            &self.state.spec.properties,
             // The pipeline does not keep the submission of the pre-translate stage
             pre_translate,
             translate,
@@ -1023,8 +1005,15 @@ mod tests {
             // Directly construct the Pipeline without calling "new",
             // which writes to `lusterna/` in the crate root.
             pipeline: Pipeline {
-                spec: serde_json::from_str(spec).unwrap(),
-                spec_path: root.join("lusterna.json"),
+                state: RunState {
+                    spec: serde_json::from_str(spec).unwrap(),
+                    spec_path: root.join("lusterna.json"),
+                    commit: "start".to_owned(),
+                    next: PipelineStep::Infer,
+                    head: "start".to_owned(),
+                    steps: BTreeMap::new(),
+                    finished: false,
+                },
                 submissions: Submissions {
                     infer: None,
                     pre_translate: None,
@@ -1034,11 +1023,6 @@ mod tests {
                     submission_dir: config.submissions_dir().unwrap(),
                 },
                 config,
-                commit: "start".to_owned(),
-                next: PipelineStep::Infer,
-                head: "start".to_owned(),
-                steps: BTreeMap::new(),
-                finished: false,
             },
             root,
             _dir: dir,
@@ -1098,7 +1082,7 @@ mod tests {
     #[test]
     fn runs_skips_the_steps_before_next() {
         let mut f = fixture("{}", &["--stop-after", "formalize"]);
-        f.pipeline.next = PipelineStep::Translate;
+        f.pipeline.state.next = PipelineStep::Translate;
 
         let running: Vec<String> = PipelineStep::value_variants()
             .iter()
@@ -1111,7 +1095,7 @@ mod tests {
     #[test]
     fn save_state_writes_the_run_state() {
         let mut f = fixture(r#"{"entrypoints": ["demo::f"]}"#, &[]);
-        f.pipeline.next = PipelineStep::Translate;
+        f.pipeline.state.next = PipelineStep::Translate;
         f.pipeline.save_state().unwrap();
 
         let run_state = f.pipeline.config.internal_dir().unwrap().join("run.json");
@@ -1136,7 +1120,7 @@ mod tests {
             .step_done(PipelineStep::Translate, PipelineStep::Formalize)
             .unwrap();
 
-        assert!(f.pipeline.next == PipelineStep::Formalize);
+        assert!(f.pipeline.state.next == PipelineStep::Formalize);
         let run_state = f.pipeline.config.internal_dir().unwrap().join("run.json");
         let text = fs::read_to_string(run_state).unwrap();
         let state: RunState = serde_json::from_str(&text).unwrap();
@@ -1197,7 +1181,7 @@ mod tests {
     #[test]
     fn close_state_saves_the_state_of_a_run_that_stopped_before_prove() {
         let mut f = fixture("{}", &["--stop-after", "formalize"]);
-        f.pipeline.next = PipelineStep::Prove;
+        f.pipeline.state.next = PipelineStep::Prove;
         f.pipeline.save_state().unwrap();
         fs::write(f.root.join("report.md"), "").unwrap();
         git::commit_all(&f.root, "Lusterna: report").unwrap();
@@ -1324,7 +1308,7 @@ mod tests {
     #[test]
     fn resume_without_the_submission_of_a_step_before_next_fails() {
         let mut f = fixture("{}", &[]);
-        f.pipeline.next = PipelineStep::Translate;
+        f.pipeline.state.next = PipelineStep::Translate;
         f.pipeline.save_state().unwrap();
 
         let loaded = Pipeline::load(f.pipeline.config).unwrap();
@@ -1341,14 +1325,14 @@ mod tests {
             .submissions
             .set_pre_translate(PreTranslateSubmission::default())
             .unwrap();
-        f.pipeline.next = PipelineStep::Translate;
+        f.pipeline.state.next = PipelineStep::Translate;
         f.pipeline.save_state().unwrap();
 
         let loaded = Pipeline::load(f.pipeline.config).unwrap_or_else(|e| panic!("{e}"));
-        assert_eq!(loaded.spec.entrypoints, ["demo::f"]);
-        assert_eq!(loaded.spec_path, f.root.join("lusterna.json"));
-        assert_eq!(loaded.commit, "start");
-        assert!(loaded.next == PipelineStep::Translate);
+        assert_eq!(loaded.state.spec.entrypoints, ["demo::f"]);
+        assert_eq!(loaded.state.spec_path, f.root.join("lusterna.json"));
+        assert_eq!(loaded.state.commit, "start");
+        assert!(loaded.state.next == PipelineStep::Translate);
         assert!(loaded.submissions.get_pre_translate().is_some());
     }
 
@@ -1357,7 +1341,7 @@ mod tests {
         let mut f = fixture("{}", &[]);
         f.pipeline.check_state_consistent().unwrap();
 
-        f.pipeline.next = PipelineStep::Translate;
+        f.pipeline.state.next = PipelineStep::Translate;
         let error = f.pipeline.check_state_consistent().unwrap_err();
         let missing = f.root.join("lusterna/submissions/pretranslate.json");
         assert!(matches!(error, PipelineError::MissingSubmission(path) if path == missing));
@@ -1567,9 +1551,9 @@ mod tests {
     fn load_loads_a_finished_run() {
         let (f, _, _) = finished_run();
         let pipeline = Pipeline::load(f.pipeline.config).unwrap_or_else(|e| panic!("{e}"));
-        assert!(pipeline.finished);
-        assert!(pipeline.next == PipelineStep::Formalize);
-        assert_eq!(pipeline.steps.len(), 2);
+        assert!(pipeline.state.finished);
+        assert!(pipeline.state.next == PipelineStep::Formalize);
+        assert_eq!(pipeline.state.steps.len(), 2);
     }
 
     #[test]
