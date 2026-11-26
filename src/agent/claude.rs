@@ -37,7 +37,7 @@ impl Agent for ClaudeCode {
             }
         };
         let mut briefing_file = None;
-        if let (None, Some(briefing)) = (req.session_id, req.briefing) {
+        if let (false, Some(briefing)) = (req.resume, req.briefing) {
             let mut file = NamedTempFile::new()?;
             file.write_all(briefing.as_bytes())?;
             briefing_file = Some(file);
@@ -104,6 +104,10 @@ impl Agent for ClaudeCode {
                 kind,
             }),
         }
+    }
+
+    fn new_session_id(&self) -> Option<String> {
+        Some(Uuid::new_v4().to_string())
     }
 
     fn set_effort(&mut self, effort: super::Effort) {
@@ -226,7 +230,7 @@ impl ClaudeCode {
         scratch_dir: Option<&Path>,
     ) -> Vec<String> {
         let mut args: Vec<String> = vec!["-p".into()];
-        if req.session_id.is_some() {
+        if req.resume {
             args.extend(["--resume".into(), session_id.to_owned()]);
         } else {
             args.extend(["--session-id".into(), session_id.to_owned()]);
@@ -339,6 +343,7 @@ mod tests {
             briefing: None,
             json_schema: None,
             session_id: None,
+            resume: false,
             budget_limit_usd: None,
             skills: &[],
             options,
@@ -384,12 +389,33 @@ mod tests {
         let sid = "sid".to_owned();
         let req = Request {
             session_id: Some(&sid),
+            resume: true,
             ..request(&options)
         };
         let args = ClaudeCode::default().args(&req, &sid, None, None, None);
         assert_eq!(flag(&args, "--resume"), Some("sid"));
         assert_eq!(flag(&args, "--session-id"), None);
         assert_eq!(flag(&args, "--append-system-prompt-file"), None);
+    }
+
+    #[test]
+    fn args_of_a_new_session_with_a_given_id_start_it() {
+        let options = AgentOptions::default();
+        let sid = "sid".to_owned();
+        let req = Request {
+            session_id: Some(&sid),
+            ..request(&options)
+        };
+        let args = ClaudeCode::default().args(&req, &sid, None, None, None);
+        assert_eq!(flag(&args, "--session-id"), Some("sid"));
+        assert_eq!(flag(&args, "--resume"), None);
+    }
+
+    #[test]
+    fn new_session_ids_differ() {
+        let agent = ClaudeCode::default();
+        assert!(agent.new_session_id().is_some());
+        assert_ne!(agent.new_session_id(), agent.new_session_id());
     }
 
     #[test]

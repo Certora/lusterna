@@ -65,5 +65,7 @@ jobs:
           sudo apt-get install -y bubblewrap socat
           # Ubuntu 24.04 blocks the unprivileged user namespaces that `bwrap` needs
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          # The `bwrap-userns-restrict` AppArmor profile of Ubuntu 26.04 denies the capabilities that the `claude` sandbox needs inside `bwrap`
+          sudo apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict
           npm install -g @anthropic-ai/claude-code
       - run: just integration-test

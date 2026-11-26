@@ -9,6 +9,7 @@ use clap::{Args, Parser, Subcommand};
 use lusterna::{
     config::{AENEAS_ROOT, Config},
     pipeline::Pipeline,
+    precheck,
     spec::Spec,
 };
 
@@ -29,6 +30,8 @@ struct Cli {
 enum Command {
     /// Runs lusterna on the crate with the spec at `SPEC`
     Run(RunArgs),
+    /// Continues the unfinished run of the crate
+    Continue,
 }
 
 #[derive(Args)]
@@ -49,18 +52,7 @@ fn main() -> anyhow::Result<()> {
 
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let cli = Cli::parse();
-    let Command::Run(args) = cli.command;
     let config = cli.config;
-
-    let spec_path = match args.spec {
-        Some(spec) => spec,
-        None => config.workspace_root()?.join("lusterna.json"),
-    };
-    let spec_path = spec_path
-        .canonicalize()
-        .with_context(|| format!("cannot find the spec `{}`", spec_path.display()))?;
-    let spec: Spec = serde_json::from_str(&fs::read_to_string(&spec_path)?)
-        .with_context(|| format!("cannot parse the spec `{}`", spec_path.display()))?;
 
     if !Config::claude_uses_subscription()?
         && !confirm(
@@ -71,7 +63,26 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    Pipeline::new(spec, spec_path, config)?.run()?;
+    match cli.command {
+        Command::Run(args) => {
+            let spec_path = match args.spec {
+                Some(spec) => spec,
+                None => config.workspace_root()?.join("lusterna.json"),
+            };
+            let spec_path = spec_path
+                .canonicalize()
+                .with_context(|| format!("cannot find the spec `{}`", spec_path.display()))?;
+            let spec: Spec = serde_json::from_str(&fs::read_to_string(&spec_path)?)
+                .with_context(|| format!("cannot parse the spec `{}`", spec_path.display()))?;
+            precheck::check_dependencies(&config)?;
+            precheck::check_clean_worktree(&config, &spec_path)?;
+            Pipeline::new(spec, spec_path, config)?.run()?
+        }
+        Command::Continue => {
+            precheck::check_dependencies(&config)?;
+            Pipeline::load(config)?.run()?
+        }
+    }
     Ok(())
 }
 

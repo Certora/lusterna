@@ -70,9 +70,6 @@ pub struct Config {
     pub(crate) allow_dirty: bool,
 
     #[arg(long, value_enum, help_heading = "Dev Options")]
-    pub(crate) start_at: Option<PipelineStep>,
-
-    #[arg(long, value_enum, help_heading = "Dev Options")]
     pub(crate) stop_after: Option<PipelineStep>,
 }
 
@@ -102,6 +99,21 @@ impl Config {
         PathBuf::from(AENEAS_ROOT)
             .canonicalize()
             .map_err(ConfigError::Io)
+    }
+
+    /// Returns `lusterna` in the crate root.
+    pub fn lusterna_dir(&self) -> Result<PathBuf, ConfigError> {
+        Ok(self.crate_root()?.join("lusterna"))
+    }
+
+    /// Returns `lusterna/.internal` in the crate root.
+    pub fn internal_dir(&self) -> Result<PathBuf, ConfigError> {
+        Ok(self.lusterna_dir()?.join(".internal"))
+    }
+
+    /// Returns `lusterna/submissions` in the crate root.
+    pub fn submissions_dir(&self) -> Result<PathBuf, ConfigError> {
+        Ok(self.lusterna_dir()?.join("submissions"))
     }
 
     pub fn repo_root(&self) -> Result<PathBuf, ConfigError> {

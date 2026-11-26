@@ -274,8 +274,6 @@ fn make_solana_lakefile(aeneas_root: &Path, solanalib_root: &Path) -> String {
 /// Creates the lean project in `lusterna/lean` of the crate root:
 /// - writes `lakefile` as `lakefile.toml`
 /// - writes the `lean-toolchain` and calls `lake update`
-/// - writes `lusterna/.gitignore`, which ignores the project's `.lake`,
-///   `lusterna/extraction.llbc` and the folder of `CHARON_LOCK`
 ///
 /// Returns the path to the lean project root.
 /// Returns an error if failed.
@@ -286,10 +284,6 @@ fn init_lake_project(
 ) -> Result<PathBuf, TranslateSetupErr> {
     let lean_root = crate_root.join("lusterna").join("lean");
     fs::create_dir_all(&lean_root)?;
-    fs::write(
-        crate_root.join("lusterna").join(".gitignore"),
-        "/lean/.lake/\n/extraction.llbc\n/charon/\n",
-    )?;
     fs::write(lean_root.join("lakefile.toml"), lakefile)?;
     fs::write(
         lean_root.join("lean-toolchain"),

@@ -37,9 +37,9 @@ fn lean_root() -> PathBuf {
     run_dir().join("lusterna/lean")
 }
 
-/// The submission of `stage`, from `lusterna/<stage>.json`
+/// The submission of `stage`, from `lusterna/submissions/<stage>.json`
 fn submission<T: DeserializeOwned>(stage: &str) -> T {
-    let path = run_dir().join(format!("lusterna/{stage}.json"));
+    let path = run_dir().join(format!("lusterna/submissions/{stage}.json"));
     serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap()
 }
 

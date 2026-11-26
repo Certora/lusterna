@@ -25,13 +25,15 @@ fn spec_of_the_test_crate_parses() {
     );
 }
 
-/// Each step of the run commits once, in the order of the pipeline.
+/// Each step before the report commits once, in the order of the pipeline,
+/// and the last commit is the report.
 #[test]
 fn commits_follow_the_pipeline_order() {
     let log = git(&["log", "--reverse", "--format=%s"]);
+    assert_eq!(log.lines().last(), Some("Lusterna: report"));
     let subjects: Vec<&str> = log
         .lines()
-        .filter(|s| s.to_lowercase().starts_with("lusterna"))
+        .filter(|s| s.to_lowercase().starts_with("lusterna") && *s != "Lusterna: report")
         .collect();
     assert_eq!(
         subjects,
@@ -42,7 +44,6 @@ fn commits_follow_the_pipeline_order() {
             "Lusterna: `translate` stage",
             "Lusterna: `formalize` stage",
             "Lusterna: `prove` stage",
-            "Lusterna: report",
         ]
     );
 }
