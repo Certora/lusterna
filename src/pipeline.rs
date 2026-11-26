@@ -146,6 +146,9 @@ pub enum PipelineError {
     /// unfinished run holds.
     #[error("`HEAD` is at {head}, but the unfinished run stopped at {saved}")]
     HeadMoved { saved: String, head: String },
+    /// The state of the run has no commits for the step.
+    #[error("the run did not start the step `{0:?}`")]
+    StepNotStarted(PipelineStep),
 }
 
 /// The steps of a pipeline run, in the order in which they run. A step
@@ -165,6 +168,20 @@ pub enum PipelineStep {
     /// Writes the report of the run to the crate. Runs even with
     /// `--stop-after`.
     Report,
+}
+
+impl PipelineStep {
+    /// The stage that the step executes, or `None` if it executes no stage.
+    fn stage(self) -> Option<StageName> {
+        match self {
+            PipelineStep::Infer => Some(StageName::Infer),
+            PipelineStep::PreTranslate => Some(StageName::PreTranslate),
+            PipelineStep::Translate => Some(StageName::Translate),
+            PipelineStep::Formalize => Some(StageName::Formalize),
+            PipelineStep::Prove => Some(StageName::Prove),
+            PipelineStep::WriteSpec | PipelineStep::Report => None,
+        }
+    }
 }
 
 /// `HEAD` of the repository before and after a step.
@@ -411,6 +428,39 @@ impl Pipeline {
             _ => self.finished = true,
         }
         self.save_state()
+    }
+
+    /// Resets the run to the commit before `step`, so that
+    /// `lusterna continue` runs `step` next. Deletes the commits, the
+    /// uncommitted changes and the stage states of `step` and of the later
+    /// steps. Fails if the run did not start `step`.
+    pub fn reset(mut self, step: PipelineStep) -> Result<(), PipelineError> {
+        let Some(commits) = self.steps.get(&step) else {
+            return Err(PipelineError::StepNotStarted(step));
+        };
+        git::reset(&self.config.repo_root()?, &commits.before, true)?;
+        // The commit before the first step of a run does not have the file
+        let lusterna_dir = self.config.lusterna_dir()?;
+        fs::create_dir_all(&lusterna_dir)?;
+        fs::write(lusterna_dir.join(".gitignore"), GITIGNORE)?;
+
+        // Forget `step` and the later steps that started
+        let started: Vec<PipelineStep> = self.steps.keys().copied().collect();
+        for later in started {
+            if later < step {
+                continue;
+            }
+            self.steps.remove(&later);
+            if let Some(stage) = later.stage() {
+                remove_if_exists(&self.stage_state_path(stage)?)?;
+            }
+        }
+
+        self.next = step;
+        self.finished = false;
+        self.save_state()?;
+        info!("Reset the run to `{:?}`", step);
+        Ok(())
     }
 
     /// Runs the steps of the pipeline from `next` on, in order, and stops at
@@ -832,6 +882,14 @@ impl Submissions {
         serde_json::from_str(&text)
             .map(Some)
             .map_err(io::Error::from)
+    }
+}
+
+/// Deletes the file `path` if it exists.
+fn remove_if_exists(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
     }
 }
 
@@ -1378,5 +1436,122 @@ mod tests {
         let head = git::head_rev(&f.root).unwrap();
         f.pipeline.commit(StageName::Translate).unwrap();
         assert_eq!(git::head_rev(&f.root).unwrap(), head);
+    }
+
+    /// A finished run whose `pre-translate` and `translate` steps each
+    /// committed a file and stored the state of their stage. Returns `HEAD`
+    /// before and after the `pre-translate` step.
+    fn finished_run() -> (Fixture, String, String) {
+        let mut f = fixture("{}", &[]);
+        fs::create_dir_all(f.root.join("lusterna/submissions")).unwrap();
+        fs::write(f.root.join("lusterna/.gitignore"), GITIGNORE).unwrap();
+        git::commit_all(&f.root, "ignore").unwrap();
+        let before = git::head_rev(&f.root).unwrap();
+
+        f.pipeline.step_started(PipelineStep::PreTranslate).unwrap();
+        write_done_pre_translate_state(&f);
+        fs::write(f.root.join("src/lib.rs"), "pub fn f() {}").unwrap();
+        f.pipeline
+            .submissions
+            .set_pre_translate(PreTranslateSubmission::default())
+            .unwrap();
+        f.pipeline.commit(StageName::PreTranslate).unwrap();
+        f.pipeline
+            .step_done(PipelineStep::PreTranslate, PipelineStep::Translate)
+            .unwrap();
+        let after = git::head_rev(&f.root).unwrap();
+
+        f.pipeline.step_started(PipelineStep::Translate).unwrap();
+        fs::write(state_file(&f.root, "translate.state.json"), "{}").unwrap();
+        fs::write(f.root.join("lusterna/extract.sh"), "").unwrap();
+        f.pipeline.commit(StageName::Translate).unwrap();
+        f.pipeline
+            .step_done(PipelineStep::Translate, PipelineStep::Formalize)
+            .unwrap();
+        f.pipeline.close_state().unwrap();
+        (f, before, after)
+    }
+
+    /// The file `name` in `lusterna/.internal` of the crate at `root`
+    fn state_file(root: &Path, name: &str) -> PathBuf {
+        root.join("lusterna/.internal").join(name)
+    }
+
+    fn read_run_state(root: &Path) -> RunState {
+        let text = fs::read_to_string(state_file(root, "run.json")).unwrap();
+        serde_json::from_str(&text).unwrap()
+    }
+
+    #[test]
+    fn load_loads_a_finished_run() {
+        let (f, _, _) = finished_run();
+        let pipeline = Pipeline::load(f.pipeline.config).unwrap_or_else(|e| panic!("{e}"));
+        assert!(pipeline.finished);
+        assert!(pipeline.next == PipelineStep::Formalize);
+        assert_eq!(pipeline.steps.len(), 2);
+    }
+
+    #[test]
+    fn reset_deletes_the_work_of_the_step_and_of_the_later_steps() {
+        let (f, before, _) = finished_run();
+        f.pipeline.reset(PipelineStep::PreTranslate).unwrap();
+
+        assert_eq!(git::head_rev(&f.root).unwrap(), before);
+        assert!(git::is_clean(&f.root).unwrap());
+        assert!(!state_file(&f.root, "pre-translate.state.json").exists());
+        assert!(!state_file(&f.root, "translate.state.json").exists());
+
+        let state = read_run_state(&f.root);
+        assert!(state.next == PipelineStep::PreTranslate);
+        assert!(!state.finished);
+        assert_eq!(state.head, before);
+        assert!(state.steps.is_empty());
+    }
+
+    #[test]
+    fn reset_keeps_the_earlier_steps() {
+        let (f, before, after) = finished_run();
+        f.pipeline.reset(PipelineStep::Translate).unwrap();
+
+        assert_eq!(git::head_rev(&f.root).unwrap(), after);
+        assert!(state_file(&f.root, "pre-translate.state.json").exists());
+        let finished = StepCommits {
+            before,
+            after: Some(after),
+        };
+        assert_eq!(
+            read_run_state(&f.root).steps,
+            BTreeMap::from([(PipelineStep::PreTranslate, finished)])
+        );
+    }
+
+    #[test]
+    fn reset_fails_for_a_step_that_did_not_start() {
+        let (f, _, _) = finished_run();
+        let error = f.pipeline.reset(PipelineStep::Prove).unwrap_err();
+        assert!(matches!(
+            error,
+            PipelineError::StepNotStarted(PipelineStep::Prove)
+        ));
+    }
+
+    #[test]
+    fn reset_of_the_first_step_keeps_the_gitignore_and_the_run_state() {
+        let mut f = fixture("{}", &[]);
+        let before = git::head_rev(&f.root).unwrap();
+        fs::create_dir_all(f.root.join("lusterna")).unwrap();
+        fs::write(f.root.join("lusterna/.gitignore"), GITIGNORE).unwrap();
+        f.pipeline.step_started(PipelineStep::WriteSpec).unwrap();
+        f.pipeline.write_spec().unwrap();
+        f.pipeline
+            .step_done(PipelineStep::WriteSpec, PipelineStep::PreTranslate)
+            .unwrap();
+        f.pipeline.close_state().unwrap();
+
+        f.pipeline.reset(PipelineStep::WriteSpec).unwrap();
+        assert_eq!(git::head_rev(&f.root).unwrap(), before);
+        let gitignore = fs::read_to_string(f.root.join("lusterna/.gitignore")).unwrap();
+        assert_eq!(gitignore, GITIGNORE);
+        assert!(read_run_state(&f.root).next == PipelineStep::WriteSpec);
     }
 }
