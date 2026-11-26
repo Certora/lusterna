@@ -61,9 +61,9 @@ build:
 install: build
   cargo install --path . --locked
 
-# To bill the subscription instead of an approved API key: `env -u ANTHROPIC_API_KEY just integration-test`
 # Installs and runs `lusterna` on a copy of `tests/fixtures/demo` and checks its output
-integration-test: setup install
+# To bill the subscription instead of an approved API key: `env -u ANTHROPIC_API_KEY just integration-test`
+integration-test-run: setup install
   #!/usr/bin/env bash
   set -euo pipefail
   run_dir="$(mktemp -d)"
@@ -75,6 +75,28 @@ integration-test: setup install
   RUST_LOG=debug lusterna --workspace-root "$run_dir" --stage-max-budget 4 --yes run
   just integration-check "$run_dir"
   rm -rf "$run_dir"
+
+# Like `integration-test-run`, but stops the run after each stage and continues it
+# To bill the subscription instead of an approved API key: `env -u ANTHROPIC_API_KEY just integration-test`
+integration-test-continue: setup install
+  #!/usr/bin/env bash
+  set -euo pipefail
+  run_dir="$(mktemp -d)"
+  trap 'echo "kept run dir: $run_dir" >&2' ERR
+  cp -R tests/fixtures/demo/. "$run_dir"
+  git -C "$run_dir" init -q
+  git -C "$run_dir" add --all
+  git -C "$run_dir" -c user.name=lusterna -c user.email=lusterna@test commit -q -m init
+  RUST_LOG=debug lusterna --workspace-root "$run_dir" --stage-max-budget 4 --yes --stop-after pre-translate run
+  RUST_LOG=debug lusterna --workspace-root "$run_dir" --stage-max-budget 4 --yes --stop-after translate continue
+  RUST_LOG=debug lusterna --workspace-root "$run_dir" --stage-max-budget 4 --yes --stop-after formalize continue
+  RUST_LOG=debug lusterna --workspace-root "$run_dir" --stage-max-budget 4 --yes continue
+  just integration-check "$run_dir"
+  rm -rf "$run_dir"
+
+# Runs `integration-test-run` and `integration-test-continue`
+# To bill the subscription instead of an approved API key: `env -u ANTHROPIC_API_KEY just integration-test`
+integration-test: integration-test-run integration-test-continue
 
 # Runs the integration tests on the output of an earlier `integration-test`
 [private]
