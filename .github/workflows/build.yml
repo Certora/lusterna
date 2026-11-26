@@ -6,6 +6,22 @@ on:
     branches: [main]
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-lint-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - name: Install just
+        run: command -v just || cargo install just --locked
+      - run: just lint
+
   build:
     strategy:
       fail-fast: false
@@ -31,6 +47,5 @@ jobs:
           curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain "$(cat deps/aeneas/backends/lean/lean-toolchain)"
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
       - run: just setup-lean
-      - run: just lint
       - run: just test
       - run: just build

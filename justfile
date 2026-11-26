@@ -35,6 +35,7 @@ bump-solanalib rev:
   just test
 
 lint:
+  cargo fmt --check
   cargo check
   cargo clippy
 
