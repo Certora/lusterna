@@ -233,6 +233,9 @@ pub struct Pipeline {
     commit: String,
     /// The step that runs next.
     next: PipelineStep,
+    /// `HEAD` of the repository when the run started, or when the state
+    /// that the run was loaded from was written.
+    head: String,
     /// The commits of each step that started.
     steps: BTreeMap<PipelineStep, StepCommits>,
     /// Whether the run finished.
@@ -245,16 +248,18 @@ impl Pipeline {
     /// earlier run.
     pub fn new(spec: Spec, spec_path: PathBuf, config: Config) -> Result<Self, PipelineError> {
         // Delete the state of the earlier run before its submissions, which
-        // `load` expects to be stored
+        // `resume` expects to be stored
         let _ = fs::remove_file(config.internal_dir()?.join("run.json"));
 
+        let head = git::head_rev(&config.repo_root()?)?;
         let pipeline = Self {
             spec,
             spec_path,
             submissions: Submissions::new(&config.submissions_dir()?)?,
-            commit: git::head_rev(&config.repo_root()?)?,
+            commit: head.clone(),
             config,
             next: PipelineStep::Infer,
+            head,
             steps: BTreeMap::new(),
             finished: false,
         };
@@ -269,38 +274,44 @@ impl Pipeline {
         Ok(pipeline)
     }
 
-    /// Creates the pipeline for the unfinished run of the crate from the
-    /// state in `lusterna/.internal/run.json`. The repository may have
-    /// uncommitted changes.
+    /// Creates the pipeline for the run of the crate, finished or not, from
+    /// the state in `lusterna/.internal/run.json`, with the stored
+    /// submissions.
     pub fn load(config: Config) -> Result<Self, PipelineError> {
         let Some(state) = RunState::read(&config)? else {
             return Err(PipelineError::NoUnfinishedRun);
         };
-        if state.finished {
-            return Err(PipelineError::NoUnfinishedRun);
-        }
-
-        let head = git::head_rev(&config.repo_root()?)?;
-        if head != state.head {
-            return Err(PipelineError::HeadMoved {
-                saved: state.head,
-                head,
-            });
-        }
-
-        let pipeline = Self {
+        Ok(Self {
             spec: state.spec,
             spec_path: state.spec_path,
             submissions: Submissions::load(&config.submissions_dir()?)?,
             config,
             commit: state.commit,
             next: state.next,
+            head: state.head,
             steps: state.steps,
-            finished: false,
-        };
-        pipeline.check_state_consistent()?;
-        info!("Continuing the run at `{:?}`", pipeline.next);
-        Ok(pipeline)
+            finished: state.finished,
+        })
+    }
+
+    /// Continues the run from `next`. Fails if the run finished, if `HEAD`
+    /// moved since the state of the run was written, or if the submission of
+    /// an earlier stage is missing. The repository may have uncommitted
+    /// changes.
+    pub fn resume(self) -> Result<(), PipelineError> {
+        if self.finished {
+            return Err(PipelineError::NoUnfinishedRun);
+        }
+        let head = git::head_rev(&self.config.repo_root()?)?;
+        if head != self.head {
+            return Err(PipelineError::HeadMoved {
+                saved: self.head,
+                head,
+            });
+        }
+        self.check_state_consistent()?;
+        info!("Continuing the run at `{:?}`", self.next);
+        self.run()
     }
 
     /// Checks that the submission of each stage whose step is before `next`
@@ -886,6 +897,7 @@ mod tests {
                 config,
                 commit: "start".to_owned(),
                 next: PipelineStep::Infer,
+                head: "start".to_owned(),
                 steps: BTreeMap::new(),
                 finished: false,
             },
@@ -1034,11 +1046,12 @@ mod tests {
     }
 
     #[test]
-    fn load_of_a_finished_run_fails() {
+    fn resume_of_a_finished_run_fails() {
         let mut f = fixture("{}", &[]);
         f.pipeline.close_state().unwrap();
 
-        let error = Pipeline::load(f.pipeline.config).err().unwrap();
+        let loaded = Pipeline::load(f.pipeline.config).unwrap();
+        let error = loaded.resume().unwrap_err();
         assert!(matches!(error, PipelineError::NoUnfinishedRun));
     }
 
@@ -1151,7 +1164,7 @@ mod tests {
     }
 
     #[test]
-    fn load_after_head_moved_fails_with_both_commits() {
+    fn resume_after_head_moved_fails_with_both_commits() {
         let f = fixture("{}", &[]);
         f.pipeline.save_state().unwrap();
         let saved_head = git::head_rev(&f.root).unwrap();
@@ -1159,7 +1172,8 @@ mod tests {
         git::commit_all(&f.root, "moved").unwrap();
         let new_head = git::head_rev(&f.root).unwrap();
 
-        let error = Pipeline::load(f.pipeline.config).err().unwrap();
+        let loaded = Pipeline::load(f.pipeline.config).unwrap();
+        let error = loaded.resume().unwrap_err();
         assert!(matches!(
             &error,
             PipelineError::HeadMoved { saved, head } if *saved == saved_head && *head == new_head
@@ -1169,12 +1183,13 @@ mod tests {
     }
 
     #[test]
-    fn load_without_the_submission_of_a_step_before_next_fails() {
+    fn resume_without_the_submission_of_a_step_before_next_fails() {
         let mut f = fixture("{}", &[]);
         f.pipeline.next = PipelineStep::Translate;
         f.pipeline.save_state().unwrap();
 
-        let error = Pipeline::load(f.pipeline.config).err().unwrap();
+        let loaded = Pipeline::load(f.pipeline.config).unwrap();
+        let error = loaded.resume().unwrap_err();
         let missing = f.root.join("lusterna/submissions/pretranslate.json");
         assert!(matches!(error, PipelineError::MissingSubmission(path) if path == missing));
     }

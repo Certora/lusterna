@@ -80,7 +80,7 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Continue => {
             precheck::check_dependencies(&config)?;
-            Pipeline::load(config)?.run()?
+            Pipeline::load(config)?.resume()?
         }
     }
     Ok(())
