@@ -33,7 +33,10 @@ fn induction_of_vault_lists_its_operations() {
     );
     let mut callers = induction.helpers["demo.vault.Vault.set"].clone();
     callers.sort();
-    assert_eq!(callers, ["demo.vault.Vault.deposit", "demo.vault.Vault.withdraw"]);
+    assert_eq!(
+        callers,
+        ["demo.vault.Vault.deposit", "demo.vault.Vault.withdraw"]
+    );
     assert_eq!(induction.helpers.len(), 1);
     assert!(induction.unmodelled_steps.is_empty());
 }
@@ -64,7 +67,10 @@ fn formalize_leaves_every_theorem_unproven() {
     let commit = commit_with_subject("Lusterna: `formalize` stage");
     for id in [CHECKED_TOTAL, LOG_BUCKET_NOT_ZERO, VAULT_SHARES, MUL_DIV] {
         let (file, theorems) = formalized(&formalize, id);
-        let text = git(&["show", &format!("{commit}:lusterna/lean/{}", file.display())]);
+        let text = git(&[
+            "show",
+            &format!("{commit}:lusterna/lean/{}", file.display()),
+        ]);
         for name in theorems {
             let block = theorem_block(&text, &file, &name);
             let proof: Vec<&str> = proof(&block).split_whitespace().collect();

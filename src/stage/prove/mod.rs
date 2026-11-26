@@ -328,9 +328,7 @@ pub(crate) fn formalized_properties(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stage::{
-        assert_no_placeholders, formalize::SkipReason, properties::PropertyKind,
-    };
+    use crate::stage::{assert_no_placeholders, formalize::SkipReason, properties::PropertyKind};
 
     fn stage() -> ProveStage {
         ProveStage {

@@ -85,10 +85,7 @@ fn formalized(formalize: &FormalizeSubmission, id: PropertyId) -> (PathBuf, Vec<
 /// The declaration of the theorem `name` in `text`, the content of the file
 /// `file` under the Lean root, up to the next declaration
 fn theorem_block(text: &str, file: &Path, name: &str) -> String {
-    let namespace = format!(
-        "Spec.{}.",
-        file.file_stem().unwrap().to_str().unwrap()
-    );
+    let namespace = format!("Spec.{}.", file.file_stem().unwrap().to_str().unwrap());
     let short = name.strip_prefix(&namespace).unwrap_or(name);
     let start = text
         .find(&format!("theorem {short} "))
@@ -99,9 +96,17 @@ fn theorem_block(text: &str, file: &Path, name: &str) -> String {
     for (offset, line) in rest.match_indices('\n') {
         let next = &rest[offset + line.len()..];
         if offset > 0
-            && ["theorem ", "@[", "lemma ", "def ", "end ", "/--", "namespace "]
-                .iter()
-                .any(|keyword| next.starts_with(keyword))
+            && [
+                "theorem ",
+                "@[",
+                "lemma ",
+                "def ",
+                "end ",
+                "/--",
+                "namespace ",
+            ]
+            .iter()
+            .any(|keyword| next.starts_with(keyword))
         {
             end = offset;
             break;

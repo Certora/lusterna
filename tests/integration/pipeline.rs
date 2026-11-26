@@ -15,7 +15,13 @@ fn spec_of_the_test_crate_parses() {
     let ids: Vec<PropertyId> = spec.properties.iter().map(|p| p.id).collect();
     assert_eq!(
         ids,
-        [CHECKED_TOTAL, LOG_BUCKET_NOT_ZERO, VAULT_SHARES, UNREACHABLE, MUL_DIV]
+        [
+            CHECKED_TOTAL,
+            LOG_BUCKET_NOT_ZERO,
+            VAULT_SHARES,
+            UNREACHABLE,
+            MUL_DIV
+        ]
     );
 }
 
