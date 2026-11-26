@@ -165,9 +165,11 @@ impl<S: Stage, A: Agent> StageExec<S, A> {
 
     /// Returns the execution that runs the stage of `self` again: with new
     /// sessions, without costs, and with the stage's base prompt and
-    /// `EARLIER_ATTEMPT` as the prompt of the first attempt.
+    /// `EARLIER_ATTEMPT` as the prompt of the first attempt. The worker
+    /// session has no id, so that `load` does not resume it.
     pub fn restart(self, cfg: &Config) -> Result<Self, StageExecutionError<S>> {
-        let worker = Self::get_worker_session(&self.stage, cfg)?;
+        let mut worker = Self::get_worker_session(&self.stage, cfg)?;
+        worker.clear_session_id();
         let judge = Self::get_judge_session(cfg)?;
         let prompt = format!("{}\n\n{EARLIER_ATTEMPT}", self.stage.base_prompt());
         Ok(Self {
@@ -996,19 +998,23 @@ mod tests {
         exec.judge_session.set_started();
         exec.worker_cost = 1.5;
         exec.judge_cost = 0.5;
-        let [old_worker, old_judge] = session_ids(&exec);
+        let [_, old_judge] = session_ids(&exec);
 
         let restarted = exec.restart(&f.cfg).unwrap();
         let expected = format!("base prompt\n\n{EARLIER_ATTEMPT}");
         assert!(matches!(&restarted.phase, Phase::Attempt { prompt } if *prompt == expected));
         let [worker, judge] = session_ids(&restarted);
-        assert_ne!(worker, old_worker);
+        assert_eq!(worker, None);
         assert_ne!(judge, old_judge);
         assert!(!restarted.worker_session.started());
         assert!(!restarted.judge_session.started());
         assert_eq!(restarted.worker_cost, 0.0);
         assert_eq!(restarted.judge_cost, 0.0);
         assert!(restarted.stage.judge);
+
+        // `load` does not resume the worker session
+        let loaded = load(&restarted, f._workspace.path(), &f.cfg).unwrap();
+        assert!(!loaded.worker_session.started());
     }
 
     #[test]

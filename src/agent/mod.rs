@@ -190,6 +190,12 @@ impl<A: Agent> Session<A> {
         self.session_id.as_ref()
     }
 
+    /// Removes the id of the session, so that the agent picks the id when it
+    /// starts the session.
+    pub fn clear_session_id(&mut self) {
+        self.session_id = None
+    }
+
     pub fn started(&self) -> bool {
         self.started
     }
