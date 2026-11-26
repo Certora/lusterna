@@ -75,7 +75,7 @@ fn main() -> anyhow::Result<()> {
                 .with_context(|| format!("cannot parse the spec `{}`", spec_path.display()))?;
             Pipeline::new(spec, spec_path, config)?.run()?
         }
-        Command::Continue => Pipeline::resume(config)?,
+        Command::Continue => Pipeline::load(config)?.run()?,
     }
     Ok(())
 }

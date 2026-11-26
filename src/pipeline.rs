@@ -3,8 +3,7 @@
 //! 1. `infer`: runs only if the spec asks for it. An agent finds properties and
 //!    entrypoints in addition to those of the spec. The pipeline writes the
 //!    submission of the stage to `lusterna/submissions/infer.json` in the crate
-//!    root, and
-//!    the later steps use its properties and entrypoints.
+//!    root, and the later steps use its properties and entrypoints.
 //! 2. The pipeline writes the spec to `lusterna/lusterna.json` and its
 //!    properties to `lusterna/properties.json` in the crate root.
 //! 3. `pre-translate`: runs only if `cargo build` fails. An agent changes the
@@ -28,10 +27,10 @@
 //!    `lusterna/submissions/`. The report shows a stage whose file is missing
 //!    as skipped.
 //!
-//! A run starts only if the repository has no uncommitted changes other than
-//! the spec file (unless `--allow-dirty`), the tools of `TOOLS` (and on Linux
-//! `LINUX_SANDBOX_TOOLS`) are on `PATH`, and the settings that the stages need
-//! resolve.
+//! A new run starts only if the repository has no uncommitted changes other
+//! than the spec file (unless `--allow-dirty`), the tools of `TOOLS` (and on
+//! Linux `LINUX_SANDBOX_TOOLS`) are on `PATH`, and the settings that the stages
+//! need resolve.
 //!
 //! After each step, the pipeline commits all changes
 //! in the repository.
@@ -40,6 +39,8 @@
 //!
 //! The `--stop-after` option ends the pipeline after the named
 //! [`PipelineStep`]. The report is written even with `--stop-after`.
+//!
+//! ## Continuing Runs
 //!
 //! `lusterna continue` goes on with the unfinished run of the crate: a run
 //! that was interrupted, that failed, or that `--stop-after` ended before the
@@ -211,16 +212,65 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
-    /// Creates the pipeline for `spec`, which was read from `spec_path`.
+    /// Creates the pipeline for a new run of `spec`, which was read from
+    /// `spec_path`. Deletes the submissions and the stage states of an
+    /// earlier run.
     pub fn new(spec: Spec, spec_path: PathBuf, config: Config) -> Result<Self, PipelineError> {
-        Ok(Self {
+        let mut pipeline = Self {
             spec,
             spec_path,
             submissions: Submissions::new(&config.submissions_dir()?)?,
             config,
             commit: None,
             next: PipelineStep::Infer,
-        })
+        };
+        pipeline.pre_check()?;
+        pipeline.commit = Some(git::head_rev(&pipeline.config.repo_root()?)?);
+
+        let lusterna_dir = pipeline.config.lusterna_dir()?;
+        let internal_dir = pipeline.config.internal_dir()?;
+        fs::create_dir_all(&internal_dir)?;
+        pipeline.submissions.clear()?;
+        remove_stage_states(&internal_dir)?;
+        fs::write(lusterna_dir.join(".gitignore"), GITIGNORE)?;
+        pipeline.save_state()?;
+
+        Ok(pipeline)
+    }
+
+    /// Creates the pipeline for the unfinished run of the crate from the
+    /// state in `lusterna/.internal/run.json`. The repository may have
+    /// uncommitted changes.
+    pub fn load(config: Config) -> Result<Self, PipelineError> {
+        let state_path = config.internal_dir()?.join("run.json");
+        let state_text = match fs::read_to_string(&state_path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Err(PipelineError::NoUnfinishedRun);
+            }
+            Err(e) => return Err(e.into()),
+        };
+        let state: RunState = serde_json::from_str(&state_text)
+            .map_err(|e| PipelineError::RunState(state_path, e))?;
+
+        let head = git::head_rev(&config.repo_root()?)?;
+        if head != state.head {
+            return Err(PipelineError::HeadMoved {
+                saved: state.head,
+                head,
+            });
+        }
+
+        let pipeline = Self {
+            spec: state.spec,
+            spec_path: state.spec_path,
+            submissions: Submissions::new(&config.submissions_dir()?)?,
+            config,
+            commit: Some(state.commit),
+            next: state.next,
+        };
+        pipeline.check_dependencies()?;
+        Ok(pipeline)
     }
 
     /// Whether `step` is `next` or a later step, and runs with
@@ -237,7 +287,10 @@ impl Pipeline {
         let state = RunState {
             spec: self.spec.clone(),
             spec_path: self.spec_path.clone(),
-            commit: self.commit.clone().expect("`run` sets the commit"),
+            commit: self
+                .commit
+                .clone()
+                .expect("`new` and `load` set the commit"),
             next: self.next,
             head: git::head_rev(&self.config.repo_root()?)?,
         };
@@ -268,61 +321,9 @@ impl Pipeline {
         Ok(())
     }
 
-    /// Starts a new run: deletes the submissions and the stage states of an
-    /// earlier run, then runs the steps of the pipeline.
-    pub fn run(mut self) -> Result<(), PipelineError> {
-        self.pre_check()?;
-        self.commit = Some(git::head_rev(&self.config.repo_root()?)?);
-
-        let lusterna_dir = self.config.crate_root()?.join("lusterna");
-        let internal_dir = self.config.internal_dir()?;
-        fs::create_dir_all(&internal_dir)?;
-        self.submissions.clear()?;
-        remove_stage_states(&internal_dir)?;
-        fs::write(lusterna_dir.join(".gitignore"), GITIGNORE)?;
-        self.save_state()?;
-
-        self.run_steps()
-    }
-
-    /// Continues the unfinished run of the crate from the state in
-    /// `lusterna/.internal/run.json`. The repository may have uncommitted
-    /// changes.
-    pub fn resume(config: Config) -> Result<(), PipelineError> {
-        let state_path = config.internal_dir()?.join("run.json");
-        let state_text = match fs::read_to_string(&state_path) {
-            Ok(text) => text,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                return Err(PipelineError::NoUnfinishedRun);
-            }
-            Err(e) => return Err(e.into()),
-        };
-        let state: RunState = serde_json::from_str(&state_text)
-            .map_err(|e| PipelineError::RunState(state_path, e))?;
-
-        let head = git::head_rev(&config.repo_root()?)?;
-        if head != state.head {
-            return Err(PipelineError::HeadMoved {
-                saved: state.head,
-                head,
-            });
-        }
-
-        let pipeline = Self {
-            spec: state.spec,
-            spec_path: state.spec_path,
-            submissions: Submissions::new(&config.submissions_dir()?)?,
-            config,
-            commit: Some(state.commit),
-            next: state.next,
-        };
-        pipeline.check_dependencies()?;
-        pipeline.run_steps()
-    }
-
     /// Runs the steps of the pipeline from `next` on, in order, and stops at
     /// the first error.
-    fn run_steps(mut self) -> Result<(), PipelineError> {
+    pub fn run(mut self) -> Result<(), PipelineError> {
         // 1. Infer the entrypoints and properties
         if self.spec.infer {
             if self.runs(PipelineStep::Infer) {
@@ -391,7 +392,7 @@ impl Pipeline {
     }
 
     fn write_spec(&self) -> Result<(), PipelineError> {
-        let lusterna_dir = self.config.crate_root()?.join("lusterna");
+        let lusterna_dir = self.config.lusterna_dir()?;
         fs::create_dir_all(&lusterna_dir)?;
         fs::write(
             lusterna_dir.join("lusterna.json"),
@@ -540,7 +541,7 @@ impl Pipeline {
     }
 
     fn run_formalize(&self) -> Result<FormalizeSubmission, PipelineError> {
-        let lusterna_dir = self.config.crate_root()?.join("lusterna");
+        let lusterna_dir = self.config.lusterna_dir()?;
         let lean_root = lusterna_dir.join("lean");
         let input = FormalizeInput {
             extracted: lean_root.join("Extraction"),
@@ -557,7 +558,7 @@ impl Pipeline {
     }
 
     fn run_prove(&self) -> Result<ProveSubmission, PipelineError> {
-        let lusterna_dir = self.config.crate_root()?.join("lusterna");
+        let lusterna_dir = self.config.lusterna_dir()?;
         let lean_root = lusterna_dir.join("lean");
 
         // Read the submission of the formalize stage, which `run_formalize`
@@ -586,7 +587,7 @@ impl Pipeline {
     /// submissions of the stages in `lusterna/`.
     fn write_report(&mut self) -> Result<(), PipelineError> {
         let t = Instant::now();
-        let lusterna_dir = self.config.crate_root()?.join("lusterna");
+        let lusterna_dir = self.config.lusterna_dir()?;
         fs::create_dir_all(&lusterna_dir)?;
 
         // Submissions
@@ -597,7 +598,9 @@ impl Pipeline {
 
         let report = report::render(
             cargo::package_name(&self.config.manifest()?)?,
-            self.commit.as_deref().expect("`run` sets the commit"),
+            self.commit
+                .as_deref()
+                .expect("`new` and `load` set the commit"),
             &self.config.aeneas_rev()?,
             &self.spec.entrypoints,
             &self.spec.properties,
@@ -1081,26 +1084,26 @@ mod tests {
     }
 
     #[test]
-    fn resume_without_run_state_fails() {
+    fn load_without_run_state_fails() {
         let f = fixture("{}", &[]);
-        let error = Pipeline::resume(f.pipeline.config).unwrap_err();
+        let error = Pipeline::load(f.pipeline.config).err().unwrap();
         assert!(matches!(error, PipelineError::NoUnfinishedRun));
     }
 
     #[test]
-    fn resume_with_a_malformed_run_state_fails() {
+    fn load_with_a_malformed_run_state_fails() {
         let f = fixture("{}", &[]);
         let internal_dir = f.pipeline.config.internal_dir().unwrap();
         let state_path = internal_dir.join("run.json");
         fs::create_dir_all(&internal_dir).unwrap();
         fs::write(&state_path, "not json").unwrap();
 
-        let error = Pipeline::resume(f.pipeline.config).unwrap_err();
+        let error = Pipeline::load(f.pipeline.config).err().unwrap();
         assert!(matches!(error, PipelineError::RunState(path, _) if path == state_path));
     }
 
     #[test]
-    fn resume_after_head_moved_fails_with_both_commits() {
+    fn load_after_head_moved_fails_with_both_commits() {
         let mut f = fixture("{}", &[]);
         f.pipeline.commit = Some("start".to_owned());
         f.pipeline.save_state().unwrap();
@@ -1109,7 +1112,7 @@ mod tests {
         git::commit_all(&f.root, "moved").unwrap();
         let new_head = git::head_rev(&f.root).unwrap();
 
-        let error = Pipeline::resume(f.pipeline.config).unwrap_err();
+        let error = Pipeline::load(f.pipeline.config).err().unwrap();
         assert!(matches!(
             &error,
             PipelineError::HeadMoved { saved, head } if *saved == saved_head && *head == new_head

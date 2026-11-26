@@ -101,14 +101,19 @@ impl Config {
             .map_err(ConfigError::Io)
     }
 
+    /// Returns `lusterna` in the crate root.
+    pub fn lusterna_dir(&self) -> Result<PathBuf, ConfigError> {
+        Ok(self.crate_root()?.join("lusterna"))
+    }
+
     /// Returns `lusterna/.internal` in the crate root.
     pub fn internal_dir(&self) -> Result<PathBuf, ConfigError> {
-        Ok(self.crate_root()?.join("lusterna/.internal"))
+        Ok(self.lusterna_dir()?.join(".internal"))
     }
 
     /// Returns `lusterna/submissions` in the crate root.
     pub fn submissions_dir(&self) -> Result<PathBuf, ConfigError> {
-        Ok(self.crate_root()?.join("lusterna/submissions"))
+        Ok(self.lusterna_dir()?.join("submissions"))
     }
 
     pub fn repo_root(&self) -> Result<PathBuf, ConfigError> {
