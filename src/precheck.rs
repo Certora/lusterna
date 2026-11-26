@@ -4,8 +4,12 @@
 //! than the spec file (unless `--allow-dirty`), the tools of `TOOLS` (and on
 //! Linux `LINUX_SANDBOX_TOOLS`) are on `PATH`, and the settings that the stages
 //! need resolve. `lusterna continue` does not check for uncommitted changes.
+//!
+//! `lost_by_reset` returns what `lusterna reset` deletes that the run did not
+//! create.
 
 use std::{
+    collections::BTreeMap,
     env,
     path::{Path, PathBuf},
 };
@@ -14,6 +18,7 @@ use log::info;
 
 use crate::{
     config::{Config, ConfigError},
+    pipeline::{PipelineStep, StepCommits},
     utils::git::{self, GitError},
 };
 
@@ -62,6 +67,42 @@ pub fn check_clean_worktree(config: &Config, spec_path: &Path) -> Result<(), Pre
         info!("Committed the uncommitted changes in {}", sha);
     }
     Ok(())
+}
+
+/// What a reset of a run deletes that the run did not create.
+#[derive(Debug, PartialEq, Eq)]
+pub struct LostByReset {
+    /// The hashes of the commits that Lusterna did not make.
+    pub commits: Vec<String>,
+    /// The files with uncommitted changes, relative to the root of the
+    /// repository.
+    pub files: Vec<PathBuf>,
+}
+
+/// Returns what a reset of the run with the step commits `steps` to `step`
+/// deletes in the repository at `repo_root` that the run did not create: the
+/// commits after the start of `step` that Lusterna did not make, and the
+/// files with uncommitted changes. If a step started and did not finish, the
+/// uncommitted changes are its work and are not returned. Returns nothing if
+/// `step` did not start.
+pub fn lost_by_reset(
+    repo_root: &Path,
+    steps: &BTreeMap<PipelineStep, StepCommits>,
+    step: PipelineStep,
+) -> Result<LostByReset, PrecheckError> {
+    let mut lost = LostByReset {
+        commits: Vec::new(),
+        files: Vec::new(),
+    };
+    let Some(commits) = steps.get(&step) else {
+        return Ok(lost);
+    };
+    lost.commits = git::commits_by_others(repo_root, &commits.before)?;
+    let unfinished = steps.values().any(|c| c.after.is_none());
+    if !unfinished {
+        lost.files = git::uncommitted_files(repo_root)?;
+    }
+    Ok(lost)
 }
 
 /// Checks that the tools of `TOOLS` (and on Linux `LINUX_SANDBOX_TOOLS`)
@@ -141,5 +182,52 @@ mod tests {
             String::from_utf8(log.stdout).unwrap().trim(),
             "Lusterna: uncommitted changes"
         );
+    }
+
+    #[test]
+    fn lost_by_reset_lists_the_commits_by_others_and_the_uncommitted_changes() {
+        let (_dir, root, _config) = crate_repo("{}", &[]);
+        let before = git::head_rev(&root).unwrap();
+        fs::write(root.join("src/lib.rs"), "pub fn f() {}").unwrap();
+        let after = git::commit_all(&root, "Lusterna: `translate` stage").unwrap();
+        let steps = BTreeMap::from([(PipelineStep::Translate, StepCommits { before, after })]);
+
+        let lost = lost_by_reset(&root, &steps, PipelineStep::Translate).unwrap();
+        assert!(lost.commits.is_empty() && lost.files.is_empty());
+
+        let commit = Command::new("git")
+            .args(["-c", "user.name=Dev", "-c", "user.email=dev@example.com"])
+            .args(["commit", "-q", "--allow-empty", "-m", "by hand"])
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        assert!(commit.success());
+        let by_hand = git::head_rev(&root).unwrap();
+        fs::write(root.join("new.rs"), "").unwrap();
+
+        let expected = LostByReset {
+            commits: vec![by_hand],
+            files: vec![PathBuf::from("new.rs")],
+        };
+        let lost = lost_by_reset(&root, &steps, PipelineStep::Translate).unwrap();
+        assert_eq!(lost, expected);
+
+        // A step that did not start
+        let lost = lost_by_reset(&root, &steps, PipelineStep::Prove).unwrap();
+        assert!(lost.commits.is_empty() && lost.files.is_empty());
+    }
+
+    #[test]
+    fn lost_by_reset_skips_the_uncommitted_changes_of_an_unfinished_step() {
+        let (_dir, root, _config) = crate_repo("{}", &[]);
+        let unfinished = StepCommits {
+            before: git::head_rev(&root).unwrap(),
+            after: None,
+        };
+        let steps = BTreeMap::from([(PipelineStep::Translate, unfinished)]);
+        fs::write(root.join("new.rs"), "").unwrap();
+
+        let lost = lost_by_reset(&root, &steps, PipelineStep::Translate).unwrap();
+        assert!(lost.files.is_empty());
     }
 }

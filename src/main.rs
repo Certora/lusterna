@@ -8,7 +8,7 @@ use anyhow::{Context, bail};
 use clap::{Args, Parser, Subcommand};
 use lusterna::{
     config::{AENEAS_ROOT, Config},
-    pipeline::Pipeline,
+    pipeline::{Pipeline, PipelineStep},
     precheck,
     spec::Spec,
 };
@@ -19,7 +19,8 @@ struct Cli {
     #[command(flatten)]
     config: Config,
     /// Run without asking for confirmation when `claude` is not logged in
-    /// with a subscription
+    /// with a subscription, or when `reset --force` deletes commits or
+    /// uncommitted changes
     #[arg(long, short, global = true)]
     yes: bool,
     #[command(subcommand)]
@@ -32,6 +33,24 @@ enum Command {
     Run(RunArgs),
     /// Continues the unfinished run of the crate
     Continue,
+    /// Resets the run of the crate to the start of `STAGE`, so that
+    /// `continue` runs it again
+    Reset(ResetArgs),
+}
+
+#[derive(Args)]
+struct ResetArgs {
+    /// The stage to run again. Its work stays in the work tree as uncommitted
+    /// changes, and the work of the later stages is deleted.
+    #[arg(value_enum)]
+    stage: PipelineStep,
+    /// Delete the work of `STAGE` too
+    #[arg(long)]
+    full: bool,
+    /// Reset even if this deletes commits that Lusterna did not make or
+    /// uncommitted changes. Asks for confirmation.
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Args)]
@@ -54,7 +73,8 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let config = cli.config;
 
-    if !Config::claude_uses_subscription()?
+    if !matches!(cli.command, Command::Reset(_))
+        && !Config::claude_uses_subscription()?
         && !confirm(
             "Warning: `claude` is not logged in with a subscription. This run is billed per token, which costs much more.",
             cli.yes,
@@ -81,6 +101,28 @@ fn main() -> anyhow::Result<()> {
         Command::Continue => {
             precheck::check_dependencies(&config)?;
             Pipeline::load(config)?.resume()?
+        }
+        Command::Reset(args) => {
+            let repo_root = config.repo_root()?;
+            let pipeline = Pipeline::load(config)?;
+            let lost = precheck::lost_by_reset(&repo_root, pipeline.steps(), args.stage)?;
+            if !lost.commits.is_empty() || !lost.files.is_empty() {
+                let mut text = String::from("The reset deletes:");
+                for commit in &lost.commits {
+                    text.push_str(&format!("\n- the commit {commit}"));
+                }
+                for file in &lost.files {
+                    let file = file.display();
+                    text.push_str(&format!("\n- the uncommitted changes to `{file}`"));
+                }
+                if !args.force {
+                    bail!("{text}\nPass `--force` to reset anyway.");
+                }
+                if !confirm(&text, cli.yes)? {
+                    return Ok(());
+                }
+            }
+            pipeline.reset(args.stage, args.full)?
         }
     }
     Ok(())

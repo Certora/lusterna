@@ -58,6 +58,28 @@
 //!
 //! A new run deletes the submission files and the state files of the earlier
 //! run.
+//!
+//! ## Resetting Runs
+//!
+//! `lusterna reset <step>` sets the run of the crate, finished or not, back
+//! to the start of a step, and `lusterna continue` then runs that step again.
+//! It deletes the commits and the stage states of the later steps. It fails
+//! if the run did not start the step.
+//!
+//! - Without `--full`, the work of the step stays in the work tree as
+//!   uncommitted changes on the commit before the step, and the submission of
+//!   its stage is deleted. The stage keeps its state file and starts again
+//!   with new agent sessions, and its first prompt says that the work tree
+//!   holds an earlier attempt. This fails if the state file of the stage does
+//!   not load.
+//! - With `--full`, the repository is reset to the commit before the step and
+//!   the state file of its stage is deleted, so the stage starts from its
+//!   setup.
+//!
+//! The command fails if the reset deletes commits that Lusterna did not make
+//! or uncommitted changes, unless `--force` is given and the user confirms.
+//! If a step of the run started and did not finish, the uncommitted changes
+//! are its work and do not count.
 
 use std::{
     collections::BTreeMap,
@@ -186,10 +208,10 @@ impl PipelineStep {
 
 /// `HEAD` of the repository before and after a step.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct StepCommits {
-    before: String,
+pub struct StepCommits {
+    pub before: String,
     /// `None` if the step did not finish.
-    after: Option<String>,
+    pub after: Option<String>,
 }
 
 /// The state of a run.
@@ -428,6 +450,11 @@ impl Pipeline {
             _ => self.finished = true,
         }
         self.save_state()
+    }
+
+    /// Returns the commits of each step that started.
+    pub fn steps(&self) -> &BTreeMap<PipelineStep, StepCommits> {
+        &self.steps
     }
 
     /// Resets the run to the commit before `step`, so that
