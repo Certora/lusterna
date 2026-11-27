@@ -8,6 +8,7 @@ use anyhow::{Context, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use lusterna::{
     config::{AENEAS_ROOT, Config},
+    log,
     pipeline::{Pipeline, PipelineStep},
     precheck,
     spec::Spec,
@@ -69,7 +70,7 @@ fn main() -> anyhow::Result<()> {
     // SAFETY: no other thread runs yet
     unsafe { env::set_var("PATH", env::join_paths(path)?) };
 
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    log::init();
     let cli = Cli::parse();
     let config = cli.config;
 
@@ -96,11 +97,17 @@ fn main() -> anyhow::Result<()> {
                 .with_context(|| format!("cannot parse the spec `{}`", spec_path.display()))?;
             precheck::check_dependencies(&config)?;
             precheck::check_clean_worktree(&config, &spec_path)?;
-            Pipeline::new(spec, spec_path, config)?.run()?
+            let internal_dir = config.internal_dir()?;
+            let pipeline = Pipeline::new(spec, spec_path, config)?;
+            log::open_file(&internal_dir, "run")?;
+            pipeline.run()?
         }
         Command::Continue => {
             precheck::check_dependencies(&config)?;
-            Pipeline::load(config)?.resume()?
+            let internal_dir = config.internal_dir()?;
+            let pipeline = Pipeline::load(config)?;
+            log::open_file(&internal_dir, "continue")?;
+            pipeline.resume()?
         }
         Command::Reset(args) => {
             if matches!(
