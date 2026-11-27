@@ -134,9 +134,10 @@ pub enum AssumptionPurpose {
     /// A condition on the arguments that every caller of the function of the
     /// theorem establishes.
     CallerPrecondition {
-        /// Each function of the translation that calls the function of the
-        /// theorem, by its full Lean name, with where it establishes the
-        /// condition.
+        /// Each function of the crate that calls the function of the
+        /// theorem, with where it establishes the condition. A function of
+        /// the translation is named by its full Lean name, another function
+        /// by its Rust path.
         callers: BTreeMap<String, String>,
     },
 }
@@ -256,6 +257,19 @@ impl Stage for ProveStage {
             .replace("{crate_root}", &self.input.crate_root.display().to_string())
             .replace("{induction}", &induction)
             .replace("{exceptions}", &exceptions)
+            .replace(
+                "{outside_callers}",
+                match &self.input.platform {
+                    Platform::Generic => {
+                        " It does not apply either if code outside the crate can call the \
+                         function."
+                    }
+                    Platform::Solana => {
+                        " It applies also to a function that is `pub` or that the crate exports: \
+                         code outside a Solana program can call only its instructions."
+                    }
+                },
+            )
     }
 
     fn agent_options(&self, cfg: &Config) -> AgentOptions {
