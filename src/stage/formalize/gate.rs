@@ -35,6 +35,7 @@ use crate::{
     utils::{
         git::{self, GitError},
         lean::{self, LakeError},
+        md::{bullet_list, code_list},
         spec_check::{self, Issue, SpecCheckError, TheoremCheck},
     },
 };
@@ -361,14 +362,6 @@ impl fmt::Display for LabelProblem {
 
 impl FormalizeGateFailure {
     pub(super) fn to_feedback_prompt(&self) -> String {
-        let list = |items: Vec<String>| {
-            items
-                .iter()
-                .map(|i| format!("- {i}"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-        let code = |items: &[String]| items.iter().map(|i| format!("`{i}`")).collect::<Vec<_>>();
         match self {
             FormalizeGateFailure::ChangedOutsideSpec { files } => format!(
                 "These files differ from the last commit, but you may only change files under \
@@ -376,7 +369,7 @@ impl FormalizeGateFailure {
                  Undo your changes to them: restore a changed file with \
                  `git restore --staged --worktree -- ':/<file>'`, and delete a file that you \
                  created.",
-                list(files.iter().map(|f| format!("`{}`", f.display())).collect())
+                code_list(files.iter().map(|f| f.display()))
             ),
             FormalizeGateFailure::StatusMismatch { missing, unknown } => {
                 let ids = |ids: &[PropertyId]| {
@@ -403,42 +396,36 @@ impl FormalizeGateFailure {
             FormalizeGateFailure::IssuesFound { theorems } => format!(
                 "These labelled theorems break the rules of \"The shape of a theorem\":\n\n{}\n\n\
                  The skill `lusterna:aeneas-specs` shows how to fix each problem.",
-                list(
-                    theorems
-                        .iter()
-                        .map(|(name, issues)| format!(
+                bullet_list(theorems.iter().map(|(name, issues)| format!(
                             "`{name}`: {}",
                             issues
                                 .iter()
                                 .map(Issue::to_string)
                                 .collect::<Vec<_>>()
                                 .join("; ")
-                        ))
-                        .collect()
-                )
+                        )))
             ),
             FormalizeGateFailure::LabelMismatch { problems } => format!(
                 "The `@[lusterna]` labels in `Spec/` do not match your submission:\n\n{}\n\n\
                  Fix the labels or the submission so that they agree.",
-                list(problems.iter().map(LabelProblem::to_string).collect())
+                bullet_list(problems)
             ),
             FormalizeGateFailure::MissingInduction { structs } => format!(
                 "Your submission has no entry in `induction` for these structs of invariant \
                  properties:\n\n{}\n\n\
                  Add the `base_cases` and the `steps` of each struct, under the struct name \
                  exactly as the property gives it.",
-                list(code(structs))
+                code_list(structs)
             ),
             FormalizeGateFailure::UncoveredInduction { missing } => format!(
                 "These functions in `base_cases` or `steps` have no labelled theorem of the \
                  invariant property whose triple calls them directly:\n\n{}\n\n\
                  Write the base case or the induction step for each one, as the skill \
                  `lusterna:invariants` describes.",
-                list(
+                bullet_list(
                     missing
                         .iter()
                         .map(|(id, function)| format!("property {id}: `{function}`"))
-                        .collect()
                 )
             ),
         }

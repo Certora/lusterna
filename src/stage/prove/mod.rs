@@ -16,7 +16,10 @@ use crate::{
         lean_agent_options,
         properties::{Properties, Property, PropertyId},
     },
-    utils::git::{self, GitError},
+    utils::{
+        git::{self, GitError},
+        md,
+    },
 };
 
 pub use gate::{ProveGateError, ProveGateFailure};
@@ -278,6 +281,36 @@ impl Stage for ProveStage {
     }
 
     fn judge_prompt(&self, submission: &Self::Submission) -> Option<String> {
+        // `names` as a numbered list, under a line that gives their number
+        let numbered_list = |names: Vec<&String>| {
+            format!(
+                "Number of entries: {}\n\n{}",
+                names.len(),
+                md::numbered_list(names.iter().map(md::code))
+            )
+        };
+        // The theorems of the submission whose status `has_status` accepts
+        let theorems_with = |has_status: fn(&TheoremStatus) -> bool| {
+            let mut names = Vec::new();
+            for (name, status) in &submission.theorems {
+                if has_status(status) {
+                    names.push(name);
+                }
+            }
+            numbered_list(names)
+        };
+        // The entries of the submission that each section of the judge prompt
+        // checks
+        let with_assumptions =
+            theorems_with(|s| matches!(s, TheoremStatus::ProvenWithAssumptions { .. }));
+        let refuted = theorems_with(|s| matches!(s, TheoremStatus::Refuted { .. }));
+        let exceptions = theorems_with(|s| matches!(s, TheoremStatus::Exception { .. }));
+        let open = theorems_with(|s| matches!(s, TheoremStatus::Open { .. }));
+        let dropped_write = theorems_with(|s| matches!(s, TheoremStatus::DroppedWrite { .. }));
+        let dropped_writes = numbered_list(submission.dropped_writes.keys().collect());
+        let added_invariants = numbered_list(submission.additional_invariants.keys().collect());
+        let added_inductions = numbered_list(submission.additional_inductions.keys().collect());
+
         let submission =
             serde_json::to_string_pretty(submission).expect("the submission serializes");
         Some(
@@ -289,6 +322,14 @@ impl Stage for ProveStage {
                     "{invariants}",
                     &format!("{INDUCTION_SKILL}\n\n{INVARIANTS_SKILL}"),
                 )
+                .replace("{theorems_with_assumptions}", &with_assumptions)
+                .replace("{refuted_theorems}", &refuted)
+                .replace("{exception_theorems}", &exceptions)
+                .replace("{open_theorems}", &open)
+                .replace("{dropped_write_theorems}", &dropped_write)
+                .replace("{dropped_writes}", &dropped_writes)
+                .replace("{added_invariants}", &added_invariants)
+                .replace("{added_inductions}", &added_inductions)
                 .replace("{briefing}", &self.briefing())
                 .replace("{submission}", &submission),
         )
@@ -371,6 +412,18 @@ mod tests {
         let prompt = stage().judge_prompt(&submission("no lemma")).unwrap();
 
         assert_no_placeholders(&prompt, &[]);
+    }
+
+    #[test]
+    fn judge_prompt_lists_the_open_theorems() {
+        let prompt = stage().judge_prompt(&submission("no lemma")).unwrap();
+
+        assert!(prompt.contains(
+            "The theorems with the status `Open`:\n\nNumber of entries: 1\n\n1. `Spec.FAdds.f_adds`"
+        ));
+        assert!(
+            prompt.contains("The theorems with the status `Refuted`:\n\nNumber of entries: 0\n")
+        );
     }
 
     #[test]

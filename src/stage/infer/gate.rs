@@ -2,9 +2,12 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::stage::{
-    infer::InferStageSubmission,
-    properties::{Properties, Property, PropertyId, PropertyKind},
+use crate::{
+    stage::{
+        infer::InferStageSubmission,
+        properties::{Properties, Property, PropertyId, PropertyKind},
+    },
+    utils::md::{bullet_list, code_list},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, derive_more::Display)]
@@ -41,13 +44,6 @@ pub enum InferGateFailure {
 
 impl InferGateFailure {
     pub(super) fn to_feedback_prompt(&self) -> String {
-        let list = |items: Vec<String>| {
-            items
-                .iter()
-                .map(|i| format!("- {i}"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
         let name = |p: &Property| format!("{} (\"{}\")", p.id, p.title);
         let json = |ps: Vec<&Property>| {
             serde_json::to_string_pretty(&ps).expect("the properties serialize")
@@ -80,7 +76,7 @@ impl InferGateFailure {
                     prompt += &format!(
                         "\n\nThese properties are not given locked properties. Set their \
                          `locked` to `false`:\n\n{}",
-                        list(added.iter().map(name).collect())
+                        bullet_list(added.iter().map(name))
                     );
                 }
                 prompt
@@ -89,33 +85,31 @@ impl InferGateFailure {
                 "These pairs of properties have the same `id`:\n\n{}\n\n\
                  Give each new property an `id` that no other property has. Do not change the \
                  `id` of a given property.",
-                list(
+                bullet_list(
                     pairs
                         .iter()
                         .map(|(a, b)| format!("{} and {}", name(a), name(b)))
-                        .collect()
                 )
             ),
             InferGateFailure::DuplicateTitles(pairs) => format!(
                 "These pairs of properties have the same `title`:\n\n{}\n\n\
                  Change the `title` of the property whose `locked` is `false`. If the two \
                  properties state the same, remove that property instead.",
-                list(
+                bullet_list(
                     pairs
                         .iter()
                         .map(|(a, b)| format!("{} and {}", name(a), name(b)))
-                        .collect()
                 )
             ),
             InferGateFailure::EmptyFns(rules) => format!(
                 "These rules have an empty `fns`:\n\n{}\n\n\
                  Name the functions that each rule is about.",
-                list(rules.iter().map(name).collect())
+                bullet_list(rules.iter().map(name))
             ),
             InferGateFailure::MissingEntrypoints(entrypoints) => format!(
                 "These given entrypoints are missing from your submission:\n\n{}\n\n\
                  Add them unchanged.",
-                list(entrypoints.iter().map(|e| format!("`{e}`")).collect())
+                code_list(entrypoints)
             ),
             InferGateFailure::NoEntrypoints => "Your submission has no entrypoints. Add the \
                                                 entrypoints that the properties need."
@@ -123,17 +117,16 @@ impl InferGateFailure {
             InferGateFailure::EntrypointPrefix(entrypoints) => format!(
                 "These entrypoints do not start with `crate::`:\n\n{}\n\n\
                  Write each as a path from the crate root that starts with `crate::`.",
-                list(entrypoints.iter().map(|e| format!("`{e}`")).collect())
+                code_list(entrypoints)
             ),
             InferGateFailure::RedundantEntrypoints(pairs) => format!(
                 "These entrypoints are inside another entrypoint:\n\n{}\n\n\
                  Remove each of them, or replace the outer entrypoint with the entrypoints \
                  inside it that the properties need.",
-                list(
+                bullet_list(
                     pairs
                         .iter()
                         .map(|(inner, outer)| format!("`{inner}` is inside `{outer}`"))
-                        .collect()
                 )
             ),
         }

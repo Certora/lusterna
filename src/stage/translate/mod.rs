@@ -13,6 +13,7 @@ use crate::{
         Stage, StageName,
         translate::{gate::TranslateGateError, setup::TranslateSetupOutcome},
     },
+    utils::md,
 };
 
 pub use {
@@ -139,11 +140,7 @@ fn make_briefing(
         if patterns.is_empty() {
             return "(none)".to_owned();
         }
-        patterns
-            .iter()
-            .map(|p| format!("- `{p}`"))
-            .collect::<Vec<_>>()
-            .join("\n")
+        md::code_list(patterns)
     };
     BRIEFING_TEMPLATE
         .replace("{crate_root}", &crate_root.display().to_string())

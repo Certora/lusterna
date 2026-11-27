@@ -9,6 +9,7 @@ use crate::{
     utils::{
         cargo::{self, CargoError},
         git::{self, GitError},
+        md,
     },
 };
 
@@ -156,11 +157,7 @@ impl Stage for PreTranslateStage {
                  `.rs` files, `Cargo.lock` and the `[patch]` table of the workspace \
                  `Cargo.toml`:\n\n{}\n\n\
                  Restore each one with `git restore --source={base_commit} -- ':/<file>'`.",
-                files
-                    .iter()
-                    .map(|f| format!("- `{}`", f.display()))
-                    .collect::<Vec<_>>()
-                    .join("\n")
+                md::code_list(files.iter().map(|f| f.display()))
             ),
             PreTranslateGateFailure::CargoBuildFailed { stderr } => format!(
                 "`cargo build` failed with this output:\n\n```\n{stderr}\n```\n\n\

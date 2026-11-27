@@ -50,7 +50,7 @@ use crate::{
 const WAIT_FOR_SUBAGENTS: &str = "Before you submit your structured output, wait until every subagent you started has finished and use its results. Results that arrive after the submission are lost.";
 
 /// The judge's prompt after its first verdict.
-const RECHECK_PROMPT: &str = "The agent changed its work to fix the defects of your last verdict. Do not review the whole work again. For each defect, check whether the agent fixed it, and review the code that the agent changed to fix it. Report a defect again only if it is not fixed. Do not report a defect again if it turns out to be wrong. Report a new defect only in the code that the agent changed to fix these defects.";
+const RECHECK_PROMPT: &str = "The agent changed its work to fix the defects of your last verdict. Do not review the whole work again. For each defect, check whether the agent fixed it, and review the code that the agent changed to fix it. Also review each part of the submission below that differs from the submission that you reviewed before. Report a defect again only if it is not fixed. Do not report a defect again if it turns out to be wrong. Report a new defect only in the code that the agent changed to fix these defects, or in a part of the submission that differs.";
 
 /// Added to the base prompt of a stage that `StageExec::restart` starts
 /// again.
@@ -139,7 +139,7 @@ impl<S: Stage, A: Agent> StageExec<S, A> {
         let mut sessions = Session::<A>::default();
 
         sessions.set_briefing(WAIT_FOR_SUBAGENTS.to_owned());
-        sessions.set_effort(cfg.effort);
+        sessions.set_effort(cfg.judge_effort);
         sessions.set_model(cfg.model.clone());
         sessions.set_dir(cfg.workspace_root()?);
 
@@ -864,6 +864,35 @@ mod tests {
 
         let error = f.exec.run(&f.cfg, None).unwrap_err();
         assert!(matches!(error, StageExecutionError::BudgetExhausted(None)));
+    }
+
+    #[test]
+    fn judge_session_gets_the_judge_effort() {
+        let workspace = tempfile::tempdir().unwrap();
+        let cfg = parse_config(
+            [
+                "--workspace-root",
+                &workspace.path().display().to_string(),
+                "--effort",
+                "low",
+                "--judge-effort",
+                "max",
+            ]
+            .map(str::to_owned),
+        );
+        let stage = MockStage { judge: true };
+
+        let worker = StageExec::<MockStage, ClaudeCode>::get_worker_session(&stage, &cfg).unwrap();
+        let judge = StageExec::<MockStage, ClaudeCode>::get_judge_session(&cfg).unwrap();
+
+        assert_eq!(
+            serde_json::to_value(worker.agent()).unwrap()["effort"],
+            "Low"
+        );
+        assert_eq!(
+            serde_json::to_value(judge.agent()).unwrap()["effort"],
+            "Max"
+        );
     }
 
     #[test]
