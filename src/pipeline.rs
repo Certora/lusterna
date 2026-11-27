@@ -711,6 +711,7 @@ impl Pipeline {
             properties: lusterna_dir.join("properties.json"),
             crate_root: self.config.crate_root()?,
             entrypoints: self.state.spec.entrypoints.clone(),
+            platform: self.config.get_platform()?,
         };
         let submission = self
             .exec_stage::<FormalizeStage>(input)
@@ -738,6 +739,7 @@ impl Pipeline {
                 formalized.property_status.clone(),
             ),
             induction: formalized.induction.clone(),
+            platform: self.config.get_platform()?,
         };
         let submission = self
             .exec_stage::<ProveStage>(input)

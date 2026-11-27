@@ -15,15 +15,44 @@ use std::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::{agent::AgentOptions, config::Config};
+use crate::{
+    agent::AgentOptions,
+    config::{Config, Platform},
+};
 
 /// The `SKILL.md` of the skill `invariants`, which the formalize and prove
 /// stages share.
 const INVARIANTS_SKILL: &str = include_str!("res/invariants.md");
 
 /// The `SKILL.md` of the skill `induction`, which the formalize and prove
-/// stages share.
+/// stages share, with `{helper}` standing for the rule that defines a helper.
 const INDUCTION_SKILL: &str = include_str!("res/induction.md");
+
+/// Returns the `SKILL.md` of the skill `induction` for a crate of `platform`.
+fn induction_skill(platform: &Platform) -> String {
+    INDUCTION_SKILL.replace(
+        "{helper}",
+        match platform {
+            Platform::Generic => {
+                "A helper is a function that changes the struct, that the crate does not \
+                 export, and whose every call in the Rust source of the crate is inside a \
+                 function of the translation that changes the struct. The invariant only has \
+                 to hold between operations, not in the middle of one. A function is exported \
+                 if every module on its path from the crate root is `pub`, or if a `pub use` \
+                 re-exports it. An exported function is never a helper. That a function is \
+                 `pub` in its module does not decide whether the crate exports it."
+            }
+            Platform::Solana => {
+                "A helper is a function that changes the struct and whose every call in the \
+                 Rust source of the crate is inside a function of the translation that changes \
+                 the struct. That a function is `pub`, or that the crate exports it, does not \
+                 keep it from being a helper: code outside a Solana program can call only its \
+                 instructions. A function with a call inside a function that the translation \
+                 does not contain is not a helper."
+            }
+        },
+    )
+}
 
 #[derive(Debug, Serialize, Deserialize, derive_more::Display)]
 pub enum StageName {

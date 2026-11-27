@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     agent::AgentOptions,
-    config::Config,
+    config::{Config, Platform},
     stage::{
-        INDUCTION_SKILL, INVARIANTS_SKILL, Stage, StageName, lean_agent_options,
+        INVARIANTS_SKILL, Stage, StageName, induction_skill, lean_agent_options,
         properties::{Properties, PropertyId},
     },
     utils::git::{self, GitError},
@@ -61,6 +61,7 @@ pub struct FormalizeInput {
     pub crate_root: PathBuf,
     /// The Rust paths from which the translation covers the reachable code
     pub entrypoints: Vec<String>,
+    pub platform: Platform,
 }
 
 /// A problem outside `Spec/` that stops the stage, for example a dependency of
@@ -206,7 +207,7 @@ impl Stage for FormalizeStage {
         vec![
             ("aeneas-specs", AENEAS_SPECS_SKILL.to_owned()),
             ("aeneas-models", AENEAS_MODELS_SKILL.to_owned()),
-            ("induction", INDUCTION_SKILL.to_owned()),
+            ("induction", induction_skill(&self.input.platform)),
             ("invariants", INVARIANTS_SKILL.to_owned()),
         ]
     }
@@ -260,6 +261,7 @@ mod tests {
                 properties: PathBuf::from("/c/lusterna/properties.json"),
                 crate_root: PathBuf::from("/c"),
                 entrypoints: vec!["crate::vault".to_owned()],
+                platform: Platform::Generic,
             },
             properties: Properties(Vec::new()),
         }

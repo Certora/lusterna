@@ -45,7 +45,7 @@ The following functions are affected by the interior mutability problem. If they
 
 #### Helpers
 
-A helper changes the struct, is not exported by the crate, and is only called inside other functions that change the struct. The invariants only have to hold between operations, so a helper has no induction step itself: the induction steps of its callers cover its change.
+A helper changes the struct and is only called inside other functions that change the struct. The invariants only have to hold between operations, so a helper has no induction step itself: the induction steps of its callers cover its change.
 
 {% if s.helpers %}
 

@@ -189,9 +189,9 @@ impl Config {
     }
 }
 
-/// The platform that the crate is written for. It selects the default opaque
-/// patterns, the Lean project and the skills that the translate agent gets.
-#[derive(Clone, Serialize, Deserialize)]
+/// The platform that the crate is written for. It selects the translation
+/// setup and the platform-specific rules and skills of the stages.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Platform {
     /// A crate with no specific platform. The default opaque patterns are
     /// the general ones, and the translate agent gets no platform skill.
