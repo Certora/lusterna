@@ -79,8 +79,8 @@ impl Log for Logger {
 /// Installs the logger. The level of the terminal output is the level in
 /// `RUST_LOG`, or info if it is not set.
 pub fn init() {
-    let cli = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-        .build();
+    let cli =
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).build();
     ::log::set_boxed_logger(Box::new(Logger { cli })).expect("no logger is installed");
     ::log::set_max_level(LevelFilter::Trace);
 }
