@@ -22,13 +22,13 @@ Some of the proofs of the properties above rely on additional assumptions on the
 
 #### Proven with Assumptions
 
-Properties that have status **Proven\*** have at least one theorem whose proof relies on additional assumptions. Each of those assumptions is of one of the following kinds:
+Properties that have status **Proven\*** have at least one theorem whose proof relies on additional assumptions. A proof with an added assumption only holds where the assumption holds. Each assumption is of one of the kinds below. The table lists them from the least to the most review that they need:
 
-- **State invariant**: an invariant holds for the state before the call. The invariant is an invariant property or one of the [additional invariants](#additional-invs), and its own status shows whether it is verified. An induction step of an invariant can assume the same invariant for another value of its struct.
-- **External**: a condition on code outside the translation, which Lean cannot check. The assumption gives its justification.
-- **Natspec**: the natspec of the property states the condition, and the theorem lacks it.
-- **Caller precondition**: a condition on the arguments that every caller of the function establishes.
-- **System**: a fact that the runtime of the platform guarantees for a value that it produces.
-- **Reasonable**: a condition that no code establishes. It excludes only values that, by its justification, no execution of the program reaches.
-
-A proof with an added assumption only holds where the assumption holds.
+| Kind | Assumes | Backed by | Review |
+|------|---------|-----------|--------|
+| State invariant | An invariant holds for the state before the call. It is an invariant property or one of the [additional invariants](#additional-invs). An induction step can assume its own invariant for another value of its struct. | The Lean proofs of the invariant. Its status shows whether it is verified. | Check the status of the invariant. |
+| Natspec | A condition that the natspec of the property states and the theorem lacks. | The specification. | Check the quote against the natspec. |
+| Caller precondition | A condition on the arguments that every caller of the function establishes. | An LLM that read each caller that the assumption lists. | Check that each caller establishes the condition. |
+| External | A condition on code outside the translation, which Lean cannot check. | The justification of an LLM. | Check the justification against that code. |
+| System | A fact that the runtime of the platform guarantees for a value that it produces. | The claim of an LLM about the runtime. | Check the claim against the documentation of the runtime. |
+| Reasonable | A condition that no code establishes. It excludes only values that, by its justification, no execution of the program reaches. | Nothing. The condition does not hold for every input. | Decide for each assumption whether to accept it. |
