@@ -156,8 +156,9 @@ struct AssumptionView {
     pub name: String,
     pub purpose: AssumptionPurposeView,
     /// The fields of the `AssumptionPurpose` as text: a link to the assumed
-    /// invariant, the justification of an external assumption, the natspec
-    /// quote, or the callers of a caller precondition.
+    /// invariant, the justification of an external or a reasonable
+    /// assumption, the natspec quote, the callers of a caller precondition,
+    /// or the fact of a system assumption.
     pub justification: String,
 }
 
@@ -171,6 +172,10 @@ enum AssumptionPurposeView {
     Natspec,
     #[serde(rename = "Caller precondition")]
     CallerPrecondition,
+    #[serde(rename = "System")]
+    System,
+    #[serde(rename = "Reasonable")]
+    Reasonable,
 }
 
 #[derive(Serialize, Clone)]
@@ -486,6 +491,10 @@ impl From<&AdditionalAssumption> for AssumptionView {
                     AssumptionPurposeView::CallerPrecondition,
                     callers.join("; "),
                 )
+            }
+            AssumptionPurpose::System { fact } => (AssumptionPurposeView::System, fact.clone()),
+            AssumptionPurpose::Reasonable { justification } => {
+                (AssumptionPurposeView::Reasonable, justification.clone())
             }
         };
 

@@ -140,6 +140,18 @@ pub enum AssumptionPurpose {
         /// by its Rust path.
         callers: BTreeMap<String, String>,
     },
+    /// A fact that the runtime of the platform guarantees for a value that it
+    /// produces.
+    System {
+        /// The value, and what the runtime guarantees for it.
+        fact: String,
+    },
+    /// A condition that no code establishes, and that excludes only values
+    /// that no execution of the program reaches.
+    Reasonable {
+        /// Why no execution reaches the excluded values.
+        justification: String,
+    },
 }
 
 /// The invariant that a `StateInvariant` assumption assumes.
@@ -267,6 +279,16 @@ impl Stage for ProveStage {
                     Platform::Solana => {
                         " It applies also to a function that is `pub` or that the crate exports: \
                          code outside a Solana program can call only its instructions."
+                    }
+                },
+            )
+            .replace(
+                "{system_purpose}",
+                match &self.input.platform {
+                    Platform::Generic => "not available for this crate.",
+                    Platform::Solana => {
+                        "the proof needs a fact about a value that the Solana runtime produces, \
+                         and the runtime guarantees the fact."
                     }
                 },
             )

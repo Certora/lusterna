@@ -32,6 +32,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    config::Platform,
     stage::{
         formalize::Induction,
         properties::{PropertyId, PropertyKind},
@@ -89,6 +90,8 @@ pub enum ProveGateFailure {
     MissingInduction { structs: Vec<String> },
     #[display("{} structs of additional_inductions already have an induction", structs.len())]
     ReplacedInduction { structs: Vec<String> },
+    #[display("{} theorems have a `System` assumption, which is not available", theorems.len())]
+    SystemUnavailable { theorems: Vec<String> },
 }
 
 /// Runs the gate checks on the work of the agent in the Lean project at
@@ -104,6 +107,9 @@ pub(super) fn run_gate(
         return Ok(Some(failure));
     }
     if let Err(failure) = check_added_inductions(&input.induction, submission) {
+        return Ok(Some(failure));
+    }
+    if let Err(failure) = check_system_available(&input.platform, submission) {
         return Ok(Some(failure));
     }
 
@@ -186,6 +192,33 @@ fn check_added_inductions_are_new(
     }
     if !replaced.is_empty() {
         return Err(ProveGateFailure::ReplacedInduction { structs: replaced });
+    }
+    Ok(())
+}
+
+/// Fails if `platform` is `Generic` and a theorem of `submission` has a
+/// `System` assumption.
+fn check_system_available(
+    platform: &Platform,
+    submission: &ProveSubmission,
+) -> Result<(), ProveGateFailure> {
+    if let Platform::Solana = platform {
+        return Ok(());
+    }
+    let mut theorems = Vec::new();
+    for (name, status) in &submission.theorems {
+        let TheoremStatus::ProvenWithAssumptions { assumptions } = status else {
+            continue;
+        };
+        for assumption in assumptions {
+            if let AssumptionPurpose::System { .. } = assumption.purpose {
+                theorems.push(name.clone());
+                break;
+            }
+        }
+    }
+    if !theorems.is_empty() {
+        return Err(ProveGateFailure::SystemUnavailable { theorems });
     }
     Ok(())
 }
@@ -529,6 +562,13 @@ impl ProveGateFailure {
                  Remove these entries from `additional_inductions`.",
                 code_list(structs)
             ),
+            ProveGateFailure::SystemUnavailable { theorems } => format!(
+                "These theorems have a hypothesis with the purpose `System`, but this purpose \
+                 is not available for this crate:\n\n{}\n\n\
+                 Give each such hypothesis another purpose, if \"Additional assumptions\" of the \
+                 briefing allows one for it. Otherwise remove the hypothesis.",
+                code_list(theorems)
+            ),
         }
     }
 }
@@ -765,6 +805,28 @@ mod tests {
         assert!(matches!(
             check_added_inductions(&induction, &submission),
             Err(ProveGateFailure::ReplacedInduction { structs }) if structs == ["module::Struct"]
+        ));
+    }
+
+    #[test]
+    fn system_assumption_passes_only_for_solana() {
+        let mut submission = submission();
+        submission.theorems.insert(
+            "Spec.Inv.f".to_owned(),
+            TheoremStatus::ProvenWithAssumptions {
+                assumptions: vec![AdditionalAssumption {
+                    name: "h_clock".to_owned(),
+                    reason: String::new(),
+                    purpose: AssumptionPurpose::System {
+                        fact: String::new(),
+                    },
+                }],
+            },
+        );
+        check_system_available(&Platform::Solana, &submission).unwrap();
+        assert!(matches!(
+            check_system_available(&Platform::Generic, &submission),
+            Err(ProveGateFailure::SystemUnavailable { theorems }) if theorems == ["Spec.Inv.f"]
         ));
     }
 

@@ -28,5 +28,7 @@ Properties that have status **Proven\*** have at least one theorem whose proof r
 - **External**: a condition on code outside the translation, which Lean cannot check. The assumption gives its justification.
 - **Natspec**: the natspec of the property states the condition, and the theorem lacks it.
 - **Caller precondition**: a condition on the arguments that every caller of the function establishes.
+- **System**: a fact that the runtime of the platform guarantees for a value that it produces.
+- **Reasonable**: a condition that no code establishes. It excludes only values that, by its justification, no execution of the program reaches.
 
 A proof with an added assumption only holds where the assumption holds.
