@@ -51,12 +51,14 @@ The submission gives a purpose for each hypothesis. The briefing defines the pur
 2. `External`: the hypothesis must be about code that the translation does not contain. Read the Rust source of that code and check that the justification holds for it.
 3. `Natspec`: `quote` must appear word for word in the natspec of the property of the theorem. The hypothesis must state the condition of the quote and nothing more.
 4. `CallerPrecondition`: search the Rust source of the crate for every call of the function of the theorem. `callers` must list each function that calls it, and no other. For each caller, read its Rust code: the condition must hold for the arguments that it passes, on every path to the call, for the reason that its entry gives. The hypothesis may only be about the arguments of the function, including the state that the caller passes. The function must not be one for which the briefing says that this purpose does not apply.
+5. `System`: the hypothesis must be about a value that the runtime produces and that the program does not compute. The runtime must guarantee the fact for every value that it produces.
+6. `Reasonable`: be more skeptical of this purpose than of any other, because a wrong `Reasonable` hypothesis hides a bug in the crate. Accept the hypothesis only if you are convinced that no execution of the program reaches the values that it excludes. Search the Rust source of the crate for code that can produce these values, and for code that excludes them. The values must not be ones for which the briefing says that this purpose does not apply, or that another purpose excludes.
 
 For every purpose:
 
 1. The hypothesis must be about the inputs and the state before the call, not about the result of the call. Only an `External` hypothesis may be about the result of a function that the translation does not contain.
 2. The hypothesis must not state that a call returns or does not panic.
-3. The hypothesis must not restrict the inputs or the state so that the conclusion holds, except a `CallerPrecondition` that holds as above. If the conclusion fails for inputs that the property covers, and the hypothesis excludes those inputs, the theorem is false and the hypothesis hides it.
+3. The hypothesis must not restrict the inputs or the state so that the conclusion holds, except a `CallerPrecondition`, a `System` or a `Reasonable` hypothesis that holds as above. If the conclusion fails for inputs that the property covers, and the hypothesis excludes those inputs, the theorem is false and the hypothesis hides it.
 4. The hypotheses of the theorem must be satisfiable together.
 
 ## Check each added invariant
