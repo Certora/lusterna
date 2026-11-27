@@ -9,11 +9,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     agent::AgentOptions,
-    config::Config,
+    config::{Config, Platform},
     stage::{
-        INDUCTION_SKILL, INVARIANTS_SKILL, Stage, StageName,
+        INVARIANTS_SKILL, Stage, StageName,
         formalize::{Induction, PropertyFormalizationStatus},
-        lean_agent_options,
+        induction_skill, lean_agent_options,
         properties::{Properties, Property, PropertyId},
     },
     utils::{
@@ -51,6 +51,7 @@ pub struct ProveInput {
     /// struct name as the property gives it, the functions of its base cases
     /// and induction steps.
     pub induction: BTreeMap<String, Induction>,
+    pub platform: Platform,
 }
 
 /// A property that the formalize stage formalized.
@@ -264,7 +265,7 @@ impl Stage for ProveStage {
     fn skills(&self) -> Vec<(&'static str, String)> {
         vec![
             ("aeneas-tactics", AENEAS_TACTICS_SKILL.to_owned()),
-            ("induction", INDUCTION_SKILL.to_owned()),
+            ("induction", induction_skill(&self.input.platform)),
             ("invariants", INVARIANTS_SKILL.to_owned()),
         ]
     }
@@ -320,7 +321,10 @@ impl Stage for ProveStage {
                 .replace("{properties}", &self.input.properties.display().to_string())
                 .replace(
                     "{invariants}",
-                    &format!("{INDUCTION_SKILL}\n\n{INVARIANTS_SKILL}"),
+                    &format!(
+                        "{}\n\n{INVARIANTS_SKILL}",
+                        induction_skill(&self.input.platform)
+                    ),
                 )
                 .replace("{theorems_with_assumptions}", &with_assumptions)
                 .replace("{refuted_theorems}", &refuted)
@@ -380,6 +384,7 @@ mod tests {
                 crate_root: PathBuf::from("/c"),
                 formalized: BTreeMap::new(),
                 induction: BTreeMap::new(),
+                platform: Platform::Generic,
             },
         }
     }
